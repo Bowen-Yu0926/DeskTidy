@@ -1,0 +1,2 @@
+This folder contains fd.exe from https://github.com/sharkdp/fd
+Licensed under MIT OR Apache-2.0. See the upstream repository for full license text.
