@@ -1,0 +1,55 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.venv/
+venv/
+.env
+.env.*
+!.env.example
+
+# Build / packaging outputs (regenerate with scripts\build*.bat)
+dist/
+dist_staging/
+build/
+*.spec.bak
+
+# Bundled FFmpeg is large and downloaded by scripts\prepare_ffmpeg_recording.py
+assets/ffmpeg/
+assets/ffmpeg.staging/
+
+# Runtime / user data (do not publish)
+logs/
+录屏/
+笔记/
+纪要/
+邮件/
+*.log
+
+# Local scratch / QA / restore dumps
+_restore/
+_icon_debug/
+_qa_regen/
+_tmp*
+_hold*.png
+_fix_*.py
+_audit_*.txt
+_extract_*.py
+dummy.md
+stop_test.txt
+build_last_pack*.txt
+
+# IDE / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Test leftovers
+scripts/_tmp*
+scripts/_selftest*
+**/DeskTidy_test*
+**/_selftest*

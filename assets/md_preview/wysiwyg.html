@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>deskNote WYSIWYG</title>
+  <link rel="stylesheet" href="vendor/toastui-editor.min.css" />
+  <style>
+    html, body, #editor {
+      height: 100%;
+      margin: 0;
+      padding: 0;
+      background: #fff;
+    }
+    body.theme-dark, body.theme-dark #editor {
+      background: #1e1e1e;
+    }
+    .toastui-editor-defaultUI {
+      border: none !important;
+      height: 100% !important;
+    }
+  </style>
+  <script src="qrc:///qtwebchannel/qwebchannel.js"></script>
+  <script src="vendor/toastui-editor-all.min.js"></script>
+</head>
+<body>
+  <div id="editor"></div>
+  <script>
+(function () {
+  var bridge = null;
+  var editor = null;
+  var suppress = false;
+
+  function boot(md, theme) {
+    var el = document.getElementById("editor");
+    el.innerHTML = "";
+    var dark = String(theme || "").toLowerCase().indexOf("dark") >= 0;
+    document.body.classList.toggle("theme-dark", dark);
+    editor = new toastui.Editor({
+      el: el,
+      height: "100%",
+      initialEditType: "wysiwyg",
+      previewStyle: "vertical",
+      usageStatistics: false,
+      initialValue: md || "",
+      autofocus: true,
+    });
+    editor.on("change", function () {
+      if (suppress || !bridge || !bridge.onMarkdownChanged) return;
+      bridge.onMarkdownChanged(editor.getMarkdown());
+    });
+  }
+
+  window.__desknoteWysiwygSet = function (md, theme) {
+    if (!editor) {
+      boot(md || "", theme || "");
+      return;
+    }
+    suppress = true;
+    try {
+      editor.setMarkdown(md || "", false);
+      var dark = String(theme || "").toLowerCase().indexOf("dark") >= 0;
+      document.body.classList.toggle("theme-dark", dark);
+    } finally {
+      setTimeout(function () { suppress = false; }, 50);
+    }
+  };
+
+  window.__desknoteWysiwygGet = function () {
+    return editor ? editor.getMarkdown() : "";
+  };
+
+  window.__desknoteWysiwygInsert = function (md) {
+    if (!editor) return;
+    try {
+      if (typeof editor.insertText === "function") {
+        editor.insertText(md || "");
+      } else {
+        editor.setMarkdown((editor.getMarkdown() || "") + (md || ""), false);
+      }
+    } catch (e) { /* ignore */ }
+  };
+
+  function ready() {
+    if (typeof qt !== "undefined" && qt.webChannelTransport) {
+      new QWebChannel(qt.webChannelTransport, function (channel) {
+        bridge = channel.objects.bridge;
+        if (bridge && bridge.previewReady) bridge.previewReady();
+      });
+    }
+  }
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", ready);
+  } else {
+    ready();
+  }
+})();
+  </script>
+</body>
+</html>

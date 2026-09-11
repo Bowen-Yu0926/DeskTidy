@@ -1,0 +1,193 @@
+{
+  "language": "zh",
+  "auto_start": true,
+  "auto_organize_on_startup": false,
+  "auto_organize_watch": false,
+  "auto_snapshot_on_change": false,
+  "show_fences": true,
+  "show_page_indicator": true,
+  "current_page": 0,
+  "theme": "mist",
+  "fence_style_preset": "charcoal",
+  "organize_mode": "virtual",
+  "legacy_storage_migrated": false,
+  "double_click_hide": true,
+  "close_to_tray": true,
+  "close_behavior_prompted": false,
+  "first_run_guide_done": false,
+  "first_run_organize_done": false,
+  "session_active": false,
+  "desktop_right_click_menu": true,
+  "enable_public_desktop": false,
+  "hosted_namespace_icons": {},
+  "hotkeys": {
+    "organize": "Ctrl+Shift+O",
+    "toggle_fences": "Ctrl+Shift+F",
+    "toggle_icons": "Ctrl+Shift+H",
+    "peek_fences": "Ctrl+Space",
+    "page_next": "Ctrl+Shift+Right",
+    "page_prev": "Ctrl+Shift+Left",
+    "screenshot": "F1",
+    "show_screenshot": "F2",
+    "screen_record": "F3",
+    "file_search": "F4",
+    "calculator": "Ctrl+Alt+C"
+  },
+  "screenshot": {
+    "auto_pin_after_copy": false,
+    "max_pins": 3
+  },
+  "screen_record": {
+    "enabled": false,
+    "output_dir": "",
+    "fps": 30
+  },
+  "file_search": {
+    "roots": ["desktop", "documents", "downloads"],
+    "search_all_drives": false,
+    "include_open_folders": true,
+    "include_hidden": false,
+    "max_results": 50,
+    "max_depth": 12,
+    "threads": 2
+  },
+  "meeting_minutes": {
+    "enabled": true,
+    "folder": ""
+  },
+  "notepad": {
+    "enabled": true,
+    "folder": ""
+  },
+  "calculator": {
+    "enabled": false
+  },
+  "desktop_todos": {
+    "enabled": false
+  },
+  "desktop_pet": {
+    "enabled": true,
+    "visible": true,
+    "follow_cursor": false,
+    "auto_wander": true,
+    "show_page_bubbles": true,
+    "character": "hoodie",
+    "enabled_actions": ["pet", "wait", "fall"],
+    "enabled_actions_by_character": {
+      "hoodie": ["pet", "wait", "sleep", "fall"],
+      "voyage": ["pet", "wait", "fall"]
+    },
+    "size_scale": 1.0
+  },
+  "wallpaper": {
+    "library_folder": ""
+  },
+  "page_folders": [],
+  "desktop_pages": [
+    {
+      "id": 0,
+      "name": "工作",
+      "locked": true
+    },
+    {
+      "id": 1,
+      "name": "文档",
+      "locked": true
+    }
+  ],
+  "dock": {
+    "enabled": false,
+    "position": "bottom",
+    "opacity": 0.88,
+    "items": []
+  },
+  "organize_rules": {},
+  "filename_rules": {},
+  "category_fence_map": {},
+  "fences": [
+    {
+      "id": "system_common",
+      "name": "常用",
+      "folder": "常用",
+      "locked": true,
+      "organize_kinds": ["icon"],
+      "extensions": [],
+      "filename_patterns": [],
+      "page": 0,
+      "pages": [0],
+      "sort_by": "name",
+      "x": 0,
+      "y": 0,
+      "width": 1609,
+      "height": 315,
+      "visible": true,
+      "collapsed": false,
+      "style": {
+        "opacity": 0.88,
+        "background": "#20242C",
+        "accent": "#07C160",
+        "border_radius": 10,
+        "show_title": true,
+        "view_mode": "grid",
+        "collapsible": true
+      }
+    },
+    {
+      "id": "system_software_side",
+      "name": "其他",
+      "folder": "其他",
+      "locked": false,
+      "organize_kinds": [],
+      "extensions": [],
+      "filename_patterns": [],
+      "page": 0,
+      "pages": [0],
+      "sort_by": "name",
+      "x": 1613,
+      "y": 0,
+      "width": 307,
+      "height": 315,
+      "visible": true,
+      "collapsed": false,
+      "style": {
+        "opacity": 0.88,
+        "background": "#20242C",
+        "accent": "#07C160",
+        "border_radius": 10,
+        "show_title": true,
+        "view_mode": "grid",
+        "collapsible": true
+      }
+    },
+    {
+      "id": "system_docs",
+      "name": "文档",
+      "folder": "文档",
+      "locked": true,
+      "organize_kinds": ["file"],
+      "extensions": [],
+      "filename_patterns": [],
+      "page": 1,
+      "pages": [1],
+      "sort_by": "name",
+      "x": 0,
+      "y": 0,
+      "width": 1920,
+      "height": 257,
+      "visible": true,
+      "collapsed": false,
+      "style": {
+        "opacity": 0.88,
+        "background": "#20242C",
+        "accent": "#07C160",
+        "border_radius": 10,
+        "show_title": true,
+        "view_mode": "grid",
+        "collapsible": true
+      }
+    }
+  ],
+  "exclude_patterns": ["desktop.ini", "DeskTidy"],
+  "organize_whitelist": [],
+  "public_desktop_items": []
+}

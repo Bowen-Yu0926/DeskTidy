@@ -1,0 +1,477 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>DeskTidy — 把桌面收拾成自己的工作台</title>
+  <meta name="description" content="DeskTidy：Windows 桌面整理助手。分区钉选、分页布局、截图录屏、文件搜索、DeskNote 笔记与更多扩展。" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,700&family=Noto+Sans+SC:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --ink: #152033;
+      --ink-soft: #3a4a60;
+      --muted: #6b7c92;
+      --paper: #eef2f7;
+      --card: #ffffff;
+      --line: #d5dee9;
+      --sky: #2a6fdb;
+      --sky-deep: #1e54ad;
+      --wash: #e3ecf9;
+      --pin: #e8a317;
+      --shadow: 0 18px 40px rgba(21, 32, 51, 0.08);
+      --radius: 14px;
+      --max: 1080px;
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background:
+        radial-gradient(1100px 480px at 0% -5%, #d7e5fb 0%, transparent 55%),
+        radial-gradient(800px 400px at 100% 5%, #e8edf4 0%, transparent 45%),
+        var(--paper);
+      font-family: "Noto Sans SC", "Segoe UI", sans-serif;
+      font-size: 16px;
+      line-height: 1.7;
+      -webkit-font-smoothing: antialiased;
+    }
+    a { color: var(--sky); text-decoration-thickness: 1px; text-underline-offset: 3px; }
+    a:hover { color: var(--sky-deep); }
+    .wrap { width: min(var(--max), calc(100% - 2.5rem)); margin-inline: auto; }
+    .top {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 1.15rem 0; gap: 1rem;
+    }
+    .brand {
+      display: inline-flex; align-items: baseline; gap: 0.45rem;
+      color: inherit; text-decoration: none; font-weight: 700;
+    }
+    .brand em {
+      font-family: Fraunces, "Noto Serif SC", serif;
+      font-style: normal; font-size: 1.35rem; color: var(--sky);
+    }
+    .brand span { color: var(--muted); font-size: 0.85rem; font-weight: 500; }
+    .top nav { display: flex; flex-wrap: wrap; gap: 0.35rem 1rem; }
+    .top nav a {
+      color: var(--ink-soft); text-decoration: none; font-size: 0.92rem; font-weight: 500;
+    }
+    .top nav a:hover { color: var(--sky); }
+
+    .hero {
+      padding: 2.1rem 0 3rem;
+      display: grid; grid-template-columns: 1.05fr 0.95fr;
+      gap: 2.2rem; align-items: center;
+    }
+    .eyebrow {
+      display: inline-block;
+      font-family: "IBM Plex Mono", ui-monospace, monospace;
+      font-size: 0.78rem; letter-spacing: 0.08em; text-transform: uppercase;
+      color: var(--sky); background: var(--wash);
+      border-radius: 999px; padding: 0.28rem 0.7rem; margin-bottom: 1rem;
+    }
+    .hero h1 {
+      font-family: Fraunces, "Noto Serif SC", serif;
+      font-weight: 700;
+      font-size: clamp(2rem, 4.4vw, 3.2rem);
+      line-height: 1.18; letter-spacing: -0.02em;
+      margin: 0 0 1rem;
+    }
+    .hero h1 .soft { color: var(--ink-soft); font-weight: 500; }
+    .lead {
+      margin: 0 0 1.5rem; color: var(--ink-soft);
+      font-size: 1.08rem; max-width: 34em;
+    }
+    .cta-row { display: flex; flex-wrap: wrap; gap: 0.7rem; }
+    .btn {
+      display: inline-flex; align-items: center; justify-content: center;
+      border-radius: 999px; padding: 0.72rem 1.25rem;
+      font-weight: 600; text-decoration: none;
+      border: 1px solid transparent;
+      transition: transform 0.15s ease, background 0.15s ease, border-color 0.15s ease;
+    }
+    .btn:hover { transform: translateY(-1px); }
+    .btn-primary { background: var(--sky); color: #fff; }
+    .btn-primary:hover { background: var(--sky-deep); color: #fff; }
+    .btn-ghost {
+      background: transparent; color: var(--ink-soft); border-color: var(--line);
+    }
+    .btn-ghost:hover { border-color: var(--sky); color: var(--sky); }
+
+    .fence-stage {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      padding: 1.1rem;
+      min-height: 280px;
+      position: relative;
+      overflow: hidden;
+    }
+    .fence-stage::before {
+      content: "";
+      position: absolute; inset: 0;
+      background-image:
+        linear-gradient(rgba(42, 111, 219, 0.05) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(42, 111, 219, 0.05) 1px, transparent 1px);
+      background-size: 22px 22px;
+      opacity: 0.7;
+      pointer-events: none;
+    }
+    .fence {
+      position: relative;
+      background: rgba(255, 255, 255, 0.92);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 0.55rem 0.65rem 0.7rem;
+      box-shadow: 0 8px 18px rgba(21, 32, 51, 0.06);
+    }
+    .fence + .fence { margin-top: 0.7rem; }
+    .fence.w1 { width: 72%; }
+    .fence.w2 { width: 58%; margin-left: 18%; }
+    .fence-title {
+      display: flex; align-items: center; gap: 0.4rem;
+      font-size: 0.78rem; font-weight: 700; color: var(--ink-soft);
+      margin-bottom: 0.45rem;
+    }
+    .pin {
+      width: 8px; height: 8px; border-radius: 50%;
+      background: var(--pin); box-shadow: 0 0 0 3px rgba(232, 163, 23, 0.25);
+    }
+    .icons {
+      display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.35rem;
+    }
+    .icon {
+      aspect-ratio: 1;
+      border-radius: 8px;
+      background: var(--wash);
+      border: 1px solid #c9d7ec;
+    }
+    .icon:nth-child(2) { background: #eef6e8; border-color: #cfe3c2; }
+    .icon:nth-child(3) { background: #f8efe4; border-color: #ecd4b3; }
+    .icon:nth-child(4) { background: #f3e8f6; border-color: #dfc5e8; }
+
+    section.block { padding: 2.8rem 0; border-top: 1px solid var(--line); }
+    .block-head { max-width: 42rem; margin-bottom: 1.8rem; }
+    .block-head h2 {
+      font-family: Fraunces, "Noto Serif SC", serif;
+      font-size: clamp(1.55rem, 2.8vw, 2.05rem);
+      margin: 0 0 0.65rem; letter-spacing: -0.015em;
+    }
+    .block-head p { margin: 0; color: var(--ink-soft); }
+    .comment {
+      font-family: "IBM Plex Mono", monospace;
+      color: var(--muted); font-size: 0.85rem; margin: 0 0 1rem;
+    }
+    .feature-grid {
+      display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.9rem;
+    }
+    .feature {
+      background: var(--card); border: 1px solid var(--line);
+      border-radius: 12px; padding: 1.05rem 1.1rem 1.15rem;
+      transition: border-color 0.15s ease, box-shadow 0.15s ease;
+    }
+    .feature:hover {
+      border-color: #b7ccef;
+      box-shadow: 0 10px 24px rgba(42, 111, 219, 0.07);
+    }
+    .feature h3 { margin: 0 0 0.4rem; font-size: 1.02rem; font-weight: 700; }
+    .feature p { margin: 0; color: var(--ink-soft); font-size: 0.92rem; line-height: 1.6; }
+    .feature code {
+      font-family: "IBM Plex Mono", monospace; font-size: 0.86em;
+      background: var(--wash); padding: 0.05em 0.3em; border-radius: 4px;
+    }
+
+    .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+    .panel {
+      background: var(--card); border: 1px solid var(--line);
+      border-radius: var(--radius); padding: 1.25rem 1.3rem 1.4rem;
+    }
+    .panel h3 {
+      margin: 0 0 0.55rem; font-family: Fraunces, serif; font-size: 1.2rem;
+    }
+    .panel p { margin: 0 0 0.8rem; color: var(--ink-soft); }
+    .panel ul { margin: 0; padding-left: 1.1rem; color: var(--ink-soft); }
+    .panel li { margin: 0.25rem 0; }
+
+    .note-box {
+      background: linear-gradient(160deg, var(--wash), #f7f9fc);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      padding: 1.4rem 1.5rem;
+    }
+    .note-box h3 { margin: 0 0 0.5rem; font-family: Fraunces, serif; }
+    .note-box p { margin: 0; color: var(--ink-soft); }
+
+    .with-row {
+      display: grid; grid-template-columns: 1.15fr 0.85fr; gap: 1.2rem; align-items: stretch;
+    }
+
+    /* —— 功能手册（注入 / 静态） —— */
+    .manual-toc {
+      background: var(--card); border: 1px solid var(--line);
+      border-radius: 12px; padding: 1rem 1.2rem 1.1rem; margin-bottom: 1.5rem;
+    }
+    .manual-toc h3 { margin: 0 0 0.55rem; font-size: 1rem; }
+    .manual-toc ol {
+      margin: 0; padding-left: 1.2rem;
+      columns: 2; column-gap: 1.5rem; color: var(--ink-soft);
+    }
+    .manual-toc li { margin: 0.2rem 0; break-inside: avoid; }
+    .manual-toc a { color: var(--ink-soft); text-decoration: none; }
+    .manual-toc a:hover { color: var(--sky); }
+    .manual-chapter {
+      background: var(--card); border: 1px solid var(--line);
+      border-radius: 12px; padding: 1.15rem 1.25rem 1.35rem; margin-bottom: 1rem;
+    }
+    .manual-chapter h2 {
+      font-family: Fraunces, "Noto Serif SC", serif;
+      font-size: 1.35rem; margin: 0 0 0.75rem; letter-spacing: -0.01em;
+      border-bottom: 1px solid var(--line); padding-bottom: 0.45rem;
+    }
+    .manual-chapter h3 { font-size: 1.02rem; margin: 1.1rem 0 0.45rem; color: var(--ink); }
+    .manual-chapter .purpose {
+      color: var(--ink-soft); margin: 0 0 1rem; padding: 0.75rem 0.9rem;
+      background: var(--wash); border-left: 3px solid var(--sky); border-radius: 0 8px 8px 0;
+    }
+    .manual-chapter .tip { color: var(--muted); font-size: 0.92rem; margin: 0.85rem 0 0; }
+    .manual-chapter ul { margin: 0 0 0.75rem; padding-left: 1.15rem; color: var(--ink-soft); }
+    .manual-chapter code {
+      font-family: "IBM Plex Mono", monospace; font-size: 0.86em;
+      background: var(--wash); padding: 0.05em 0.3em; border-radius: 4px;
+    }
+    table.op-table {
+      border-collapse: collapse; width: 100%; margin: 0.55rem 0 0.9rem;
+      font-size: 0.92rem;
+    }
+    table.op-table th, table.op-table td {
+      border-bottom: 1px solid var(--line); text-align: left;
+      padding: 0.55rem 0.4rem; vertical-align: top;
+    }
+    table.op-table th { color: var(--muted); font-weight: 600; width: 36%; }
+    table.op-table td:first-child { font-weight: 600; color: var(--ink); }
+
+    footer {
+      border-top: 1px solid var(--line);
+      padding: 1.6rem 0 2.4rem;
+      color: var(--muted); font-size: 0.88rem;
+      display: flex; flex-wrap: wrap; justify-content: space-between; gap: 0.6rem 1.5rem;
+    }
+
+    @media (max-width: 860px) {
+      .hero, .feature-grid, .two-col, .with-row { grid-template-columns: 1fr; }
+      .wrap { width: min(var(--max), calc(100% - 1.5rem)); }
+      .fence.w1, .fence.w2 { width: 100%; margin-left: 0; }
+      .manual-toc ol { columns: 1; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      html { scroll-behavior: auto; }
+      .btn, .feature { transition: none; }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header class="top">
+      <a class="brand" href="#top"><em>DeskTidy</em><span>桌面整理助手</span></a>
+      <nav>
+        <a href="#fences">分区</a>
+        <a href="#pages">分页</a>
+        <a href="#capture">截图与搜索</a>
+        <a href="#extensions">扩展</a>
+        <a href="#desknote">DeskNote</a>
+        <a href="#manual">使用手册</a>
+      </nav>
+    </header>
+
+    <section class="hero" id="top">
+      <div>
+        <div class="eyebrow">/* tidy the desktop, keep the files */</div>
+        <h1>把桌面收拾成<br /><span class="soft">自己的工作台</span></h1>
+        <p class="lead">
+          DeskTidy 用分区把图标<strong>钉选</strong>分类显示——文件仍留在系统桌面，路径不变。
+          再配上分页布局、截图录屏、搜索与笔记，让桌面既干净又好用。
+        </p>
+        <div class="cta-row">
+          <a class="btn btn-primary" href="#manual">使用手册</a>
+          <a class="btn btn-ghost" href="desknote.html">DeskNote 介绍</a>
+        </div>
+      </div>
+      <div class="fence-stage" aria-hidden="true">
+        <div class="fence w1">
+          <div class="fence-title"><span class="pin"></span>文档</div>
+          <div class="icons"><div class="icon"></div><div class="icon"></div><div class="icon"></div><div class="icon"></div></div>
+        </div>
+        <div class="fence w2">
+          <div class="fence-title"><span class="pin"></span>软件</div>
+          <div class="icons"><div class="icon"></div><div class="icon"></div><div class="icon"></div><div class="icon"></div></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="block" id="fences">
+      <div class="block-head">
+        <p class="comment">/* fences, not folders */</p>
+        <h2>分区：分类显示，不挪文件</h2>
+        <p>
+          分区是桌面上的分类容器。拖入图标即钉选显示；一键整理可按规则自动归类。
+          删除分区不会删除文件——只是撤掉「钉选」。
+        </p>
+      </div>
+      <div class="feature-grid">
+        <article class="feature">
+          <h3>虚拟钉选</h3>
+          <p>文件仍在系统桌面文件夹；分区只负责怎么显示、怎么找。</p>
+        </article>
+        <article class="feature">
+          <h3>一键整理</h3>
+          <p>按软件 / 文档等规则批量钉选；支持白名单跳过重要路径。</p>
+        </article>
+        <article class="feature">
+          <h3>拖放与缩放</h3>
+          <p>拖标题移动、拖边缘改大小、折叠收起；拖出到空白即取消钉选。</p>
+        </article>
+        <article class="feature">
+          <h3>文件夹门户</h3>
+          <p>分区可镜像真实文件夹：拖入 / 拖出按系统规则真正复制或移动。</p>
+        </article>
+        <article class="feature">
+          <h3>系统菜单</h3>
+          <p>图标右键仍是熟悉的资源管理器菜单，并附加移出分区、记事本打开等。</p>
+        </article>
+        <article class="feature">
+          <h3>Peek 与热键</h3>
+          <p>快速显隐分区、置顶查看；全局热键可在设置里改。</p>
+        </article>
+      </div>
+    </section>
+
+    <section class="block" id="pages">
+      <div class="block-head">
+        <p class="comment">/* many desktops, one screen */</p>
+        <h2>分页：多套布局，随时切换</h2>
+        <p>
+          「工作」「娱乐」可以是两套完全不同的分区布局。切换分页只改变 DeskTidy 显示哪一套，
+          不等于 Windows 虚拟桌面——两边可以一起用。
+        </p>
+      </div>
+      <div class="two-col">
+        <div class="panel">
+          <h3>怎么切换</h3>
+          <ul>
+            <li>右侧浮标栏单击页名</li>
+            <li>快捷键上一页 / 下一页</li>
+            <li>主窗口「桌面分区」统一管理</li>
+          </ul>
+        </div>
+        <div class="panel">
+          <h3>布局快照</h3>
+          <ul>
+            <li>保存整套分区位置与配置</li>
+            <li>预览后再还原</li>
+            <li>换机或大调整前先拍一张</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section class="block" id="capture">
+      <div class="block-head">
+        <p class="comment">/* capture &amp; find */</p>
+        <h2>截图、录屏与搜索</h2>
+        <p>整理之外，把常用桌面工具收在同一套热键里。</p>
+      </div>
+      <div class="feature-grid">
+        <article class="feature">
+          <h3>区域截图</h3>
+          <p>框选桌面区域，复制 / 保存 / 贴图；可点选窗口区域。</p>
+        </article>
+        <article class="feature">
+          <h3>桌面录屏</h3>
+          <p>一键开始与结束录制（依赖本机 FFmpeg）。</p>
+        </article>
+        <article class="feature">
+          <h3>文件搜索</h3>
+          <p>快速找到本地文件；可配合扩展选项调整范围。</p>
+        </article>
+        <article class="feature">
+          <h3>公共区域</h3>
+          <p>从分区拖出的图标可按设置在多分页间共享显示。</p>
+        </article>
+        <article class="feature">
+          <h3>双击隐藏图标</h3>
+          <p>建议开启：减少系统图标与分区、浮标叠在一起。</p>
+        </article>
+        <article class="feature">
+          <h3>托盘常驻</h3>
+          <p>关主窗口仍可整理、截图、开帮助；不打扰工作流。</p>
+        </article>
+      </div>
+    </section>
+
+    <section class="block" id="extensions">
+      <div class="block-head">
+        <p class="comment">/* extras on the side */</p>
+        <h2>扩展：需要时再打开</h2>
+        <p>会议纪要、计算器、桌面待办、桌面宠物、壁纸与分页文件夹——按需启用，主窗口扩展页统一开关。</p>
+      </div>
+      <div class="feature-grid">
+        <article class="feature">
+          <h3>会议纪要</h3>
+          <p>在指定文件夹生成 Word 纪要，方便会后整理。</p>
+        </article>
+        <article class="feature">
+          <h3>计算器 / 待办</h3>
+          <p>快捷呼出计算器；桌面待办钉在眼前。</p>
+        </article>
+        <article class="feature">
+          <h3>桌面宠物</h3>
+          <p>可互动的小伴侣：摸摸、等待、跌落；也能调大小。</p>
+        </article>
+      </div>
+    </section>
+
+    <section class="block" id="desknote">
+      <div class="with-row">
+        <div class="block-head" style="margin-bottom:0">
+          <p class="comment">/* ships with DeskNote */</p>
+          <h2>DeskNote：一起装上的 Markdown 笔记</h2>
+          <p>
+            独立窗口与进程，支持源码三栏 / 所见即所得、公式与 Mermaid、文件树与库内搜索、
+            本地图片落盘，以及导出 HTML / PDF / Word。与 DeskTidy 共享笔记目录与主题。
+          </p>
+          <p style="margin-top:1rem">
+            <a class="btn btn-primary" href="desknote.html">打开 DeskNote 介绍</a>
+          </p>
+        </div>
+        <div class="note-box">
+          <h3>帮助分开打开</h3>
+          <p>
+            本页（DeskTidy）与 DeskNote 帮助是<strong>两份网页</strong>。
+            笔记编辑说明请在 DeskNote 按 F1，或打开
+            <a href="desknote.html">DeskNote 介绍与手册</a>。
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <!-- HELP_MANUAL -->
+    <section class="block" id="manual">
+      <div class="block-head">
+        <p class="comment">/* operations handbook */</p>
+        <h2>使用手册</h2>
+        <p>按功能分章：用途、操作入口、快捷键与相关设置写在一起。快捷键以你当前设置为准（打开帮助时生成）。</p>
+      </div>
+      <p class="tip" style="color:var(--muted)">若你看到这段文字，说明手册章节尚未注入；请从 DeskTidy「帮助」重新打开本页。</p>
+    </section>
+    <!-- /HELP_MANUAL -->
+
+    <footer>
+      <div>DeskTidy · Windows 桌面整理助手</div>
+      <div>介绍 + 使用手册合一；功能以当前版本为准</div>
+    </footer>
+  </div>
+</body>
+</html>
