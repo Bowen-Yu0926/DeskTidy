@@ -1,0 +1,441 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>DeskTidy · DeskNote</title>
+  <meta name="description" content="DeskTidy 桌面整理助手与 DeskNote Markdown 笔记介绍" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,700&family=Noto+Sans+SC:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <style id="shell-chrome">
+    :root {
+      --ink: #152033;
+      --ink-soft: #3a4a60;
+      --muted: #6b7c92;
+      --paper: #eef2f7;
+      --line: #d5dee9;
+      --sky: #2a6fdb;
+      --sky-deep: #1e54ad;
+      --wash: #e3ecf9;
+      --teal: #0b6e74;
+      --toc-w: 168px;
+      --max: 1080px;
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background:
+        radial-gradient(1100px 480px at 0% -5%, #d7e5fb 0%, transparent 55%),
+        radial-gradient(800px 400px at 100% 5%, #e8edf4 0%, transparent 45%),
+        var(--paper);
+      font-family: "Noto Sans SC", "Segoe UI", sans-serif;
+      font-size: 16px;
+      line-height: 1.7;
+      -webkit-font-smoothing: antialiased;
+    }
+    .app-shell {
+      width: min(calc(var(--max) + var(--toc-w) + 2.5rem), calc(100% - 2rem));
+      margin-inline: auto;
+      display: grid;
+      grid-template-columns: var(--toc-w) minmax(0, 1fr);
+      gap: 0 1.75rem;
+      align-items: start;
+      min-height: 100vh;
+    }
+    .side-toc {
+      position: sticky;
+      top: 0;
+      align-self: start;
+      max-height: 100vh;
+      overflow: auto;
+      padding: 1.15rem 0 2rem;
+    }
+    .side-toc .brand {
+      display: flex; flex-direction: column; align-items: flex-start; gap: 0.15rem;
+      color: inherit; text-decoration: none; font-weight: 700;
+      margin-bottom: 1.1rem;
+      cursor: pointer;
+    }
+    .side-toc .brand em {
+      font-family: Fraunces, "Noto Serif SC", serif;
+      font-style: normal; font-size: 1.25rem;
+    }
+    .side-toc .brand span { color: var(--muted); font-size: 0.78rem; font-weight: 500; }
+    body[data-product="desktidy"] .side-toc .brand em { color: var(--sky); }
+    body[data-product="desknote"] .side-toc .brand em { color: var(--teal); }
+    .toc-label {
+      margin: 0 0 0.45rem;
+      font-family: "IBM Plex Mono", ui-monospace, monospace;
+      font-size: 0.72rem; letter-spacing: 0.08em; text-transform: uppercase;
+      color: var(--muted);
+    }
+    .side-toc nav {
+      display: flex; flex-direction: column; gap: 0.15rem;
+    }
+    .side-toc nav a {
+      color: var(--ink-soft); text-decoration: none;
+      font-size: 0.9rem; font-weight: 500;
+      padding: 0.32rem 0.55rem; border-radius: 8px;
+      border-left: 2px solid transparent;
+    }
+    body[data-product="desktidy"] .side-toc nav a:hover {
+      color: var(--sky); background: var(--wash); border-left-color: var(--sky);
+    }
+    body[data-product="desknote"] .side-toc nav a:hover {
+      color: var(--teal); background: #e4eef1; border-left-color: var(--teal);
+    }
+    .main-col { min-width: 0; padding-top: 0.85rem; padding-right: 7.5rem; }
+    .product-tabs {
+      position: fixed;
+      top: 1.15rem;
+      right: max(0.85rem, calc((100vw - min(calc(var(--max) + var(--toc-w) + 2.5rem), calc(100% - 2rem))) / 2 + 0.15rem));
+      z-index: 40;
+      display: flex;
+      flex-direction: column;
+      align-items: stretch;
+      gap: 0.45rem;
+      margin: 0;
+      padding: 0;
+      background: transparent;
+    }
+    .product-tabs button {
+      appearance: none;
+      border: 1px solid var(--line);
+      background: rgba(255, 255, 255, 0.94);
+      backdrop-filter: blur(8px);
+      color: var(--ink-soft);
+      font: inherit;
+      font-size: 0.9rem;
+      font-weight: 700;
+      letter-spacing: 0.01em;
+      writing-mode: horizontal-tb;
+      text-orientation: mixed;
+      white-space: nowrap;
+      min-width: 6.6rem;
+      padding: 0.55rem 1.05rem;
+      border-radius: 999px;
+      cursor: pointer;
+      box-shadow: 0 10px 28px rgba(21, 32, 51, 0.1);
+      transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease, transform 0.15s ease;
+    }
+    .product-tabs button:hover {
+      transform: translateY(-1px);
+    }
+    .product-tabs button[aria-selected="true"] {
+      color: #fff;
+      border-color: transparent;
+      box-shadow: 0 12px 30px rgba(42, 111, 219, 0.22);
+    }
+    body[data-product="desktidy"] .product-tabs button[aria-selected="true"] {
+      background: var(--sky);
+    }
+    body[data-product="desknote"] .product-tabs button[aria-selected="true"] {
+      background: var(--teal);
+      box-shadow: 0 12px 30px rgba(11, 110, 116, 0.22);
+    }
+    .product-tabs button:focus-visible {
+      outline: 3px solid var(--sky);
+      outline-offset: 2px;
+    }
+    #content-host {
+      min-width: 0;
+    }
+    #content-host .wrap {
+      width: 100%;
+      padding-top: 0;
+    }
+    .boot-msg {
+      padding: 2rem 0;
+      color: var(--muted);
+    }
+    .boot-msg.error { color: #b42318; }
+    @media (max-width: 860px) {
+      .app-shell {
+        width: min(100%, calc(100% - 1.5rem));
+        grid-template-columns: 1fr;
+      }
+      .side-toc {
+        position: static; max-height: none;
+        padding: 0.85rem 0 0.4rem;
+        border-bottom: 1px solid var(--line);
+        margin-bottom: 0.4rem;
+      }
+      .side-toc .brand { flex-direction: row; align-items: baseline; gap: 0.45rem; margin-bottom: 0.65rem; }
+      .side-toc nav { flex-direction: row; flex-wrap: wrap; gap: 0.25rem 0.35rem; }
+      .side-toc nav a { border-left: none; }
+      .main-col { padding-right: 0; padding-top: 4.2rem; }
+      .product-tabs {
+        top: 0.7rem;
+        right: 0.7rem;
+        left: auto;
+        transform: none;
+      }
+    }
+
+    /* Soft star sparkles on click */
+    .click-stars {
+      position: fixed;
+      left: 0;
+      top: 0;
+      width: 0;
+      height: 0;
+      pointer-events: none;
+      z-index: 80;
+    }
+    .click-star {
+      position: absolute;
+      left: 0;
+      top: 0;
+      width: 7px;
+      height: 7px;
+      margin: -3.5px 0 0 -3.5px;
+      background: var(--sky);
+      clip-path: polygon(
+        50% 0%, 61% 35%, 98% 35%, 68% 57%, 79% 91%,
+        50% 70%, 21% 91%, 32% 57%, 2% 35%, 39% 35%
+      );
+      opacity: 0.95;
+      animation: click-star-fly 700ms ease-out forwards;
+    }
+    body[data-product="desknote"] .click-star {
+      background: var(--teal);
+    }
+    .click-star:nth-child(odd) {
+      width: 5px;
+      height: 5px;
+      margin: -2.5px 0 0 -2.5px;
+    }
+    .click-star:nth-child(3n) {
+      width: 9px;
+      height: 9px;
+      margin: -4.5px 0 0 -4.5px;
+      opacity: 0.85;
+    }
+    @keyframes click-star-fly {
+      0% {
+        transform: translate(0, 0) scale(0.4) rotate(0deg);
+        opacity: 0.95;
+      }
+      70% {
+        opacity: 0.85;
+      }
+      100% {
+        transform: translate(var(--dx), var(--dy)) scale(0.15) rotate(140deg);
+        opacity: 0;
+      }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .click-stars { display: none; }
+    }
+  </style>
+  <style id="product-styles"></style>
+</head>
+<body data-product="desktidy">
+  <div class="product-tabs" role="tablist" aria-label="产品">
+    <button type="button" role="tab" id="tab-desktidy" data-product="desktidy" aria-selected="true">DeskTidy</button>
+    <button type="button" role="tab" id="tab-desknote" data-product="desknote" aria-selected="false">DeskNote</button>
+  </div>
+  <div class="app-shell">
+    <aside class="side-toc" aria-label="页面目录">
+      <a class="brand" href="#top" id="side-brand">
+        <em id="brand-name">DeskTidy</em>
+        <span id="brand-sub">桌面整理助手</span>
+      </a>
+      <p class="toc-label">目录</p>
+      <nav id="side-nav"></nav>
+    </aside>
+    <div class="main-col">
+      <div id="content-host">
+        <p class="boot-msg">正在加载介绍页…</p>
+      </div>
+    </div>
+  </div>
+
+  <script>
+  (function () {
+    const PRODUCTS = {
+      desktidy: {
+        file: "desktidy.html",
+        name: "DeskTidy",
+        sub: "桌面整理助手",
+        title: "DeskTidy — 把桌面收拾成自己的工作台",
+      },
+      desknote: {
+        file: "desknote.html",
+        name: "DeskNote",
+        sub: "by DeskTidy",
+        title: "DeskNote — 简洁而强大的 Markdown 笔记",
+      },
+    };
+
+    const cache = {};
+    const host = document.getElementById("content-host");
+    const sideNav = document.getElementById("side-nav");
+    const brandName = document.getElementById("brand-name");
+    const brandSub = document.getElementById("brand-sub");
+    const styleEl = document.getElementById("product-styles");
+
+    function productFromHash() {
+      const raw = (location.hash || "").replace(/^#/, "");
+      if (raw.startsWith("desknote")) return "desknote";
+      if (raw.startsWith("desktidy")) return "desktidy";
+      return "desktidy";
+    }
+
+    function sectionFromHash() {
+      const raw = (location.hash || "").replace(/^#/, "");
+      const parts = raw.split("/");
+      if (parts.length >= 2 && parts[1]) return parts[1];
+      // legacy: #download while on desktidy-only pages — ignore product prefix
+      if (parts[0] && !PRODUCTS[parts[0]]) return parts[0];
+      return "top";
+    }
+
+    function setHash(product, section) {
+      const sec = section && section !== "top" ? section : "top";
+      const next = sec === "top" ? product : product + "/" + sec;
+      if (location.hash.replace(/^#/, "") !== next) {
+        history.replaceState(null, "", "#" + next);
+      }
+    }
+
+    function rewriteLinks(root, product) {
+      root.querySelectorAll("a[href]").forEach((a) => {
+        const href = a.getAttribute("href") || "";
+        if (/desknote\.html/i.test(href)) {
+          a.addEventListener("click", (e) => {
+            e.preventDefault();
+            switchProduct("desknote", "top", true);
+          });
+          return;
+        }
+        if (/desktidy\.html/i.test(href)) {
+          a.addEventListener("click", (e) => {
+            e.preventDefault();
+            switchProduct("desktidy", "top", true);
+          });
+          return;
+        }
+        if (href.startsWith("#")) {
+          const id = href.slice(1) || "top";
+          a.addEventListener("click", (e) => {
+            e.preventDefault();
+            setHash(product, id);
+            const el = document.getElementById(id) || host.querySelector("#" + CSS.escape(id));
+            if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+          });
+        }
+      });
+    }
+
+    async function loadProduct(product) {
+      if (cache[product]) return cache[product];
+      const meta = PRODUCTS[product];
+      const res = await fetch(meta.file, { cache: "no-cache" });
+      if (!res.ok) throw new Error("无法加载 " + meta.file + "（" + res.status + "）");
+      const html = await res.text();
+      const doc = new DOMParser().parseFromString(html, "text/html");
+      const styles = Array.from(doc.querySelectorAll("style"))
+        .map((s) => s.textContent || "")
+        .join("\n");
+      const nav = doc.querySelector(".side-toc nav");
+      const wrap = doc.querySelector(".wrap");
+      if (!wrap) throw new Error(meta.file + " 缺少正文");
+      cache[product] = {
+        styles,
+        navHtml: nav ? nav.innerHTML : "",
+        bodyHtml: wrap.innerHTML,
+      };
+      return cache[product];
+    }
+
+    function paintTabs(product) {
+      document.querySelectorAll(".product-tabs [role='tab']").forEach((btn) => {
+        const on = btn.getAttribute("data-product") === product;
+        btn.setAttribute("aria-selected", on ? "true" : "false");
+      });
+    }
+
+    async function switchProduct(product, section, scroll) {
+      if (!PRODUCTS[product]) product = "desktidy";
+      const meta = PRODUCTS[product];
+      document.body.dataset.product = product;
+      paintTabs(product);
+      brandName.textContent = meta.name;
+      brandSub.textContent = meta.sub;
+      document.title = meta.title;
+
+      try {
+        const data = await loadProduct(product);
+        styleEl.textContent = data.styles
+          // Avoid body/html background fighting the shell; keep product component styles.
+          .replace(/\bbody\s*\{[^}]*\}/g, "")
+          .replace(/\bhtml\s*\{[^}]*\}/g, "");
+        sideNav.innerHTML = data.navHtml;
+        host.innerHTML = '<div class="wrap">' + data.bodyHtml + "</div>";
+        rewriteLinks(sideNav, product);
+        rewriteLinks(host, product);
+        document.getElementById("side-brand").onclick = (e) => {
+          e.preventDefault();
+          setHash(product, "top");
+          window.scrollTo({ top: 0, behavior: "smooth" });
+        };
+        setHash(product, section || "top");
+        if (scroll !== false) {
+          const id = section || "top";
+          requestAnimationFrame(() => {
+            if (id === "top") {
+              window.scrollTo({ top: 0, behavior: "smooth" });
+              return;
+            }
+            const el = host.querySelector("#" + CSS.escape(id));
+            if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+          });
+        }
+      } catch (err) {
+        host.innerHTML = '<p class="boot-msg error">' + (err && err.message ? err.message : String(err)) + "</p>";
+      }
+    }
+
+    document.querySelectorAll(".product-tabs [role='tab']").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        switchProduct(btn.getAttribute("data-product"), "top", true);
+      });
+    });
+
+    window.addEventListener("hashchange", () => {
+      switchProduct(productFromHash(), sectionFromHash(), true);
+    });
+
+    switchProduct(productFromHash(), sectionFromHash(), false);
+
+    // Star sparkles on click
+    const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
+    document.addEventListener("pointerdown", (e) => {
+      if (reduceMotion.matches) return;
+      if (e.pointerType === "mouse" && e.button !== 0) return;
+      const wrap = document.createElement("span");
+      wrap.className = "click-stars";
+      wrap.style.left = e.clientX + "px";
+      wrap.style.top = e.clientY + "px";
+      const count = 7;
+      for (let i = 0; i < count; i++) {
+        const star = document.createElement("span");
+        star.className = "click-star";
+        const angle = (-Math.PI / 2) + (i * (Math.PI * 2) / count) + (Math.random() - 0.5) * 0.35;
+        const dist = 28 + Math.random() * 36;
+        star.style.setProperty("--dx", Math.cos(angle) * dist + "px");
+        star.style.setProperty("--dy", Math.sin(angle) * dist + "px");
+        star.style.animationDelay = (i * 18) + "ms";
+        wrap.appendChild(star);
+      }
+      document.body.appendChild(wrap);
+      setTimeout(() => wrap.remove(), 900);
+    }, { passive: true });
+  })();
+  </script>
+</body>
+</html>

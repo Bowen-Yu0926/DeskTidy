@@ -23,7 +23,7 @@ MARGIN_X = 20
 MARGIN_Y = 20
 # Spacing already includes the gap between icons — do not add a second gutter.
 GAP_X = 0
-GAP_Y = 0
+GAP_Y = 6
 FENCE_PAD = 16
 
 

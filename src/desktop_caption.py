@@ -340,12 +340,13 @@ def _draw_theme_caption(
             opts.dwFlags = DTT_COMPOSITED | DTT_GLOWSIZE | DTT_TEXTCOLOR
             opts.crText = _rgb(255, 255, 255)
             opts.iGlowSize = max(1, int(round(glow_size * dpr)))
-            # Inset so glow/AA is not shaved when we crop back to phys_w×phys_h.
+            # Horizontal inset only — vertical glow lives in DIB ``pad``; a
+            # vertical ink shrink clipped the second caption line in half.
             rc = RECT(
                 pad + ink,
-                pad + ink,
+                pad,
                 pad + phys_w - ink,
-                pad + phys_h - ink,
+                pad + phys_h,
             )
             flags = (
                 DT_CENTER
@@ -425,16 +426,23 @@ def _qt_explorer_caption(
     scaled = QFont(font)
     scaled.setPixelSize(_font_pixel_size(font, dpr))
     painter.setFont(scaled)
-    # Draw inside phys box, inset by ink so left/right strokes are not clipped.
-    rect = QRect(pad, pad, phys_w, phys_h).adjusted(ink, ink, -ink, -ink)
+    # Horizontal inset only. Vertical ink used to shrink the paint box so line 2
+    # was drawn then cropped — the second row showed as half-glyphs.
+    # Vertical glow bleeds into the outer canvas ``pad``, then we crop to phys.
+    rect = QRect(pad + ink, pad, max(1, phys_w - 2 * ink), phys_h)
     lines = [ln for ln in (text or "").replace("\r\n", "\n").replace("\r", "\n").split("\n") if ln]
     if not lines:
         lines = [" "]
     fm = QFontMetrics(scaled)
-    line_h = max(1, int(fm.lineSpacing()))
+    # Same pitch as ``caption_box_height``.
+    line_h = max(
+        1,
+        int(fm.lineSpacing()),
+        int(fm.height() + max(0, fm.descent())),
+    )
     single_flags = int(
         Qt.AlignmentFlag.AlignHCenter
-        | Qt.AlignmentFlag.AlignVCenter
+        | Qt.AlignmentFlag.AlignTop
         | Qt.TextFlag.TextSingleLine
     )
 
@@ -442,8 +450,6 @@ def _qt_explorer_caption(
         painter.setPen(pen)
         y = rect.top() + oy
         for ln in lines:
-            if y >= rect.bottom():
-                break
             row = QRect(rect.left() + ox, y, rect.width(), line_h)
             painter.drawText(row, single_flags, ln)
             y += line_h
@@ -627,6 +633,9 @@ def elide_desktop_caption_text(
 ) -> str:
     """Explorer-like wrap: at most ``max_lines``, ellipsis on the last line.
 
+    Unselected icons use ``max_lines=2``. Selected icons pass a larger
+    ``max_lines`` (or skip elide) so the full name can show.
+
     Also avoids a one-character last line (CJK 孤字) by borrowing from the
     previous line — e.g. ``…集团合`` / ``同`` becomes ``…集团`` / ``合同``.
     At a CJK|CJK break, prefers pulling one character down when that keeps
@@ -639,8 +648,9 @@ def elide_desktop_caption_text(
     width = max(8, int(width))
     use_font = QFont(font) if font is not None else icon_title_qfont()
     option = QTextOption()
-    # Mid-token wrap matches DefView for CJK + extensions like ``.docx``.
-    option.setWrapMode(QTextOption.WrapMode.WrapAnywhere)
+    # Prefer word breaks for Latin (``Android`` / ``Developer``); still wrap
+    # mid-token for CJK and long extensions like ``.docx`` when needed.
+    option.setWrapMode(QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere)
     option.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop)
 
     layout = QTextLayout(text, use_font)
@@ -758,18 +768,22 @@ def caption_box_height(
 ) -> int:
     """Logical height for an Explorer-like multi-line caption box.
 
-    Reserves vertical ink inset (glow / descent) so line 2 is not cropped —
-    without a tall empty band under the glyphs (cell air is centered outside).
+    Must clear ``max_lines`` of glyphs *including* descent and the soft glow;
+    a too-tight shelf was clipping the bottom half of line 2.
     """
     use_font = QFont(font) if font is not None else icon_title_qfont()
     fm = QFontMetrics(use_font)
-    line_h = max(fm.lineSpacing(), fm.height() + max(0, fm.descent()))
+    # Match ``_qt_explorer_caption`` row pitch (lineSpacing), not a shorter
+    # height() that leaves descent / glow hanging outside the shelf.
+    line_h = max(1, int(fm.lineSpacing()), int(fm.height() + max(0, fm.descent())))
     try:
         ink = _caption_ink_inset_logical(screen_device_pixel_ratio())
     except Exception:
         ink = 3
-    # Glow/AA only — do not inflate a blank strip under the text inside the label.
-    pad = max(int(extra_pad), 2 * ink + max(0, fm.descent()))
+    # Last-line descent + outer glow must sit *inside* the shelf. A 6px pad
+    # still shaved 「件」/ ``p``/ ``g`` and made ``Developer`` look like ``Develop...``.
+    glow = max(4, int(ink) + 1)
+    pad = max(int(extra_pad), int(fm.descent()) + glow * 2 + 4)
     return int(line_h * max(1, max_lines) + pad)
 
 

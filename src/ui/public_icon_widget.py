@@ -44,7 +44,7 @@ from src.win_shell import (
 _cell0 = system_desktop_icon_cell()
 _ICON_SIZE = int(_cell0.icon_size)
 # Side inset scales with cell (not a fixed 14px that eats narrow DPI cells).
-_SIDE_INSET = max(4, min(10, int(_cell0.width) // 12))
+_SIDE_INSET = max(2, min(4, int(_cell0.width) // 36))
 _LABEL_WIDTH = max(32, int(_cell0.width) - 2 * _SIDE_INSET)
 
 
@@ -83,7 +83,7 @@ def clear_label_pixmap_cache() -> None:
     global _SIDE_INSET
     cell = system_desktop_icon_cell()
     _ICON_SIZE = int(cell.icon_size)
-    _SIDE_INSET = max(4, min(10, int(cell.width) // 12))
+    _SIDE_INSET = max(2, min(4, int(cell.width) // 36))
     _LABEL_WIDTH = max(32, int(cell.width) - 2 * _SIDE_INSET)
     _LABEL_HEIGHT = _default_label_height(cell)
     _CAPTION_MAX_LINES = int(cell.caption_lines)
@@ -124,7 +124,9 @@ class PublicIconWidget(QWidget):
         scale = float(self._icon_size) / float(base_icon)
         # Footprint width from comfort cell; height follows 2-line shelf (not leftover space).
         self._widget_w = max(48, int(round(cell.width * scale)))
-        side_inset = max(4, min(10, int(round(self._widget_w / 12))))
+        # Caption uses almost the full cell — large side inset made
+        # ``Android Developer`` wrap to ``Develop...`` and ``新建文件夹`` split.
+        side_inset = max(2, min(4, int(round(self._widget_w / 36))))
         self._label_width = max(32, self._widget_w - 2 * side_inset)
         self._caption_max_lines = min(2, max(1, int(cell.caption_lines)))
         self._icon_caption_gap = max(2, int(round(3 * scale)))
@@ -133,19 +135,26 @@ class PublicIconWidget(QWidget):
         shelf = caption_box_height(
             icon_title_qfont(),
             max_lines=self._caption_max_lines,
-            extra_pad=max(6, int(round(6 * scale))),
+            extra_pad=max(10, int(round(10 * scale))),
         )
         self._label_height = max(16, int(round(shelf * scale)) if abs(scale - 1.0) > 0.01 else shelf)
         self._margin_top = 0
         self._margin_bot = 0
-        # ``cell.height`` already embeds ``desktop_icon_footprint_height`` via
-        # ``_comfort_cell_size``. Re-maxing a second footprint call can drift
-        # ±2px when font metrics warm up, so widget height ≠ CELL_H.
+        # Widget must be tall enough for icon + gap + full 2-line shelf. A cell
+        # pitch computed from a tighter shelf used to compress the label and
+        # clip the second caption line.
+        stack_h = (
+            int(self._icon_size)
+            + int(self._icon_caption_gap)
+            + int(self._label_height)
+            + 12
+        )
         if abs(scale - 1.0) <= 0.01:
-            self._widget_h_min = max(48, int(cell.height))
+            self._widget_h_min = max(48, int(cell.height), stack_h)
         else:
             self._widget_h_min = max(
                 48,
+                stack_h,
                 desktop_icon_footprint_height(
                     self._icon_size, self._caption_max_lines, scale=scale
                 ),
@@ -177,7 +186,7 @@ class PublicIconWidget(QWidget):
 
         layout = QVBoxLayout(self)
         # Side inset only; equal stretch above/below centers glyph+caption in the cell.
-        layout.setContentsMargins(5, 0, 5, 0)
+        layout.setContentsMargins(side_inset, 0, side_inset, 0)
         layout.setSpacing(self._icon_caption_gap)
         layout.addStretch(1)
 
@@ -271,7 +280,7 @@ class PublicIconWidget(QWidget):
         return font
 
     def _caption_height(self) -> int:
-        # Always a fixed 2-line shelf — selected does not grow to 3+ lines.
+        # Fixed 2-line Explorer shelf — selected does not change caption height.
         return max(16, int(self._label_height))
 
     def _reload_icon(self) -> None:

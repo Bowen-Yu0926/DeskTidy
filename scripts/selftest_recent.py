@@ -2037,7 +2037,7 @@ def test_fence_grid_fit() -> None:
             # Fixed 4-line shelf — short and long names share one height.
             from src.desktop_caption import caption_box_height
 
-            shelf = caption_box_height(item.text_label.font(), max_lines=2, extra_pad=6)
+            shelf = caption_box_height(item.text_label.font(), max_lines=2, extra_pad=10)
             assert item.text_label.height() == shelf, (
                 item.text_label.height(),
                 shelf,
@@ -2052,7 +2052,7 @@ def test_fence_grid_fit() -> None:
                 item.text_label.height(),
                 shelf,
             )
-            assert item.text_label.height() <= int(line_h * 2 + 12), (
+            assert item.text_label.height() <= int(line_h * 2 + 24), (
                 item.text_label.height(),
                 line_h,
             )
@@ -2108,7 +2108,7 @@ def test_fence_grid_fit() -> None:
             assert pub._CAPTION_MAX_LINES == cell.caption_lines
             # Caption label is shelf-sized — not the leftover empty band under text.
             assert long_pub.text_label.height() <= caption_box_height(
-                icon_title_qfont(), max_lines=2, extra_pad=6
+                icon_title_qfont(), max_lines=2, extra_pad=10
             ) + 2
             two_line = caption_needed_height(
                 long_tmp.name, long_pub._label_width, max_lines=2
@@ -2155,18 +2155,18 @@ def test_fence_grid_fit() -> None:
         refresh_cap = inspect.getsource(FenceIconItem._refresh_caption_for_selection)
         assert "fit_desktop_caption_label" in refresh_cap
         assert "max_lines=2" in refresh_cap
-        assert "max_lines=12" not in refresh_cap
         assert "elide_desktop_caption_text" in inspect.getsource(
             FenceIconItem._caption_display_text
         )
-        # Selected no longer expands to 3+ lines — always 2-line ellipsis.
+        # Selected stays on the same 2-line ellipsis shelf (height must not clip).
         cap_disp = inspect.getsource(FenceIconItem._caption_display_text)
-        assert "if self._selected:" not in cap_disp
         assert "max_lines=2" in cap_disp
+        assert "12 if self._selected" not in cap_disp
         pub_label = inspect.getsource(pub.PublicIconWidget._reload_label)
         assert "elide=True" in pub_label
         assert "elide=not selected" not in pub_label
-        assert "max_lines=12" not in inspect.getsource(pub.PublicIconWidget._caption_height)
+        cap_h = inspect.getsource(pub.PublicIconWidget._caption_height)
+        assert "caption_needed_height" not in cap_h
         from src.ui import fence_icon_item as fii
 
         assert callable(fii.fit_desktop_caption_label)
@@ -2177,6 +2177,45 @@ def test_fence_grid_fit() -> None:
         ) or "\u2026" in elide_desktop_caption_text(
             "微控立库堆垛机库提高出库节拍方案.docx", 70, max_lines=2
         )
+        # Shelf tall enough: 2-line caption pixmap keeps ink near the bottom
+        # (regression — line 2 used to be vertically half-clipped).
+        from src.desktop_caption import (
+            caption_box_height,
+            icon_title_qfont,
+            render_desktop_caption,
+        )
+        import src.desktop_caption as _dc
+
+        assert "WrapAtWordBoundaryOrAnywhere" in inspect.getsource(
+            _dc.elide_desktop_caption_text
+        )
+        _font = icon_title_qfont()
+        _shelf = caption_box_height(_font, max_lines=2, extra_pad=10)
+        _pix = render_desktop_caption(
+            "Android Developer", 98, _shelf, dpr=1.0, font=_font, max_lines=2, elide=True
+        )
+        _img = _pix.toImage()
+        _ink_rows = [
+            y
+            for y in range(_img.height())
+            if any(_img.pixelColor(x, y).alpha() > 30 for x in range(0, _img.width(), 2))
+        ]
+        assert _ink_rows, "caption pixmap has no ink"
+        # Line 2 must be painted (not half-clipped). Extra shelf pad sits *below*
+        # the glyphs, so ink need not reach 70% of the box.
+        _bands = []
+        _s = _p = _ink_rows[0]
+        for _y in _ink_rows[1:]:
+            if _y > _p + 1:
+                _bands.append((_s, _p))
+                _s = _y
+            _p = _y
+        _bands.append((_s, _p))
+        assert len(_bands) >= 2, _bands
+        _h1 = _bands[0][1] - _bands[0][0] + 1
+        _h2 = _bands[-1][1] - _bands[-1][0] + 1
+        assert _h2 >= int(_h1 * 0.85), (_bands, "line 2 shorter than line 1")
+        assert _shelf - 1 - _ink_rows[-1] >= 4, (_ink_rows[-1], _shelf)
         # CJK 孤字: do not leave 「同」 alone on the second line.
         from src.desktop_caption import _balance_caption_orphan_lines
 

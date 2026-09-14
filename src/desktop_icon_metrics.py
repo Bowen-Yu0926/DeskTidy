@@ -129,7 +129,7 @@ def desktop_icon_footprint_height(
     gap = max(2, int(round(3 * scale)))
     # Symmetric margins — leftover cell height is centered around the stack.
     margin = max(2, int(round(3 * scale)))
-    pad = max(6, int(round(6 * scale)))
+    pad = max(10, int(round(10 * scale)))
     shelf = _caption_line_height() * lines + pad
     try:
         from PyQt6.QtWidgets import QApplication
@@ -148,7 +148,9 @@ def desktop_icon_footprint_height(
     # Slight outer pitch above the tight stack so neighboring icons do not cover
     # captions; the widget centers the stack so the air is not all under text.
     stack = margin + icon + gap + max(16, int(shelf)) + margin
-    pitch = max(2, int(round(_caption_line_height() * 0.35 * scale)))
+    # Keep a full line of air under the caption so the next icon does not
+    # cover line-2 descenders (looked like ``Develop...`` / half 文件夹).
+    pitch = max(8, int(round(_caption_line_height() * 0.7 * scale)))
     return stack + pitch
 
 

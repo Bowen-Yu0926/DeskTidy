@@ -23,6 +23,7 @@
       --shadow: 0 18px 40px rgba(21, 32, 51, 0.08);
       --radius: 14px;
       --max: 1080px;
+      --toc-w: 168px;
     }
     * { box-sizing: border-box; }
     html { scroll-behavior: smooth; }
@@ -40,25 +41,52 @@
     }
     a { color: var(--sky); text-decoration-thickness: 1px; text-underline-offset: 3px; }
     a:hover { color: var(--sky-deep); }
-    .wrap { width: min(var(--max), calc(100% - 2.5rem)); margin-inline: auto; }
-    .top {
-      display: flex; align-items: center; justify-content: space-between;
-      padding: 1.15rem 0; gap: 1rem;
+    .shell {
+      width: min(calc(var(--max) + var(--toc-w) + 2.5rem), calc(100% - 2rem));
+      margin-inline: auto;
+      display: grid;
+      grid-template-columns: var(--toc-w) minmax(0, 1fr);
+      gap: 0 1.75rem;
+      align-items: start;
     }
-    .brand {
-      display: inline-flex; align-items: baseline; gap: 0.45rem;
+    .side-toc {
+      position: sticky;
+      top: 0;
+      align-self: start;
+      max-height: 100vh;
+      overflow: auto;
+      padding: 1.15rem 0 2rem;
+    }
+    .side-toc .brand {
+      display: flex; flex-direction: column; align-items: flex-start; gap: 0.15rem;
       color: inherit; text-decoration: none; font-weight: 700;
+      margin-bottom: 1.1rem;
     }
     .brand em {
       font-family: Fraunces, "Noto Serif SC", serif;
-      font-style: normal; font-size: 1.35rem; color: var(--sky);
+      font-style: normal; font-size: 1.25rem; color: var(--sky);
     }
-    .brand span { color: var(--muted); font-size: 0.85rem; font-weight: 500; }
-    .top nav { display: flex; flex-wrap: wrap; gap: 0.35rem 1rem; }
-    .top nav a {
-      color: var(--ink-soft); text-decoration: none; font-size: 0.92rem; font-weight: 500;
+    .brand span { color: var(--muted); font-size: 0.78rem; font-weight: 500; }
+    .toc-label {
+      margin: 0 0 0.45rem;
+      font-family: "IBM Plex Mono", ui-monospace, monospace;
+      font-size: 0.72rem; letter-spacing: 0.08em; text-transform: uppercase;
+      color: var(--muted);
     }
-    .top nav a:hover { color: var(--sky); }
+    .side-toc nav {
+      display: flex; flex-direction: column; gap: 0.15rem;
+    }
+    .side-toc nav a {
+      color: var(--ink-soft); text-decoration: none;
+      font-size: 0.9rem; font-weight: 500;
+      padding: 0.32rem 0.55rem; border-radius: 8px;
+      border-left: 2px solid transparent;
+    }
+    .side-toc nav a:hover {
+      color: var(--sky); background: var(--wash);
+      border-left-color: var(--sky);
+    }
+    .wrap { width: 100%; min-width: 0; padding-top: 0.35rem; }
 
     .hero {
       padding: 2.1rem 0 3rem;
@@ -95,6 +123,45 @@
     .btn:hover { transform: translateY(-1px); }
     .btn-primary { background: var(--sky); color: #fff; }
     .btn-primary:hover { background: var(--sky-deep); color: #fff; }
+
+    .download-card {
+      display: grid;
+      grid-template-columns: 1.2fr 0.8fr;
+      gap: 1.4rem;
+      align-items: center;
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      padding: 1.5rem 1.6rem;
+    }
+    .download-card .meta {
+      display: flex; flex-wrap: wrap; gap: 0.45rem 0.7rem;
+      margin: 0.85rem 0 1.1rem;
+    }
+    .download-card .chip {
+      font-family: "IBM Plex Mono", ui-monospace, monospace;
+      font-size: 0.78rem;
+      color: var(--ink-soft);
+      background: var(--wash);
+      border-radius: 999px;
+      padding: 0.28rem 0.7rem;
+    }
+    .download-card .aside {
+      background: linear-gradient(160deg, var(--wash), #f7f9fc);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 1.1rem 1.2rem;
+    }
+    .download-card .aside h3 {
+      margin: 0 0 0.45rem;
+      font-family: Fraunces, "Noto Serif SC", serif;
+      font-size: 1.05rem;
+    }
+    .download-card .aside ul {
+      margin: 0; padding-left: 1.1rem; color: var(--ink-soft); font-size: 0.92rem;
+    }
+    .download-card .aside li { margin: 0.25rem 0; }
     .btn-ghost {
       background: transparent; color: var(--ink-soft); border-color: var(--line);
     }
@@ -209,6 +276,66 @@
       display: grid; grid-template-columns: 1.15fr 0.85fr; gap: 1.2rem; align-items: stretch;
     }
 
+    .pet-showcase {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 0.9rem;
+      margin: 0 0 1.25rem;
+    }
+    .pet-card {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      overflow: hidden;
+      text-align: center;
+    }
+    .pet-card img {
+      display: block;
+      width: 100%;
+      max-height: 280px;
+      object-fit: contain;
+      background: linear-gradient(180deg, #f7faff, #eef3f9);
+      padding: 1rem 0.5rem 0.4rem;
+    }
+    .pet-card figcaption {
+      margin: 0;
+      padding: 0.7rem 1rem 0.95rem;
+      border-top: 1px solid var(--line);
+      text-align: left;
+    }
+    .pet-card strong {
+      display: block;
+      font-size: 1.02rem;
+      margin-bottom: 0.25rem;
+    }
+    .pet-card span {
+      color: var(--ink-soft);
+      font-size: 0.9rem;
+      line-height: 1.55;
+    }
+    .pet-points {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 0.75rem;
+    }
+    .pet-points article {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 0.95rem 1.05rem 1.05rem;
+    }
+    .pet-points h3 {
+      margin: 0 0 0.35rem;
+      font-size: 1rem;
+    }
+    .pet-points p {
+      margin: 0;
+      color: var(--ink-soft);
+      font-size: 0.92rem;
+      line-height: 1.55;
+    }
+
     /* —— 功能手册（注入 / 静态） —— */
     .manual-toc {
       background: var(--card); border: 1px solid var(--line);
@@ -261,8 +388,20 @@
     }
 
     @media (max-width: 860px) {
-      .hero, .feature-grid, .two-col, .with-row { grid-template-columns: 1fr; }
-      .wrap { width: min(var(--max), calc(100% - 1.5rem)); }
+      .shell {
+        width: min(100%, calc(100% - 1.5rem));
+        grid-template-columns: 1fr;
+      }
+      .side-toc {
+        position: static; max-height: none;
+        padding: 0.85rem 0 0.4rem;
+        border-bottom: 1px solid var(--line);
+        margin-bottom: 0.4rem;
+      }
+      .side-toc .brand { flex-direction: row; align-items: baseline; gap: 0.45rem; margin-bottom: 0.65rem; }
+      .side-toc nav { flex-direction: row; flex-wrap: wrap; gap: 0.25rem 0.35rem; }
+      .side-toc nav a { border-left: none; padding: 0.28rem 0.55rem; }
+      .hero, .feature-grid, .two-col, .with-row, .download-card, .pet-showcase, .pet-points { grid-template-columns: 1fr; }
       .fence.w1, .fence.w2 { width: 100%; margin-left: 0; }
       .manual-toc ol { columns: 1; }
     }
@@ -273,18 +412,22 @@
   </style>
 </head>
 <body>
-  <div class="wrap">
-    <header class="top">
+  <div class="shell">
+    <aside class="side-toc" aria-label="页面目录">
       <a class="brand" href="#top"><em>DeskTidy</em><span>桌面整理助手</span></a>
+      <p class="toc-label">目录</p>
       <nav>
+        <a href="#download">下载</a>
         <a href="#fences">分区</a>
         <a href="#pages">分页</a>
         <a href="#capture">截图与搜索</a>
         <a href="#extensions">扩展</a>
+        <a href="#pet">桌面宠物</a>
         <a href="#desknote">DeskNote</a>
         <a href="#manual">使用手册</a>
       </nav>
-    </header>
+    </aside>
+    <div class="wrap">
 
     <section class="hero" id="top">
       <div>
@@ -295,7 +438,8 @@
           再配上分页布局、截图录屏、搜索与笔记，让桌面既干净又好用。
         </p>
         <div class="cta-row">
-          <a class="btn btn-primary" href="#manual">使用手册</a>
+          <a class="btn btn-primary" href="#download">下载 DeskTidy</a>
+          <a class="btn btn-ghost" href="#manual">使用手册</a>
           <a class="btn btn-ghost" href="desknote.html">DeskNote 介绍</a>
         </div>
       </div>
@@ -308,6 +452,40 @@
           <div class="fence-title"><span class="pin"></span>软件</div>
           <div class="icons"><div class="icon"></div><div class="icon"></div><div class="icon"></div><div class="icon"></div></div>
         </div>
+      </div>
+    </section>
+
+    <section class="block" id="download">
+      <div class="block-head">
+        <p class="comment">/* get the installer */</p>
+        <h2>下载 DeskTidy</h2>
+        <p>Windows 安装包，安装后即可使用桌面分区、分页、截图录屏与 DeskNote。</p>
+      </div>
+      <div class="download-card">
+        <div>
+          <h3 style="margin:0 0 0.35rem;font-family:Fraunces,serif;font-size:1.35rem;">DeskTidy Setup</h3>
+          <p style="margin:0;color:var(--ink-soft);">安装包体积约 214 MB（含 DeskNote 与录屏组件）。分区只钉选显示，不挪动你的文件。</p>
+          <div class="meta">
+            <span class="chip">v4.0.24</span>
+            <span class="chip">Windows 10 / 11</span>
+            <span class="chip">x64</span>
+          </div>
+          <div class="cta-row">
+            <a class="btn btn-primary" href="https://github.com/Bowen-Yu0926/DeskTidy-Releases/releases/download/v4.0.24/DeskTidy_Setup_4.0.24.exe">下载安装包（GitHub）</a>
+            <a class="btn btn-ghost" href="#manual">先看使用手册</a>
+          </div>
+          <p style="margin:0.85rem 0 0;color:var(--muted);font-size:0.9rem;">
+            点击后从 GitHub Releases 下载 <code>DeskTidy_Setup_4.0.24.exe</code>，双击即可安装。
+          </p>
+        </div>
+        <aside class="aside">
+          <h3>安装提示</h3>
+          <ul>
+            <li>默认安装到当前用户目录，一般无需管理员权限</li>
+            <li>可选创建桌面快捷方式与开机启动</li>
+            <li>卸载可在开始菜单或「应用和功能」中进行</li>
+          </ul>
+        </aside>
       </div>
     </section>
 
@@ -428,7 +606,52 @@
         </article>
         <article class="feature">
           <h3>桌面宠物</h3>
-          <p>可互动的小伴侣：摸摸、等待、跌落；也能调大小。</p>
+          <p>可互动的小伴侣。详见下方 <a href="#pet">桌面宠物</a> 专节。</p>
+        </article>
+      </div>
+    </section>
+
+    <section class="block" id="pet">
+      <div class="block-head">
+        <p class="comment">/* a tiny desk buddy */</p>
+        <h2>桌面宠物：陪着你收拾桌面</h2>
+        <p>
+          在扩展里打开后，宠物会停在桌面上：可以摸摸、等待、睡觉、甩出去跌落；
+          也能把图标拖到它身上，揉成纸团丢进回收站。形象与大小可在设置里改。
+        </p>
+      </div>
+      <div class="pet-showcase">
+        <figure class="pet-card">
+          <img src="/images/pet-hoodie.png" alt="卫衣少年桌面宠物素材" width="480" height="480" loading="lazy" />
+          <figcaption>
+            <strong>卫衣少年</strong>
+            <span>默认形象。等待时会在「玩手机」和「睡觉」之间轮流切换，更有生活感。</span>
+          </figcaption>
+        </figure>
+        <figure class="pet-card">
+          <img src="/images/pet-voyage.png" alt="出海少女桌面宠物素材" width="480" height="480" loading="lazy" />
+          <figcaption>
+            <strong>出海少女</strong>
+            <span>另一套可选形象，互动动作同样支持摸摸、等待、跌落等。</span>
+          </figcaption>
+        </figure>
+      </div>
+      <div class="pet-points">
+        <article>
+          <h3>摸摸 / 等待 / 睡觉</h3>
+          <p>单击摸摸会开心回应；「⋯」菜单可点等待、睡觉。未勾选的动作不会出现在菜单里，「隐藏」始终可用。</p>
+        </article>
+        <article>
+          <h3>拖动与跌落</h3>
+          <p>按住拖动可换位置；甩出去会抛物线落地。位置与大小会记在你的配置里。</p>
+        </article>
+        <article>
+          <h3>拖文件给它</h3>
+          <p>把桌面或分区里的图标拖到宠物身上，会揉成纸团进系统回收站（可还原）。别拖到头上的分页浮标。</p>
+        </article>
+        <article>
+          <h3>大小与浮标</h3>
+          <p>设置里可调约 50%～160% 显示比例。可选把右侧浮标栏放到宠物头上，分页、录屏等更顺手。</p>
         </article>
       </div>
     </section>
@@ -469,9 +692,10 @@
     <!-- /HELP_MANUAL -->
 
     <footer>
-      <div>DeskTidy · Windows 桌面整理助手</div>
-      <div>介绍 + 使用手册合一；功能以当前版本为准</div>
+      <div>DeskTidy · Windows 桌面整理助手 · v4.0.24</div>
+      <div><a href="#download">下载安装包</a> · 介绍 + 使用手册合一</div>
     </footer>
+    </div>
   </div>
 </body>
 </html>

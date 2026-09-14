@@ -59,8 +59,10 @@ def fit_desktop_caption_label(label: QLabel, width: int, *, max_lines: int = 2) 
     label.setWordWrap(False)
     label.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop)
     max_lines = max(1, int(max_lines))
-    caption_h = caption_box_height(label.font(), max_lines=max_lines, extra_pad=6)
-    label.setContentsMargins(0, 1, 0, 2)
+    caption_h = caption_box_height(label.font(), max_lines=max_lines, extra_pad=10)
+    # No contentsMargins here — stylesheet padding on ``#fenceItem`` already
+    # reserves descent room; stacking margins clipped line 2 inside FixedHeight.
+    label.setContentsMargins(0, 0, 0, 0)
     label.setMinimumHeight(caption_h)
     label.setMaximumHeight(caption_h)
     label.setFixedHeight(caption_h)
@@ -1078,7 +1080,7 @@ def public_caption_ink_rect(widget: QWidget) -> QRect:
         geo.setLeft(x)
         geo.setWidth(shelf_w)
     if shelf_h > 0:
-        geo.setHeight(shelf_h)
+        geo.setHeight(max(int(geo.height()), shelf_h))
     return geo
 
 
