@@ -71,12 +71,8 @@ def _default_label_height(cell=None) -> int:
 _LABEL_HEIGHT = _default_label_height(_cell0)
 _CAPTION_MAX_LINES = int(_cell0.caption_lines)
 _WIDGET_W = int(_cell0.width)
-_WIDGET_H = max(
-    48,
-    desktop_icon_footprint_height(
-        int(_cell0.icon_size), int(_cell0.caption_lines), scale=1.0
-    ),
-)
+# Same source as PublicIconWidget / public_desktop.CELL_H.
+_WIDGET_H = max(48, int(_cell0.height))
 
 
 def clear_label_pixmap_cache() -> None:
@@ -92,12 +88,7 @@ def clear_label_pixmap_cache() -> None:
     _LABEL_HEIGHT = _default_label_height(cell)
     _CAPTION_MAX_LINES = int(cell.caption_lines)
     _WIDGET_W = int(cell.width)
-    _WIDGET_H = max(
-        48,
-        desktop_icon_footprint_height(
-            int(cell.icon_size), int(cell.caption_lines), scale=1.0
-        ),
-    )
+    _WIDGET_H = max(48, int(cell.height))
     try:
         from src.public_desktop import refresh_public_grid_metrics
 
@@ -147,14 +138,19 @@ class PublicIconWidget(QWidget):
         self._label_height = max(16, int(round(shelf * scale)) if abs(scale - 1.0) > 0.01 else shelf)
         self._margin_top = 0
         self._margin_bot = 0
-        # Prefer shared footprint so grid CELL_H and widget stay identical.
-        self._widget_h_min = max(
-            48,
-            desktop_icon_footprint_height(
-                self._icon_size, self._caption_max_lines, scale=scale
-            ),
-            int(round(cell.height * scale)),
-        )
+        # ``cell.height`` already embeds ``desktop_icon_footprint_height`` via
+        # ``_comfort_cell_size``. Re-maxing a second footprint call can drift
+        # ±2px when font metrics warm up, so widget height ≠ CELL_H.
+        if abs(scale - 1.0) <= 0.01:
+            self._widget_h_min = max(48, int(cell.height))
+        else:
+            self._widget_h_min = max(
+                48,
+                desktop_icon_footprint_height(
+                    self._icon_size, self._caption_max_lines, scale=scale
+                ),
+                int(round(cell.height * scale)),
+            )
         self._press_pos: QPoint | None = None
         self._press_was_selected = False
         self._dragging_window = False

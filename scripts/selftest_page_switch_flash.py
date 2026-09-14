@@ -290,6 +290,12 @@ def test_icon_selection_batch_contracts() -> None:
     assert "paint_fence_item_selection" in paint
     assert "_selection_ring" not in inspect.getsource(FenceIconItem.__init__)
     assert "QGraphicsDropShadowEffect" not in inspect.getsource(FenceIconItem.__init__)
+    # Selection plate hugs glyph+caption ink (equal pad) — not full cell with empty shelf.
+    fence_sel = inspect.getsource(fii.paint_fence_item_selection)
+    assert "fence_selection_chrome_rect" in fence_sel
+    assert "widget.rect().adjusted(1, 1, -2, -2)" not in fence_sel
+    chrome = inspect.getsource(fii.fence_selection_chrome_rect)
+    assert "_caption_text_hit_rect" in chrome
 
     label_paint = inspect.getsource(FenceItemLabel.paintEvent)
     assert "paint_fence_item_selection" in label_paint

@@ -6,12 +6,12 @@ from typing import Any
 
 
 THEME_OPTIONS: list[tuple[str, str]] = [
-    ("mist", "薄雾浅灰"),
+    ("mist", "薄雾浅灰（推荐）"),
+    ("graphite", "石墨灰（推荐）"),
     ("sky", "天空蓝"),
     ("mint", "薄荷绿"),
-    ("lavender", "淡紫"),
-    ("peach", "浅杏"),
-    ("graphite", "石墨灰"),
+    ("lavender", "淡紫 · 柔和"),
+    ("peach", "浅杏 · 柔和"),
 ]
 
 # Desktop/fence captions follow Explorer / Fences: light ink on dark panels
@@ -499,7 +499,7 @@ QLabel#pageKicker {{
 
 QLabel#pageTitle {{
     color: {p['text']};
-    font-size: 26px;
+    font-size: 22px;
     font-weight: 800;
     letter-spacing: -0.2px;
 }}
@@ -835,9 +835,9 @@ QListWidget#sidebarNav::viewport {{
 
 QListWidget#sidebarNav::item {{
     color: {p['sidebar_muted']};
-    padding: 10px 12px 10px 10px;
+    padding: 7px 10px 7px 8px;
     border-radius: 8px;
-    margin: 3px 0;
+    margin: 1px 0;
 }}
 
 QListWidget#sidebarNav::item:selected {{

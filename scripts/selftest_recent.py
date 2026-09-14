@@ -1999,6 +1999,7 @@ def test_fence_grid_fit() -> None:
 
         assert FenceWidget.ICON_BASE_SIZE == 40
         assert FenceIconItem.DEFAULT_ICON_SIZE == FenceWidget.ICON_BASE_SIZE
+        assert FenceWidget.FOOTER_OVERLAY_HEIGHT >= 18
         align_src = inspect.getsource(FenceWidget._build_ui)
         assert "AlignHCenter" in align_src
         assert "AlignTop" in align_src
@@ -2006,6 +2007,9 @@ def test_fence_grid_fit() -> None:
         assert "setAlignment(Qt.AlignmentFlag.AlignCenter)" not in align_src.split(
             "items_layout"
         )[1].split("footer_label")[0]
+        # Footer must overlay — in-flow footer on hover clipped the last icon row.
+        assert "body_layout.addWidget(self.footer_label)" not in align_src
+        assert "_sync_footer_geometry" in inspect.getsource(FenceWidget)
         # No Qt StandardPixmap special-case for system icons.
         import src.icon_utils as iu
 
@@ -5321,10 +5325,15 @@ def test_page_organize_rules() -> None:
                 }
             ],
         }
-        # Page 1 has no fences → no page-level fallback.
-        assert resolve_organize_target(doc, settings_empty, page_id=1) is None
-        # Page 0 fences don't match docs → still no page fallback.
-        assert resolve_organize_target(doc, settings_empty, page_id=0) is None
+        # Empty「文档」page (no fences) still claims file items so one-click
+        # organize can materialize a real fence instead of losing docs.
+        hit_empty = resolve_organize_target(doc, settings_empty, page_id=1)
+        assert hit_empty is not None and hit_empty[0] == "page"
+        assert hit_empty[1]["id"] == 1
+        # Page 0 icon-only fences don't match docs → fall through to empty page 1.
+        hit_cross = resolve_organize_target(doc, settings_empty, page_id=0)
+        assert hit_cross is not None and hit_cross[0] == "page"
+        assert hit_cross[1]["id"] == 1
         # With a document fence on page 1, docs resolve to that fence.
         settings_docs = {
             "current_page": 0,
@@ -7429,7 +7438,9 @@ def test_page_folders() -> None:
         assert "notepad_open_dialog_filter" in inspect.getsource(NotepadWindow.open_document)
         assert "setAcceptDrops(True)" in inspect.getsource(NotepadWindow.__init__)
         assert "app.installEventFilter" in inspect.getsource(NotepadWindow.__init__)
-        assert "_mime_has_openable_files" in inspect.getsource(NotepadWindow.eventFilter)
+        assert "_handle_window_file_drag" in inspect.getsource(NotepadWindow.eventFilter)
+        drag_src = inspect.getsource(NotepadWindow._handle_window_file_drag)
+        assert "_mime_has_openable_files" in drag_src
         assert "_handle_window_file_drag" in inspect.getsource(NotepadWindow)
         make_page = inspect.getsource(NotepadWindow._make_page)
         assert "viewport().installEventFilter" in make_page
@@ -7570,13 +7581,12 @@ def test_page_folders() -> None:
                 assert hasattr(win, "_toggle_pin_page")
                 assert hasattr(win.library, "close_requested")
                 assert hasattr(win.library, "pin_requested")
-                # Shared RMB actions on library + tabs
+                # Shared RMB actions on library + tabs (关闭用页签 ×，无单独「打开/关闭」项)
                 lib_menu_src = inspect.getsource(win.library._file_actions_menu)
-                assert "打开" in lib_menu_src and "重命名" in lib_menu_src
-                assert "置顶" in lib_menu_src and "关闭" in lib_menu_src
-                assert "删除" in lib_menu_src
+                assert "重命名" in lib_menu_src and "置顶" in lib_menu_src
+                assert "打开文件所在目录" in lib_menu_src and "删除" in lib_menu_src
                 tab_menu_src = inspect.getsource(NotepadWindow._on_tab_context_menu)
-                for label in ("打开", "重命名", "置顶", "关闭", "删除"):
+                for label in ("重命名", "置顶", "打开文件所在目录", "删除"):
                     assert label in tab_menu_src
                 # Pin button on each tab; pin moves tab to the left group
                 pin_btn = bar.tabButton(0, bar.ButtonPosition.LeftSide)
