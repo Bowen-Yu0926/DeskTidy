@@ -28,8 +28,8 @@ class SectionCard(QFrame):
         inner = QWidget()
         inner.setObjectName("sectionCardInner")
         root = QVBoxLayout(inner)
-        root.setContentsMargins(18, 16, 18, 16)
-        root.setSpacing(12)
+        root.setContentsMargins(14, 12, 14, 12)
+        root.setSpacing(10)
         shell.addWidget(inner, stretch=1)
 
         header = QHBoxLayout()

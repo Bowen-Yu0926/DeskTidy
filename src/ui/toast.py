@@ -18,6 +18,8 @@ from src.ui.screen_snap import work_screen
 _theme_colors_cache_key: object | None = None
 _theme_colors_cache: dict[str, str] | None = None
 
+_ToastLevel = str  # "info" | "success" | "warn"
+
 
 def invalidate_toast_theme_cache() -> None:
     global _theme_colors_cache_key, _theme_colors_cache
@@ -45,7 +47,17 @@ def _theme_colors() -> dict[str, str]:
             "text_muted": "#6B7280",
             "accent": "#2563EB",
             "accent_soft": "#DBEAFE",
+            "primary": "#16A34A",
+            "danger": "#DC2626",
         }
+
+
+def _accent_for_level(level: str, palette: dict[str, str]) -> str:
+    if level == "success":
+        return palette.get("primary") or "#16A34A"
+    if level == "warn":
+        return palette.get("danger") or "#DC2626"
+    return palette.get("accent") or "#2563EB"
 
 
 _active_toast: _ToastTip | None = None
@@ -57,6 +69,7 @@ def show_toast(
     *,
     msec: int = 2800,
     anchor: QRect | QPoint | None = None,
+    level: _ToastLevel = "info",
 ) -> None:
     """Show a non-modal topmost tip that auto-closes.
 
@@ -64,6 +77,7 @@ def show_toast(
     「正在移动」cannot linger under「已移入」after a short background move.
 
     *anchor*: place on that screen/rect (e.g. recording target). Default = cursor work screen.
+    *level*: ``info`` / ``success`` / ``warn`` — left accent bar color.
     """
     global _active_toast
     prev = _active_toast
@@ -73,7 +87,7 @@ def show_toast(
             prev.close()
         except RuntimeError:
             pass
-    tip = _ToastTip(title, body, msec=msec, anchor=anchor)
+    tip = _ToastTip(title, body, msec=msec, anchor=anchor, level=level)
     _active_toast = tip
     tip.destroyed.connect(lambda *_: _clear_active_toast(tip))
     tip.show()
@@ -107,6 +121,7 @@ class _ToastTip(QWidget):
         *,
         msec: int,
         anchor: QRect | QPoint | None = None,
+        level: str = "info",
     ) -> None:
         super().__init__(None)
         self._anchor = anchor
@@ -122,28 +137,29 @@ class _ToastTip(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, False)
 
         p = _theme_colors()
+        bar = _accent_for_level(level, p)
         # Prefer a crisp theme border over Win Tool-window drop shadows (paint cost).
         self.setStyleSheet(
             f"QWidget#toastCard {{"
             f" background: {p['card']};"
             f" border: 1px solid {p['border']};"
-            f" border-left: 4px solid {p['accent']};"
-            f" border-radius: 16px;"
+            f" border-left: 3px solid {bar};"
+            f" border-radius: 12px;"
             f"}}"
-            f"QLabel#toastTitle {{ color: {p['text']}; font-size: 16px; font-weight: 700; }}"
-            f"QLabel#toastBody {{ color: {p['text_muted']}; font-size: 13px; }}"
+            f"QLabel#toastTitle {{ color: {p['text']}; font-size: 14px; font-weight: 700; }}"
+            f"QLabel#toastBody {{ color: {p['text_muted']}; font-size: 12px; }}"
         )
 
         card = QWidget(self)
         card.setObjectName("toastCard")
         layout = QVBoxLayout(card)
-        layout.setContentsMargins(22, 16, 22, 16)
-        layout.setSpacing(5)
+        layout.setContentsMargins(16, 12, 16, 12)
+        layout.setSpacing(4)
 
         title_lbl = QLabel(title)
         title_lbl.setObjectName("toastTitle")
         title_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        title_lbl.setMaximumWidth(440)
+        title_lbl.setMaximumWidth(400)
         layout.addWidget(title_lbl)
 
         if body.strip():
@@ -151,7 +167,7 @@ class _ToastTip(QWidget):
             body_lbl.setObjectName("toastBody")
             body_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
             body_lbl.setWordWrap(True)
-            body_lbl.setMaximumWidth(440)
+            body_lbl.setMaximumWidth(400)
             layout.addWidget(body_lbl)
 
         outer = QVBoxLayout(self)
@@ -163,14 +179,14 @@ class _ToastTip(QWidget):
         rest_y = self._place_top_center()
 
         fade = QPropertyAnimation(self, b"windowOpacity", self)
-        fade.setDuration(220)
+        fade.setDuration(180)
         fade.setStartValue(0.0)
         fade.setEndValue(1.0)
         fade.setEasingCurve(QEasingCurve.Type.OutCubic)
 
         slide = QPropertyAnimation(self, b"pos", self)
-        slide.setDuration(220)
-        slide.setStartValue(QPoint(self.x(), rest_y - 14))
+        slide.setDuration(180)
+        slide.setStartValue(QPoint(self.x(), rest_y - 10))
         slide.setEndValue(QPoint(self.x(), rest_y))
         slide.setEasingCurve(QEasingCurve.Type.OutCubic)
 
@@ -217,6 +233,6 @@ class _ToastTip(QWidget):
             return 0
         self.adjustSize()
         x = geo.x() + (geo.width() - self.width()) // 2
-        y = geo.y() + max(48, geo.height() // 12)
+        y = geo.y() + max(40, geo.height() // 14)
         self.move(x, y)
         return y

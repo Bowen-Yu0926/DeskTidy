@@ -1725,16 +1725,36 @@ class DeskTidyApp:
         """Re-extract shell icons in place (no layout rebuild / restack)."""
         from src.icon_utils import invalidate_file_icon_cache
 
-        invalidate_file_icon_cache()
         for fence in list(self.fences):
             try:
+                for path in fence._visible_entry_paths():
+                    invalidate_file_icon_cache(path)
                 fence.reload_icons()
             except Exception:
                 pass
         for icon in list(self.public_icons):
             try:
+                invalidate_file_icon_cache(getattr(icon, "file_path", None))
                 icon._reload_icon()
                 icon._reload_label()
+            except Exception:
+                pass
+
+    def _invalidate_visible_icon_caches(self) -> None:
+        """Drop icon cache entries only for currently shown overlay paths."""
+        from src.icon_utils import invalidate_file_icon_cache
+
+        for fence in list(self.fences):
+            try:
+                for path in fence._visible_entry_paths():
+                    invalidate_file_icon_cache(path)
+            except Exception:
+                pass
+        for icon in list(self.public_icons):
+            try:
+                path = getattr(icon, "file_path", None)
+                if path is not None:
+                    invalidate_file_icon_cache(path)
             except Exception:
                 pass
 
@@ -7608,7 +7628,12 @@ class DeskTidyApp:
 
         get_logger().info("force_refresh_desktop begin")
         invalidate_desktop_scan_cache()
-        invalidate_file_icon_cache()
+        # Path-scoped invalidation for visible overlays — avoids clearing the
+        # whole shell icon cache on every user refresh.
+        try:
+            self._invalidate_visible_icon_caches()
+        except Exception:
+            invalidate_file_icon_cache()
         self._last_public_sync_sig = None
         self._loose_sync_needed = True
         self._public_force_relayout = True

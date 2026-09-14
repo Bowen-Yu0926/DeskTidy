@@ -29,8 +29,8 @@ class SidebarNavWidget(QListWidget):
         self.setFrameShape(QListWidget.Shape.NoFrame)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        self.setSpacing(4)
-        self.setIconSize(QSize(20, 20))
+        self.setSpacing(2)
+        self.setIconSize(QSize(18, 18))
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
 
         for page_id, title in items:
@@ -39,7 +39,7 @@ class SidebarNavWidget(QListWidget):
                 title,
             )
             item.setData(Qt.ItemDataRole.UserRole, page_id)
-            item.setSizeHint(QSize(0, 44))
+            item.setSizeHint(QSize(0, 36))
             self.addItem(item)
 
         self.currentRowChanged.connect(self._emit_change)

@@ -25,7 +25,7 @@ if not exist dist_staging\DeskTidy\DeskTidy.exe (
     echo Build failed: missing dist_staging\DeskTidy\DeskTidy.exe
     exit /b 1
 )
-echo Pruning WebEngine debug / DevTools / unused locales from staging...
+echo Pruning WebEngine debug / unused Qt Quick3D / translations / Cython from staging...
 python scripts\prune_release_payload.py dist_staging\DeskTidy
 if errorlevel 1 (
     echo Build failed: prune_release_payload on staging.

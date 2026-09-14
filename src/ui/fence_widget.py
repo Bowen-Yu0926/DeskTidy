@@ -9,6 +9,7 @@ from PyQt6.QtCore import (
     QObject,
     QPoint,
     QRect,
+    QSize,
     QTimer,
     QUrl,
     Qt,
@@ -539,8 +540,9 @@ class FenceWidget(QWidget):
     MIN_HEIGHT = 180
     COLLAPSED_HEIGHT = 44
     HEADER_OVERLAY_HEIGHT = 40
+    FOOTER_OVERLAY_HEIGHT = 22
     EDGE_SNAP_THRESHOLD = 24
-    # Match Windows desktop "中等图标" (48px). Users can Alt+wheel / menu to enlarge.
+    # Default desktop-medium-ish glyph (40px). Users can Alt+wheel / menu to enlarge.
     ICON_BASE_SIZE = 40
     ICON_BASE_WIDTH = 220
     ICON_BASE_HEIGHT = 320
@@ -709,12 +711,21 @@ class FenceWidget(QWidget):
     def _restore_footer_text(self) -> None:
         if hasattr(self, "footer_label"):
             self.footer_label.setText(self._footer_count_text())
+            # Zoom hint may have forced the overlay visible — restore chrome rule.
+            self._chrome_vis_sig = None
+            self._update_chrome_visibility()
 
     def _show_zoom_hint(self) -> None:
         if not hasattr(self, "footer_label"):
             return
         percent = int(round(self._icon_zoom * 100))
         self.footer_label.setText(f"图标大小 {percent}%")
+        if not self._collapsed:
+            self._sync_footer_geometry()
+            self.footer_label.show()
+            self.footer_label.raise_()
+            if hasattr(self, "header_widget"):
+                self.header_widget.raise_()
         self._zoom_hint_timer.start()
 
     def _zoom_in(self) -> None:
@@ -762,7 +773,7 @@ class FenceWidget(QWidget):
             QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Preferred
         )
 
-        self.collapse_btn = QPushButton("▼")
+        self.collapse_btn = QPushButton("▾")
         self.collapse_btn.setObjectName("fenceBtn")
         self.collapse_btn.setFixedSize(26, 26)
         self.collapse_btn.setFlat(True)
@@ -770,9 +781,10 @@ class FenceWidget(QWidget):
         self.collapse_btn.setToolTip("折叠/展开")
         self.collapse_btn.clicked.connect(self._toggle_collapse)
 
-        self.lock_btn = QPushButton("🔓")
+        self.lock_btn = QPushButton()
         self.lock_btn.setObjectName("fenceBtn")
         self.lock_btn.setFixedSize(26, 26)
+        self.lock_btn.setIconSize(QSize(14, 14))
         self.lock_btn.setFlat(True)
         self.lock_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.lock_btn.clicked.connect(self._toggle_position_lock)
@@ -829,10 +841,12 @@ class FenceWidget(QWidget):
         body.setAutoFillBackground(False)
         self.body_widget = body
         body_layout = QVBoxLayout(body)
-        # Top inset reserved for title overlay (HEADER_OVERLAY_HEIGHT). A tight
-        # 8px top put the first icon row under the 40px header band so glyphs
-        # looked top-clipped / covered on hover.
-        body_layout.setContentsMargins(10, self.HEADER_OVERLAY_HEIGHT, 10, 10)
+        # Top/bottom insets reserve overlay bands (title + count). Putting the
+        # footer in the layout used to shrink the scroll viewport on hover and
+        # clip the last icon row (「图标显示不全」).
+        body_layout.setContentsMargins(
+            10, self.HEADER_OVERLAY_HEIGHT, 10, self.FOOTER_OVERLAY_HEIGHT
+        )
         body_layout.setSpacing(6)
         self._body_layout = body_layout
 
@@ -878,15 +892,20 @@ class FenceWidget(QWidget):
         self._drop_indicator.hide()
         body_layout.addWidget(self.scroll)
 
-        self.footer_label = QLabel("")
+        # Count / zoom hint overlays the reserved bottom band — never a layout row.
+        self.footer_label = QLabel("", self.container)
         self.footer_label.setObjectName("fenceEmpty")
         self.footer_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        body_layout.addWidget(self.footer_label)
+        self.footer_label.setAttribute(
+            Qt.WidgetAttribute.WA_TransparentForMouseEvents, True
+        )
+        self.footer_label.hide()
         # Body fills the panel; title overlays on hover.
         container_layout.addWidget(body)
 
         outer.addWidget(self.container)
         self._sync_header_geometry()
+        self._sync_footer_geometry()
         self._wire_fence_context_menus()
 
     def _wire_fence_context_menus(self) -> None:
@@ -1067,6 +1086,7 @@ class FenceWidget(QWidget):
             btn_hover_fg = "#ffffff"
             item_css = _DEFAULT_FENCE_TEXT_COLOR
             empty_css = _DEFAULT_FENCE_MUTED_COLOR
+        self._chrome_btn_color = btn_css
         # WA_TranslucentBackground: transparent chips are click-through on Win32
         # layered hit-tests — only opaque painted pixels receive mouse events.
         # Same visual plane as the panel — a darker header strip looked like a
@@ -1137,18 +1157,20 @@ class FenceWidget(QWidget):
         )
         self._sync_body_top_inset()
         self._update_chrome_visibility()
+        self._update_lock_button()
         self._flush_style_paint()
 
     def _sync_body_top_inset(self) -> None:
-        """Keep the icon grid below the title overlay band."""
+        """Keep the icon grid clear of title / count overlay bands."""
         layout = getattr(self, "_body_layout", None)
         if layout is None:
             return
         show_title = bool((self._style or {}).get("show_title", True))
         top = self.HEADER_OVERLAY_HEIGHT if (show_title or self._collapsed) else 8
+        bottom = 8 if self._collapsed else self.FOOTER_OVERLAY_HEIGHT
         try:
-            left, _old_top, right, bottom = layout.getContentsMargins()
-            if _old_top != top:
+            left, _old_top, right, _old_bottom = layout.getContentsMargins()
+            if _old_top != top or _old_bottom != bottom:
                 layout.setContentsMargins(left, top, right, bottom)
         except RuntimeError:
             pass
@@ -1311,6 +1333,22 @@ class FenceWidget(QWidget):
         self.header_widget.setGeometry(0, 0, w, h)
         self.header_widget.raise_()
         self._sync_header_hit_mask()
+
+    def _sync_footer_geometry(self) -> None:
+        """Pin the count / zoom hint to the reserved bottom band (no layout row)."""
+        footer = getattr(self, "footer_label", None)
+        container = getattr(self, "container", None)
+        if footer is None or container is None:
+            return
+        w = max(container.width(), 1)
+        h = self.FOOTER_OVERLAY_HEIGHT
+        y = max(0, container.height() - h)
+        footer.setGeometry(0, y, w, h)
+        if not footer.isHidden():
+            footer.raise_()
+            header = getattr(self, "header_widget", None)
+            if header is not None and not header.isHidden():
+                header.raise_()
 
     def _header_chrome_buttons(self) -> tuple:
         """Title-bar widgets that must win over resize-edge hit testing."""
@@ -1521,7 +1559,13 @@ class FenceWidget(QWidget):
                 # title grip is included (first pass can see size 0).
                 self._sync_header_hit_mask()
 
-            self.footer_label.setVisible(False)
+            self.footer_label.setVisible(
+                bool(show_header)
+                and (not self._collapsed)
+                and bool(self.footer_label.text().strip())
+            )
+            if not self.footer_label.isHidden():
+                self._sync_footer_geometry()
 
             policy = (
                 Qt.ScrollBarPolicy.ScrollBarAsNeeded
@@ -1563,7 +1607,7 @@ class FenceWidget(QWidget):
             self.body_widget.hide()
             self.content_widget.hide()
             self.footer_label.hide()
-            self.collapse_btn.setText("▶")
+            self.collapse_btn.setText("▸")
             self.collapse_btn.setToolTip("展开")
             self.setMinimumHeight(self.COLLAPSED_HEIGHT)
             self.resize(self.width(), self.COLLAPSED_HEIGHT)
@@ -1573,7 +1617,7 @@ class FenceWidget(QWidget):
             self.body_widget.show()
             self.content_widget.show()
             self.footer_label.hide()
-            self.collapse_btn.setText("▼")
+            self.collapse_btn.setText("▾")
             self.collapse_btn.setToolTip("折叠")
             self.setMinimumHeight(self.MIN_HEIGHT)
             self.resize(self.width(), max(self._saved_height, self.MIN_HEIGHT))
@@ -1594,11 +1638,15 @@ class FenceWidget(QWidget):
         btn = getattr(self, "lock_btn", None)
         if btn is None:
             return
-        if self._position_locked:
-            btn.setText("🔒")
+        from src.ui.action_icons import make_fence_lock_icon
+
+        color = getattr(self, "_chrome_btn_color", None) or _DEFAULT_FENCE_MUTED_COLOR
+        locked = bool(self._position_locked)
+        btn.setText("")
+        btn.setIcon(make_fence_lock_icon(locked=locked, color=color, size=14))
+        if locked:
             btn.setToolTip("解锁位置（可拖动）")
         else:
-            btn.setText("🔓")
             btn.setToolTip("锁定位置（不可拖动）")
 
     def set_position_locked(self, locked: bool, *, emit: bool = False) -> None:
@@ -2014,14 +2062,14 @@ class FenceWidget(QWidget):
             if self._collapsed:
                 empty_text = "暂无文件"
             else:
-                empty_text = "暂无匹配文件\n拖入桌面图标到此分区（不移动文件）"
+                empty_text = "暂无文件\n拖入图标，或使用一键整理"
             empty = QLabel(empty_text)
             empty.setObjectName("fenceEmpty")
             empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
             self.items_layout.addWidget(empty, 0, 0)
             self.footer_label.setText("")
         else:
-            self.footer_label.setText(f"共 {count} 项")
+            self.footer_label.setText(f"{count} 项")
         self._last_refresh_sig = refresh_sig
         self._update_chrome_visibility()
 
@@ -3911,6 +3959,7 @@ class FenceWidget(QWidget):
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
         self._sync_header_geometry()
+        self._sync_footer_geometry()
         # Defer column reflow while the user is dragging resize handles — avoids
         # shell icon rescale storms and full grid rebuilds on every mouse move.
         if not self._collapsed and not self._resize_mode:

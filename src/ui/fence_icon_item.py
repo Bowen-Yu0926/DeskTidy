@@ -481,7 +481,64 @@ def paint_fence_item_selection(widget: QWidget, painter: QPainter) -> None:
     pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
     painter.setPen(pen)
     radius = _selection_ring_radius(widget)
-    painter.drawRoundedRect(widget.rect().adjusted(1, 1, -2, -2), radius, radius)
+    rect = fence_selection_chrome_rect(widget)
+    if not rect.isValid() or rect.isEmpty():
+        return
+    painter.drawRoundedRect(rect, radius, radius)
+
+
+def fence_selection_chrome_rect(widget: QWidget) -> QRect:
+    """Equal-pad AABB around glyph + caption ink (not the empty 2-line shelf).
+
+    Full ``widget.rect()`` left a large empty band under one-line names because
+    captions reserve a 2-line shelf — selection looked top-heavy.
+    """
+    try:
+        bounds = widget.rect().adjusted(1, 1, -2, -2)
+    except RuntimeError:
+        return QRect()
+    parts: list[QRect] = []
+    icon = getattr(widget, "icon_label", None)
+    if icon is not None:
+        try:
+            if not icon.isHidden():
+                parts.append(QRect(icon.geometry()))
+        except RuntimeError:
+            pass
+    text = getattr(widget, "text_label", None)
+    if text is not None:
+        try:
+            if not text.isHidden():
+                ink = _caption_text_hit_rect(widget, text)
+                if ink.isValid() and not ink.isEmpty():
+                    # Keep shelf width (centered column) but clip height to ink
+                    # so short names do not leave a dead band under the glyphs.
+                    geo = text.geometry()
+                    parts.append(QRect(geo.x(), ink.y(), geo.width(), ink.height()))
+                else:
+                    parts.append(QRect(text.geometry()))
+        except RuntimeError:
+            pass
+    if not parts:
+        return bounds
+    content = parts[0]
+    for part in parts[1:]:
+        content = content.united(part)
+    # Want equal pad; if the cell edge clips one side, shrink the other to match
+    # so icon+caption stay vertically centered in the green plate.
+    pad = 4
+    want = content.adjusted(-pad, -pad, pad, pad)
+    rect = want.intersected(bounds)
+    if not rect.isValid() or rect.isEmpty():
+        return bounds
+    pad_top = max(0, content.top() - rect.top())
+    pad_bot = max(0, rect.bottom() - content.bottom())
+    if pad_top != pad_bot:
+        use = min(pad_top, pad_bot)
+        rect.setTop(content.top() - use)
+        rect.setBottom(content.bottom() + use)
+        rect = rect.intersected(bounds)
+    return rect
 
 
 def sync_fence_item_selection_ring(widget: QWidget) -> None:
@@ -2036,7 +2093,7 @@ def _start_background_fs_paste(
                 except Exception:
                     get_logger().exception("fs paste: on_failure failed")
                 try:
-                    show_toast("粘贴失败", "部分文件未能粘贴完成", msec=4500)
+                    show_toast("粘贴失败", "部分文件未能粘贴完成", msec=4500, level="warn")
                 except Exception:
                     pass
 
@@ -2127,7 +2184,7 @@ def _finalize_virtual_folder_move(
         pass
     if moved_dest is not None:
         try:
-            show_toast("已移入文件夹", f"「{file_path.name}」", msec=2800)
+            show_toast("已移入文件夹", f"「{file_path.name}」", msec=2800, level="success")
         except Exception:
             pass
     if dropped_public:
@@ -2262,7 +2319,7 @@ def _move_virtual_into_folder(file_path: Path, folder: Path, fence_id: str) -> s
         try:
             from src.ui.toast import show_toast
 
-            show_toast("已在目标文件夹", f"「{file_path.name}」", msec=2800)
+            show_toast("已在目标文件夹", f"「{file_path.name}」", msec=2800, level="success")
         except Exception:
             pass
         return "copied"
@@ -2282,9 +2339,9 @@ def _move_virtual_into_folder(file_path: Path, folder: Path, fence_id: str) -> s
 
             try:
                 if do_move:
-                    show_toast("已移入文件夹", f"「{file_path.name}」", msec=2800)
+                    show_toast("已移入文件夹", f"「{file_path.name}」", msec=2800, level="success")
                 else:
-                    show_toast("已复制到文件夹", f"「{file_path.name}」", msec=2800)
+                    show_toast("已复制到文件夹", f"「{file_path.name}」", msec=2800, level="success")
             except Exception:
                 pass
             get_logger().info(
@@ -2379,7 +2436,7 @@ def _move_virtual_into_folder(file_path: Path, folder: Path, fence_id: str) -> s
     try:
         from src.ui.toast import show_toast
 
-        show_toast("已复制到文件夹", f"「{file_path.name}」", msec=2800)
+        show_toast("已复制到文件夹", f"「{file_path.name}」", msec=2800, level="success")
     except Exception:
         pass
     return "copied"
@@ -3788,7 +3845,7 @@ def _finalize_public_folder_move(
             pass
     if moved_dest is not None:
         try:
-            show_toast("已移入文件夹", f"「{file_path.name}」", msec=2800)
+            show_toast("已移入文件夹", f"「{file_path.name}」", msec=2800, level="success")
         except Exception:
             pass
 
@@ -3858,7 +3915,7 @@ def _move_public_into_folder(
         try:
             from src.ui.toast import show_toast
 
-            show_toast("已在目标文件夹", f"「{file_path.name}」", msec=2800)
+            show_toast("已在目标文件夹", f"「{file_path.name}」", msec=2800, level="success")
         except Exception:
             pass
         return "copied"
@@ -3889,7 +3946,7 @@ def _move_public_into_folder(
                 try:
                     from src.ui.toast import show_toast
 
-                    show_toast("已复制到文件夹", f"「{file_path.name}」", msec=2800)
+                    show_toast("已复制到文件夹", f"「{file_path.name}」", msec=2800, level="success")
                 except Exception:
                     pass
 
@@ -3954,7 +4011,7 @@ def _move_public_into_folder(
     try:
         from src.ui.toast import show_toast
 
-        show_toast("已复制到文件夹", f"「{file_path.name}」", msec=2800)
+        show_toast("已复制到文件夹", f"「{file_path.name}」", msec=2800, level="success")
     except Exception:
         pass
     return "copied"

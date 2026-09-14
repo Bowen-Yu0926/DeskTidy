@@ -168,16 +168,16 @@ class MainWindow(QMainWindow):
         sidebar = QFrame()
         sidebar.setObjectName("sidebar")
         sidebar.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        sidebar.setFixedWidth(248)
+        sidebar.setFixedWidth(200)
         layout = QVBoxLayout(sidebar)
-        layout.setContentsMargins(16, 22, 16, 16)
+        layout.setContentsMargins(12, 16, 12, 12)
         layout.setSpacing(16)
 
         brand = QFrame()
         brand.setObjectName("sidebarBrand")
         brand_row = QHBoxLayout(brand)
-        brand_row.setContentsMargins(4, 4, 4, 16)
-        brand_row.setSpacing(12)
+        brand_row.setContentsMargins(2, 2, 2, 10)
+        brand_row.setSpacing(10)
 
         palette = get_theme_palette(normalize_theme(self.settings.get("theme")))
         accent = palette["accent"]
@@ -222,7 +222,7 @@ class MainWindow(QMainWindow):
         panel = QFrame()
         panel.setObjectName("contentPanel")
         layout = QVBoxLayout(panel)
-        layout.setContentsMargins(32, 26, 32, 22)
+        layout.setContentsMargins(24, 18, 24, 18)
         layout.setSpacing(16)
 
         header = QVBoxLayout()
@@ -646,7 +646,10 @@ class MainWindow(QMainWindow):
         general_card.add_body_layout(general_body)
         settings_layout.addWidget(general_card)
 
-        appearance_card = SectionCard("外观主题", "切换浅色主题；新建分区会同步使用对应强调色。")
+        appearance_card = SectionCard(
+            "外观主题",
+            "推荐「薄雾 / 石墨」；分区强调色会跟随主题。淡紫、浅杏偏柔和装饰向。",
+        )
         appearance_body = QHBoxLayout()
         appearance_body.setSpacing(12)
         theme_label = QLabel("界面主题")
