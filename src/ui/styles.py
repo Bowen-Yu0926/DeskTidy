@@ -1693,8 +1693,8 @@ QLabel#fenceItem {{
     color: {_DEFAULT_FENCE_TEXT_COLOR};
     background-color: transparent;
     border: none;
-    /* Room for glyph descent (Explorer-style captions). */
-    padding: 1px 2px 3px 2px;
+    /* Descent is reserved by caption_box_height — extra padding here clipped line 2. */
+    padding: 0px;
     margin: 0px;
     font-size: 12px;
 }}

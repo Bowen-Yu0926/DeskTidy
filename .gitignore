@@ -8,6 +8,10 @@ venv/
 .env
 .env.*
 !.env.example
+!.env.byethost.example
+# Deploy secrets (ByetHost / FTP) — never commit
+.env.byethost
+.local/
 
 # Build / packaging outputs (regenerate with scripts\build*.bat)
 dist/

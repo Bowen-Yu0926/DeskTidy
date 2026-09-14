@@ -1,0 +1,45 @@
+---
+description: DeskTidy ByetHost 下载站凭据与自动上传（用户称「虚拟机」）
+alwaysApply: true
+---
+
+# ByetHost 下载站（用户口语：虚拟机）
+
+用户说「虚拟机 / 上传网站 / 发布下载页」时，指 **ByetHost 免费主机**，不是本地 Hyper-V/VMware。
+
+## 凭据位置（勿写入 git / 勿写进提交说明）
+
+- 私密文件：`Desktidy/.env.byethost`（已 gitignore）
+- 模板：`Desktidy/.env.byethost.example`
+- 字段：`BYETHOST_SITE_URL`、`BYETHOST_FTP_HOST`、`BYETHOST_FTP_USER`、`BYETHOST_FTP_PASS`、`BYETHOST_FTP_REMOTE_ROOT`
+
+上传时用脚本读取该文件，**不要把密码写进仓库、规则正文或聊天复述**。
+
+## 自动上传
+
+```text
+cd Desktidy
+python scripts/upload_byethost.py                  # index(页签壳) + desktidy + desknote
+python scripts/upload_byethost.py --purge-snapkeep # 顺带清掉主机上的 SnapKeep
+python scripts/upload_byethost.py --list           # 仅列远程目录
+```
+
+约束：
+
+- 只能传到 **`htdocs`**（其它路径会被拒）
+- **站点结构**：
+  - `/` → `docs/index.html` 页签壳（右侧 DeskTidy | DeskNote，左侧随产品切换目录；`fetch` 加载同目录 `desktidy.html` / `desknote.html`）
+  - `/desktidy.html`、`/desknote.html` → 独立介绍页（应用内 F1 帮助仍用这两份）
+- 必须同时上传三页，缺 `desktidy.html`/`desknote.html` 时首页页签会加载失败
+- **安装包不要传 ByetHost**（免费站单文件 ≤10MB，会 413）。安装包走公开仓库 **GitHub Releases**：
+  - 仓库：`https://github.com/Bowen-Yu0926/DeskTidy-Releases`（PUBLIC，仅放安装包；源码仓 DeskTidy 仍可私有）
+  - 直链格式：`https://github.com/Bowen-Yu0926/DeskTidy-Releases/releases/download/v<VERSION>/DeskTidy_Setup_<VERSION>.exe`
+  - 发版：`gh release create v<VERSION> dist/DeskTidy_Setup_<VERSION>.exe --repo Bowen-Yu0926/DeskTidy-Releases --title "DeskTidy <VERSION>" --notes "..."`
+  - 介绍页下载按钮应指向上述 Releases 直链，不是 `./DeskTidy_Setup_*.exe`
+- 站点：见 `.env.byethost` 的 `BYETHOST_SITE_URL`
+- 浏览器可能遇到 ByetHost 反欺诈中间页，刷新后正常；自动化 HTTP 探测可能空内容
+
+## 代理行为
+
+当用户要求发布/上传下载页时：直接读 `.env.byethost` 并运行 `upload_byethost.py`，无需再向用户要 FTP 密码（除非文件缺失或登录失败）。
+当用户要求上传/发布安装包时：用 `gh release` 发到 `DeskTidy-Releases`，并更新 `docs/desktidy.html` 下载链接后同步 ByetHost 页面。
