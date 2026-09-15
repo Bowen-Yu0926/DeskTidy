@@ -1906,11 +1906,16 @@ class DeskTidyApp:
                 for icon in icons:
                     if _broken(icon, require_attached=True):
                         return True
+        vault = getattr(self, "vault_panel", None)
+        try:
+            vault_open = vault is not None and bool(vault.isVisible())
+        except RuntimeError:
+            vault_open = False
         for chrome in (
             self.page_indicator,
             self.dock,
             getattr(self, "todo_panel", None),
-            getattr(self, "vault_panel", None),
+            vault if vault_open else None,
             getattr(self, "vault_launcher", None),
             getattr(self, "pet_widget", None),
         ):
@@ -2100,7 +2105,18 @@ class DeskTidyApp:
         if vault is not None:
             from src.account_vault import account_vault_enabled
 
-            if account_vault_enabled(self.settings) and not self._icons_hidden:
+            # Panel stays user-toggled: do not yield while hidden, or shell
+            # repair / apply_overlay_stack_mode would show() it on every
+            # desktop FG return (Win+D / Alt+Tab).
+            try:
+                vault_open = bool(vault.isVisible())
+            except RuntimeError:
+                vault_open = False
+            if (
+                account_vault_enabled(self.settings)
+                and not self._icons_hidden
+                and vault_open
+            ):
                 yield vault, False
         launcher = getattr(self, "vault_launcher", None)
         if launcher is not None:
@@ -2638,11 +2654,17 @@ class DeskTidyApp:
 
             if desktop_todos_enabled(self.settings):
                 return True
+        # Closed vault panel must not keep keepalive / repair alive — buoy alone
+        # is enough; otherwise desktop return treats the hidden panel as broken.
         vault = getattr(self, "vault_panel", None)
         if vault is not None and not self._icons_hidden:
             from src.account_vault import account_vault_enabled
 
-            if account_vault_enabled(self.settings):
+            try:
+                vault_open = bool(vault.isVisible())
+            except RuntimeError:
+                vault_open = False
+            if account_vault_enabled(self.settings) and vault_open:
                 return True
         launcher = getattr(self, "vault_launcher", None)
         if launcher is not None and not self._icons_hidden:

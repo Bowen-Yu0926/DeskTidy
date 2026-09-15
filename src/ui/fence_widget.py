@@ -539,7 +539,7 @@ class FenceWidget(QWidget):
     MIN_WIDTH = 160
     MIN_HEIGHT = 180
     COLLAPSED_HEIGHT = 44
-    HEADER_OVERLAY_HEIGHT = 40
+    HEADER_OVERLAY_HEIGHT = 56
     FOOTER_OVERLAY_HEIGHT = 22
     EDGE_SNAP_THRESHOLD = 24
     # Default desktop-medium-ish glyph (40px). Users can Alt+wheel / menu to enlarge.

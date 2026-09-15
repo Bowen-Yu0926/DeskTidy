@@ -5547,7 +5547,7 @@ def test_system_defaults_locked() -> None:
         assert soft["organize_kinds"] == ["icon"]
         assert soft["pages"] == [0]
         assert soft["x"] == 0 and soft["y"] == 0
-        assert soft["width"] == 1609 and soft["height"] == 315
+        assert soft["width"] == 1280 and soft["height"] == 315
         assert side["name"] == SYSTEM_SOFTWARE_SIDE_FENCE_NAME
         assert side["pages"] == [0]
         assert side["x"] == _SOFT_SIDE_FALLBACK["x"]
@@ -5555,6 +5555,8 @@ def test_system_defaults_locked() -> None:
         assert side["height"] == soft["height"]
         assert soft["x"] + soft["width"] < side["x"]
         assert side["x"] + side["width"] <= 1920
+        assert abs(soft["width"] / 1920 - 2 / 3) < 0.01
+        assert abs(side["width"] / 1920 - 1 / 3) < 0.02
         assert docs["name"] == SYSTEM_DOCS_FENCE_NAME
         assert docs["organize_kinds"] == ["file"]
         assert docs["pages"] == [1]
@@ -5593,8 +5595,9 @@ def test_system_defaults_locked() -> None:
         _heal_top_edge_strips(heal_settings)
         assert heal_settings["fences"][0]["y"] == 0
         # Fallback px match the shipped JSON; live create scales to primary screen.
-        assert _SOFT_FALLBACK["width"] == 1609 and _SOFT_FALLBACK["height"] == 315
-        assert _SOFT_SIDE_FALLBACK["width"] == 307
+        assert _SOFT_FALLBACK["width"] == 1280 and _SOFT_FALLBACK["height"] == 315
+        assert _SOFT_SIDE_FALLBACK["width"] == 636
+        assert abs(_SOFT_FALLBACK["width"] / 1920 - 2 / 3) < 0.01
         assert _DOCS_FALLBACK["width"] == 1920 and _DOCS_FALLBACK["height"] == 257
         soft_live = default_software_fence()
         side_live = default_software_side_fence()

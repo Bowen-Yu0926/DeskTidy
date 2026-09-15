@@ -20,6 +20,11 @@ _MIN_H = 120
 # New-fence defaults: wide enough for title + collapse/refresh/close without clipping.
 DEFAULT_NEW_FENCE_WIDTH = 320
 DEFAULT_NEW_FENCE_HEIGHT = 360
+# Stock / first-install layouts in default_settings.json were authored on a
+# 1920×1032 primary work area. Absolute seeds without ref_* must scale from
+# this canvas on smaller laptop logical sizes (125%/150% DPI).
+_DESIGN_REF_W = 1920
+_DESIGN_REF_H = 1032
 
 
 def ensure_fence_ids(settings: dict) -> None:
@@ -657,13 +662,40 @@ def ensure_display_layout_ready(settings: dict) -> str:
 
 
 def _geometry_from_fence(fence: dict) -> dict:
-    return {
+    out = {
         "x": int(fence.get("x", 50)),
         "y": int(fence.get("y", 50)),
         "width": int(fence.get("width", 220)),
         "height": int(fence.get("height", 320)),
         "collapsed": bool(fence.get("collapsed", False)),
     }
+    # Preserve ratios / design canvas so first-install JSON seeds scale onto
+    # laptop work areas instead of clamping into a pile-up.
+    for key in ("rx", "ry", "rw", "rh", "ref_x", "ref_y", "ref_w", "ref_h"):
+        if key not in fence or fence[key] is None:
+            continue
+        out[key] = fence[key]
+    return out
+
+
+def _absolute_overflows_primary(entry: dict) -> bool:
+    """True when absolute x/y/w/h extend past the current primary work area."""
+    try:
+        x = int(entry.get("x", 0))
+        y = int(entry.get("y", 0))
+        w = int(entry.get("width", 0))
+        h = int(entry.get("height", 0))
+    except (TypeError, ValueError):
+        return False
+    if w <= 0 or h <= 0:
+        return False
+    area = primary_desktop_rect()
+    return (
+        w > area.width() + 24
+        or h > area.height() + 24
+        or x + w > area.x() + area.width() + 24
+        or y + h > area.y() + area.height() + 24
+    )
 
 
 def _clamp_geometry(x: int, y: int, w: int, h: int, collapsed: bool = False) -> dict:
@@ -1213,6 +1245,26 @@ def geometry_from_entry(entry: dict | None, *, collapsed_default: bool = False) 
         if ref_w > 0 and abs(ref_w - area.width()) > 24:
             return scaled
         # Same-ish screen: proportional scale still OK; fall through if identical.
+
+    # 2b) Legacy absolute without ref_* that was authored on a larger canvas
+    # (stock default_settings 1920 layout). Synthesize the design ref so
+    # laptop logical sizes scale side-by-side instead of clamping into overlap.
+    try:
+        ref_w = int(entry.get("ref_w") or 0)
+        ref_h = int(entry.get("ref_h") or 0)
+    except (TypeError, ValueError):
+        ref_w, ref_h = 0, 0
+    if (ref_w <= 0 or ref_h <= 0) and _absolute_overflows_primary(entry):
+        enriched = {
+            **entry,
+            "ref_x": int(entry.get("ref_x") or 0),
+            "ref_y": int(entry.get("ref_y") or 0),
+            "ref_w": _DESIGN_REF_W,
+            "ref_h": _DESIGN_REF_H,
+        }
+        design_scaled = _scale_absolute_proportional(enriched, collapsed)
+        if design_scaled is not None:
+            return design_scaled
 
     # 3) Same screen absolute clamp (no cross-resolution).
     if entry.get("x") is not None and entry.get("width") is not None:
