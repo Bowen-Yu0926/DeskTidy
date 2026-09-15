@@ -20,12 +20,13 @@ SYSTEM_SOFTWARE_SIDE_FENCE_LEGACY_NAMES = frozenset({"常用"})
 SYSTEM_DOCS_FENCE_ID = "system_docs"
 SYSTEM_DOCS_FENCE_NAME = "文档"
 
-# Product default sizes — match the owner's 1920×1080 work-area layout
-# (software ~1609×315 + gap + side ~307×315 on page 0; docs full-width ~1920×257).
+# Product default sizes — 常用 ~2/3 + gap + 其他 ~1/3 of the primary work width
+# (docs full-width on page 1). Height ratios still keyed to a 1920×1032 canvas.
 _REF_WORK_W = 1920
 _REF_WORK_H = 1032
 _REF_WORK_GAP = 4
-_SOFT_FALLBACK = {"x": 0, "y": 0, "width": 1609, "height": 315}
+_SOFT_FALLBACK_W = int(round(_REF_WORK_W * 2 / 3))  # 1280
+_SOFT_FALLBACK = {"x": 0, "y": 0, "width": _SOFT_FALLBACK_W, "height": 315}
 _SOFT_SIDE_FALLBACK = {
     "x": _SOFT_FALLBACK["x"] + _SOFT_FALLBACK["width"] + _REF_WORK_GAP,
     "y": 0,
@@ -37,6 +38,10 @@ _SOFT_RW = _SOFT_FALLBACK["width"] / _REF_WORK_W
 _SOFT_RH = _SOFT_FALLBACK["height"] / _REF_WORK_H
 _DOCS_RW = _DOCS_FALLBACK["width"] / _REF_WORK_W
 _DOCS_RH = _DOCS_FALLBACK["height"] / _REF_WORK_H
+# Pre-2/3 layout used ~84% / 16% (1609 / 307 on 1920) — heal still recognizes it.
+_LEGACY_SOFT_RW = 1609 / 1920
+_LEGACY_SOFT_W = 1609
+_LEGACY_SIDE_X = 1613
 
 _FENCE_STYLE = {
     "opacity": 0.94,
@@ -387,6 +392,117 @@ def apply_system_fence_geometry_from_display(settings: dict) -> bool:
     return changed
 
 
+def _clear_system_work_row_profiles(settings: dict) -> None:
+    """Drop saved 常用/其他 entries so the next apply re-seeds from fence cfg."""
+    profiles = settings.get("fence_layouts_by_display")
+    if not isinstance(profiles, dict):
+        return
+    ids = {SYSTEM_COMMON_FENCE_ID, SYSTEM_SOFTWARE_SIDE_FENCE_ID}
+    for profile in profiles.values():
+        if not isinstance(profile, dict):
+            continue
+        for page_key in (str(SYSTEM_WORK_PAGE_ID), SYSTEM_WORK_PAGE_ID):
+            page_map = profile.get(page_key)
+            if not isinstance(page_map, dict):
+                continue
+            for fid in list(page_map.keys()):
+                if str(fid) in ids:
+                    page_map.pop(fid, None)
+    legacy = settings.get("fence_layouts_by_page")
+    if isinstance(legacy, dict):
+        page_map = legacy.get(str(SYSTEM_WORK_PAGE_ID))
+        if isinstance(page_map, dict):
+            for fid in ids:
+                page_map.pop(fid, None)
+
+
+def _heal_crowded_work_row_geometries(settings: dict, fences: list) -> bool:
+    """Rewrite 常用/其他 when crowded, legacy 84/16 stock, or overflow on laptop."""
+    software = _find_fence(fences, SYSTEM_COMMON_FENCE_ID, SYSTEM_COMMON_FENCE_LEGACY_NAMES)
+    side = _find_fence(
+        fences,
+        SYSTEM_SOFTWARE_SIDE_FENCE_ID,
+        SYSTEM_SOFTWARE_SIDE_FENCE_LEGACY_NAMES,
+        skip_ids=frozenset({SYSTEM_COMMON_FENCE_ID}),
+    )
+    if software is None or side is None:
+        return False
+
+    try:
+        from src.fence_layout import (
+            _geometry_from_fence,
+            _rects_overlap_heavily,
+            geometry_from_entry,
+            primary_desktop_rect,
+        )
+    except Exception:
+        return False
+
+    area = primary_desktop_rect()
+    left = geometry_from_entry(_geometry_from_fence(software))
+    right = geometry_from_entry(_geometry_from_fence(side))
+    needs = _rects_overlap_heavily(left, right)
+    try:
+        raw_left_w = int(software.get("width") or 0)
+        raw_side_x = int(side.get("x") or 0)
+        raw_rw = float(software.get("rw") or 0)
+    except (TypeError, ValueError):
+        raw_left_w, raw_side_x, raw_rw = 0, 0, 0.0
+    # Stock defaults (w≈1609, side x≈1613) on a narrower logical work area.
+    if raw_left_w > area.width() + 24 or raw_side_x > area.width():
+        needs = True
+    # Already-clamped mess: left ate nearly the full width while side remains.
+    if left["width"] >= int(area.width() * 0.92) and right["width"] >= 80:
+        needs = True
+    # Migrate pre-2/3 product default (~84% / 16%) to 常用 2/3 + 其他 1/3.
+    left_ratio = left["width"] / max(1, area.width())
+    if (
+        raw_left_w == _LEGACY_SOFT_W
+        or raw_side_x == _LEGACY_SIDE_X
+        or abs(raw_rw - _LEGACY_SOFT_RW) < 0.03
+        or abs(left_ratio - _LEGACY_SOFT_RW) < 0.04
+    ):
+        needs = True
+    if not needs:
+        return False
+
+    left_g, right_g = _default_work_row_geometries()
+    software.update(
+        {
+            "x": left_g["x"],
+            "y": left_g["y"],
+            "width": left_g["width"],
+            "height": left_g["height"],
+            "rx": 0.0,
+            "ry": 0.0,
+            "rw": _SOFT_RW,
+            "rh": _SOFT_RH,
+            "ref_x": 0,
+            "ref_y": 0,
+            "ref_w": _REF_WORK_W,
+            "ref_h": _REF_WORK_H,
+        }
+    )
+    side.update(
+        {
+            "x": right_g["x"],
+            "y": right_g["y"],
+            "width": right_g["width"],
+            "height": right_g["height"],
+            "rx": (_SOFT_FALLBACK["width"] + _REF_WORK_GAP) / _REF_WORK_W,
+            "ry": 0.0,
+            "rw": _SOFT_SIDE_FALLBACK["width"] / _REF_WORK_W,
+            "rh": _SOFT_RH,
+            "ref_x": 0,
+            "ref_y": 0,
+            "ref_w": _REF_WORK_W,
+            "ref_h": _REF_WORK_H,
+        }
+    )
+    _clear_system_work_row_profiles(settings)
+    return True
+
+
 def ensure_system_defaults(settings: dict) -> bool:
     """Guarantee locked 工作/文档 pages + 常用/文档 fences. Returns True if mutated."""
     changed = False
@@ -504,5 +620,8 @@ def ensure_system_defaults(settings: dict) -> bool:
             )
             or changed
         )
+
+    if _heal_crowded_work_row_geometries(settings, fences):
+        changed = True
 
     return changed

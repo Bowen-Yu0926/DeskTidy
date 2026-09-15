@@ -268,6 +268,46 @@ def main() -> int:
     row.close()
     row.deleteLater()
 
+    # Closed vault panel must not be in overlay iter (desktop FG would show it).
+    import inspect
+
+    from src.app import DeskTidyApp
+    from PyQt6.QtWidgets import QWidget
+
+    iter_src = inspect.getsource(DeskTidyApp._iter_overlay_widgets)
+    assert "vault_open" in iter_src or "isVisible()" in iter_src
+    repair_src = inspect.getsource(DeskTidyApp._overlays_need_shell_repair_impl)
+    assert "vault_open" in repair_src
+
+    class _FakeDesk:
+        settings = {"account_vault": {"enabled": True}}
+        _icons_hidden = False
+        _fences_hidden = False
+        fences = []
+        page_indicator = None
+        dock = None
+        public_icons = []
+        _parked_public_icons = {}
+        _public_icon_host = None
+        todo_panel = None
+        pet_widget = None
+        vault_launcher = None
+
+        def _fences_should_show(self):
+            return False
+
+    desk = _FakeDesk()
+    desk.vault_panel = QWidget()
+    desk.vault_panel.hide()
+    assert desk.vault_panel.isVisible() is False
+    closed = [w for w, _ in DeskTidyApp._iter_overlay_widgets(desk)]  # type: ignore[arg-type]
+    assert desk.vault_panel not in closed
+    desk.vault_panel.show()
+    opened = [w for w, _ in DeskTidyApp._iter_overlay_widgets(desk)]  # type: ignore[arg-type]
+    assert desk.vault_panel in opened
+    desk.vault_panel.close()
+    desk.vault_panel.deleteLater()
+
     print("selftest_account_vault: OK")
     return 0
 

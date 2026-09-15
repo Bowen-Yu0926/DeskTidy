@@ -490,6 +490,51 @@ def test_fence_layout() -> None:
 
     run("显示器→笔记本等比例缩放", _scale_monitor_to_laptop)
 
+    def _stock_absolute_defaults_on_laptop():
+        """Fresh-install 1920 abs coords must not clamp into overlap on 1280×720."""
+        from PyQt6.QtCore import QRect
+        from src import fence_layout as fl
+
+        area = QRect(0, 0, 1280, 720)
+        orig_p = fl.primary_desktop_rect
+        orig_t = fl._target_screen_rect
+        fl.primary_desktop_rect = lambda: area  # type: ignore[assignment]
+        fl._target_screen_rect = lambda x, y, w, h: area  # type: ignore[assignment]
+        try:
+            left = fl.geometry_from_entry(
+                {"x": 0, "y": 0, "width": 1609, "height": 315, "collapsed": False}
+            )
+            right = fl.geometry_from_entry(
+                {"x": 1613, "y": 0, "width": 307, "height": 315, "collapsed": False}
+            )
+            assert not fl._rects_overlap_heavily(left, right), (left, right)
+            assert left["width"] < 1280
+            assert right["x"] >= left["x"] + left["width"] - 8
+            assert right["x"] + right["width"] <= 1280 + 2
+            # Ratios in default_settings must also scale cleanly via fence seed.
+            seed = fl._geometry_from_fence(
+                {
+                    "x": 0,
+                    "y": 0,
+                    "width": 1609,
+                    "height": 315,
+                    "rx": 0.0,
+                    "ry": 0.0,
+                    "rw": 0.838,
+                    "rh": 0.305,
+                    "ref_w": 1920,
+                    "ref_h": 1032,
+                }
+            )
+            assert "rw" in seed and int(seed.get("ref_w") or 0) == 1920
+            scaled = fl.geometry_from_entry(seed)
+            assert 900 <= scaled["width"] <= 1100
+        finally:
+            fl.primary_desktop_rect = orig_p  # type: ignore[assignment]
+            fl._target_screen_rect = orig_t  # type: ignore[assignment]
+
+    run("安装默认绝对坐标→笔记本不重叠", _stock_absolute_defaults_on_laptop)
+
     def _scale_laptop_to_monitor_side_by_side():
         """Laptop→larger panel must keep two top fences side-by-side."""
         from PyQt6.QtCore import QRect
