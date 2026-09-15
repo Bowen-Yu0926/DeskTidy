@@ -209,6 +209,8 @@ class DeskTidyApp:
         self.dock: DockWidget | None = None
         self.page_indicator: PageIndicatorWidget | None = None
         self.todo_panel = None
+        self.vault_panel = None
+        self.vault_launcher = None
         self.pet_widget = None
         self._notepad_window = None
         self._icons_hidden = False
@@ -528,6 +530,7 @@ class DeskTidyApp:
         self._setup_page_indicator()
         self._setup_dock()
         self._setup_todo_panel()
+        self._setup_account_vault_panel()
         self._setup_desktop_pet()
         self._start_overlay_keepalive_timer()
         try:
@@ -1230,6 +1233,18 @@ class DeskTidyApp:
         if todo_panel is not None:
             todo_panel.settings = self.settings
             todo_panel.refresh_theme()
+        vault_panel = getattr(self, "vault_panel", None)
+        if vault_panel is not None:
+            vault_panel.settings = self.settings
+            apply = getattr(vault_panel, "apply_settings", None)
+            if callable(apply):
+                apply(self.settings)
+            else:
+                vault_panel._apply_theme()
+        vault_launcher = getattr(self, "vault_launcher", None)
+        if vault_launcher is not None:
+            vault_launcher.settings = self.settings
+            vault_launcher.refresh_theme()
         pet = getattr(self, "pet_widget", None)
         if pet is not None:
             pet.reload_settings(self.settings)
@@ -1895,6 +1910,8 @@ class DeskTidyApp:
             self.page_indicator,
             self.dock,
             getattr(self, "todo_panel", None),
+            getattr(self, "vault_panel", None),
+            getattr(self, "vault_launcher", None),
             getattr(self, "pet_widget", None),
         ):
             if chrome is not None and _broken(chrome, require_attached=False):
@@ -2079,6 +2096,18 @@ class DeskTidyApp:
 
             if desktop_todos_enabled(self.settings) and not self._icons_hidden:
                 yield todo, False
+        vault = getattr(self, "vault_panel", None)
+        if vault is not None:
+            from src.account_vault import account_vault_enabled
+
+            if account_vault_enabled(self.settings) and not self._icons_hidden:
+                yield vault, False
+        launcher = getattr(self, "vault_launcher", None)
+        if launcher is not None:
+            from src.account_vault import account_vault_enabled
+
+            if account_vault_enabled(self.settings) and not self._icons_hidden:
+                yield launcher, False
         pet = getattr(self, "pet_widget", None)
         if pet is not None:
             from src.desktop_pet import desktop_pet_visible
@@ -2278,6 +2307,8 @@ class DeskTidyApp:
                 widget is self.page_indicator
                 or widget is self.dock
                 or widget is getattr(self, "todo_panel", None)
+                or widget is getattr(self, "vault_panel", None)
+                or widget is getattr(self, "vault_launcher", None)
                 or widget is getattr(self, "pet_widget", None)
             ):
                 continue
@@ -2285,6 +2316,8 @@ class DeskTidyApp:
                 widget is self.page_indicator
                 or widget is self.dock
                 or widget is getattr(self, "todo_panel", None)
+                or widget is getattr(self, "vault_panel", None)
+                or widget is getattr(self, "vault_launcher", None)
                 or widget is getattr(self, "pet_widget", None)
             )
             # Settings/notepad: may-show gate skips reveal, but new fences from
@@ -2604,6 +2637,18 @@ class DeskTidyApp:
             from src.todos import desktop_todos_enabled
 
             if desktop_todos_enabled(self.settings):
+                return True
+        vault = getattr(self, "vault_panel", None)
+        if vault is not None and not self._icons_hidden:
+            from src.account_vault import account_vault_enabled
+
+            if account_vault_enabled(self.settings):
+                return True
+        launcher = getattr(self, "vault_launcher", None)
+        if launcher is not None and not self._icons_hidden:
+            from src.account_vault import account_vault_enabled
+
+            if account_vault_enabled(self.settings):
                 return True
         pet = getattr(self, "pet_widget", None)
         if pet is not None and not self._icons_hidden:
@@ -4342,6 +4387,170 @@ class DeskTidyApp:
         except RuntimeError:
             pass
 
+    def _setup_account_vault_panel(self) -> None:
+        """Create vault panel + Doubao-style launcher when enabled."""
+        from src.account_vault import account_vault_enabled
+
+        enabled = account_vault_enabled(self.settings)
+        if not enabled or self._icons_hidden or self._exiting:
+            for attr in ("vault_panel", "vault_launcher"):
+                existing = getattr(self, attr, None)
+                if existing is not None:
+                    try:
+                        existing.close()
+                        existing.deleteLater()
+                    except RuntimeError:
+                        pass
+                    setattr(self, attr, None)
+            return
+
+        panel = getattr(self, "vault_panel", None)
+        launcher = getattr(self, "vault_launcher", None)
+        if panel is not None and launcher is not None:
+            try:
+                apply = getattr(panel, "apply_settings", None)
+                if callable(apply):
+                    apply(self.settings)
+                else:
+                    panel.settings = self.settings
+                    panel._apply_theme()
+                launcher.settings = self.settings
+                launcher.refresh_theme()
+                set_anchor = getattr(panel, "set_anchor_widget", None)
+                if callable(set_anchor):
+                    set_anchor(launcher)
+                if not launcher.isVisible():
+                    launcher.show()
+                    launcher.raise_()
+                return
+            except RuntimeError:
+                pass
+
+        for attr in ("vault_panel", "vault_launcher"):
+            existing = getattr(self, attr, None)
+            if existing is not None:
+                try:
+                    existing.close()
+                    existing.deleteLater()
+                except RuntimeError:
+                    pass
+                setattr(self, attr, None)
+
+        from src.ui.account_vault_launcher import AccountVaultLauncher
+        from src.ui.account_vault_widget import AccountVaultWidget
+
+        self.vault_panel = AccountVaultWidget(self.settings)
+        self.vault_launcher = AccountVaultLauncher(self.settings)
+        self.vault_panel.set_anchor_widget(self.vault_launcher)
+        self.vault_launcher.activated.connect(self._on_vault_launcher_activated)
+        self.vault_panel.server_unreachable.connect(self._on_vault_server_unreachable)
+        try:
+            self.vault_launcher.show()
+            self.vault_launcher.raise_()
+        except RuntimeError:
+            pass
+        # Background reachability gate — never block the UI thread.
+        QTimer.singleShot(0, self._probe_account_vault_server)
+
+    def _probe_account_vault_server(self) -> None:
+        """If vault is enabled but the API host is down, tip + auto-disable."""
+        from src.account_vault import account_vault_api_base, account_vault_enabled
+
+        if not account_vault_enabled(self.settings):
+            return
+        if getattr(self, "_vault_probe_busy", False):
+            return
+        if self._icons_hidden or self._exiting:
+            return
+        self._vault_probe_busy = True
+        base = account_vault_api_base(self.settings)
+        from src.ui.account_vault_async import VaultApiJob
+
+        def work() -> bool:
+            from src.account_vault_api import probe_vault_reachable
+
+            ok, msg = probe_vault_reachable(base, timeout=8.0)
+            if not ok:
+                raise RuntimeError(msg or "无法访问账号服务器")
+            return True
+
+        job = VaultApiJob(work, self.vault_panel)
+
+        def on_ok(_result: object) -> None:
+            self._vault_probe_busy = False
+
+        def on_err(exc: object) -> None:
+            self._vault_probe_busy = False
+            msg = ""
+            if isinstance(exc, BaseException):
+                msg = str(exc)
+            elif exc is not None:
+                msg = str(exc)
+            self._on_vault_server_unreachable(msg)
+
+        job.succeeded.connect(on_ok)
+        job.failed.connect(on_err)
+        job.finished.connect(job.deleteLater)
+        self._vault_probe_job = job
+        job.start()
+
+    def _on_vault_server_unreachable(self, message: str = "") -> None:
+        """Tip the user and turn vault off so a dead host cannot block the app."""
+        from src.account_vault import account_vault_enabled, account_vault_settings
+        from src.settings import save_settings
+        from src.ui.toast import show_toast
+
+        if not account_vault_enabled(self.settings):
+            return
+        cfg = account_vault_settings(self.settings)
+        cfg["enabled"] = False
+        try:
+            save_settings(self.settings, immediate=True)
+        except OSError:
+            pass
+        tip = (message or "").strip() or "无法访问账号服务器"
+        show_toast("账号服务器无法访问，已关闭账号管理", tip, level="warn")
+        self._setup_account_vault_panel()
+        window = getattr(self, "window", None)
+        vault_page = getattr(window, "_vault_settings_widget", None) if window else None
+        if vault_page is not None:
+            try:
+                cb = getattr(vault_page, "enabled_cb", None)
+                if cb is not None:
+                    cb.blockSignals(True)
+                    cb.setChecked(False)
+                    cb.blockSignals(False)
+                status = getattr(vault_page, "status_lbl", None)
+                if status is not None:
+                    status.setText(tip)
+            except RuntimeError:
+                pass
+
+    def _on_vault_launcher_activated(self) -> None:
+        """Doubao-style float click: toggle vault panel."""
+        self._on_vault_requested(toggle=True)
+
+    def _on_vault_requested(self, *, toggle: bool = False) -> None:
+        """Show / raise (or toggle) the vault panel from the desktop launcher."""
+        from src.account_vault import account_vault_enabled
+
+        if not account_vault_enabled(self.settings):
+            return
+        panel = getattr(self, "vault_panel", None)
+        if panel is None:
+            self._setup_account_vault_panel()
+            panel = getattr(self, "vault_panel", None)
+        if panel is None:
+            return
+        try:
+            if toggle and panel.isVisible():
+                panel.hide()
+                return
+            panel.raise_panel()
+            self._ensure_page_chrome_visible(raise_band=True)
+        except RuntimeError:
+            pass
+
     def _setup_desktop_pet(self) -> None:
         """Show / hide the desktop companion pet."""
         from src.desktop_pet import desktop_pet_enabled, desktop_pet_visible
@@ -4397,6 +4606,9 @@ class DeskTidyApp:
         )
         pet.todo_requested.connect(
             self._on_todo_requested, Qt.ConnectionType.QueuedConnection
+        )
+        pet.vault_requested.connect(
+            self._on_vault_requested, Qt.ConnectionType.QueuedConnection
         )
         if desktop_pet_visible(self.settings) and (
             self._page_chrome_may_show() or self._desk_app_ui_open()
@@ -4503,6 +4715,7 @@ class DeskTidyApp:
         self._schedule_hotkeys_refresh()
         self._setup_dock()
         self._setup_todo_panel()
+        self._setup_account_vault_panel()
         self._setup_desktop_pet()
         self.tray.apply_feature_visibility(self.settings)
         try:
@@ -5829,6 +6042,19 @@ class DeskTidyApp:
 
             if desktop_todos_enabled(self.settings):
                 chrome_widgets.append(todo)
+        vault = getattr(self, "vault_panel", None)
+        if vault is not None:
+            try:
+                if vault.isVisible():
+                    chrome_widgets.append(vault)
+            except RuntimeError:
+                pass
+        launcher = getattr(self, "vault_launcher", None)
+        if launcher is not None:
+            from src.account_vault import account_vault_enabled
+
+            if account_vault_enabled(self.settings):
+                chrome_widgets.append(launcher)
         pet = getattr(self, "pet_widget", None)
         if pet is not None:
             from src.desktop_pet import desktop_pet_visible
@@ -6093,6 +6319,10 @@ class DeskTidyApp:
         )
         self.page_indicator.todo_requested.connect(
             self._on_todo_requested,
+            Qt.ConnectionType.QueuedConnection,
+        )
+        self.page_indicator.vault_requested.connect(
+            self._on_vault_requested,
             Qt.ConnectionType.QueuedConnection,
         )
         self.page_indicator.pet_requested.connect(
@@ -7212,6 +7442,18 @@ class DeskTidyApp:
                 todo.hide()
             except Exception:
                 pass
+        vault = getattr(self, "vault_panel", None)
+        if vault is not None:
+            try:
+                vault.hide()
+            except Exception:
+                pass
+        launcher = getattr(self, "vault_launcher", None)
+        if launcher is not None:
+            try:
+                launcher.hide()
+            except Exception:
+                pass
         pet = getattr(self, "pet_widget", None)
         if pet is not None:
             try:
@@ -7219,6 +7461,10 @@ class DeskTidyApp:
             except Exception:
                 pass
         self._flush_overlay_teardown()
+        try:
+            reveal_hosted_namespace_icons()
+        except Exception:
+            pass
         set_desktop_icons_visible(True)
         self.settings["hide_shell_icons"] = False
         try:
@@ -7260,6 +7506,39 @@ class DeskTidyApp:
                     self._setup_todo_panel()
             else:
                 self._setup_todo_panel()
+        from src.account_vault import account_vault_enabled
+
+        if account_vault_enabled(self.settings):
+            # Panel stays hidden until float click; launcher is always shown.
+            if getattr(self, "vault_panel", None) is None or getattr(
+                self, "vault_launcher", None
+            ) is None:
+                self._setup_account_vault_panel()
+            else:
+                launcher = getattr(self, "vault_launcher", None)
+                if launcher is not None:
+                    try:
+                        launcher.show()
+                        launcher.raise_()
+                    except RuntimeError:
+                        self._setup_account_vault_panel()
+        else:
+            existing = getattr(self, "vault_panel", None)
+            if existing is not None:
+                try:
+                    existing.close()
+                    existing.deleteLater()
+                except RuntimeError:
+                    pass
+                self.vault_panel = None
+            launcher = getattr(self, "vault_launcher", None)
+            if launcher is not None:
+                try:
+                    launcher.close()
+                    launcher.deleteLater()
+                except RuntimeError:
+                    pass
+                self.vault_launcher = None
         from src.desktop_pet import desktop_pet_visible
 
         if desktop_pet_visible(self.settings):
@@ -7809,6 +8088,20 @@ class DeskTidyApp:
             except Exception:
                 pass
             self.todo_panel = None
+        vault = getattr(self, "vault_panel", None)
+        if vault is not None:
+            try:
+                self._retire_overlay_widget(vault)
+            except Exception:
+                pass
+            self.vault_panel = None
+        launcher = getattr(self, "vault_launcher", None)
+        if launcher is not None:
+            try:
+                self._retire_overlay_widget(launcher)
+            except Exception:
+                pass
+            self.vault_launcher = None
         pet = getattr(self, "pet_widget", None)
         if pet is not None:
             try:
@@ -7955,6 +8248,22 @@ class DeskTidyApp:
             except RuntimeError:
                 pass
             self.todo_panel = None
+        vault = getattr(self, "vault_panel", None)
+        if vault is not None:
+            try:
+                vault.close()
+                vault.deleteLater()
+            except RuntimeError:
+                pass
+            self.vault_panel = None
+        launcher = getattr(self, "vault_launcher", None)
+        if launcher is not None:
+            try:
+                launcher.close()
+                launcher.deleteLater()
+            except RuntimeError:
+                pass
+            self.vault_launcher = None
         pet = getattr(self, "pet_widget", None)
         if pet is not None:
             try:

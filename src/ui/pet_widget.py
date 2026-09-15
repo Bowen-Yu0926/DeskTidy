@@ -202,6 +202,7 @@ class DesktopPetWidget(QWidget):
     minutes_folder_requested = pyqtSignal()
     calculator_requested = pyqtSignal()
     todo_requested = pyqtSignal()
+    vault_requested = pyqtSignal()
 
     def __init__(self, settings: dict | None = None, parent: QWidget | None = None):
         super().__init__(parent)
@@ -629,6 +630,7 @@ class DesktopPetWidget(QWidget):
             ("minutes", "纪要"),
             ("calculator", "计算器"),
             ("todo", "待办"),
+            ("vault", "账号"),
         )
         for key, label in tool_labels:
             if flags.get(key):
@@ -716,6 +718,8 @@ class DesktopPetWidget(QWidget):
             self.calculator_requested.emit()
         elif tool == "todo":
             self.todo_requested.emit()
+        elif tool == "vault":
+            self.vault_requested.emit()
 
     def _action_panel_origin_x(self) -> int:
         """Panel hugs the pet body — not the page-chip cloud's right edge."""

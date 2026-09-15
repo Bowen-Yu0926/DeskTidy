@@ -26,6 +26,11 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from src.account_vault import (
+    add_session_listener,
+    load_session,
+    mask_login,
+)
 from src.desktop_scanner import format_size, scan_desktop
 from src.fence_rules import all_fence_pinned_keys
 from src.icon_utils import get_app_icon
@@ -44,6 +49,7 @@ from src._version import __version__
 from src.ui.brand_mark import BrandMark
 from src.ui.desktop_layout_widget import DesktopLayoutWidget
 from src.ui.extensions_widget import ExtensionsWidget
+from src.ui.account_vault_settings_widget import AccountVaultSettingsWidget
 from src.ui.pet_settings_widget import PetSettingsWidget
 from src.ui.hotkey_edit import HotkeyEdit
 from src.ui.snapshot_widget import SnapshotWidget
@@ -58,6 +64,7 @@ _NAV_ITEMS: list[tuple[str, str]] = [
     ("fences", "桌面分区"),
     ("snapshot", "布局快照"),
     ("extensions", "扩展功能"),
+    ("vault", "账号管理"),
     ("pet", "桌面宠物"),
     ("settings", "设置"),
     ("help", "帮助"),
@@ -68,6 +75,7 @@ _PAGE_SUBTITLES: dict[str, str] = {
         "fences": "DeskTidy 分页（≠ Windows 虚拟桌面）与分区；上方可选外观样式预览并应用。",
     "snapshot": "保存分区布局与样式；卡片可预览、应用或删除。",
     "extensions": "会议纪要、壁纸、录屏保存目录与分页栏文件夹快捷方式。",
+    "vault": "在此直接维护账号、密码、网址；启用后桌面浮标点击即可打开面板。",
     "pet": "独立宠物菜单：启用、交互行为与角色形象选择。",
     "settings": "主题、整理模式、快捷键与应用行为。",
     "help": "介绍与使用手册已合并；点击打开系统浏览器查看。",
@@ -78,6 +86,7 @@ _PAGE_KICKERS: dict[str, str] = {
     "fences": "DESK · ZONES",
     "snapshot": "DESK · SNAP",
     "extensions": "DESK · EXT",
+    "vault": "DESK · VAULT",
     "pet": "DESK · PET",
     "settings": "DESK · PREFS",
     "help": "DESK · HELP",
@@ -88,6 +97,7 @@ _LAZY_PAGE_IDS: tuple[str, ...] = (
     "fences",
     "snapshot",
     "extensions",
+    "vault",
     "pet",
     "settings",
     "help",
@@ -128,6 +138,7 @@ class MainWindow(QMainWindow):
         self._page_manager = None
         self._snapshot_widget = None
         self._extensions_widget = None
+        self._vault_settings_widget = None
         self._pet_settings_widget = None
         self._show_fences_cb = None
         self.hotkey_inputs: dict[str, HotkeyEdit] = {}
@@ -186,21 +197,33 @@ class MainWindow(QMainWindow):
 
         text_col = QVBoxLayout()
         text_col.setSpacing(2)
-        title = QLabel(APP_NAME_ZH)
-        title.setObjectName("appTitle")
-        title.setWordWrap(True)
-        text_col.addWidget(title)
-        tag = QLabel("DESK · TIDY")
-        tag.setObjectName("brandTag")
-        text_col.addWidget(tag)
-        version = QLabel(f"v{__version__}")
-        version.setObjectName("appSubtitle")
-        version.setToolTip("点击查看关于")
-        version.setCursor(Qt.CursorShape.PointingHandCursor)
-        version.mousePressEvent = lambda _e: show_about(self)  # type: ignore[method-assign]
-        text_col.addWidget(version)
+        self._brand_title = QLabel(APP_NAME_ZH)
+        self._brand_title.setObjectName("appTitle")
+        self._brand_title.setWordWrap(True)
+        text_col.addWidget(self._brand_title)
+        self._brand_tag = QLabel("DESK · TIDY")
+        self._brand_tag.setObjectName("brandTag")
+        text_col.addWidget(self._brand_tag)
+        self._brand_version = QLabel(f"v{__version__}")
+        self._brand_version.setObjectName("appSubtitle")
+        self._brand_version.setToolTip("点击查看关于")
+        self._brand_version.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._brand_version.mousePressEvent = lambda _e: show_about(self)  # type: ignore[method-assign]
+        text_col.addWidget(self._brand_version)
+        self._account_name = QLabel("")
+        self._account_name.setObjectName("appTitle")
+        self._account_name.setWordWrap(True)
+        self._account_name.setVisible(False)
+        text_col.addWidget(self._account_name)
+        self._account_login = QLabel("")
+        self._account_login.setObjectName("appSubtitle")
+        self._account_login.setWordWrap(True)
+        self._account_login.setVisible(False)
+        text_col.addWidget(self._account_login)
         brand_row.addLayout(text_col, stretch=1)
         layout.addWidget(brand)
+        self._refresh_sidebar_brand()
+        add_session_listener(self._refresh_sidebar_brand)
 
         self._nav = SidebarNavWidget(
             _NAV_ITEMS,
@@ -217,6 +240,31 @@ class MainWindow(QMainWindow):
         layout.addWidget(tip)
 
         return sidebar
+
+    def _refresh_sidebar_brand(self) -> None:
+        """Show vault account in sidebar when logged in; otherwise DeskTidy branding."""
+        title = getattr(self, "_brand_title", None)
+        if title is None:
+            return
+        session = load_session()
+        logged_in = session is not None
+        self._brand_title.setVisible(not logged_in)
+        self._brand_tag.setVisible(not logged_in)
+        self._brand_version.setVisible(not logged_in)
+        self._account_name.setVisible(logged_in)
+        self._account_login.setVisible(logged_in)
+        if logged_in:
+            nick = str(session.get("display_name") or "").strip()
+            masked = mask_login(str(session.get("login") or ""))
+            self._account_name.setText(nick or masked or "已登录")
+            if nick:
+                self._account_login.setText(masked)
+                self._account_login.setVisible(True)
+            else:
+                self._account_login.setText("")
+                self._account_login.setVisible(False)
+            self._account_name.setToolTip("账号管理已登录")
+            self._account_login.setToolTip(str(session.get("login") or ""))
 
     def _build_content_area(self) -> QFrame:
         panel = QFrame()
@@ -309,6 +357,7 @@ class MainWindow(QMainWindow):
         self._page_manager = None
         self._snapshot_widget = None
         self._extensions_widget = None
+        self._vault_settings_widget = None
         self._pet_settings_widget = None
         self._help_panel = None
         self._show_fences_cb = None
@@ -354,6 +403,12 @@ class MainWindow(QMainWindow):
         return self._extensions_widget
 
     @property
+    def vault_settings_widget(self) -> AccountVaultSettingsWidget:
+        self._ensure_page("vault")
+        assert self._vault_settings_widget is not None
+        return self._vault_settings_widget
+
+    @property
     def show_fences_cb(self) -> QCheckBox:
         self._ensure_page("settings")
         assert self._show_fences_cb is not None
@@ -374,6 +429,8 @@ class MainWindow(QMainWindow):
             return self._build_snapshot_page()
         if page_id == "extensions":
             return self._build_extensions_page()
+        if page_id == "vault":
+            return self._build_vault_page()
         if page_id == "pet":
             return self._build_pet_page()
         if page_id == "settings":
@@ -547,6 +604,11 @@ class MainWindow(QMainWindow):
         self._extensions_widget.hotkey_capture_began.connect(self.hotkey_capture_began.emit)
         self._extensions_widget.hotkey_capture_ended.connect(self.hotkey_capture_ended.emit)
         return self._extensions_widget
+
+    def _build_vault_page(self) -> QWidget:
+        self._vault_settings_widget = AccountVaultSettingsWidget(self.settings)
+        self._vault_settings_widget.vault_settings_changed.connect(self._on_extensions_changed)
+        return self._vault_settings_widget
 
     def _build_pet_page(self) -> QWidget:
         self._pet_settings_widget = PetSettingsWidget(self.settings)
@@ -766,6 +828,9 @@ class MainWindow(QMainWindow):
         self._refresh_page_badge(page_id)
         if page_id == "files":
             self.refresh_data()
+        elif page_id == "vault" and self._vault_settings_widget is not None:
+            # Same pattern as files: lazy rebuild / first open must pull cloud list.
+            self._vault_settings_widget.reload()
 
     def _refresh_page_badge(self, page_id: str | None = None) -> None:
         """Files: pending count. Fences: today's date. Others: hidden."""
@@ -1212,7 +1277,10 @@ class MainWindow(QMainWindow):
         self.pages_changed.emit()
 
     def _on_extensions_changed(self) -> None:
-        self.extensions_widget.reload_tables()
+        if self._extensions_widget is not None:
+            self._extensions_widget.reload_tables()
+        if self._vault_settings_widget is not None:
+            self._vault_settings_widget.reload()
         self.extensions_changed.emit()
 
     def _on_pet_settings_changed(self) -> None:
@@ -1281,6 +1349,10 @@ class MainWindow(QMainWindow):
                 # so opening on「整理」must refresh here (not only on re-click).
                 if page_id == "files":
                     self.refresh_data()
+                elif page_id == "vault":
+                    self._ensure_page("vault")
+                    if self._vault_settings_widget is not None:
+                        self._vault_settings_widget.reload()
         self.settings_ui_shown.emit()
 
     def hideEvent(self, event) -> None:

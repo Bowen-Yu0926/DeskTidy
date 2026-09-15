@@ -2611,12 +2611,37 @@ def reveal_hosted_namespace_icons() -> int:
 
     Used when DeskTidy exits so the desktop looks normal until next launch,
     while settings still remember which icons belong in fences.
+
+    Always also unhides the stock system set (此电脑 / 回收站 / …). The hosted
+    store alone can miss entries after crashes or partial saves — that left
+    「此电脑」hidden in HideDesktopIcons after quit while other icons returned.
     """
     hosted = _hosted_namespace_store()
     count = 0
+    seen: set[str] = set()
     for clsid in list(hosted.keys()):
-        set_desktop_namespace_icon_visible(clsid, True)
+        key = _normalize_clsid(clsid)
+        set_desktop_namespace_icon_visible(key, True)
+        seen.add(key)
         count += 1
+    for clsid in _NAMESPACE_FALLBACK_NAMES:
+        key = _normalize_clsid(clsid)
+        if key in seen:
+            continue
+        set_desktop_namespace_icon_visible(key, True)
+        count += 1
+    return count
+
+
+def ensure_system_namespace_icons_visible() -> int:
+    """Force-show stock Explorer namespace icons (This PC, Recycle Bin, …)."""
+    count = 0
+    for clsid in _NAMESPACE_FALLBACK_NAMES:
+        try:
+            set_desktop_namespace_icon_visible(clsid, True)
+            count += 1
+        except Exception:
+            pass
     return count
 
 
@@ -2624,8 +2649,17 @@ def restore_all_hosted_namespace_icons() -> int:
     """Unhide every system icon we moved into fences (used on exit)."""
     hosted = _hosted_namespace_store()
     count = 0
+    seen: set[str] = set()
     for clsid in list(hosted.keys()):
-        set_desktop_namespace_icon_visible(clsid, True)
+        key = _normalize_clsid(clsid)
+        set_desktop_namespace_icon_visible(key, True)
+        seen.add(key)
+        count += 1
+    for clsid in _NAMESPACE_FALLBACK_NAMES:
+        key = _normalize_clsid(clsid)
+        if key in seen:
+            continue
+        set_desktop_namespace_icon_visible(key, True)
         count += 1
     _save_hosted_namespace_store({})
     return count

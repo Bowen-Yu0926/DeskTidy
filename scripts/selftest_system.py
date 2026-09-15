@@ -1252,8 +1252,11 @@ def test_win_shell_overlay() -> None:
 
         from src.app import DeskTidyApp
         from src.win_shell import (
+            _NAMESPACE_FALLBACK_NAMES,
             _read_hide_icons_registry,
             ensure_desktop_icons_visible,
+            reveal_hosted_namespace_icons,
+            restore_all_hosted_namespace_icons,
             set_desktop_icons_visible,
         )
 
@@ -1277,12 +1280,19 @@ def test_win_shell_overlay() -> None:
         assert "ensure_desktop_icons_visible" in inspect.getsource(
             DeskTidyApp._ensure_shell_icons_restored
         )
+        reveal_src = inspect.getsource(reveal_hosted_namespace_icons)
+        assert "_NAMESPACE_FALLBACK_NAMES" in reveal_src
+        assert "{20D04FE0-3AEA-1069-A2D8-08002B30309D}" in _NAMESPACE_FALLBACK_NAMES
+        assert "_NAMESPACE_FALLBACK_NAMES" in inspect.getsource(
+            restore_all_hosted_namespace_icons
+        )
+        stock = inspect.getsource(DeskTidyApp._show_stock_desktop_view)
+        assert "reveal_hosted_namespace_icons" in stock
+        assert "hide_fences" in stock
+        assert "_flush_overlay_teardown" in stock
         toggle = inspect.getsource(DeskTidyApp._toggle_icons_and_fences)
         assert "_show_stock_desktop_view" in toggle
         assert "_show_organized_desktop_view" in toggle
-        stock = inspect.getsource(DeskTidyApp._show_stock_desktop_view)
-        assert "hide_fences" in stock
-        assert "_flush_overlay_teardown" in stock
         dbl = inspect.getsource(DeskTidyApp._on_desktop_double_click)
         assert "_show_stock_desktop_view" in dbl
         quit_src = inspect.getsource(DeskTidyApp._quit_impl)

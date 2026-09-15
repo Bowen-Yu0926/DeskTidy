@@ -54,6 +54,21 @@ def _icon_pixmap(
         p.drawLine(size // 2 + 7, size // 2 - 4, size // 2 - 4, size // 2 + 7)
         p.drawLine(size // 2 - 6, size // 2 + 5, size // 2 - 7, size // 2 + 7)
         p.drawLine(size // 2 - 7, size // 2 + 7, size // 2 - 4, size // 2 + 7)
+    elif kind == "copy":
+        # Two overlapping rounded rects (clipboard / duplicate).
+        p.setPen(QPen(ink, 1.4))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawRoundedRect(size // 2 - 2, size // 2 - 6, 9, 11, 1.5, 1.5)
+        p.drawRoundedRect(size // 2 - 7, size // 2 - 3, 9, 11, 1.5, 1.5)
+    elif kind == "pin":
+        # Map-pin style marker.
+        p.setPen(QPen(ink, 1.5))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawEllipse(size // 2 - 4, size // 2 - 7, 8, 8)
+        p.drawLine(size // 2, size // 2 + 1, size // 2, size // 2 + 7)
+        p.setBrush(ink)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.drawEllipse(size // 2 - 2, size // 2 - 5, 4, 4)
     elif kind in ("plus", "minus"):
         p.setPen(QPen(ink, 2.0, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
         mid = size // 2
@@ -160,6 +175,8 @@ def make_action_icon(
             "chevron_right",
             "chevron_down",
             "edit",
+            "copy",
+            "pin",
             "lock",
             "unlock",
         )

@@ -65,6 +65,11 @@
   "desktop_todos": {
     "enabled": false
   },
+  "account_vault": {
+    "enabled": false,
+    "api_base": "https://bowen-yu0926.byethost10.com/desktidy-vault/",
+    "refresh_interval_hours": 2
+  },
   "desktop_pet": {
     "enabled": true,
     "visible": true,

@@ -494,6 +494,7 @@ class PageIndicatorWidget(QWidget):
     record_folder_requested = pyqtSignal()
     calculator_requested = pyqtSignal()
     todo_requested = pyqtSignal()
+    vault_requested = pyqtSignal()
     pet_requested = pyqtSignal()
 
     _EDGE_MARGIN = 8
@@ -529,6 +530,8 @@ class PageIndicatorWidget(QWidget):
         self._calc_row: _PeekRow | None = None
         self._todo_btn: QPushButton | None = None
         self._todo_row: _PeekRow | None = None
+        self._vault_btn: QPushButton | None = None
+        self._vault_row: _PeekRow | None = None
         self._pet_btn: QPushButton | None = None
         self._pet_row: _PeekRow | None = None
         self._drag_offset: QPoint | None = None
@@ -585,7 +588,14 @@ class PageIndicatorWidget(QWidget):
     def _iter_rows(self) -> list[_PeekRow]:
         rows = list(self._rows)
         rows.extend(self._folder_rows)
-        for extra in (self._record_row, self._note_row, self._minutes_row, self._calc_row, self._todo_row):
+        for extra in (
+            self._record_row,
+            self._note_row,
+            self._minutes_row,
+            self._calc_row,
+            self._todo_row,
+            self._vault_row,
+        ):
             if extra is not None:
                 rows.append(extra)
         return rows
@@ -702,6 +712,17 @@ class PageIndicatorWidget(QWidget):
         btn.installEventFilter(self)
         return btn
 
+    def _make_vault_button(self) -> QPushButton:
+        btn = _PeekChip(
+            "账号",
+            role="vault",
+            object_name="pageVaultBtn",
+            settings=self.settings,
+        )
+        btn.setToolTip("单击显示/置顶账号管理面板")
+        btn.installEventFilter(self)
+        return btn
+
     def _make_pet_button(self) -> QPushButton:
         btn = _PeekChip(
             "宠物",
@@ -740,6 +761,7 @@ class PageIndicatorWidget(QWidget):
             self._minutes_btn,
             self._calc_btn,
             self._todo_btn,
+            self._vault_btn,
             self._pet_btn,
         ):
             if extra is not None:
@@ -781,6 +803,8 @@ class PageIndicatorWidget(QWidget):
         self._calc_row = None
         self._todo_btn = None
         self._todo_row = None
+        self._vault_btn = None
+        self._vault_row = None
         self._pet_btn = None
         self._pet_row = None
         from src.desktop_pet import desktop_pet_hosts_float_bar
@@ -829,6 +853,10 @@ class PageIndicatorWidget(QWidget):
             self._todo_btn = self._make_todo_button()
             self._todo_row = self._wrap_row(self._todo_btn)
             layout.addWidget(self._todo_row, 0, Qt.AlignmentFlag.AlignRight)
+        if flags.get("vault"):
+            self._vault_btn = self._make_vault_button()
+            self._vault_row = self._wrap_row(self._vault_btn)
+            layout.addWidget(self._vault_row, 0, Qt.AlignmentFlag.AlignRight)
         if flags.get("pet"):
             self._pet_btn = self._make_pet_button()
             self._pet_row = self._wrap_row(self._pet_btn)
@@ -1144,6 +1172,9 @@ class PageIndicatorWidget(QWidget):
                     return True
                 if obj is self._todo_btn:
                     self.todo_requested.emit()
+                    return True
+                if obj is self._vault_btn:
+                    self.vault_requested.emit()
                     return True
                 if obj is self._pet_btn:
                     self.pet_requested.emit()
