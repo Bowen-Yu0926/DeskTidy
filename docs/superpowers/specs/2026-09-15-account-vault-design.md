@@ -1,7 +1,7 @@
 # DeskTidy 账号管理（云端保险库）
 
 **日期：** 2026-09-15  
-**状态：** 待用户审阅  
+**状态：** 已实现（待部署 MySQL `config.local.php`）  
 **产品决策：** 云端 MySQL（方案 B）+ 无验证码注册 + 账号/密码登录（登录态方案 A）+ 字段方案 A + DeskNote 联动方案 A  
 **技术选型：** 方案 1 — PHP REST API（byethost）+ MySQL + DeskTidy 独立浮层窗口  
 

@@ -563,6 +563,7 @@ def _merge_partial_settings(disk: dict, partial: dict) -> dict:
             "meeting_minutes",
             "calculator",
             "desktop_todos",
+            "account_vault",
             "wallpaper",
         }
     )

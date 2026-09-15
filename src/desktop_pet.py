@@ -411,6 +411,8 @@ def float_bar_tool_flags(settings: dict[str, Any] | None) -> dict[str, bool]:
         "minutes": meeting_minutes_enabled(settings),
         "calculator": calculator_enabled(settings),
         "todo": desktop_todos_enabled(settings),
+        # Account vault uses Doubao-style desktop launcher; never on float bar.
+        "vault": False,
         "pet": False,
     }
 

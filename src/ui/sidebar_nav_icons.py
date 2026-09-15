@@ -12,6 +12,7 @@ _NAV_ICON_KIND: dict[str, str] = {
     "fences": "zones",
     "snapshot": "snapshot",
     "extensions": "extensions",
+    "vault": "vault",
     "pet": "pet",
     "settings": "settings",
     "help": "help",
@@ -68,6 +69,16 @@ def _icon_pixmap(kind: str, size: int, color: QColor) -> QPixmap:
         p.setPen(_pen(color, 1.8))
         p.drawLine(cx - 3, cy, cx + 3, cy)
         p.drawLine(cx, cy - 3, cx, cy + 3)
+    elif kind == "vault":
+        # Keyhole padlock
+        p.drawRoundedRect(cx - 5, cy - 1, 10, 8, 1.5, 1.5)
+        p.drawArc(cx - 4, cy - 8, 8, 8, 0, 180 * 16)
+        p.setBrush(color)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.drawEllipse(cx - 1, cy + 1, 2, 2)
+        p.setPen(_pen(color, 1.4))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawLine(cx, cy + 3, cx, cy + 5)
     elif kind == "pet":
         p.drawEllipse(cx - 6, cy - 1, 12, 9)
         p.drawEllipse(cx - 6, cy - 8, 4, 6)

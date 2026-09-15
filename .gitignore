@@ -12,6 +12,7 @@ venv/
 # Deploy secrets (ByetHost / FTP) — never commit
 .env.byethost
 .local/
+server/desktidy-vault/config.local.php
 
 # Build / packaging outputs (regenerate with scripts\build*.bat)
 dist/
