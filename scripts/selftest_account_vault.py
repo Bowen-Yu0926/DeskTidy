@@ -308,6 +308,39 @@ def main() -> int:
     desk.vault_panel.close()
     desk.vault_panel.deleteLater()
 
+    # Closed-until-open: __init__ must not shell-attach / ShowWindow the panel.
+    # Premature configure_desktop_overlay left Win32 visible while Qt isVisible
+    # stayed False — hotkey page-switch Z-raise then "woke" the ghost ledger.
+    import ctypes
+
+    from src.ui.account_vault_widget import AccountVaultWidget
+
+    init_src = inspect.getsource(AccountVaultWidget.__init__)
+    show_src = inspect.getsource(AccountVaultWidget.showEvent)
+    assert "configure_desktop_overlay(" not in init_src, (
+        "vault panel must not shell-attach in __init__ "
+        "(Win32 ShowWindow while Qt still hidden)"
+    )
+    assert "configure_desktop_overlay(" in show_src
+
+    panel = AccountVaultWidget({"theme": "light", "account_vault": {"enabled": True}})
+    assert panel.isVisible() is False
+    hwnd = int(panel.winId()) if panel.winId() else 0
+    assert hwnd, "expected winId for Win32 visibility probe"
+    assert not bool(ctypes.windll.user32.IsWindowVisible(hwnd)), (
+        "closed vault panel must stay Win32-hidden until raise_panel/show"
+    )
+    panel.raise_panel()
+    app.processEvents()
+    assert panel.isVisible() is True
+    assert bool(ctypes.windll.user32.IsWindowVisible(int(panel.winId())))
+    panel.hide()
+    app.processEvents()
+    assert panel.isVisible() is False
+    assert not bool(ctypes.windll.user32.IsWindowVisible(int(panel.winId())))
+    panel.close()
+    panel.deleteLater()
+
     print("selftest_account_vault: OK")
     return 0
 

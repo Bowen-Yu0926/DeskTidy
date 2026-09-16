@@ -761,7 +761,9 @@ class AccountVaultWidget(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self._build_ui()
         self._apply_theme()
-        configure_desktop_overlay(self)
+        # Defer shell attach until showEvent (user opens the panel). Calling it
+        # here maps Win32 visible while Qt stays hidden — page-switch Z-raise
+        # then surfaces a ghost ledger. Same pattern as DesktopTodoWidget.
         self._place_beside_anchor()
         self._refresh_timer = QTimer(self)
         self._refresh_timer.timeout.connect(self._on_background_refresh)
