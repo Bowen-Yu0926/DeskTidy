@@ -4550,6 +4550,10 @@ def test_page_switch_click() -> None:
         assert callable(HelpHomePage)
         assert product_page_path("desktidy") is not None
         assert product_page_path("desknote") is not None
+        intro = product_page_path("desktidy").read_text(encoding="utf-8")
+        assert "账号管理" in intro
+        assert 'id="vault"' in intro
+        assert "DeskTidy_Setup_4.0.25.exe" in intro
         assert "help" in mw._LAZY_PAGE_IDS
         assert ("help", "帮助") in mw._NAV_ITEMS
         assert "menuBar().hide()" in inspect.getsource(mw.MainWindow.__init__)
