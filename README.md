@@ -2,6 +2,10 @@
 
 一款功能完整的 Windows 桌面整理工具：自动分类、分区管理、分页桌面、Dock 栏、区域截图、云端账号管理。
 
+公开仓库与安装包：[github.com/Bowen-Yu0926/DeskTidy](https://github.com/Bowen-Yu0926/DeskTidy) · [v4.0.25 安装包](https://github.com/Bowen-Yu0926/DeskTidy/releases/download/v4.0.25/DeskTidy_Setup_4.0.25.exe)
+
+**账号管理：** 侧栏启用后，桌面出现独立「账」浮标（不在分页栏）。单击打开清单，维护名称 / 账号 / 密码 / 网址，双击复制；手机号或邮箱登录后云端同步。默认关闭。
+
 ## 功能一览
 
 | 模块 | 功能 |
