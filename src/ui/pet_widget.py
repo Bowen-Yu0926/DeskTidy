@@ -60,8 +60,11 @@ _BUBBLE_PAD = 8
 # page chips can sit on the hood without a gutter for text.
 _MIN_BUBBLE_H = 0
 _IDLE_BUBBLE_H = 0
-# Page chips hang this many px into the body slot (toward the hair).
-_PAGE_CLOUD_OVERLAP = 16
+# Page chips sit entirely ABOVE the sprite — never overlap into the body.
+# Earlier builds let chips hang _PAGE_CLOUD_OVERLAP px into the body ("toward
+# the hair"), but on small sprites or multi-row chrome that visually blocked
+# the pet. Zero overlap keeps chips above the head without covering it.
+_PAGE_CLOUD_OVERLAP = 0
 _MENU_BTN = 22
 _ACTION_BTN = 30
 _ACTION_GAP = 4
@@ -490,6 +493,16 @@ class DesktopPetWidget(QWidget):
     def _size_scale(self) -> float:
         return pet_size_scale(self.settings)
 
+    def _bubble_scale(self) -> float:
+        """Scale factor for page-chip chrome so bubbles shrink on small sprites.
+
+        Fixed-pixel bubble constants (_PAGE_BUBBLE_H, _PAGE_CLOUD_OVERLAP, …)
+        left chips relatively larger on small pets — they visually blocked the
+        sprite. Scale all chrome metrics with the pet size so proportions match
+        across machines / size_scale settings.
+        """
+        return self._size_scale()
+
     def _sprite_h(self) -> int:
         return max(96, int(round(_SPRITE_H * self._size_scale())))
 
@@ -520,18 +533,30 @@ class DesktopPetWidget(QWidget):
         return desktop_pet_hosts_float_bar(self.settings) and bool(self._chrome_items)
 
     def _chrome_chip_width(self, label: str) -> int:
-        font = QFont("Microsoft YaHei UI", 9)
+        s = self._bubble_scale()
+        font = QFont("Microsoft YaHei UI", max(7, int(round(9 * s))))
         fm = QFontMetrics(font)
-        return max(_PAGE_BUBBLE_MIN_W, fm.horizontalAdvance(str(label or "")) + 18)
+        min_w = int(round(_PAGE_BUBBLE_MIN_W * s))
+        return max(min_w, fm.horizontalAdvance(str(label or "")) + int(round(18 * s)))
 
     def _layout_page_bubbles(self) -> tuple[list[QRect], int, int, int]:
         """Head-cloud chrome: (rects, left_pad, band_h, total_w).
 
         Chips sit in staggered arc rows above the pet — not a right-side column.
         ``left_pad`` shifts the body so the cloud can overhang both sides.
+        All bubble metrics scale with ``_bubble_scale`` so chips shrink on
+        small sprites and never visually block the pet.
         """
         if not self._show_page_bubbles():
             return [], 0, 0, self._layout_body_width()
+
+        s = self._bubble_scale()
+        gap = int(round(_PAGE_BUBBLE_GAP * s))
+        row_gap = int(round(_PAGE_BUBBLE_ROW_GAP * s))
+        pad = int(round(_PAGE_BUBBLE_PAD * s))
+        bh = int(round(_PAGE_BUBBLE_H * s))
+        overlap = int(round(_PAGE_CLOUD_OVERLAP * s))
+        stagger = tuple(int(round(v * s)) for v in _PAGE_BUBBLE_STAGGER)
 
         chips: list[tuple[int, int]] = []
         for i, item in enumerate(self._chrome_items):
@@ -540,36 +565,36 @@ class DesktopPetWidget(QWidget):
         rows: list[list[tuple[int, int]]] = []
         cur: list[tuple[int, int]] = []
         cur_w = 0
-        row_budget = max(self._sprite_w() + 72, 220)
+        row_budget = max(self._sprite_w() + int(round(72 * s)), int(round(220 * s)))
         for chip in chips:
             w = chip[1]
-            need = w if not cur else cur_w + _PAGE_BUBBLE_GAP + w
+            need = w if not cur else cur_w + gap + w
             if cur and (len(cur) >= _PAGE_BUBBLE_MAX_ROW or need > row_budget):
                 rows.append(cur)
                 cur = []
                 cur_w = 0
             cur.append(chip)
-            cur_w = sum(c[1] for c in cur) + _PAGE_BUBBLE_GAP * (len(cur) - 1)
+            cur_w = sum(c[1] for c in cur) + gap * (len(cur) - 1)
         if cur:
             rows.append(cur)
 
         body_cx = self._body_width() / 2.0
         rel: list[tuple[int, float, float, int]] = []
-        y = float(_PAGE_BUBBLE_PAD + 4)
+        y = float(pad + 4)
         for row_i, row in enumerate(rows):
-            row_w = sum(c[1] for c in row) + _PAGE_BUBBLE_GAP * max(0, len(row) - 1)
+            row_w = sum(c[1] for c in row) + gap * max(0, len(row) - 1)
             x = body_cx - row_w / 2.0
             mid = (len(row) - 1) / 2.0
             for j, (idx, w) in enumerate(row):
                 arc = abs(j - mid) * 3.5
-                stagger = _PAGE_BUBBLE_STAGGER[(idx + row_i) % len(_PAGE_BUBBLE_STAGGER)]
-                rel.append((idx, x, y + stagger - arc, w))
-                x += w + _PAGE_BUBBLE_GAP
-            y += _PAGE_BUBBLE_H + _PAGE_BUBBLE_ROW_GAP + 3
+                st = stagger[(idx + row_i) % len(stagger)]
+                rel.append((idx, x, y + st - arc, w))
+                x += w + gap
+            y += bh + row_gap + 3
 
         min_x = min(r[1] for r in rel)
         max_x = max(r[1] + r[3] for r in rel)
-        left_pad = max(0, int(math.ceil(_PAGE_BUBBLE_PAD - min_x)))
+        left_pad = max(0, int(math.ceil(pad - min_x)))
         # Trash/wait sprite pads shift the body column — chips must follow or they
         # jump left on screen when pin keeps the boy fixed (_enter → trash).
         spr_pad_l, _spr_pad_r = self._sprite_dest_horizontal_pad()
@@ -577,15 +602,15 @@ class DesktopPetWidget(QWidget):
         ordered: list[QRect | None] = [None] * len(chips)
         for idx, rx, ry, w in rel:
             top = max(2, int(round(ry)))
-            rect = QRect(int(round(rx)) + left_pad + spr_pad_l, top, w, _PAGE_BUBBLE_H)
+            rect = QRect(int(round(rx)) + left_pad + spr_pad_l, top, w, bh)
             ordered[idx] = rect
             max_y = max(max_y, rect.bottom())
         rects = [r for r in ordered if r is not None]
         # Hang the cloud toward the hair (no speech gutter — bubbles retired).
-        band_h = max(0, max_y + 2 - _PAGE_CLOUD_OVERLAP)
+        band_h = max(0, max_y + 2 - overlap)
         total_w = max(
             left_pad + self._layout_body_width(),
-            int(math.ceil(max_x)) + left_pad + spr_pad_l + _PAGE_BUBBLE_PAD,
+            int(math.ceil(max_x)) + left_pad + spr_pad_l + pad,
         )
         return rects, left_pad, band_h, total_w
 
@@ -1965,7 +1990,8 @@ class DesktopPetWidget(QWidget):
         accent = QColor(p.get("accent", "#2563EB"))
         soft = QColor(p.get("accent_soft", "#DBEAFE"))
         ink = QColor(p.get("text", "#1F2937"))
-        font = QFont("Microsoft YaHei UI", 9)
+        s = self._bubble_scale()
+        font = QFont("Microsoft YaHei UI", max(7, int(round(9 * s))))
         painter.setFont(font)
         for i, item in enumerate(self._chrome_items):
             kind = str(item.get("kind") or "")

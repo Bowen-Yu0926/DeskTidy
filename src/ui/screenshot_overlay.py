@@ -482,7 +482,15 @@ class ScreenshotOverlay(QWidget):
         rect = self._active_rect()
         if rect is None or rect.width() < 2 or rect.height() < 2:
             return None
-        result = self._desktop.copy(rect)
+        dpr = self._desktop.devicePixelRatio()
+        phys = QRect(
+            int(rect.x() * dpr),
+            int(rect.y() * dpr),
+            int(rect.width() * dpr),
+            int(rect.height() * dpr),
+        )
+        result = self._desktop.copy(phys)
+        result.setDevicePixelRatio(dpr)
         painter = QPainter(result)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         for annotation in self._annotations:
@@ -551,7 +559,15 @@ class ScreenshotOverlay(QWidget):
                 continue
             visited.add(key)
             src = QRect(gx + offset.x(), gy + offset.y(), block, block)
-            sample = self._desktop.copy(src.intersected(self._logical_desktop_rect()))
+            clipped = src.intersected(self._logical_desktop_rect())
+            dpr = self._desktop.devicePixelRatio()
+            phys = QRect(
+                int(clipped.x() * dpr),
+                int(clipped.y() * dpr),
+                int(clipped.width() * dpr),
+                int(clipped.height() * dpr),
+            )
+            sample = self._desktop.copy(phys)
             if sample.isNull():
                 continue
             avg = sample.scaled(
