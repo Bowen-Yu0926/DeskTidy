@@ -206,6 +206,10 @@ class AccountVaultSettingsWidget(QWidget):
         cfg = account_vault_settings(self.settings)
         self.enabled_cb.blockSignals(True)
         self.enabled_cb.setChecked(bool(cfg.get("enabled", False)))
+        # Safety: a previous _on_enabled_changed may have setEnabled(False)
+        # before the widget was released/destroyed. Always re-enable on reload
+        # so the checkbox is not stuck greyed-out («记账按钮没法选中»).
+        self.enabled_cb.setEnabled(True)
         self.enabled_cb.blockSignals(False)
         self.refresh_spin.blockSignals(True)
         self.refresh_spin.setValue(account_vault_refresh_interval_hours(self.settings))
