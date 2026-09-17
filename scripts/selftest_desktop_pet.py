@@ -786,9 +786,12 @@ def main() -> None:
     assert "raise_overlay_in_desktop_band" in ensure_live
     assert 'getattr(self, "pet_widget"' in ensure_live
     assert "_sink_below_fence(getattr(self, \"pet_widget\"" not in ensure_live
+    assert "_sink_public_host_below_overlays" in ensure_live
+    sink = inspect.getsource(DeskTidyApp._sink_public_host_below_overlays)
     # No live fences must still sink public host under pet (full 框选 plate).
-    assert "if not first_fence_hwnd and pet_hwnd:" in ensure_live
-    assert "refresh_click_mask" in ensure_live
+    assert "elif pet_hwnd:" in sink or "pet_hwnd" in sink
+    assert "refresh_click_mask" in sink
+    assert "_public_icon_host" in sink
     assert "_STATE_WANDER" in src
     assert "_on_ai" in src
     assert "_toggle_action_menu" in src
@@ -854,7 +857,24 @@ def main() -> None:
 
     pet_throw._state = _STATE_FALL
     pet_throw.say("飞啦!", msec=1400)
-    assert pet_throw.height() >= 280, pet_throw.height()
+    # Speech bubbles retired — say() must not grow a text slot above the sprite.
+    assert not pet_throw._bubble_text
+    assert pet_throw._bubble_h == 0
+    assert pet_throw.height() == normal_h, (pet_throw.height(), normal_h)
+    # 「⋯」 hugs the sprite (not the page-cloud gutter above wait/sleep poses).
+    menu_src = inspect.getsource(DesktopPetWidget._menu_button_rect)
+    assert "_sprite_dest_rect" in menu_src
+    assert "_PAGE_CLOUD_OVERLAP" in inspect.getsource(
+        __import__("src.ui.pet_widget", fromlist=["x"])
+    )
+    assert "_PAGE_CLOUD_OVERLAP" in inspect.getsource(
+        DesktopPetWidget._layout_page_bubbles
+    )
+    say_src = inspect.getsource(DesktopPetWidget.say)
+    assert "Speech bubbles removed" in say_src or "draw nothing" in say_src
+    paint_src = inspect.getsource(DesktopPetWidget.paintEvent)
+    assert "_paint_page_bubbles" in paint_src
+    assert "drawRoundedRect(bubble_rect" not in paint_src
     # idle/sleep → trash must pin body *before* pad/width change (else jumps right).
     enter_src = inspect.getsource(DesktopPetWidget._enter)
     apply_src = inspect.getsource(DesktopPetWidget._apply_size)

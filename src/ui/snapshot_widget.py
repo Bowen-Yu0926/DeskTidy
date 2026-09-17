@@ -19,7 +19,7 @@ def _nudge_font(font, *, delta: int = -1, floor: int = 8):
 from pathlib import Path
 
 from PyQt6.QtCore import QPoint, QRect, QSize, Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QColor, QIcon, QPainter, QPen, QPixmap
+from PyQt6.QtGui import QColor, QFontMetrics, QIcon, QPainter, QPen, QPixmap
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QHBoxLayout,
@@ -58,7 +58,8 @@ from src.ui.styles import get_theme_palette, normalize_theme
 _THUMB_W = 220
 _THUMB_H = 132
 _ITEM_W = 248
-_ITEM_H = 210
+# Thumb + full-width title row + action chips (chips no longer share the title lane).
+_ITEM_H = 226
 _ROLE_META = Qt.ItemDataRole.UserRole + 10
 _ROLE_CREATED = Qt.ItemDataRole.UserRole + 11
 
@@ -71,6 +72,8 @@ _BTN_W = 48
 _BTN_H = 24
 _BTN_GAP = 5
 _CARD_INSET = 2
+_FOOTER_TITLE_H = 20
+_FOOTER_TITLE_GAP = 4
 
 
 class _SnapshotIconDelegate(QStyledItemDelegate):
@@ -166,7 +169,7 @@ class _SnapshotIconDelegate(QStyledItemDelegate):
                     meta_text,
                 )
 
-        # Action chips in the card footer bottom-right (beside title/date).
+        # Action chips on their own row under the title (full-width name above).
         actions = _card_action_rects(rect)
         btn_font = painter.font()
         btn_font = _nudge_font(btn_font, delta=-1, floor=8)
@@ -193,39 +196,66 @@ class _SnapshotIconDelegate(QStyledItemDelegate):
             painter.drawText(btn_rect, int(Qt.AlignmentFlag.AlignCenter), label)
 
         footer_top = icon_rect.bottom() + 4
-        text_right = actions["preview"].left() - 8
+        # Full card width — buttons used to squeeze this to ~70px and elide
+        # default names like「2026-09-17 14:57」into「2026-09-1...」.
         text_rect = QRect(
             rect.left() + 10,
             footer_top,
-            max(40, text_right - (rect.left() + 10)),
-            22,
+            max(40, rect.width() - 20),
+            _FOOTER_TITLE_H,
         )
         painter.setPen(text_c)
         font = painter.font()
         font.setBold(selected)
         font = _nudge_font(font, delta=0, floor=9)
         painter.setFont(font)
+        title = QFontMetrics(font).elidedText(
+            text, Qt.TextElideMode.ElideRight, text_rect.width()
+        )
         painter.drawText(
             text_rect,
-            int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter | Qt.TextFlag.TextWordWrap),
-            text,
+            int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter),
+            title,
         )
         created_text = str(index.data(_ROLE_CREATED) or "").strip()
-        if created_text:
+        if created_text and not _created_redundant_with_name(text, created_text):
             painter.setPen(QColor(palette.get("text_muted", "#64748B")))
             sub_font = painter.font()
             sub_font.setBold(False)
             sub_font = _nudge_font(sub_font, delta=-1, floor=8)
             painter.setFont(sub_font)
+            # Sit on the button row left; chips stay right-aligned.
+            sub_rect = QRect(
+                text_rect.left(),
+                actions["preview"].top(),
+                max(40, actions["preview"].left() - text_rect.left() - 8),
+                _BTN_H,
+            )
+            sub = QFontMetrics(sub_font).elidedText(
+                created_text, Qt.TextElideMode.ElideRight, sub_rect.width()
+            )
             painter.drawText(
-                QRect(text_rect.left(), text_rect.bottom(), text_rect.width(), 18),
+                sub_rect,
                 int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter),
-                created_text,
+                sub,
             )
         painter.restore()
 
     def sizeHint(self, option: QStyleOptionViewItem, index) -> QSize:  # noqa: ANN001
         return QSize(_ITEM_W, _ITEM_H)
+
+
+def _created_redundant_with_name(name: str, created: str) -> bool:
+    """True when the footer title already carries the same day/minute stamp."""
+    n = str(name or "").strip().replace("T", " ")
+    c = str(created or "").strip().replace("T", " ")
+    if not n or not c:
+        return False
+    if n == c:
+        return True
+    # 「2026-09-17 14:57」vs ISO「2026-09-17 14:57:03」/ truncated created.
+    n16, c16 = n[:16], c[:16]
+    return n.startswith(c16) or c.startswith(n16)
 
 
 def _card_content_rect(item_rect: QRect) -> QRect:
@@ -243,13 +273,13 @@ def _thumb_rect(card_rect: QRect) -> QRect:
 
 
 def _card_action_rects(rect: QRect) -> dict[str, QRect]:
-    """Action chips in the card footer bottom-right (beside title/date)."""
+    """Action chips on a row under the full-width title (not beside it)."""
     thumb = _thumb_rect(rect)
     total = len(_CARD_ACTIONS) * _BTN_W + (len(_CARD_ACTIONS) - 1) * _BTN_GAP
     x = rect.right() - total - 10
-    footer_top = thumb.bottom() + 4
-    footer_h = max(_BTN_H, rect.bottom() - footer_top - 4)
-    y = footer_top + max(0, (footer_h - _BTN_H) // 2)
+    y = thumb.bottom() + 4 + _FOOTER_TITLE_H + _FOOTER_TITLE_GAP
+    # Keep chips inside the card if the item is unusually short.
+    y = min(y, rect.bottom() - _BTN_H - 6)
     out: dict[str, QRect] = {}
     for i, (key, _) in enumerate(_CARD_ACTIONS):
         out[key] = QRect(x + i * (_BTN_W + _BTN_GAP), y, _BTN_W, _BTN_H)

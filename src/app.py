@@ -5773,23 +5773,36 @@ class DeskTidyApp:
             skip_raise = True
 
         if skip_raise:
+            first_fence_hwnd = 0
             for fence in list(getattr(self, "fences", None) or ()):
                 try:
                     if bool(getattr(fence, "_desktidy_soft_parked", False)):
                         self._soft_show_fence_for_page(fence)
                     set_overlay_mouse_passthrough(fence, False)
+                    if not first_fence_hwnd:
+                        hwnd = self._fence_hwnd(fence)
+                        if hwnd:
+                            first_fence_hwnd = int(hwnd)
                 except RuntimeError:
                     continue
+            pet_hwnd = 0
+            pet = getattr(self, "pet_widget", None)
+            if pet is not None:
+                try:
+                    if pet.isVisible():
+                        pet_hwnd = int(pet.winId()) if pet.winId() else 0
+                except (RuntimeError, Exception):
+                    pet_hwnd = 0
+            # Still sink the public plate under live fences/pet — skip_raise only
+            # means "do not HWND_TOP the band over foreign apps", not "leave the
+            # full-desktop host above sibling overlays so it steals their clicks".
+            self._sink_public_host_below_overlays(
+                first_fence_hwnd, pet_hwnd=pet_hwnd
+            )
             return
 
         from src.desktop_shell_host import (
-            SWP_NOACTIVATE,
-            SWP_NOMOVE,
-            SWP_NOOWNERZORDER,
-            SWP_NOREDRAW,
-            SWP_NOSIZE,
             raise_overlay_in_desktop_band,
-            user32,
         )
 
         first_fence_hwnd = 0
@@ -5806,6 +5819,36 @@ class DeskTidyApp:
                     first_fence_hwnd = int(hwnd)
             except RuntimeError:
                 continue
+
+        pet_hwnd = 0
+        pet = getattr(self, "pet_widget", None)
+        if pet is not None:
+            try:
+                if pet.isVisible():
+                    pet_hwnd = int(pet.winId()) if pet.winId() else 0
+                    if pet_hwnd:
+                        raise_overlay_in_desktop_band(int(pet_hwnd))
+            except (RuntimeError, Exception):
+                pet_hwnd = 0
+
+        self._sink_public_host_below_overlays(first_fence_hwnd, pet_hwnd=pet_hwnd)
+
+    def _sink_public_host_below_overlays(
+        self, first_fence_hwnd: int = 0, *, pet_hwnd: int = 0
+    ) -> None:
+        """Park the full-desktop public plate under fences/pet and refresh holes.
+
+        Owner of host-vs-sibling Z + exclusion mask. ``present`` / setMask can
+        leave the host above fences; layered HTCLIENT then steals float clicks.
+        """
+        from src.desktop_shell_host import (
+            SWP_NOACTIVATE,
+            SWP_NOMOVE,
+            SWP_NOOWNERZORDER,
+            SWP_NOREDRAW,
+            SWP_NOSIZE,
+            user32,
+        )
 
         def _sink_below(widget, above_hwnd: int) -> None:
             if widget is None or not above_hwnd:
@@ -5836,28 +5879,26 @@ class DeskTidyApp:
                 pass
 
         host = getattr(self, "_public_icon_host", None)
-        # Prefer sinking the public plate under a live fence (OLE / 框选 order).
         if first_fence_hwnd:
             _sink_below(host, first_fence_hwnd)
-
-        pet_hwnd = 0
-        pet = getattr(self, "pet_widget", None)
-        if pet is not None:
-            try:
-                if pet.isVisible():
-                    pet_hwnd = int(pet.winId()) if pet.winId() else 0
-                    if pet_hwnd:
-                        raise_overlay_in_desktop_band(int(pet_hwnd))
-            except (RuntimeError, Exception):
-                pet_hwnd = 0
-
-        # No live fences: still park the full-desktop public plate under the pet
-        # so 框选 alpha / setMask cannot swallow pet clicks.
-        if not first_fence_hwnd and pet_hwnd:
+        elif pet_hwnd:
             _sink_below(host, pet_hwnd)
+        else:
+            # No fence/pet: still prefer vault buoy / page tip above the plate.
+            for attr in ("vault_launcher", "page_indicator", "vault_panel"):
+                tip = getattr(self, attr, None)
+                if tip is None:
+                    continue
+                try:
+                    if not tip.isVisible():
+                        continue
+                    hwnd = int(tip.winId()) if tip.winId() else 0
+                except RuntimeError:
+                    continue
+                if hwnd:
+                    _sink_below(host, hwnd)
+                    break
 
-        # Keep exclusion holes aligned with live fence/pet geometry (style apply /
-        # restack used to leave a stale full-desktop plate over side fences).
         if host is not None:
             try:
                 refresh = getattr(host, "refresh_click_mask", None)

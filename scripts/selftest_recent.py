@@ -3103,6 +3103,9 @@ def test_page_switch_click() -> None:
         assert "set_overlay_mouse_passthrough" in restore_src
         assert "ensure_live_fences_interactive" in restore_src
         assert "_public_icon_host" in inspect.getsource(
+            DeskTidyApp._sink_public_host_below_overlays
+        )
+        assert "_sink_public_host_below_overlays" in inspect.getsource(
             DeskTidyApp.ensure_live_fences_interactive
         )
         impl = inspect.getsource(DeskTidyApp._refresh_public_desktop_impl)
@@ -6557,23 +6560,27 @@ def test_layout_snapshot_desktidy() -> None:
         assert "_CARD_ACTIONS" in paint
         from src.ui.snapshot_widget import (
             _CARD_ACTIONS,
+            _FOOTER_TITLE_H,
+            _ITEM_H,
+            _ITEM_W,
             _THUMB_H,
             _card_action_rects,
             _card_content_rect,
+            _created_redundant_with_name,
             _hit_card_action,
             _thumb_rect,
         )
         from PyQt6.QtCore import QPoint, QRect
 
         assert [label for _, label in _CARD_ACTIONS] == ["预览", "应用", "删除"]
-        card = _card_content_rect(QRect(0, 0, 248, 200))
+        card = _card_content_rect(QRect(0, 0, _ITEM_W, _ITEM_H))
         thumb = _thumb_rect(card)
         rects = _card_action_rects(card)
         assert set(rects) == {"preview", "apply", "delete"}
         assert _hit_card_action(card, rects["apply"].center()) == "apply"
         assert _hit_card_action(card, QPoint(10, 10)) is None
-        # Chips sit in the footer bottom-right (beside title/date, not on the thumb).
-        assert rects["preview"].top() >= thumb.bottom()
+        # Chips sit under the full-width title row (not beside a squeezed name).
+        assert rects["preview"].top() >= thumb.bottom() + _FOOTER_TITLE_H
         assert rects["delete"].bottom() <= card.bottom()
         assert rects["delete"].right() <= card.right()
         assert rects["preview"].left() > thumb.left()
@@ -6581,11 +6588,16 @@ def test_layout_snapshot_desktidy() -> None:
         assert thumb.height() == _THUMB_H
         # Title stays left of the action row.
         assert rects["preview"].left() > card.left() + 40
+        assert _created_redundant_with_name("2026-09-17 14:57", "2026-09-17T14:57:03")
+        assert not _created_redundant_with_name("我的布局", "2026-09-17 14:57")
         paint = inspect.getsource(_SnapshotIconDelegate.paint)
         assert "_card_action_rects" in paint
+        assert "ElideRight" in paint
+        assert "_created_redundant_with_name" in paint
         assert "text_muted" in paint
         assert 'palette["muted"]' not in paint
         assert "btn_fill" in paint
+        assert "rect.width() - 20" in paint or "rect.width()-20" in paint.replace(" ", "")
         sheet = __import__("src.ui.styles", fromlist=["build_stylesheet"]).build_stylesheet("mist")
         assert "snapshotIconView::item" in sheet
         item_block = sheet.split("QListWidget#snapshotIconView::item {")[1].split("}")[0]
@@ -6697,6 +6709,8 @@ def test_layout_snapshot_desktidy() -> None:
 
         from src.ui.snapshot_widget import (
             SnapshotWidget,
+            _ITEM_H,
+            _ITEM_W,
             _card_action_rects,
             _card_content_rect,
             _item_row,
@@ -6712,7 +6726,7 @@ def test_layout_snapshot_desktidy() -> None:
         w.view.clear()
         item = QListWidgetItem("t")
         item.setData(Qt.ItemDataRole.UserRole, 0)  # row 0 must remain clickable
-        item.setSizeHint(__import__("PyQt6.QtCore", fromlist=["QSize"]).QSize(248, 200))
+        item.setSizeHint(__import__("PyQt6.QtCore", fromlist=["QSize"]).QSize(_ITEM_W, _ITEM_H))
         w.view.addItem(item)
         app.processEvents()
         assert _item_row(item) == 0

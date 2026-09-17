@@ -233,12 +233,18 @@ def test_soft_park_contracts() -> None:
     ensure_live = inspect.getsource(DeskTidyApp.ensure_live_fences_interactive)
     assert "raise_overlay_in_desktop_band" in ensure_live
     assert "pet_widget" in ensure_live
-    assert "_public_icon_host" in ensure_live
+    assert "_sink_public_host_below_overlays" in ensure_live
+    assert "_public_icon_host" in inspect.getsource(
+        DeskTidyApp._sink_public_host_below_overlays
+    )
     assert "_soft_show_fence_for_page" in ensure_live
     assert "set_overlay_mouse_passthrough" in ensure_live
     # Tray organize / refresh_public: raise only on Explorer desktop FG.
     assert "is_explorer_desktop_foreground" in ensure_live
     assert "skip_raise" in ensure_live
+    # skip_raise must still sink host (not leave full-desktop plate above floats).
+    skip_block = ensure_live.split("if skip_raise:", 1)[1].split("return", 1)[0]
+    assert "_sink_public_host_below_overlays" in skip_block
     raise_src = inspect.getsource(
         __import__("src.desktop_shell_host", fromlist=["x"]).raise_overlay_in_desktop_band
     )

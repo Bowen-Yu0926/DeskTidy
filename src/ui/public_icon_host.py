@@ -12,15 +12,17 @@ Hit testing (mouse):
 - Sparse layouts keep padded footprints so far wallpaper stays click-through —
   Explorer keeps native empty-desktop features (右键 / 粘贴 / 刷新).
 - When DeskTidy owns the desktop (``hide_shell_icons`` + icons present), expand
-  the mask to the full host minus fence/pet HWNDs so 框选 can start on empty
-  wallpaper (DefView cannot select our floats) without swallowing the desktop
-  pet. Empty-plate **LMB** starts 框选; empty-plate **RMB** must open Explorer's
-  real desktop menu (查看 / 排序 / 粘贴 / 个性化 / …) — never a thin filesystem
-  ``CreateViewObject`` substitute. When this session owns the plate
-  (``hide_shell_icons``), ListView is hidden so ``HTTRANSPARENT`` pass-through
-  cannot show a menu — keep HTCLIENT and forward via
-  ``request_desktop_background_menu`` + explorer-menu freeze. When shell icons
-  are still visible, empty RMB may ``HTTRANSPARENT`` through to DefView.
+  the mask to the full host minus fence/pet/vault/page-tip HWNDs so 框选 can
+  start on empty wallpaper (DefView cannot select our floats) without swallowing
+  sibling overlays. Empty-plate **LMB** starts 框选; empty-plate **RMB** must open
+  Explorer's real desktop menu (查看 / 排序 / 粘贴 / 个性化 / …) — never a thin
+  filesystem ``CreateViewObject`` substitute. When this session owns the plate
+  (``hide_shell_icons``), ListView is hidden so ``HTTRANSPARENT`` on *empty*
+  wallpaper cannot show a menu — keep HTCLIENT inside the carved mask and
+  forward via ``request_desktop_background_menu`` + explorer-menu freeze.
+  Points over fence/vault/tip exclusions still ``HTTRANSPARENT`` so siblings
+  receive clicks even when the host stacks above them. When shell icons are
+  still visible, empty RMB may ``HTTRANSPARENT`` through to DefView.
 - Each ``PublicIconWidget`` masks hits to glyph+caption only; transparent shelf
   margins fall through to this host so 框选 can start between overlapping shelves.
 - ``paintEvent`` fills *shelf-gap* pixels only (cluster mask minus glyph/caption
@@ -304,12 +306,48 @@ class PublicIconHost(QWidget):
                 continue
         return region
 
+    def _chrome_exclusion_region(self) -> QRegion:
+        """Vault buoy / panel / page tip — same band as fences, must stay clickable.
+
+        The full-desktop owned plate sits above these HWNDs in Z-order whenever
+        ``present`` / mask refresh re-raises the host. Without holes, layered
+        alpha + ``nativeEvent`` HTCLIENT swallowed buoy/tip clicks.
+        """
+        region = QRegion()
+        host_tl = self.geometry().topLeft()
+        chrome_names = {
+            "AccountVaultLauncher",
+            "AccountVaultWidget",
+            "PageIndicatorWidget",
+        }
+        for top in QApplication.topLevelWidgets():
+            if top.__class__.__name__ not in chrome_names:
+                continue
+            try:
+                if not top.isVisible():
+                    continue
+                if bool(getattr(top, "_desktidy_soft_parked", False)):
+                    continue
+                geo = top.frameGeometry()
+                tl = QPoint(
+                    int(geo.x() - host_tl.x()),
+                    int(geo.y() - host_tl.y()),
+                )
+                rect = QRect(tl, geo.size()).adjusted(-4, -4, 4, 4)
+                region = region.united(QRegion(rect))
+            except RuntimeError:
+                continue
+        return region
+
     def _overlay_exclusion_region(self) -> QRegion:
         """Union of other DefView-band overlays that must keep their own hits."""
         region = self._fence_exclusion_region()
         pet = self._pet_exclusion_region()
         if not pet.isEmpty():
             region = region.united(pet)
+        chrome = self._chrome_exclusion_region()
+        if not chrome.isEmpty():
+            region = region.united(chrome)
         return region
 
     def _icon_hit_region(self) -> QRegion:
@@ -410,12 +448,20 @@ class PublicIconHost(QWidget):
         PyQt6/Qt6 ``QRegion`` is not iterable (no ``rects()``). Use ``QPainterPath``.
         Skip redundant full-desktop floods when the mask is unchanged — keepalive
         used to ``update()`` every tick and freeze MainThread in paintEvent.
+
+        Always clear the dirty rect with ``CompositionMode_Source`` first — layered
+        translucent buffers keep stale alpha=1 ink after exclusion holes move,
+        which Win32 still hit-tests even when ``setMask`` punched a hole.
         """
         if self._painting_plate:
             return
         self._painting_plate = True
         painter = QPainter(self)
         try:
+            painter.setCompositionMode(
+                QPainter.CompositionMode.CompositionMode_Source
+            )
+            painter.fillRect(event.rect(), QColor(0, 0, 0, 0))
             region = self._hit_plate_region()
             if region.isEmpty():
                 return
@@ -736,11 +782,17 @@ class PublicIconHost(QWidget):
         return False
 
     def nativeEvent(self, eventType, message):  # noqa: N802
-        """Empty-plate RMB hit-test: never punch through an owned (icons-hidden) plate.
+        """Hit-test: empty owned plate stays HTCLIENT; overlay holes pass through.
 
         With ``hide_shell_icons``, SysListView32 is invisible — ``HTTRANSPARENT``
-        delivers RMB to a dead layer and no menu appears. Keep HTCLIENT so Qt
-        gets the click and ``eventFilter`` forwards ``WM_CONTEXTMENU`` to DefView.
+        on *empty wallpaper* delivers RMB to a dead layer and no menu appears.
+        Keep HTCLIENT inside ``hit_test_region`` so Qt gets the click and
+        ``eventFilter`` forwards ``WM_CONTEXTMENU`` to DefView.
+
+        Outside that region (fence / vault / page-tip exclusions) must still
+        ``HTTRANSPARENT``: the public host often stacks above sibling overlays,
+        and layered alpha ignores ``setMask`` holes — returning default HTCLIENT
+        for the whole HWND stole all float clicks.
 
         When shell icons are visible, empty gaps may still ``HTTRANSPARENT`` to
         live DefView while VK_RBUTTON is down.
@@ -772,12 +824,6 @@ class PublicIconHost(QWidget):
                 return False, 0
             if int(msg.message) != _WM_NCHITTEST:
                 return False, 0
-            # Owned plate: ListView hidden — pass-through cannot open a menu.
-            if self.session_owns_desktop_drops():
-                return False, 0
-            # Only pass through while the right button is down so LMB 框选 still hits us.
-            if not (ctypes.windll.user32.GetAsyncKeyState(_VK_RBUTTON) & 0x8000):
-                return False, 0
             try:
                 gx = ctypes.c_short(msg.lParam & 0xFFFF).value
                 gy = ctypes.c_short((msg.lParam >> 16) & 0xFFFF).value
@@ -786,6 +832,18 @@ class PublicIconHost(QWidget):
                 return False, 0
             if self._hit_public_icon_at(local):
                 return True, _HTCLIENT
+            # Owned plate: HTCLIENT only on the carved mask (框选 / empty RMB).
+            # Points over fence/vault/tip exclusions → HTTRANSPARENT so siblings win.
+            if self.session_owns_desktop_drops():
+                try:
+                    if self.hit_test_region().contains(local):
+                        return False, 0
+                except Exception:
+                    return False, 0
+                return True, _HTTRANSPARENT
+            # Only pass through while the right button is down so LMB 框选 still hits us.
+            if not (ctypes.windll.user32.GetAsyncKeyState(_VK_RBUTTON) & 0x8000):
+                return False, 0
             return True, _HTTRANSPARENT
         except Exception:
             # Never raise out of a Win32 callback (STATUS_FATAL_USER_CALLBACK_EXCEPTION).
