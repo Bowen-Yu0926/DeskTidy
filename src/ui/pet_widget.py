@@ -56,7 +56,12 @@ _SPRITE_H = 220
 _SPRITE_W = 180
 _STATUS_H = 0
 _BUBBLE_PAD = 8
-_MIN_BUBBLE_H = 28
+# Speech bubbles retired — ``say()`` is a no-op; keep slot constants at 0 so
+# page chips can sit on the hood without a gutter for text.
+_MIN_BUBBLE_H = 0
+_IDLE_BUBBLE_H = 0
+# Page chips hang this many px into the body slot (toward the hair).
+_PAGE_CLOUD_OVERLAP = 16
 _MENU_BTN = 22
 _ACTION_BTN = 30
 _ACTION_GAP = 4
@@ -226,7 +231,7 @@ class DesktopPetWidget(QWidget):
         self._wander_target_x: int | None = None
         self._bubble_text = ""
         self._bubble_until = 0.0
-        self._bubble_h = _MIN_BUBBLE_H
+        self._bubble_h = _IDLE_BUBBLE_H
         self._fx_hearts: list[tuple[float, float, float]] = []  # x,y,born
         self._fx_food: list[tuple[float, float, float]] = []
         self._hunger = 70.0
@@ -576,7 +581,8 @@ class DesktopPetWidget(QWidget):
             ordered[idx] = rect
             max_y = max(max_y, rect.bottom())
         rects = [r for r in ordered if r is not None]
-        band_h = max_y + _PAGE_BUBBLE_PAD + 2
+        # Hang the cloud toward the hair (no speech gutter — bubbles retired).
+        band_h = max(0, max_y + 2 - _PAGE_CLOUD_OVERLAP)
         total_w = max(
             left_pad + self._layout_body_width(),
             int(math.ceil(max_x)) + left_pad + spr_pad_l + _PAGE_BUBBLE_PAD,
@@ -731,18 +737,24 @@ class DesktopPetWidget(QWidget):
             return QRect()
         defs = self._action_defs()
         rows = max(1, (len(defs) + 1) // 2)
-        _ox, oy = self._body_origin()
+        # Align with 「⋯」 on the sprite, not the old chip↔hair gutter.
+        menu = self._menu_button_rect()
         return QRect(
             self._action_panel_origin_x(),
-            oy + self._bubble_h + 2,
+            menu.top(),
             self._action_panel_width(),
             rows * (_ACTION_BTN + _ACTION_GAP) + _ACTION_PAD,
         )
 
     def _menu_button_rect(self) -> QRect:
-        ox, oy = self._body_origin()
-        x = ox + self._body_width() - _MENU_BTN - 4
-        y = oy + self._bubble_h + 6
+        """⋯ hugs the pet sprite (head/shoulder), not the page-cloud gutter.
+
+        Anchoring to ``_body_origin`` + idle bubble left the chip floating in the
+        empty band above wait/sleep poses; users asked it closer to the figure.
+        """
+        sprite = self._sprite_dest_rect()
+        x = sprite.right() - _MENU_BTN - 2
+        y = sprite.top() + max(8, sprite.height() // 5)
         return QRect(x, y, _MENU_BTN, _MENU_BTN)
 
     def _wait_action_tip(self, resting: bool = False) -> str:
@@ -792,9 +804,9 @@ class DesktopPetWidget(QWidget):
     def _action_button_rect(self, index: int) -> QRect:
         col = index % 2
         row = index // 2
-        _ox, oy = self._body_origin()
+        menu = self._menu_button_rect()
         x = self._action_panel_origin_x() + _ACTION_PAD + col * (_ACTION_BTN + _ACTION_GAP)
-        y = oy + self._bubble_h + _ACTION_PAD + row * (_ACTION_BTN + _ACTION_GAP)
+        y = menu.top() + _ACTION_PAD + row * (_ACTION_BTN + _ACTION_GAP)
         return QRect(x, y, _ACTION_BTN, _ACTION_BTN)
 
     def _hit_action_id(self, local: QPoint) -> str | None:
@@ -891,26 +903,23 @@ class DesktopPetWidget(QWidget):
     # ------------------------------------------------------------------ speech / FX
 
     def say(self, text: str, *, msec: int = 3200) -> None:
-        self._bubble_text = str(text or "").strip()
-        self._bubble_until = time.monotonic() + max(0.8, msec / 1000.0)
-        self._recompute_bubble_height()
-        self.update()
+        """Speech bubbles removed — keep call sites, draw nothing."""
+        del text, msec
+        if self._bubble_text or self._bubble_h:
+            self._bubble_text = ""
+            self._bubble_until = 0.0
+            self._bubble_h = _IDLE_BUBBLE_H
+            self._apply_size()
+            self.update()
 
     def _recompute_bubble_height(self) -> None:
-        if not self._bubble_text:
-            # Trash widens the body — shrinking the bubble slot mid-throw relayouts
-            # the widget and makes the speech bubble flash.
-            if self._state == _STATE_TRASH:
-                return
-            self._bubble_h = _MIN_BUBBLE_H
-            self._apply_size()
+        """No-op: speech UI retired; keep height at the idle (zero) slot."""
+        if self._state == _STATE_TRASH and self._bubble_h:
             return
-        font = QFont("Microsoft YaHei UI", 9)
-        fm = QFontMetrics(font)
-        max_w = max(80, self._body_width() - 24)
-        br = fm.boundingRect(0, 0, max_w, 200, int(Qt.TextFlag.TextWordWrap), self._bubble_text)
-        self._bubble_h = max(_MIN_BUBBLE_H, br.height() + 14)
-        self._apply_size()
+        if self._bubble_h != _IDLE_BUBBLE_H or self._bubble_text:
+            self._bubble_text = ""
+            self._bubble_h = _IDLE_BUBBLE_H
+            self._apply_size()
 
     def _spawn_hearts(self, n: int = 4) -> None:
         now = time.monotonic()
@@ -1090,7 +1099,7 @@ class DesktopPetWidget(QWidget):
             self._anim.frame = 0
             self._trash_erase_prev = None
         elif not self._bubble_text:
-            self._bubble_h = _MIN_BUBBLE_H
+            self._bubble_h = _IDLE_BUBBLE_H
         if state != _STATE_TRASH:
             self._trash_erase_prev = None
         # Fall/dizzy/trash widen the sprite dest — resize + remask immediately.
@@ -1660,7 +1669,7 @@ class DesktopPetWidget(QWidget):
     def _sprite_dest_rect(self) -> QRect:
         ox, oy = self._body_origin()
         x = ox + 4
-        y = oy + self._bubble_h + 2
+        y = oy + self._bubble_h + (0 if self._bubble_h <= _IDLE_BUBBLE_H else 2)
         w = self._body_width() - 8
         h = self._sprite_h()
         if self._dragging:
@@ -1878,7 +1887,6 @@ class DesktopPetWidget(QWidget):
     def paintEvent(self, event) -> None:  # noqa: N802
         del event
         p = getattr(self, "_palette", get_theme_palette("mist"))
-        ink = QColor(p.get("text", "#1F2937"))
         now = time.monotonic()
 
         painter = QPainter(self)
@@ -1924,27 +1932,6 @@ class DesktopPetWidget(QWidget):
             character=self._character,
         )
 
-        if self._bubble_text:
-            bubble_rect = QRect(ox + 4, oy + 2, body_w - 8, bubble_h - 4)
-            painter.setPen(QPen(QColor(p.get("border", "#D5DCE7")), 1))
-            painter.setBrush(QColor(255, 255, 255, 238))
-            painter.drawRoundedRect(bubble_rect, 10, 10)
-            painter.setPen(ink)
-            font = QFont("Microsoft YaHei UI", 9)
-            painter.setFont(font)
-            painter.drawText(
-                bubble_rect.adjusted(10, 4, -10, -4),
-                int(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignHCenter | Qt.TextFlag.TextWordWrap),
-                self._bubble_text,
-            )
-            painter.setPen(QPen(QColor(p.get("border", "#D5DCE7")), 1))
-            painter.drawLine(
-                ox + body_w // 2 - 4,
-                oy + bubble_h,
-                ox + body_w // 2 + 4,
-                oy + bubble_h + 6,
-            )
-
         for hx, hy, born in self._fx_hearts:
             age = now - born
             alpha = max(0, int(220 * (1.0 - age / 1.1)))
@@ -1964,6 +1951,7 @@ class DesktopPetWidget(QWidget):
             py = oy + int(fy * (bubble_h + self._sprite_h()) - age * 28)
             painter.drawText(px, py, "🍱")
 
+        # Page chips + 「⋯」 only — speech bubbles retired.
         self._paint_page_bubbles(painter, p)
         self._paint_menu_chrome(painter, p)
         painter.end()

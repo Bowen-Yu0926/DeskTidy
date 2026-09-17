@@ -53,6 +53,16 @@ def test_host_contracts() -> None:
     assert "_full_host_region" not in inspect.getsource(public_icon_host.PublicIconHost)
     assert "_fence_exclusion_region" in inspect.getsource(public_icon_host.PublicIconHost)
     assert "_pet_exclusion_region" in inspect.getsource(public_icon_host.PublicIconHost)
+    assert "_chrome_exclusion_region" in inspect.getsource(public_icon_host.PublicIconHost)
+    chrome_excl = inspect.getsource(
+        public_icon_host.PublicIconHost._chrome_exclusion_region
+    )
+    assert "AccountVaultLauncher" in chrome_excl
+    assert "PageIndicatorWidget" in chrome_excl
+    overlay_excl = inspect.getsource(
+        public_icon_host.PublicIconHost._overlay_exclusion_region
+    )
+    assert "_chrome_exclusion_region" in overlay_excl
     assert "_work_area_region_local" in hit_src
     assert "virtual_desktop_work_region" in inspect.getsource(
         public_icon_host.PublicIconHost._work_area_region_local
@@ -69,6 +79,8 @@ def test_host_contracts() -> None:
     assert "_painting_plate" in paint_src
     assert "QPainterPath" in paint_src
     assert "addRegion" in paint_src
+    assert "CompositionMode_Source" in paint_src
+    assert "QColor(0, 0, 0, 0)" in paint_src or "QColor(0,0,0,0)" in paint_src.replace(" ", "")
     refresh_src = inspect.getsource(public_icon_host.PublicIconHost.refresh_click_mask)
     assert "_last_mask_region" in refresh_src
     assert "_last_plate_sig" in refresh_src
@@ -211,10 +223,32 @@ def test_host_owns_explorer_drops_when_shell_hidden() -> None:
 
                     return QSize(280, 320)
 
+            class AccountVaultLauncher:
+                def isVisible(self):
+                    return True
+
+                def geometry(self):
+                    from PyQt6.QtCore import QRect
+
+                    return QRect(700, 80, 56, 56)
+
+                def frameGeometry(self):
+                    return self.geometry()
+
+                def size(self):
+                    from PyQt6.QtCore import QSize
+
+                    return QSize(56, 56)
+
             with patch.object(
                 QApplication,
                 "topLevelWidgets",
-                return_value=[FenceWidget(), DesktopPetWidget(), host],
+                return_value=[
+                    FenceWidget(),
+                    DesktopPetWidget(),
+                    AccountVaultLauncher(),
+                    host,
+                ],
             ):
                 region = host.hit_test_region()
                 assert not region.isEmpty()
@@ -226,6 +260,8 @@ def test_host_owns_explorer_drops_when_shell_hidden() -> None:
                 # (public floats under wait/trash pads were undraggable before).
                 assert region.contains(QPoint(720, 550))
                 assert region.contains(QPoint(700, 500))  # far empty → our 框选 plate
+                # Vault buoy must stay clickable (host often Z-above the buoy).
+                assert not region.contains(QPoint(720, 100))
             pet_excl_src = inspect.getsource(
                 __import__(
                     "src.ui.public_icon_host", fromlist=["PublicIconHost"]
@@ -469,12 +505,19 @@ def test_empty_plate_rmb_passes_to_defview() -> None:
     assert "show_folder_background_menu" not in inspect.getsource(
         PublicIconHost.eventFilter
     )
-    # Owned plate must not punch through to a hidden ListView.
+    # Owned plate must not punch through empty wallpaper to a hidden ListView,
+    # but MUST HTTRANSPARENT over fence/vault exclusions (host often Z-above them).
     ne = inspect.getsource(PublicIconHost.nativeEvent)
     assert "session_owns_desktop_drops" in ne
+    assert "hit_test_region" in ne
+    assert "_HTTRANSPARENT" in ne
     assert "_VK_RBUTTON" in ne or "0x02" in ne
     assert "from_address" in ne
     assert "super().nativeEvent" not in ne
+    # Owned path must consult the carved mask — not blanket (False, 0).
+    owned_idx = ne.index("session_owns_desktop_drops")
+    assert "hit_test_region" in ne[owned_idx:]
+    assert "_HTTRANSPARENT" in ne[owned_idx:]
     # Leftover empty RMB → DefView; freeze until menu dismisses (not end_later 250).
     ef = inspect.getsource(PublicIconHost.eventFilter)
     assert "_forward_empty_plate_rmb" in ef
