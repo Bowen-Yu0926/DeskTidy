@@ -1316,17 +1316,28 @@ class DeskTidyApp:
             # public floats share one host HWND).
             self._trim_parked_overlays(max_public=15, max_fences=3)
 
+    @staticmethod
+    def _pop_oldest(mapping: dict) -> tuple[Any, Any]:
+        """Pop the first-inserted (oldest) item from a plain dict.
+
+        dict.popitem() takes no arguments; only OrderedDict supports
+        ``popitem(last=False)``. DeskTidy uses plain dicts for parked
+        overlays, so pop the first key explicitly (insertion-ordered).
+        """
+        key = next(iter(mapping))
+        return key, mapping.pop(key)
+
     def _trim_parked_overlays(
         self, *, max_public: int | None = None, max_fences: int | None = None
     ) -> None:
         pub_cap = int(max_public if max_public is not None else self._max_parked_public_icons)
         fence_cap = int(max_fences if max_fences is not None else self._max_parked_fences)
         while len(self._parked_public_icons) > pub_cap:
-            _, victim = self._parked_public_icons.popitem(last=False)
+            _, victim = self._pop_oldest(self._parked_public_icons)
             if victim is not None:
                 self._retire_overlay_widget(victim)
         while len(self._parked_fences) > fence_cap:
-            _, victim = self._parked_fences.popitem(last=False)
+            _, victim = self._pop_oldest(self._parked_fences)
             if victim is not None:
                 self._retire_overlay_widget(victim)
 
@@ -2550,12 +2561,48 @@ class DeskTidyApp:
         except Exception:
             pass
 
+    def _release_stuck_grabs(self) -> None:
+        """Release any orphaned mouse/keyboard grabs left by interrupted marquee.
+
+        ``_begin_marquee`` calls ``grabMouse``; if the operation is interrupted
+        (crash, page switch without Escape, or a modal dialog popping up),
+        the grab stays active and silently swallows every click on the settings
+        window — the user sees「弹窗点不了」. Aborting the marquee on the public
+        host plus a global grabber release covers fence/screenshot grabs too.
+        """
+        from PyQt6.QtWidgets import QWidget
+
+        host = getattr(self, "_public_icon_host", None)
+        if host is not None:
+            try:
+                abort = getattr(host, "_abort_marquee", None)
+                if callable(abort):
+                    abort()
+            except RuntimeError:
+                pass
+        # Fence / screenshot overlays also grab — release any survivor.
+        try:
+            grabber = QWidget.mouseGrabber()
+            if grabber is not None:
+                grabber.releaseMouse()
+        except (RuntimeError, Exception):
+            pass
+        try:
+            kb = QWidget.keyboardGrabber()
+            if kb is not None:
+                kb.releaseKeyboard()
+        except (RuntimeError, Exception):
+            pass
+
     def _on_settings_shown(self) -> None:
         """Main window opened — freeze overlay thrashing; sink once to desktop band."""
         now = time.perf_counter()
         if now - float(getattr(self, "_settings_shown_at", 0.0)) < 0.08:
             return
         self._settings_shown_at = now
+        # An interrupted marquee (crash / page switch) leaves grabMouse active
+        # and silently swallows all clicks on the settings window.
+        self._release_stuck_grabs()
         # HWND_BOTTOM sink — never insert just below the settings HWND (that
         # covers VS Code and every other app under the settings window).
         # Further show()/attach while settings is open also sinks via
@@ -3093,7 +3140,7 @@ class DeskTidyApp:
             self._retire_overlay_widget(old)
         self._parked_public_icons[key] = icon
         while len(self._parked_public_icons) > self._max_parked_public_icons:
-            _, victim = self._parked_public_icons.popitem(last=False)
+            _, victim = self._pop_oldest(self._parked_public_icons)
             if victim is not icon:
                 self._retire_overlay_widget(victim)
         if host is not None:
@@ -3170,7 +3217,7 @@ class DeskTidyApp:
             self._retire_overlay_widget(old)
         self._parked_fences[fence_id] = fence
         while len(self._parked_fences) > self._max_parked_fences:
-            _, victim = self._parked_fences.popitem(last=False)
+            _, victim = self._pop_oldest(self._parked_fences)
             if victim is not fence:
                 self._retire_overlay_widget(victim)
 
@@ -4496,7 +4543,10 @@ class DeskTidyApp:
                 raise RuntimeError(msg or "无法访问账号服务器")
             return True
 
-        job = VaultApiJob(work, self.vault_panel)
+        # Parent to self (the app, process lifetime) — NOT to self.vault_panel.
+        # _on_vault_server_unreachable destroys the panel, which would kill
+        # this QThread mid-run ("QThread: Destroyed while thread is still running").
+        job = VaultApiJob(work, self)
 
         def on_ok(_result: object) -> None:
             self._vault_probe_busy = False

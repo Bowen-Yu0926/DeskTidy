@@ -6,6 +6,7 @@ from collections.abc import Callable
 from typing import Any
 
 from PyQt6.QtCore import QObject, QThread, pyqtSignal, pyqtSlot
+from PyQt6.QtWidgets import QApplication
 
 from src.account_vault_api import VaultApiError
 
@@ -67,7 +68,15 @@ class VaultAsyncRunner(QObject):
         self._pending_ok = on_ok
         self._pending_err = on_err
         self.busy_changed.emit(True, busy_text)
-        job = VaultApiJob(fn, self)
+        # Parent the job to QApplication (process lifetime) — NOT to self.
+        # When the host widget is destroyed (release_lazy_pages / page switch),
+        # a self-parented QThread is killed mid-run: callbacks never fire,
+        # the settings checkbox stays disabled, and Qt prints
+        # "QThread: Destroyed while thread is still running".
+        # Parenting to the app lets the job finish naturally; Qt auto-
+        # disconnects the slots (receiver destroyed) so nothing unsafe runs.
+        app = QApplication.instance()
+        job = VaultApiJob(fn, app if app is not None else None)
         job.succeeded.connect(self._on_job_succeeded)
         job.failed.connect(self._on_job_failed)
         job.finished.connect(job.deleteLater)
