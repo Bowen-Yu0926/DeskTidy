@@ -2051,6 +2051,12 @@ class DeskTidyApp:
         self._last_fg_was_desktop = True
         self._overlays_parked_for_app_fg = False
         self._remap_hidden_overlay_hwnds()
+        # Virtual-desktop switch / Win+D can leave a stale grabMouse from an
+        # interrupted marquee, and the public host click mask can reference
+        # HWNDs that no longer exist. Release grabs + refresh the mask so
+        # desktop icons stay clickable after the switch.
+        self._release_stuck_grabs()
+        self._refresh_public_host_click_mask()
 
         needs_repair = self._overlays_need_shell_repair_light()
         if needs_repair:
