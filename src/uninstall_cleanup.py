@@ -375,7 +375,6 @@ def purge_user_data(*, install_dir: Path | None = None) -> None:
     except Exception:
         pass
 
-    _delete_leftover_shortcuts()
     _notify_custom_data_dirs(custom_dirs)
 
 
@@ -395,6 +394,9 @@ def run_uninstall_cleanup() -> int:
         time.sleep(0.4)
         _purge_shell_and_autostart()
         _restore_shell_desktop()
+        # Shortcuts are app artifacts, not user data — always remove them
+        # so DeskNote.lnk / DeskTidy.lnk do not survive a normal uninstall.
+        _delete_leftover_shortcuts()
         if purge:
             purge_user_data()
     except Exception:
@@ -405,6 +407,10 @@ def run_uninstall_cleanup() -> int:
             pass
         try:
             _purge_shell_and_autostart()
+        except Exception:
+            pass
+        try:
+            _delete_leftover_shortcuts()
         except Exception:
             pass
         if purge:
