@@ -2925,6 +2925,17 @@ def test_page_switch_click() -> None:
         assert "raise_band: bool" in chrome or "*, raise_band" in chrome
         assert "not raise_band" in chrome
         assert "_foreign_app_owns_foreground" in chrome
+        # Open vault/todo after pet so raise_band does not bury panels under sprite.
+        assert chrome.index("chrome_widgets.append(pet)") < chrome.index(
+            "chrome_widgets.append(vault)"
+        )
+        assert callable(DeskTidyApp._raise_open_tool_panels_above_pet)
+        assert "_raise_open_tool_panels_above_pet" in inspect.getsource(
+            DeskTidyApp._on_vault_requested
+        )
+        assert "_raise_open_tool_panels_above_pet" in inspect.getsource(
+            DeskTidyApp.ensure_live_fences_interactive
+        )
         chrome_may = inspect.getsource(DeskTidyApp._page_chrome_may_show)
         assert "_overlays_parked_for_app_fg" not in chrome_may
         assert "_desk_app_ui_open" in chrome_may
@@ -3651,7 +3662,17 @@ def test_page_switch_click() -> None:
         assert "widget.hide()" not in sink
         assert "_keep_overlays_under_apps" in sink
         assert "_remap_hidden_overlay_hwnds" in sink
+        assert "_release_stuck_grabs" in sink
+        assert "_passthrough_public_host_for_foreign_fg" not in sink
+        assert "set_overlay_mouse_passthrough(host" not in sink
         assert "_ensure_page_chrome_visible(raise_band=True)" not in sink
+        release = inspect.getsource(DeskTidyApp._release_stuck_grabs)
+        assert "ReleaseCapture" in release
+        recover = inspect.getsource(DeskTidyApp._recover_from_desktop_foreground)
+        assert "_ensure_public_host_mouse_opaque" in recover
+        assert callable(DeskTidyApp._ensure_public_host_mouse_opaque)
+        live = inspect.getsource(DeskTidyApp.ensure_live_fences_interactive)
+        assert "_ensure_public_host_mouse_opaque" in live
         desk_fg = inspect.getsource(
             __import__("src.win_shell", fromlist=["x"]).is_desktop_foreground
         )

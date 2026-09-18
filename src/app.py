@@ -2056,6 +2056,9 @@ class DeskTidyApp:
         # HWNDs that no longer exist. Release grabs + refresh the mask so
         # desktop icons stay clickable after the switch.
         self._release_stuck_grabs()
+        # Never leave WS_EX_TRANSPARENT on the public host — that bit is
+        # per-HWND and makes every child public float unclickable.
+        self._ensure_public_host_mouse_opaque()
         self._refresh_public_host_click_mask()
 
         needs_repair = self._overlays_need_shell_repair_light()
@@ -2274,6 +2277,8 @@ class DeskTidyApp:
             self._desk_app_ui_open() and self._desk_app_owns_foreground()
         ):
             return
+        # Always drop orphaned capture first — foreign modals must stay clickable.
+        self._release_stuck_grabs()
         was_hidden = bool(getattr(self, "_overlays_parked_for_app_fg", False))
         self._overlays_parked_for_app_fg = False
         if was_hidden and not self._exiting and not self._icons_hidden:
@@ -2292,6 +2297,8 @@ class DeskTidyApp:
         self._keep_overlays_under_apps()
         # Never HWND_TOP chrome here: Progman-owned raise used to lift fences
         # over the foreign app a few seconds later (keepalive / FG sink).
+        # Do NOT set WS_EX_TRANSPARENT on the public host here — one HWND owns
+        # all public floats; click-through would make desktop files unselectable.
 
     def _park_overlays_for_foreign_app(self) -> None:
         """Compat alias — foreign FG no longer hides; sink under apps instead."""
@@ -2573,8 +2580,9 @@ class DeskTidyApp:
         ``_begin_marquee`` calls ``grabMouse``; if the operation is interrupted
         (crash, page switch without Escape, or a modal dialog popping up),
         the grab stays active and silently swallows every click on the settings
-        window — the user sees「弹窗点不了」. Aborting the marquee on the public
-        host plus a global grabber release covers fence/screenshot grabs too.
+        window — and on foreign app tips such as WeChat「我知道了」. Aborting
+        the marquee on the public host plus a global grabber release covers
+        fence/screenshot grabs too.
         """
         from PyQt6.QtWidgets import QWidget
 
@@ -2598,6 +2606,31 @@ class DeskTidyApp:
             if kb is not None:
                 kb.releaseKeyboard()
         except (RuntimeError, Exception):
+            pass
+        # Win32 SetCapture outlives Qt grabber bookkeeping on some paths.
+        try:
+            import ctypes
+
+            if ctypes.windll.user32.GetCapture():
+                ctypes.windll.user32.ReleaseCapture()
+        except Exception:
+            pass
+
+    def _ensure_public_host_mouse_opaque(self) -> None:
+        """Clear stuck WS_EX_TRANSPARENT on the shared public-icon host.
+
+        Soft-park / a short-lived foreign-FG experiment used host-wide
+        click-through; because every public float shares that HWND, the bit
+        made desktop files appear frozen until a full restart.
+        """
+        host = getattr(self, "_public_icon_host", None)
+        if host is None:
+            return
+        try:
+            from src.win_shell import set_overlay_mouse_passthrough
+
+            set_overlay_mouse_passthrough(host, False)
+        except Exception:
             pass
 
     def _on_settings_shown(self) -> None:
@@ -4459,6 +4492,7 @@ class DeskTidyApp:
             panel.raise_()
             panel.reload()
             self._ensure_page_chrome_visible(raise_band=True)
+            self._raise_open_tool_panels_above_pet()
         except RuntimeError:
             pass
 
@@ -4626,6 +4660,7 @@ class DeskTidyApp:
                 return
             panel.raise_panel()
             self._ensure_page_chrome_visible(raise_band=True)
+            self._raise_open_tool_panels_above_pet()
         except RuntimeError:
             pass
 
@@ -5818,6 +5853,9 @@ class DeskTidyApp:
         """
         from src.win_shell import set_overlay_mouse_passthrough
 
+        # Host-wide WS_EX_TRANSPARENT would click-through every public float.
+        self._ensure_public_host_mouse_opaque()
+
         # Opaque + clickable always; band raise only on true Explorer desktop FG.
         skip_raise = True
         try:
@@ -5888,6 +5926,30 @@ class DeskTidyApp:
                 pet_hwnd = 0
 
         self._sink_public_host_below_overlays(first_fence_hwnd, pet_hwnd=pet_hwnd)
+        # Pet is raised above fences; open vault/todo must stay above the pet.
+        self._raise_open_tool_panels_above_pet()
+
+    def _raise_open_tool_panels_above_pet(self) -> None:
+        """Keep visible vault/todo panels above the desktop pet sprite."""
+        from src.desktop_shell_host import raise_overlay_in_desktop_band
+
+        for attr in ("todo_panel", "vault_panel"):
+            panel = getattr(self, attr, None)
+            if panel is None:
+                continue
+            try:
+                if not panel.isVisible():
+                    continue
+                hwnd = int(panel.winId()) if panel.winId() else 0
+            except RuntimeError:
+                continue
+            if not hwnd:
+                continue
+            try:
+                raise_overlay_in_desktop_band(int(hwnd))
+                panel.raise_()
+            except (RuntimeError, Exception):
+                continue
 
     def _sink_public_host_below_overlays(
         self, first_fence_hwnd: int = 0, *, pet_hwnd: int = 0
@@ -6155,19 +6217,6 @@ class DeskTidyApp:
             chrome_widgets.append(self.page_indicator)
         if self.dock and self.settings.get("dock", {}).get("enabled"):
             chrome_widgets.append(self.dock)
-        todo = getattr(self, "todo_panel", None)
-        if todo is not None:
-            from src.todos import desktop_todos_enabled
-
-            if desktop_todos_enabled(self.settings):
-                chrome_widgets.append(todo)
-        vault = getattr(self, "vault_panel", None)
-        if vault is not None:
-            try:
-                if vault.isVisible():
-                    chrome_widgets.append(vault)
-            except RuntimeError:
-                pass
         launcher = getattr(self, "vault_launcher", None)
         if launcher is not None:
             from src.account_vault import account_vault_enabled
@@ -6180,6 +6229,24 @@ class DeskTidyApp:
 
             if desktop_pet_visible(self.settings):
                 chrome_widgets.append(pet)
+        # Open tool panels last — pet used to be appended after vault/todo, so
+        # raise_band=True buried the panel under the sprite (「浮窗在宠物下面」).
+        todo = getattr(self, "todo_panel", None)
+        if todo is not None:
+            from src.todos import desktop_todos_enabled
+
+            try:
+                if desktop_todos_enabled(self.settings) and todo.isVisible():
+                    chrome_widgets.append(todo)
+            except RuntimeError:
+                pass
+        vault = getattr(self, "vault_panel", None)
+        if vault is not None:
+            try:
+                if vault.isVisible():
+                    chrome_widgets.append(vault)
+            except RuntimeError:
+                pass
         for tip in chrome_widgets:
             try:
                 if not tip.isVisible():
