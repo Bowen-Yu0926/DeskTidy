@@ -806,6 +806,16 @@ class DeskTidyApp:
                 continue
             self._warmup_one_offpage_fence(fence_cfg, sync_icons=True)
             warmed += 1
+        try:
+            get_logger().info(
+                "[SWDBG] warmup page=%s warmed=%d live=%d parked=%d",
+                page_id,
+                warmed,
+                len(self.fences),
+                len(getattr(self, "_parked_fences", {}) or {}),
+            )
+        except Exception:
+            pass
         return warmed
 
     def _warmup_offpage_fences(self) -> None:
@@ -3033,6 +3043,16 @@ class DeskTidyApp:
         """
         from src.win_shell import set_overlay_mouse_passthrough
 
+        try:
+            get_logger().info(
+                "[SHDBG] soft_hide fid=%s hwnd=%s pending=%s batch=%s",
+                str(fence.config.get("id") or ""),
+                self._fence_hwnd(fence),
+                bool(getattr(self, "_page_switch_ensure_pending", False)),
+                bool(getattr(self, "_page_switch_geo_batch", None) is not None),
+            )
+        except Exception:
+            pass
         try:
             # Click-through while still mapped (batch hide commits later).
             set_overlay_mouse_passthrough(fence, True)
@@ -5335,6 +5355,9 @@ class DeskTidyApp:
             if timer is not None:
                 timer.stop()
             self.hotkey_manager.unregister_all()
+            from src.desktop_ll_keyboard import clear_chord_handlers
+
+            clear_chord_handlers()
 
     def _on_hotkey_capture_ended(self) -> None:
         self._hotkey_capture_depth = max(0, int(getattr(self, "_hotkey_capture_depth", 0)) - 1)
@@ -5348,6 +5371,9 @@ class DeskTidyApp:
             shortcut.deleteLater()
         self._app_shortcuts.clear()
         self.hotkey_manager.unregister_all()
+        from src.desktop_ll_keyboard import clear_chord_handlers
+
+        clear_chord_handlers()
 
         hotkeys = self.settings.get("hotkeys", {})
         # Extension checkboxes only control page-bar (and tray) chrome — hotkeys
@@ -5408,6 +5434,8 @@ class DeskTidyApp:
                 shortcut.activated.connect(callback)
                 self._app_shortcuts.append(shortcut)
 
+        self._register_hotkey_chords(hotkeys)
+
         if hotkeys_changed:
             try:
                 save_settings(self.settings)
@@ -5435,6 +5463,46 @@ class DeskTidyApp:
             ext_edit = ext_edits.get(action)
             if ext_edit is not None:
                 ext_edit.setText(key)
+
+    def _register_hotkey_chords(self, hotkeys: dict) -> None:
+        """LL-hook fallback so modifier-combo global hotkeys still fire while
+        another app runs in exclusive fullscreen (RegisterHotKey WM_HOTKEY is
+        not delivered in that state). The shared WH_KEYBOARD_LL hook sees all
+        input regardless of focus.  Bare F-keys are already polled via
+        GetAsyncKeyState (works system-wide), so only modifier combos need this.
+        """
+        from src.desktop_ll_keyboard import register_chord_handler
+        from src.hotkey_manager import _parse_hotkey as parse_hotkey
+
+        failed = {a for a, _ in self.hotkey_manager.failed_bindings}
+        actions = (
+            ("organize", self._do_organize),
+            ("toggle_fences", self._toggle_fences_visibility),
+            ("toggle_icons", self._toggle_icons_and_fences),
+            ("peek_fences", self._toggle_peek),
+            ("page_next", self.next_page),
+            ("page_prev", self.prev_page),
+            ("screenshot", self.screenshot_manager.start_capture),
+            ("show_screenshot", self._hotkey_show_last_screenshot),
+            ("screen_record", self.screen_record_manager.toggle_recording),
+            ("file_search", self._toggle_file_search),
+            ("calculator", self._on_calculator_requested),
+        )
+        for action, cb in actions:
+            key = str(hotkeys.get(action, "") or "").strip()
+            if not key or action in failed:
+                continue
+            parsed = parse_hotkey(key)
+            if parsed is None:
+                continue
+            modifiers, vk = parsed
+            if modifiers == 0:
+                continue
+
+            def _deferred(cb=cb) -> None:
+                QTimer.singleShot(0, cb)
+
+            register_chord_handler(modifiers, vk, _deferred)
 
     def _notify_user(self, text: str) -> None:
         tray = getattr(self, "tray", None)
@@ -5593,6 +5661,18 @@ class DeskTidyApp:
     def switch_page(self, page_id: int) -> None:
         started = time.perf_counter()
         page_id = int(page_id)
+        try:
+            get_logger().info(
+                "[SWDBG] switch_page to=%s fences=%d parked=%d should_show=%s fg_foreign=%s",
+                page_id,
+                len(self.fences),
+                len(getattr(self, "_parked_fences", {}) or {}),
+                bool(self._fences_should_show()),
+                bool(self._foreign_app_owns_foreground()),
+            )
+        except Exception:
+            pass
+        self._release_stuck_grabs()
         # One settings write: leaving-page geometry stays in memory, then
         # current_page + layout persist together (two json.dump's stalled the click).
         if self.fences:
@@ -6343,6 +6423,21 @@ class DeskTidyApp:
         self._remap_hidden_overlay_hwnds()
 
         for fence in list(self.fences):
+            _swdbg_hwnd = self._fence_hwnd(fence)
+            try:
+                get_logger().info(
+                    "[SWDBG] ensure fid=%s hwnd=%s attached=%s w32vis=%s qtvis=%s soft=%s br=%s stuck=%s",
+                    str(fence.config.get("id") or ""),
+                    bool(_swdbg_hwnd),
+                    bool(_swdbg_hwnd and is_attached_to_desktop(_swdbg_hwnd)),
+                    bool(overlay_win32_visible(fence)),
+                    fence.isVisible(),
+                    bool(getattr(fence, "_desktidy_soft_parked", False)),
+                    bool(getattr(fence, "_desktidy_batch_reveal", False)),
+                    bool(_swdbg_hwnd and is_stuck_under_wallpaper(_swdbg_hwnd)),
+                )
+            except Exception:
+                pass
             try:
                 if bool(getattr(fence, "_desktidy_soft_parked", False)):
                     continue
@@ -6398,7 +6493,46 @@ class DeskTidyApp:
             if self._page_chrome_needs_raise():
                 self._ensure_page_chrome_visible(raise_band=True)
 
+    def _show_desktop_if_foreign_fg(self) -> None:
+        """If a foreign app is fullscreen / foreground, bring the desktop to front."""
+        if not self._foreign_app_owns_foreground():
+            return
+        try:
+            import ctypes
+
+            user32 = ctypes.windll.user32
+            kernel32 = ctypes.windll.kernel32
+
+            # Minimize the foreground window first.
+            fg = int(user32.GetForegroundWindow() or 0)
+            if fg:
+                user32.ShowWindow(fg, 6)  # SW_MINIMIZE
+
+            # After minimizing, the taskbar (Shell_TrayWnd) may become
+            # foreground instead of the desktop.  Use AttachThreadInput +
+            # SetForegroundWindow on Progman to reliably bring the desktop
+            # to the front.  Do NOT call BringWindowToTop — that raises
+            # Progman above DeskTidy overlays and makes them unclickable.
+            import win32gui
+
+            progman = int(win32gui.FindWindow("Progman", None) or 0)
+            if progman:
+                fg2 = int(user32.GetForegroundWindow() or 0)
+                fg_tid = int(user32.GetWindowThreadProcessId(fg2, None) or 0)
+                our_tid = int(kernel32.GetCurrentThreadId())
+                attached = False
+                if fg_tid and fg_tid != our_tid:
+                    attached = bool(user32.AttachThreadInput(our_tid, fg_tid, True))
+                try:
+                    user32.SetForegroundWindow(progman)
+                finally:
+                    if attached:
+                        user32.AttachThreadInput(our_tid, fg_tid, False)
+        except Exception:
+            pass
+
     def next_page(self) -> None:
+        self._show_desktop_if_foreign_fg()
         pages = self._get_pages()
         if len(pages) <= 1:
             return
@@ -6412,6 +6546,7 @@ class DeskTidyApp:
         self.switch_page(next_id)
 
     def prev_page(self) -> None:
+        self._show_desktop_if_foreign_fg()
         pages = self._get_pages()
         if len(pages) <= 1:
             return
@@ -6838,6 +6973,9 @@ class DeskTidyApp:
     ) -> None:
         started = time.perf_counter()
         page_switch = bool(getattr(self, "_page_switch_ensure_pending", False))
+        if page_switch and getattr(self, "_page_switch_geo_batch", None) is None:
+            self._page_switch_ensure_pending = False
+            page_switch = False
         # switch_page already flushed the leaving page; skip a second sync write.
         if self.fences and not page_switch:
             self._save_fence_layout(immediate=True)
