@@ -62,6 +62,29 @@ _SHIFT_VKS = frozenset({VK_SHIFT, VK_LSHIFT, VK_RSHIFT})
 _ALT_VKS = frozenset({VK_MENU, VK_LMENU, VK_RMENU})
 _CTRL_CHORD_GRACE_S = 0.06
 
+MOD_ALT = 0x0001
+MOD_CONTROL = 0x0002
+MOD_SHIFT = 0x0004
+MOD_WIN = 0x0008
+_VK_LWIN = 0x5B
+_VK_RWIN = 0x5C
+
+_CHORD_GATE_S = 0.35
+
+
+class _ChordHandler:
+    __slots__ = ("modifiers", "vk", "callback", "last_fired", "down")
+
+    def __init__(self, modifiers: int, vk: int, callback: Callable[[], None]) -> None:
+        self.modifiers = modifiers
+        self.vk = vk
+        self.callback = callback
+        self.last_fired = 0.0
+        self.down = False
+
+
+_chord_handlers: list[_ChordHandler] = []
+
 
 class KBDLLHOOKSTRUCT(ctypes.Structure):
     _fields_ = [
@@ -169,6 +192,58 @@ def shift_physically_down() -> bool:
         return False
 
 
+def _chord_modifiers_match(want: int) -> bool:
+    want_ctrl = bool(want & MOD_CONTROL)
+    want_alt = bool(want & MOD_ALT)
+    want_shift = bool(want & MOD_SHIFT)
+    have_ctrl = ctrl_physically_down()
+    have_alt = alt_physically_down()
+    have_shift = shift_physically_down()
+    if want_ctrl != have_ctrl or want_alt != have_alt or want_shift != have_shift:
+        return False
+    if not (want & MOD_WIN):
+        return True
+    try:
+        have_win = bool(
+            (user32.GetAsyncKeyState(_VK_LWIN) & 0x8000)
+            or (user32.GetAsyncKeyState(_VK_RWIN) & 0x8000)
+        )
+    except Exception:
+        have_win = False
+    return have_win
+
+
+def _hook_needed() -> bool:
+    return bool(_subscribers or _chord_handlers)
+
+
+def _ensure_ll_hook() -> None:
+    global _proc, _hook_id
+    if _hook_id:
+        return
+    if _proc is None:
+        _proc = LowLevelKeyboardProc(_dispatch)
+    ctypes.set_last_error(0)
+    hook = user32.SetWindowsHookExW(WH_KEYBOARD_LL, _proc, None, 0)
+    if not hook:
+        ctypes.set_last_error(0)
+        hook = user32.SetWindowsHookExW(
+            WH_KEYBOARD_LL, _proc, kernel32.GetModuleHandleW(None), 0
+        )
+    _hook_id = hook or None
+
+
+def _maybe_unhook_ll() -> None:
+    global _hook_id
+    if not _hook_id or _hook_needed():
+        return
+    try:
+        user32.UnhookWindowsHookEx(_hook_id)
+    except Exception:
+        pass
+    _hook_id = None
+
+
 def _dispatch(n_code: int, w_param: int, l_param: int) -> int:
     eat = False
     if n_code >= 0:
@@ -201,6 +276,35 @@ def _dispatch(n_code: int, w_param: int, l_param: int) -> int:
                             eat = True
                     except Exception:
                         pass
+
+        # Global chord fallback — fires when the pressed key + modifiers match a
+        # registered chord. RegisterHotKey's WM_HOTKEY is not delivered while
+        # another app runs in exclusive fullscreen; the LL hook sees all input.
+        if _chord_handlers and vk and not (flags & LLKHF_INJECTED):
+            if wp in (WM_KEYDOWN, WM_SYSKEYDOWN):
+                for h in tuple(_chord_handlers):
+                    if h.vk != vk:
+                        continue
+                    if not _chord_modifiers_match(h.modifiers):
+                        h.down = False
+                        continue
+                    # Chord matches — consume so the focused app never sees it
+                    # (parity with a successful RegisterHotKey).
+                    eat = True
+                    import time
+
+                    now = time.monotonic()
+                    if not h.down and (now - h.last_fired) >= _CHORD_GATE_S:
+                        h.last_fired = now
+                        h.down = True
+                        try:
+                            h.callback()
+                        except Exception:
+                            pass
+            elif wp in (WM_KEYUP, WM_SYSKEYUP):
+                for h in _chord_handlers:
+                    if h.vk == vk:
+                        h.down = False
     if eat:
         return 1
     return int(user32.CallNextHookEx(_hook_id, n_code, w_param, l_param))
@@ -208,45 +312,63 @@ def _dispatch(n_code: int, w_param: int, l_param: int) -> int:
 
 def register_ll_keyboard_handler(handler: Handler, *, force: bool = False) -> None:
     """Subscribe to the shared LL keyboard hook (idempotent)."""
-    global _proc, _hook_id
     if handler not in _subscribers:
         _subscribers.append(handler)
-    if _hook_id and not force:
-        return
     if force and _hook_id:
         try:
             user32.UnhookWindowsHookEx(_hook_id)
         except Exception:
             pass
         _hook_id = None
-    if _proc is None:
-        _proc = LowLevelKeyboardProc(_dispatch)
-    ctypes.set_last_error(0)
-    hook = user32.SetWindowsHookExW(WH_KEYBOARD_LL, _proc, None, 0)
-    if not hook:
-        ctypes.set_last_error(0)
-        hook = user32.SetWindowsHookExW(
-            WH_KEYBOARD_LL, _proc, kernel32.GetModuleHandleW(None), 0
-        )
-    _hook_id = hook or None
+    _ensure_ll_hook()
 
 
 def unregister_ll_keyboard_handler(handler: Handler) -> None:
-    global _hook_id
     try:
         _subscribers.remove(handler)
     except ValueError:
         pass
-    if _subscribers or not _hook_id:
-        return
-    user32.UnhookWindowsHookEx(_hook_id)
-    _hook_id = None
+    _maybe_unhook_ll()
+
+
+def register_chord_handler(
+    modifiers: int, vk: int, callback: Callable[[], None]
+) -> None:
+    """Fire *callback* when *modifiers* + *vk* is pressed anywhere on screen.
+
+    The LL hook observes all keyboard input regardless of the foreground window,
+    so this is the reliable fallback for global hotkeys whose RegisterHotKey
+    WM_HOTKEY is not delivered while another app runs in exclusive fullscreen.
+    The matching key is consumed (eaten) so the focused app never sees it —
+    parity with a successful RegisterHotKey.
+    """
+    for h in _chord_handlers:
+        if h.modifiers == modifiers and h.vk == vk:
+            h.callback = callback
+            _ensure_ll_hook()
+            return
+    _chord_handlers.append(_ChordHandler(modifiers, vk, callback))
+    _ensure_ll_hook()
+
+
+def unregister_chord_handler(modifiers: int, vk: int) -> None:
+    for i, h in enumerate(_chord_handlers):
+        if h.modifiers == modifiers and h.vk == vk:
+            del _chord_handlers[i]
+            break
+    _maybe_unhook_ll()
+
+
+def clear_chord_handlers() -> None:
+    _chord_handlers.clear()
+    _maybe_unhook_ll()
 
 
 def shutdown_ll_keyboard() -> None:
     """Force-unhook on app exit."""
     global _hook_id, _ctrl_chord_grace_until
     _subscribers.clear()
+    _chord_handlers.clear()
     _ctrl_vks_down.clear()
     _shift_vks_down.clear()
     _alt_vks_down.clear()
