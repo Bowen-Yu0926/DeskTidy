@@ -107,21 +107,6 @@ def set_overlay_mouse_passthrough(widget, passthrough: bool) -> None:
 
     want = bool(passthrough)
     try:
-        import sys as _sys
-        _f = _sys._getframe(1)
-        _caller = _f.f_code.co_name if _f is not None else "?"
-    except Exception:
-        _caller = "?"
-    try:
-        _h = int(widget.winId()) if widget.winId() else 0
-    except Exception:
-        _h = 0
-    try:
-        from src.app_logging import get_logger
-        get_logger().info("[PTDBG] want=%s hwnd=%s caller=%s", want, _h, _caller)
-    except Exception:
-        pass
-    try:
         widget.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, want)
     except RuntimeError:
         return

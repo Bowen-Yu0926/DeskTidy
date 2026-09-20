@@ -129,6 +129,10 @@ class ScreenshotManager:
         Do **not** hide the settings main window or notepad: hide→show flashes the
         UI between ``grab_desktop`` and overlay paint. The fullscreen TOPMOST
         overlay (with mouse/keyboard grab) covers them instead.
+
+        Do **not** hide desktop-band chrome (fences /「账」/ pet / page bar): those
+        must stay Progman-owned. Treating them as transient TOPMOST helpers made
+        restore() put them above Cursor after F1.
         """
         from PyQt6.QtWidgets import QDialog, QMessageBox
 
@@ -139,11 +143,31 @@ class ScreenshotManager:
         main_win = getattr(desk, "window", None) if desk is not None else None
         notepad = getattr(desk, "_notepad_window", None) if desk is not None else None
         overlay = self._overlay
+        skip_ids = {id(w) for w in (overlay, main_win, notepad) if w is not None}
+        if desk is not None:
+            for attr in (
+                "vault_launcher",
+                "vault_panel",
+                "todo_panel",
+                "pet_widget",
+                "page_indicator",
+                "dock",
+                "_public_icon_host",
+            ):
+                w = getattr(desk, attr, None)
+                if w is not None:
+                    skip_ids.add(id(w))
+            for fence in list(getattr(desk, "fences", None) or ()):
+                if fence is not None:
+                    skip_ids.add(id(fence))
+            for icon in list(getattr(desk, "public_icons", None) or ()):
+                if icon is not None:
+                    skip_ids.add(id(icon))
         suspended = list(self._suspended_top_levels)
         already = {id(w) for w, _ in suspended}
 
         for w in list(app.topLevelWidgets()):
-            if w is overlay or w is main_win or w is notepad:
+            if id(w) in skip_ids:
                 continue
             if isinstance(w, (ScreenshotOverlay, QMessageBox)):
                 continue
@@ -155,6 +179,9 @@ class ScreenshotManager:
             except RuntimeError:
                 continue
             if id(w) in already:
+                continue
+            # Desktop-band chrome never uses StaysOnTop; skip any leftover.
+            if bool(getattr(w, "_desktidy_raise_band", False)):
                 continue
             try:
                 flags = w.windowFlags()

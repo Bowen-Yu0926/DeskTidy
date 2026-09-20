@@ -97,6 +97,13 @@ def test_common_callers_go_through_gated_ensure_live() -> None:
     pending = inspect.getsource(DeskTidyApp._run_pending_force_shell_attach)
     assert "ensure_live_fences_interactive" in pending
     assert "_foreign_app_owns_foreground" in pending
+    assert "_overlay_capture_freeze_active" in pending
+    # Capture freeze must cancel — not reschedule through snip teardown.
+    freeze_branch = pending.split("if self._overlay_restack_blocked():", 1)[1]
+    assert "if self._overlay_capture_freeze_active():" in freeze_branch
+    assert freeze_branch.index("if self._overlay_capture_freeze_active():") < freeze_branch.index(
+        "_schedule_force_shell_attach(150)"
+    )
 
     restore = inspect.getsource(DeskTidyApp._restore_arriving_fences_interactive)
     assert "ensure_live_fences_interactive" in restore

@@ -753,10 +753,11 @@ class AccountVaultWidget(QWidget):
         self._async.busy_changed.connect(self._on_busy_changed)
         self.setObjectName("accountVaultPanel")
         self.setWindowFlags(
-            Qt.WindowType.FramelessWindowHint
-            | Qt.WindowType.Tool
-            | Qt.WindowType.WindowStaysOnTopHint
+            Qt.WindowType.FramelessWindowHint | Qt.WindowType.Tool
         )
+        # Same rule as DesktopTodoWidget / vault launcher: desktop-band only.
+        # Qt stays-on-top caused F1 restore to lift the panel over apps.
+        self._desktidy_raise_band = True
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, False)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self._build_ui()
