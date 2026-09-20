@@ -419,9 +419,6 @@ class DeskTidyApp:
         # Tray is up; wait for Explorer DefView on cold boot before shell attach.
         self._schedule_startup_overlays()
         mark("startup_critical_complete")
-
-        # Non-critical work after the event loop starts — keeps first paint responsive.
-        self._schedule_startup_deferred()
         mark("startup_complete")
 
     @property
@@ -520,7 +517,6 @@ class DeskTidyApp:
         if callable(mark):
             mark("fences_shown")
         self.refresh_public_desktop(relayout=True, immediate=True)
-        QTimer.singleShot(0, self._startup_force_overlay_attach)
         if self.settings.get("show_page_indicator") is not True:
             self.settings["show_page_indicator"] = True
             try:
@@ -571,9 +567,21 @@ class DeskTidyApp:
         if len(self._get_pages()) > 1 and self.settings.get("show_fences", True):
             # Prime off-page HWNDs in the background so the current page paints first.
             self._schedule_startup_offpage_warmup()
+        # Attach before returning to the event loop. A zero-delay timer loses to
+        # deferred work that expired while fences were being built, so the boot
+        # heal ran ~2s after the fences were already on screen.
+        self._startup_force_overlay_attach()
+        # Arm COM/registry/watcher timers only after overlays, or their deadlines
+        # expire during this call and they run as one hitch before the heal.
+        self._schedule_startup_deferred()
 
     def _schedule_startup_deferred(self) -> None:
-        """Stagger background startup work so the first paint stays light."""
+        """Stagger shell/registry work after overlays are attached.
+
+        Must not be armed from ``__init__``: those deadlines expire while
+        ``_run_startup_overlays`` is still building fences, and Qt then runs
+        the whole batch before boot heal.
+        """
         QTimer.singleShot(0, self._startup_deferred_immediate)
         QTimer.singleShot(400, self._startup_deferred_monitors)
         QTimer.singleShot(700, self._startup_deferred_guard)
@@ -680,18 +688,36 @@ class DeskTidyApp:
             try:
                 if bool(getattr(fence, "_desktidy_soft_parked", False)):
                     continue
-                apply = getattr(fence, "_apply_style", None)
-                if callable(apply):
-                    apply()
-                    fence.setWindowOpacity(fence._target_opacity())
+                # show_fences already applied QSS. setStyleSheet again restyles
+                # every icon child and held the UI thread after first paint.
+                container = getattr(fence, "container", None)
+                already_styled = False
+                try:
+                    already_styled = bool(
+                        container is not None and str(container.styleSheet() or "")
+                    )
+                except RuntimeError:
+                    already_styled = False
+                if not already_styled:
+                    apply = getattr(fence, "_apply_style", None)
+                    if callable(apply):
+                        apply()
+                        fence.setWindowOpacity(fence._target_opacity())
                 cfg = fence.config if isinstance(fence.config, dict) else {}
                 needs_icons = bool(cfg.get("virtual_items")) or is_portal_fence(cfg)
                 if needs_icons:
-                    # Widgets may exist while shell glyphs never painted into the
-                    # layered HWND — one boot refresh only (no post-refresh shell
-                    # heal: that re-entered force-attach and flickered icons).
-                    fence.refresh(force=True, shell_heal=False)
-                    rebuilt += 1
+                    # show_fences already built the grid. force-refresh here
+                    # re-ran SHGetFileInfo for every pin and held the UI thread
+                    # ~2s after the fences were already on screen.
+                    empty = True
+                    try:
+                        layout = getattr(fence, "items_layout", None)
+                        empty = layout is None or int(layout.count()) == 0
+                    except Exception:
+                        empty = True
+                    if empty:
+                        fence.refresh(force=True, shell_heal=False)
+                        rebuilt += 1
                     flush_icons = getattr(fence, "flush_icon_grid_paint", None)
                     if callable(flush_icons):
                         flush_icons()
@@ -718,7 +744,9 @@ class DeskTidyApp:
         self._offpage_warmup_pending = list(pending)
         self._max_parked_fences = max(int(self._max_parked_fences), len(pending))
         get_logger().debug("warmup: scheduling %d off-page fence(s)", len(pending))
-        QTimer.singleShot(50, self._startup_offpage_warmup_tick)
+        # After the current page is up. Icon extract waits for the first visit
+        # — doing it here blocked the UI thread for every off-page fence.
+        QTimer.singleShot(1200, self._startup_offpage_warmup_tick)
 
     def _startup_offpage_warmup_tick(self) -> None:
         if self._exiting or self._icons_hidden:
@@ -736,7 +764,9 @@ class DeskTidyApp:
         fence_cfg = pending.pop(0)
         self._offpage_warmup_pending = pending
         try:
-            self._warmup_one_offpage_fence(fence_cfg, sync_icons=True)
+            # HWND only. Icon extract on this tick stalled login; the page
+            # switch refresh fills glyphs on first visit.
+            self._warmup_one_offpage_fence(fence_cfg, sync_icons=False)
         except Exception:
             get_logger().exception("warmup: off-page fence failed")
         if pending:
@@ -806,16 +836,6 @@ class DeskTidyApp:
                 continue
             self._warmup_one_offpage_fence(fence_cfg, sync_icons=True)
             warmed += 1
-        try:
-            get_logger().info(
-                "[SWDBG] warmup page=%s warmed=%d live=%d parked=%d",
-                page_id,
-                warmed,
-                len(self.fences),
-                len(getattr(self, "_parked_fences", {}) or {}),
-            )
-        except Exception:
-            pass
         return warmed
 
     def _warmup_offpage_fences(self) -> None:
@@ -1359,9 +1379,7 @@ class DeskTidyApp:
             return True
         if getattr(self, "_desktop_popup_open", False):
             return True
-        if getattr(self, "_screenshot_session_active", False):
-            return True
-        if getattr(self, "_recording_session_active", False):
+        if self._overlay_capture_freeze_active():
             return True
         try:
             from src.ui.fence_icon_item import desktop_selection_batch_active
@@ -1371,6 +1389,26 @@ class DeskTidyApp:
         except Exception:
             pass
         return False
+
+    def _overlay_capture_freeze_active(self) -> bool:
+        """Screenshot / screen-record freeze — must not defer force-attach retries.
+
+        Menu/drag freezes keep retrying force attach so user refresh still lands.
+        Capture freezes must **drop** pending force: the snip overlay is HWND_TOPMOST,
+        and a deferred ``ensure_live`` after teardown HWND_TOPs every fence
+        (「截图后分区到最上层」).
+        """
+        return bool(getattr(self, "_screenshot_session_active", False)) or bool(
+            getattr(self, "_recording_session_active", False)
+        )
+
+    def _cancel_pending_force_shell_attach(self) -> None:
+        """Invalidate queued force-attach timers (capture freeze / snip end)."""
+        self._shell_attach_force_seq = int(
+            getattr(self, "_shell_attach_force_seq", 0)
+        ) + 1
+        self._shell_attach_force_pending = False
+        self._shell_attach_force_delay_ms = None
 
     def _stop_overlay_churn_timers(self) -> None:
         keepalive = getattr(self, "_overlay_keepalive_timer", None)
@@ -1390,6 +1428,9 @@ class DeskTidyApp:
             getattr(self, "_screenshot_session_depth", 0)
         ) + 1
         self._screenshot_session_active = True
+        # Drop any force-attach already queued — retries through the snip would
+        # fire right after overlay teardown and raise every fence.
+        self._cancel_pending_force_shell_attach()
         self._stop_overlay_churn_timers()
 
     def _end_screenshot_session(self) -> None:
@@ -1400,6 +1441,19 @@ class DeskTidyApp:
         self._screenshot_session_active = False
         if self._exiting or self._overlay_mgmt_suspended:
             return
+        # Never let a capture-era force attach land as HWND_TOP on fences.
+        self._cancel_pending_force_shell_attach()
+        # Soft remap only — do not ensure_live / raise_band after TOPMOST snip.
+        try:
+            self._remap_hidden_overlay_hwnds()
+        except Exception:
+            pass
+        # Reconcile Z-order now that restack is allowed: foreign FG sinks
+        # chrome that snip TOPMOST / restore may have lifted over apps.
+        try:
+            self._sync_overlays_to_foreground()
+        except Exception:
+            pass
         # Resume slow keepalive only — do not force a restack (that is the flash).
         if not self._desktop_popup_open and not getattr(
             self, "_overlay_drag_active", False
@@ -1417,6 +1471,7 @@ class DeskTidyApp:
             getattr(self, "_recording_session_depth", 0)
         ) + 1
         self._recording_session_active = True
+        self._cancel_pending_force_shell_attach()
         self._stop_overlay_churn_timers()
 
     def _end_recording_session(self) -> None:
@@ -1427,6 +1482,7 @@ class DeskTidyApp:
         self._recording_session_active = False
         if self._exiting or self._overlay_mgmt_suspended:
             return
+        self._cancel_pending_force_shell_attach()
         if not self._desktop_popup_open and not getattr(
             self, "_overlay_drag_active", False
         ):
@@ -2439,8 +2495,9 @@ class DeskTidyApp:
     def _ensure_shell_attachments(self, *, force: bool = False) -> None:
         """Re-attach overlays onto the DefView host (Explorer restart safe)."""
         if self._overlay_restack_blocked():
-            # Force refresh / page-switch must not die while the menu freeze is up.
-            if force:
+            # Menu/drag freeze: keep force refresh alive. Capture freeze: drop it —
+            # retrying through snip fires ensure_live and raises every fence.
+            if force and not self._overlay_capture_freeze_active():
                 self._schedule_force_shell_attach(150)
             return
         # App UI open: skip immediate restack (flashes fences over the UI),
@@ -2538,6 +2595,10 @@ class DeskTidyApp:
             if self._exiting:
                 return
             if self._overlay_restack_blocked():
+                # Capture freeze: drop — spinning through snip raises fences after.
+                if self._overlay_capture_freeze_active():
+                    return
+                self._post_refresh_heal_pending = True
                 QTimer.singleShot(150, _run)
                 return
             try:
@@ -2559,7 +2620,10 @@ class DeskTidyApp:
         if self._exiting:
             return
         # Still frozen (menu/drag): keep trying — do not drop user refresh.
+        # Capture freeze: drop — deferred ensure_live after snip raises fences.
         if self._overlay_restack_blocked():
+            if self._overlay_capture_freeze_active():
+                return
             self._schedule_force_shell_attach(150)
             return
         if self._desk_app_ui_open() and self._desk_app_owns_foreground():
@@ -2797,7 +2861,7 @@ class DeskTidyApp:
         ):
             return
         if self._overlay_restack_blocked():
-            if force:
+            if force and not self._overlay_capture_freeze_active():
                 self._schedule_force_shell_attach(150)
             return
         timer = getattr(self, "_overlay_keepalive_timer", None)
@@ -3043,16 +3107,6 @@ class DeskTidyApp:
         """
         from src.win_shell import set_overlay_mouse_passthrough
 
-        try:
-            get_logger().info(
-                "[SHDBG] soft_hide fid=%s hwnd=%s pending=%s batch=%s",
-                str(fence.config.get("id") or ""),
-                self._fence_hwnd(fence),
-                bool(getattr(self, "_page_switch_ensure_pending", False)),
-                bool(getattr(self, "_page_switch_geo_batch", None) is not None),
-            )
-        except Exception:
-            pass
         try:
             # Click-through while still mapped (batch hide commits later).
             set_overlay_mouse_passthrough(fence, True)
@@ -4603,10 +4657,9 @@ class DeskTidyApp:
                 raise RuntimeError(msg or "无法访问账号服务器")
             return True
 
-        # Parent to self (the app, process lifetime) — NOT to self.vault_panel.
-        # _on_vault_server_unreachable destroys the panel, which would kill
-        # this QThread mid-run ("QThread: Destroyed while thread is still running").
-        job = VaultApiJob(work, self)
+        # DeskTidyApp is not a QObject — parenting the thread to it raises
+        # and aborts the probe during startup. QApplication outlives the panel.
+        job = VaultApiJob(work, self.qt_app)
 
         def on_ok(_result: object) -> None:
             self._vault_probe_busy = False
@@ -5661,17 +5714,6 @@ class DeskTidyApp:
     def switch_page(self, page_id: int) -> None:
         started = time.perf_counter()
         page_id = int(page_id)
-        try:
-            get_logger().info(
-                "[SWDBG] switch_page to=%s fences=%d parked=%d should_show=%s fg_foreign=%s",
-                page_id,
-                len(self.fences),
-                len(getattr(self, "_parked_fences", {}) or {}),
-                bool(self._fences_should_show()),
-                bool(self._foreign_app_owns_foreground()),
-            )
-        except Exception:
-            pass
         self._release_stuck_grabs()
         # One settings write: leaving-page geometry stays in memory, then
         # current_page + layout persist together (two json.dump's stalled the click).
@@ -6423,21 +6465,6 @@ class DeskTidyApp:
         self._remap_hidden_overlay_hwnds()
 
         for fence in list(self.fences):
-            _swdbg_hwnd = self._fence_hwnd(fence)
-            try:
-                get_logger().info(
-                    "[SWDBG] ensure fid=%s hwnd=%s attached=%s w32vis=%s qtvis=%s soft=%s br=%s stuck=%s",
-                    str(fence.config.get("id") or ""),
-                    bool(_swdbg_hwnd),
-                    bool(_swdbg_hwnd and is_attached_to_desktop(_swdbg_hwnd)),
-                    bool(overlay_win32_visible(fence)),
-                    fence.isVisible(),
-                    bool(getattr(fence, "_desktidy_soft_parked", False)),
-                    bool(getattr(fence, "_desktidy_batch_reveal", False)),
-                    bool(_swdbg_hwnd and is_stuck_under_wallpaper(_swdbg_hwnd)),
-                )
-            except Exception:
-                pass
             try:
                 if bool(getattr(fence, "_desktidy_soft_parked", False)):
                     continue
@@ -6493,46 +6520,7 @@ class DeskTidyApp:
             if self._page_chrome_needs_raise():
                 self._ensure_page_chrome_visible(raise_band=True)
 
-    def _show_desktop_if_foreign_fg(self) -> None:
-        """If a foreign app is fullscreen / foreground, bring the desktop to front."""
-        if not self._foreign_app_owns_foreground():
-            return
-        try:
-            import ctypes
-
-            user32 = ctypes.windll.user32
-            kernel32 = ctypes.windll.kernel32
-
-            # Minimize the foreground window first.
-            fg = int(user32.GetForegroundWindow() or 0)
-            if fg:
-                user32.ShowWindow(fg, 6)  # SW_MINIMIZE
-
-            # After minimizing, the taskbar (Shell_TrayWnd) may become
-            # foreground instead of the desktop.  Use AttachThreadInput +
-            # SetForegroundWindow on Progman to reliably bring the desktop
-            # to the front.  Do NOT call BringWindowToTop — that raises
-            # Progman above DeskTidy overlays and makes them unclickable.
-            import win32gui
-
-            progman = int(win32gui.FindWindow("Progman", None) or 0)
-            if progman:
-                fg2 = int(user32.GetForegroundWindow() or 0)
-                fg_tid = int(user32.GetWindowThreadProcessId(fg2, None) or 0)
-                our_tid = int(kernel32.GetCurrentThreadId())
-                attached = False
-                if fg_tid and fg_tid != our_tid:
-                    attached = bool(user32.AttachThreadInput(our_tid, fg_tid, True))
-                try:
-                    user32.SetForegroundWindow(progman)
-                finally:
-                    if attached:
-                        user32.AttachThreadInput(our_tid, fg_tid, False)
-        except Exception:
-            pass
-
     def next_page(self) -> None:
-        self._show_desktop_if_foreign_fg()
         pages = self._get_pages()
         if len(pages) <= 1:
             return
@@ -6546,7 +6534,6 @@ class DeskTidyApp:
         self.switch_page(next_id)
 
     def prev_page(self) -> None:
-        self._show_desktop_if_foreign_fg()
         pages = self._get_pages()
         if len(pages) <= 1:
             return
@@ -6972,10 +6959,14 @@ class DeskTidyApp:
         self, *, force_rebuild: bool = False, relayout_public: bool | None = None
     ) -> None:
         started = time.perf_counter()
-        page_switch = bool(getattr(self, "_page_switch_ensure_pending", False))
-        if page_switch and getattr(self, "_page_switch_geo_batch", None) is None:
-            self._page_switch_ensure_pending = False
-            page_switch = False
+        # Soft-hide only while the switch freeze owns a batch. Pending is set
+        # before warmup processEvents, and the batch appears only inside the
+        # freeze — clearing pending when the batch is still None dropped the
+        # real swap onto the normal show path. Stale pending without a batch
+        # must not soft-hide either; finish still owns clearing the flag.
+        page_switch = bool(
+            getattr(self, "_page_switch_ensure_pending", False)
+        ) and getattr(self, "_page_switch_geo_batch", None) is not None
         # switch_page already flushed the leaving page; skip a second sync write.
         if self.fences and not page_switch:
             self._save_fence_layout(immediate=True)

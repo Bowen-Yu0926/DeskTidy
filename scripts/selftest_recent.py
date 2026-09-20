@@ -2995,6 +2995,12 @@ def test_page_switch_click() -> None:
         assert "QTimer.singleShot(0, self._finish_page_switch_overlays_if_pending)" in finish_fn
         assert finish_call > freeze_call
         assert "timer.stop()" in switch or "_refresh_public_timer" in switch
+        show_src = inspect.getsource(DeskTidyApp.show_fences)
+        assert "_page_switch_ensure_pending = False" not in show_src
+        assert "_page_switch_geo_batch" in show_src
+        assert "_show_desktop_if_foreign_fg" not in inspect.getsource(DeskTidyApp.next_page)
+        assert "_show_desktop_if_foreign_fg" not in inspect.getsource(DeskTidyApp.prev_page)
+        assert not hasattr(DeskTidyApp, "_show_desktop_if_foreign_fg")
         assert "_reveal_desktop_overlay" in inspect.getsource(DeskTidyApp.show_fences)
         assert callable(DeskTidyApp._reveal_desktop_overlay)
         assert callable(DeskTidyApp._page_switch_paint_freeze)
@@ -3182,6 +3188,7 @@ def test_page_switch_click() -> None:
         assert "_flush_style_paint" in heal
         assert "flush_icon_grid_paint" in heal
         assert "refresh(force=True, shell_heal=False)" in heal
+        assert "items_layout" in heal
         assert "self.ensure_live_fences_interactive" not in heal
         assert "configure_desktop_overlay" not in heal
         assert "QTimer.singleShot(900" not in boot_attach
@@ -3713,13 +3720,29 @@ def test_page_switch_click() -> None:
         from src.screenshot_manager import ScreenshotManager
 
         blocked = inspect.getsource(DeskTidyApp._overlay_restack_blocked)
-        assert "_screenshot_session_active" in blocked
+        assert "_overlay_capture_freeze_active" in blocked
+        assert callable(DeskTidyApp._overlay_capture_freeze_active)
+        assert callable(DeskTidyApp._cancel_pending_force_shell_attach)
         begin = inspect.getsource(DeskTidyApp._begin_screenshot_session)
         assert "_stop_overlay_churn_timers" in begin
+        assert "_cancel_pending_force_shell_attach" in begin
         end = inspect.getsource(DeskTidyApp._end_screenshot_session)
-        # Must not force restack on resume (that flashes icons).
+        # Must not force restack on resume (that flashes icons / raises fences).
         assert "force=True" not in end
         assert "_ensure_desktop_overlays_visible" not in end
+        assert "ensure_live_fences_interactive" not in end
+        assert "_cancel_pending_force_shell_attach" in end
+        assert "_remap_hidden_overlay_hwnds" in end
+        # Capture freeze must drop force-attach retries (not spin until snip ends).
+        attach = inspect.getsource(DeskTidyApp._ensure_shell_attachments)
+        assert "_overlay_capture_freeze_active" in attach
+        pending = inspect.getsource(DeskTidyApp._run_pending_force_shell_attach)
+        assert "_overlay_capture_freeze_active" in pending
+        freeze_branch = pending.split("if self._overlay_restack_blocked():", 1)[1]
+        assert "if self._overlay_capture_freeze_active():" in freeze_branch
+        assert freeze_branch.index(
+            "if self._overlay_capture_freeze_active():"
+        ) < freeze_branch.index("_schedule_force_shell_attach(150)")
         mgr_src = inspect.getsource(ScreenshotManager)
         assert "_begin_session" in mgr_src
         assert "_end_session_later" in mgr_src
@@ -3804,8 +3827,24 @@ def test_page_switch_click() -> None:
         assert "fileSearchOverlay" in dismiss
         # Settings / notepad must stay visible — hide→show flashes between grab and overlay.
         assert "_suspend_app_window" not in dismiss
-        assert "w is main_win" in dismiss
-        assert "w is notepad" in dismiss
+        assert "vault_launcher" in dismiss
+        assert "_desktidy_raise_band" in dismiss
+        assert "w is main_win" not in dismiss or "skip_ids" in dismiss
+        from src.ui.account_vault_launcher import AccountVaultLauncher
+        from src.ui.account_vault_widget import AccountVaultWidget
+
+        launch_src = inspect.getsource(AccountVaultLauncher.__init__)
+        flags_launch = launch_src.split("setWindowFlags(", 1)[1].split(")", 1)[0]
+        assert "WindowStaysOnTopHint" not in flags_launch
+        assert "_desktidy_raise_band" in launch_src
+        panel_src = inspect.getsource(AccountVaultWidget.__init__)
+        flags_panel = panel_src.split("setWindowFlags(", 1)[1].split(")", 1)[0]
+        assert "WindowStaysOnTopHint" not in flags_panel
+        assert "_desktidy_raise_band" in panel_src
+        end_sess = inspect.getsource(
+            __import__("src.app", fromlist=["x"]).DeskTidyApp._end_screenshot_session
+        )
+        assert "_sync_overlays_to_foreground" in end_sess
         from src.ui import main_window as mw
 
         mw_hide = inspect.getsource(mw.MainWindow.hideEvent)

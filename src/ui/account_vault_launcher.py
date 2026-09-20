@@ -34,10 +34,12 @@ class AccountVaultLauncher(QWidget):
 
         self.setObjectName("vaultLauncher")
         self.setWindowFlags(
-            Qt.WindowType.FramelessWindowHint
-            | Qt.WindowType.Tool
-            | Qt.WindowType.WindowStaysOnTopHint
+            Qt.WindowType.FramelessWindowHint | Qt.WindowType.Tool
         )
+        # Desktop-band chrome (Progman-owned) — never Qt stays-on-top.
+        # That flag made F1 snip treat this as a transient helper: hide → restore
+        # with raise_() put「账」above Cursor / VS Code.
+        self._desktidy_raise_band = True
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
         self.setAttribute(Qt.WidgetAttribute.WA_QuitOnClose, False)
