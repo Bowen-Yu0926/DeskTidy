@@ -140,6 +140,9 @@ def test_soft_park_contracts() -> None:
     assert "_mark_page_switch_fence_force_refresh" in show_fences
     assert "_desktidy_defer_refresh" in show_fences.split("_mark_page_switch_fence_force_refresh")[0]
     assert "Hide leavers before" in show_fences or "to_park.clear()" in show_fences
+    # Settings/rebuild also parks leavers before arrivals (not only page_switch).
+    assert "to_retire or to_park" in show_fences
+    assert "settings/rebuild alike" in show_fences
     assert "batch SWP_SHOWWINDOW" in prepare or "_sync_qt_visible_after_win32" in prepare
     show_src = inspect.getsource(DeskTidyApp.show_fences)
     assert "batch.set_rect" in show_src

@@ -484,6 +484,41 @@ def _rotate_settings_backup() -> None:
         pass
 
 
+def _is_selftest_temp_virtual_list(items: list | None) -> bool:
+    """True when every pin path lives under ``%TEMP%\\desktidy_*`` (probe leftovers)."""
+    import tempfile
+
+    if not isinstance(items, list) or not items:
+        return False
+    try:
+        tmp_root = Path(tempfile.gettempdir()).resolve()
+    except OSError:
+        tmp_root = Path(tempfile.gettempdir())
+    for raw in items:
+        if not raw:
+            return False
+        try:
+            p = Path(str(raw))
+            if not p.is_absolute():
+                return False
+            resolved = p
+            try:
+                resolved = p.resolve()
+            except OSError:
+                pass
+            # Must be under TEMP and inside a desktidy_* probe folder.
+            try:
+                resolved.relative_to(tmp_root)
+            except ValueError:
+                return False
+            parts = {part.casefold() for part in resolved.parts}
+            if not any(part.startswith("desktidy_") for part in parts):
+                return False
+        except OSError:
+            return False
+    return True
+
+
 def _patch_fences_from_partial(disk_fences: list, partial_fences: list) -> list:
     """Update matching fences by id; never drop disk fences because of a stub save."""
     by_id = {
@@ -522,8 +557,21 @@ def _patch_fences_from_partial(disk_fences: list, partial_fences: list) -> list:
         if not src:
             continue
         for field in fields:
-            if field in src:
-                fence[field] = deepcopy(src[field])
+            if field not in src:
+                continue
+            # Refuse to replace real pins with tempfile probe lists (a live
+            # diagnostic once used id=system_common + desktidy_dense_* and
+            # wiped the user's 常用 fence to i00.txt…i21.txt). Empty/missing
+            # disk lists count as real — a probe must not seed an empty fence.
+            if field == "virtual_items":
+                incoming = src.get("virtual_items")
+                disk_items = fence.get("virtual_items")
+                if _is_selftest_temp_virtual_list(incoming) and not (
+                    isinstance(disk_items, list)
+                    and _is_selftest_temp_virtual_list(disk_items)
+                ):
+                    continue
+            fence[field] = deepcopy(src[field])
     return patched
 
 

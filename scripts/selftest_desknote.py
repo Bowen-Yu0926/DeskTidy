@@ -227,6 +227,9 @@ def main() -> int:
         )
         assert "invalidate_loose_sync_cache" in sync_src
         assert "force=True" in sync_src
+        # Fence-pinned DeskNote.lnk must not also get a public-desktop float.
+        assert "path_in_pinned_keys" in sync_src
+        assert "all_fence_pinned_keys" in sync_src
         deferred = inspect.getsource(DeskTidyApp._startup_deferred_guard)
         assert "sync_desknote_shortcuts" in deferred
         ok("app IPC + extensions + startup sync")

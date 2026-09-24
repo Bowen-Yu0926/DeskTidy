@@ -20,7 +20,7 @@ if not errorlevel 1 (
     set "STOPPED=1"
 )
 
-powershell -NoProfile -Command "$root=(Resolve-Path -LiteralPath '%~dp0..').Path; $killed=0; Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '^(python|pythonw)\.exe$' -and $_.CommandLine -and $_.CommandLine -notmatch '(?i)selftest' -and ( ($_.CommandLine -match [regex]::Escape($root) -and $_.CommandLine -match '(?i)(main\.py|desknote_main\.py)') -or ($_.CommandLine -match '(?i)Desktidy.*(main\.py|desknote_main\.py)') ) } | ForEach-Object { Write-Host ('Stopping source DeskTidy/deskNote PID ' + $_.ProcessId); Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue; $script:killed=1 }; if ($killed) { exit 10 } else { exit 0 }"
+powershell -NoProfile -Command "$root=(Resolve-Path -LiteralPath '%~dp0..').Path; $killed=0; Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '^(python|pythonw)\.exe$' -and $_.CommandLine -and $_.CommandLine -notmatch '(?i)selftest' -and ( ($_.CommandLine -match [regex]::Escape($root) -and $_.CommandLine -match '(?i)(main\.py|desknote_main\.py)') -or ($_.CommandLine -match '(?i)Desktidy.*(main\.py|desknote_main\.py)') -or ($_.CommandLine -match '(?i)-u\s+\S*main\.py') -or ($_.CommandLine -match '(?i)-u\s+\S*desknote_main\.py') ) } | ForEach-Object { Write-Host ('Stopping source DeskTidy/deskNote PID ' + $_.ProcessId); Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue; $script:killed=1 }; if ($killed) { exit 10 } else { exit 0 }"
 if errorlevel 10 set "STOPPED=1"
 
 if "%STOPPED%"=="0" (

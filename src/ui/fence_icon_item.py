@@ -276,9 +276,20 @@ def resolve_external_drag_path(path: Path) -> Path | None:
 
 
 def attach_external_file_drag_payload(
-    mime: QMimeData, path: Path | list[Path]
+    mime: QMimeData,
+    path: Path | list[Path],
+    *,
+    with_urls: bool = False,
+    urls_only: bool = True,
 ) -> bool:
-    """Attach Explorer/WeChat drag formats (CF_HDROP + companions, no URL mime)."""
+    """Attach Explorer-compatible file drag formats for external OLE.
+
+    Default ``urls_only=True``: Qt ``setUrls`` → system ``CF_HDROP`` (one payload).
+    Dual shell CF_HDROP + setUrls confuses Electron and many drop targets.
+    ``with_urls`` / shell companions kept for rare callers that need FileNameW
+    on the mime itself (chat paste uses clipboard helpers instead).
+    Mid-desktop custom drag must not call this (wakes VPN AcceptFiles panels).
+    """
     paths = [path] if isinstance(path, Path) else [p for p in path if p]
     resolved: list[Path] = []
     for raw in paths:
@@ -287,9 +298,26 @@ def attach_external_file_drag_payload(
             resolved.append(p)
     if not resolved:
         return False
+    if urls_only:
+        try:
+            mime.setUrls([QUrl.fromLocalFile(str(p)) for p in resolved])
+            mime.setData(
+                "Preferred DropEffect",
+                QByteArray(struct.pack("<I", 1)),  # DROPEFFECT_COPY
+            )
+            return True
+        except Exception:
+            return False
     from src.shell_clipboard import attach_shell_file_drag_mime
 
-    return attach_shell_file_drag_mime(mime, resolved, copy=True)
+    if not attach_shell_file_drag_mime(mime, resolved, copy=True):
+        return False
+    if with_urls:
+        try:
+            mime.setUrls([QUrl.fromLocalFile(str(p)) for p in resolved])
+        except Exception:
+            pass
+    return True
 
 
 def last_virtual_unpin_pos() -> QPoint:
@@ -376,6 +404,26 @@ def clear_fence_drop_indicators() -> None:
                 hide()
             except Exception:
                 pass
+
+
+def _pet_trash_geometry_at(pos: QPoint):
+    """Visible pet whose sprite contains *pos* (geometry only — mid-drag cheap)."""
+    app = QApplication.instance()
+    if app is None:
+        return None
+    try:
+        from src.ui.pet_widget import DesktopPetWidget
+    except Exception:
+        return None
+    for top in app.topLevelWidgets():
+        if not isinstance(top, DesktopPetWidget):
+            continue
+        try:
+            if top.accepts_trash_at(pos):
+                return top
+        except RuntimeError:
+            continue
+    return None
 
 
 def iter_fence_selectable_items(anchor: QWidget) -> list[QWidget]:
@@ -1601,6 +1649,10 @@ def _run_custom_desktop_resident_virtual_drag(
         drop_pos = QPoint(filt.drop_pos)
         cancelled = bool(filt.cancelled)
         handoff_external = bool(filt.handoff_external)
+    except BaseException:
+        # Event-loop death must not leak concealed cells / overlay drag freeze.
+        _abort_custom_drag_session(concealed)
+        raise
     finally:
         filt.stop()
         try:
@@ -1628,6 +1680,10 @@ def _run_custom_desktop_resident_virtual_drag(
                 len(payload),
                 primary,
             )
+            # Reveal before OLE — QDrag.exec can block for seconds; leaving cells
+            # hidden looked like「文件消失了，过一会又出来」(Cursor IgnoreAction).
+            _reveal_widgets_after_custom_drag(concealed)
+            concealed.clear()
             result = _exec_external_file_ole_drag(
                 widget, payload, pixmap=pix, hotspot=hotspot
             )
@@ -1636,24 +1692,35 @@ def _run_custom_desktop_resident_virtual_drag(
                 result.name if hasattr(result, "name") else result,
                 primary,
             )
-            # If release landed on a fence (handoff was a false positive through
-            # translucent chrome), pin the original .lnk paths — not OLE's
-            # resolved English target.
+            # OLE already delivered — never also pin into a fence (double write).
+            if result != Qt.DropAction.IgnoreAction:
+                return result, False
+            # Ignore: false-positive handoff through translucent chrome — pin the
+            # original .lnk paths under the cursor (not OLE's resolved target).
+            # Skip while still over an allowlisted app (Cursor/Chrome cover
+            # fence geometry via geometry_only).
             end_pos = QCursor.pos()
-            fence = fence_widget_at(end_pos, geometry_only=True)
-            if fence is not None:
-                if _apply_fence_virtual_drop(
-                    fence, drag_paths, source_id=source_id, drop_global=end_pos
-                ):
-                    try:
-                        drop_id = str(
-                            (getattr(fence, "config", None) or {}).get("id") or ""
-                        )
-                    except Exception:
-                        drop_id = ""
-                    if drop_id and drop_id == source_id:
-                        quiet_end = True
-                    return Qt.DropAction.MoveAction, False
+            try:
+                from src.win_shell import should_ole_file_handoff_at
+
+                still_external = should_ole_file_handoff_at(end_pos.x(), end_pos.y())
+            except Exception:
+                still_external = False
+            if not still_external:
+                fence = fence_widget_at(end_pos, geometry_only=True)
+                if fence is not None:
+                    if _apply_fence_virtual_drop(
+                        fence, drag_paths, source_id=source_id, drop_global=end_pos
+                    ):
+                        try:
+                            drop_id = str(
+                                (getattr(fence, "config", None) or {}).get("id") or ""
+                            )
+                        except Exception:
+                            drop_id = ""
+                        if drop_id and drop_id == source_id:
+                            quiet_end = True
+                        return Qt.DropAction.MoveAction, False
             return result, False
 
         # DeskNote before pet trash (geometry-only pet hit overlapped DeskNote).
@@ -1684,6 +1751,7 @@ def _run_custom_desktop_resident_virtual_drag(
             virtual_items=list(drag_sources),
         ):
             quiet_end = True
+            _drop_concealed_for_paths(concealed, drag_paths)
             return Qt.DropAction.MoveAction, False
 
         folder = folder_drop_target_at(drop_pos, exclude=primary)
@@ -1712,8 +1780,8 @@ def _run_custom_desktop_resident_virtual_drag(
                         moved_keys.add(str(path).casefold())
                 elif outcome == "copied":
                     copied_any = True
-            # Hide only cells that actually started a document move. Icons /
-            # copies / failed docs must stay visible.
+            # Hide only cells that actually started an FS move. Copies / failed
+            # transfers must stay visible.
             for item in drag_sources:
                 path = getattr(item, "file_path", None)
                 if path is None:
@@ -1729,13 +1797,14 @@ def _run_custom_desktop_resident_virtual_drag(
                         pass
             if moved_keys:
                 quiet_end = True
+                _drop_concealed_for_paths(concealed, list(moved_keys))
                 return Qt.DropAction.MoveAction, False
             if copied_any:
                 quiet_end = True
                 return Qt.DropAction.CopyAction, False
-            # Folder hit but nothing moved (.lnk / failed doc): fall through so
-            # a release that is really "out to desktop" can still unpin. Only
-            # block unpin while the pointer remains on that folder target.
+            # Folder hit but nothing transferred (collision / locked / etc.):
+            # fall through so a release that is really "out to desktop" can still
+            # unpin. Only block unpin while the pointer remains on that folder.
             if not should_unpin_virtual_drop(drop_pos):
                 get_logger().info(
                     "virtual drag: folder miss kept in fence drop=(%s,%s)",
@@ -1757,8 +1826,11 @@ def _run_custom_desktop_resident_virtual_drag(
                 except Exception:
                     drop_id = ""
                 if drop_id and drop_id == source_id:
-                    # In-fence reorder: no FG heal / public refresh (desktop flash).
+                    # In-fence reorder: keep conceal so finally re-shows cells.
                     quiet_end = True
+                else:
+                    # Cross-fence move: do not finally show() source ghosts.
+                    _drop_concealed_for_paths(concealed, drag_paths)
                 return Qt.DropAction.MoveAction, False
 
         try:
@@ -1798,6 +1870,8 @@ def _run_custom_desktop_resident_virtual_drag(
             drop_pos.x(),
             drop_pos.y(),
         )
+        # Leaving the fence — finally must not show() the old cells.
+        _drop_concealed_for_paths(concealed, drag_paths)
         return Qt.DropAction.CopyAction, True
     finally:
         _reveal_widgets_after_custom_drag(concealed)
@@ -1857,10 +1931,10 @@ def start_virtual_item_drag(
     When *paths* is omitted, drag uses Explorer rules via ``paths_for_fence_drag``.
 
     Always uses the custom non-OLE loop (same as public floats). A full-gesture
-    ``QDrag.exec`` with CF_HDROP wakes every AcceptFiles / Electron panel under
-    the cursor while crossing to the public area (VPN popups). OLE is only
-    started mid-gesture via ``_PublicDragFilter`` when the cursor rests on an
-    allowlisted chat / Office / browser process.
+    ``QDrag.exec`` with CF_HDROP wakes every AcceptFiles panel under the cursor
+    while crossing the desktop (VPN popups). OLE starts mid-gesture via
+    ``_PublicDragFilter`` when the cursor rests on a foreign app (VPN deny-list
+    excluded).
     """
     drag_paths = [Path(p) for p in (paths if paths is not None else paths_for_fence_drag(widget))]
     if not drag_paths:
@@ -2248,24 +2322,16 @@ def _restore_virtual_folder_move_failure(file_path: Path, fence_id: str) -> None
 
 
 def _move_virtual_into_folder(file_path: Path, folder: Path, fence_id: str) -> str | None:
-    """Transfer a document into *folder* (Explorer same-vol move / cross-vol copy).
+    """Transfer a pin into *folder* (Explorer same-vol move / cross-vol copy).
 
     Returns ``\"moved\"``, ``\"copied\"``, or ``None`` (skipped / failed).
 
-    「图标」(.lnk/.url) → ``None`` so the caller keeps the pin (no FS swallow).
-    Copy leaves the virtual pin in place (source file stays); move unpins.
+    Shortcuts (``.lnk`` / ``.url`` / ``.exe``) transfer like Explorer — the link
+    file itself moves/copies. Copy leaves the virtual pin; move unpins.
     """
     from src.app_logging import get_logger
-    from src.fence_rules import path_organize_kind
     from src.organize_suppress import suppress_desktop_item
     from src.win_shell import default_fs_drop_is_move, resolve_folder_drop_target
-
-    # Icons stay virtual: pin/unpin only, do not bury the .lnk inside a folder.
-    if path_organize_kind(file_path) == "icon":
-        get_logger().info(
-            "virtual drag: skip folder move for icon path=%s", file_path
-        )
-        return None
 
     app = QApplication.instance()
     desk = getattr(app, "_desktidy_app", None) if app is not None else None
@@ -2448,12 +2514,13 @@ class _PublicDragFilter(QObject):
     """Drive a non-OLE public/fence icon drag until left button release / Escape.
 
     Desktop / fence / folder targets stay custom (no mid-drag CF_HDROP — that
-    wakes VPN panels). Hovering an allowlisted chat / Office / browser arms
-    ``handoff_pending``; on **release** over that target the caller delivers
-    via clipboard paste / OLE (WeChat rejects post-release ``QDrag``).
+    wakes VPN panels). Hovering a foreign app (VPN deny-list excluded) arms
+    ``handoff_external`` and **quits while LMB is still down** so ``QDrag.exec``
+    can deliver; chat apps also accept clipboard Ctrl+V as a fallback.
+    Waiting until mouse-up left LMB released and only WeChat paste worked.
 
-    Ghost motion and OLE handoff probes run on a timer — not on every global
-    ``MouseMove`` — so cold ``EnumWindows`` / fence scans do not hitch the drag.
+    Ghost motion runs on a ~60Hz timer. Fence caret + OLE handoff probes are
+    throttled (~50ms) and skip no-op work so mid-desktop drag stays smooth.
     Fence hover uses cached ``fence_widget_at(..., geometry_only=True)`` rects.
 
     Win32 LMB polling in ``_on_tick`` ends the loop when Qt never delivers
@@ -2462,6 +2529,7 @@ class _PublicDragFilter(QObject):
 
     _TICK_MS = 16
     _HANDOFF_MS = 50
+    _INDICATOR_MS = 50
     _VK_LBUTTON = 0x01
 
     def __init__(self, loop: QEventLoop, ghost: QLabel, hotspot: QPoint) -> None:
@@ -2475,6 +2543,9 @@ class _PublicDragFilter(QObject):
         self._handoff_pending = False
         self._external_streak = 0
         self._last_handoff_check_ms = 0
+        self._last_indicator_ms = 0
+        self._last_indicator_key: tuple | None = None
+        self._indicator_cleared = True
         self._last_ghost_global: QPoint | None = None
         self._fences_cache = self._build_fence_cache()
         self._tick = QTimer()
@@ -2517,6 +2588,9 @@ class _PublicDragFilter(QObject):
             self._tick.stop()
         except RuntimeError:
             pass
+        clear_fence_drop_indicators()
+        self._indicator_cleared = True
+        self._last_indicator_key = None
 
     def _commit_external_handoff_if_pending(self, pos: QPoint) -> None:
         if not self._handoff_pending:
@@ -2525,13 +2599,8 @@ class _PublicDragFilter(QObject):
         try:
             if self._fence_at(pos) is not None:
                 return
-            try:
-                from src.ui.pet_widget import find_pet_trash_target
-
-                if find_pet_trash_target(pos) is not None:
-                    return
-            except Exception:
-                pass
+            if _pet_trash_geometry_at(pos) is not None:
+                return
             try:
                 import win32gui
 
@@ -2551,6 +2620,48 @@ class _PublicDragFilter(QObject):
         except Exception:
             pass
 
+    def _sync_fence_drop_indicator(self, pos: QPoint) -> None:
+        """Show the same insertion caret OLE used — custom drag had none."""
+        now_ms = int(time.perf_counter() * 1000)
+        if now_ms - self._last_indicator_ms < self._INDICATOR_MS:
+            return
+        self._last_indicator_ms = now_ms
+        fence = self._fence_at(pos)
+        if fence is None or not fence_accepts_virtual_drop_at(fence, pos):
+            if not self._indicator_cleared:
+                clear_fence_drop_indicators()
+                self._indicator_cleared = True
+                self._last_indicator_key = None
+            return
+        update = getattr(fence, "_update_drop_indicator", None)
+        items = getattr(fence, "items_widget", None)
+        if not callable(update) or items is None:
+            if not self._indicator_cleared:
+                clear_fence_drop_indicators()
+                self._indicator_cleared = True
+                self._last_indicator_key = None
+            return
+        try:
+            local = items.mapFromGlobal(pos)
+            insert_at = getattr(fence, "_insert_index_at", None)
+            key = (
+                id(fence),
+                int(insert_at(items, local)) if callable(insert_at) else None,
+            )
+            if key == self._last_indicator_key:
+                return
+            self._last_indicator_key = key
+            update(items, local)
+            self._indicator_cleared = False
+        except RuntimeError:
+            clear_fence_drop_indicators()
+            self._indicator_cleared = True
+            self._last_indicator_key = None
+        except Exception:
+            clear_fence_drop_indicators()
+            self._indicator_cleared = True
+            self._last_indicator_key = None
+
     def _on_tick(self) -> None:
         pos = QCursor.pos()
         self.drop_pos = pos
@@ -2560,6 +2671,9 @@ class _PublicDragFilter(QObject):
             if not (ctypes.windll.user32.GetAsyncKeyState(self._VK_LBUTTON) & 0x8000):
                 self._commit_external_handoff_if_pending(pos)
                 self.drop_pos = pos
+                if not self._indicator_cleared:
+                    clear_fence_drop_indicators()
+                    self._indicator_cleared = True
                 self._loop.quit()
                 return
         except Exception:
@@ -2572,6 +2686,7 @@ class _PublicDragFilter(QObject):
             except RuntimeError:
                 pass
             self._last_ghost_global = QPoint(pos)
+        self._sync_fence_drop_indicator(pos)
         self._maybe_handoff_check(pos)
 
     def _maybe_handoff_check(self, pos: QPoint) -> None:
@@ -2580,49 +2695,34 @@ class _PublicDragFilter(QObject):
             return
         self._last_handoff_check_ms = now_ms
         try:
-            # Translucent fence HWNDs are skipped by WindowFromPoint — an
-            # app underneath (Chrome/Edge) looked like an OLE target and
-            # resolved .lnk → English .exe (百度网盘 → BaiduNetdisk.exe).
-            if self._fence_at(pos) is not None:
+            # Pet trash aims stay custom (geometry only — no EnumWindows).
+            if _pet_trash_geometry_at(pos) is not None:
                 self._external_streak = 0
                 self._handoff_pending = False
                 return
-            # Same for the pet sprite: skip-chrome hit-test sees apps under
-            # the character and would false-handoff mid crumple aim.
-            try:
-                from src.ui.pet_widget import find_pet_trash_target
-
-                if find_pet_trash_target(pos) is not None:
-                    self._external_streak = 0
-                    self._handoff_pending = False
-                    return
-            except Exception:
-                pass
-            try:
-                import win32gui
-
-                from src.win_shell import _own_hwnd_is_desktop_overlay
-
-                under = int(
-                    win32gui.WindowFromPoint((int(pos.x()), int(pos.y()))) or 0
-                )
-                if under and _own_hwnd_is_desktop_overlay(under):
-                    self._external_streak = 0
-                    self._handoff_pending = False
-                    return
-            except Exception:
-                pass
             from src.win_shell import should_ole_file_handoff_at
 
+            # Foreign app (minus VPN deny-list). Overlays stay click-through
+            # via drag-begin re-bind — WindowFromPoint reaches the real top.
             if should_ole_file_handoff_at(pos.x(), pos.y()):
                 self._external_streak += 1
-                if self._external_streak >= 3:
+                if self._external_streak >= 2:
+                    # Quit custom loop while LMB is still down so DoDragDrop can
+                    # deliver. Waiting for release left LMB up and only chat
+                    # Ctrl+V worked (「只能拖进微信」).
                     self._handoff_pending = True
+                    self.handoff_external = True
+                    self.drop_pos = QPoint(pos)
+                    if not self._indicator_cleared:
+                        clear_fence_drop_indicators()
+                        self._indicator_cleared = True
+                    self._loop.quit()
             else:
                 self._external_streak = 0
                 self._handoff_pending = False
         except Exception:
             self._external_streak = 0
+            self._handoff_pending = False
 
     def eventFilter(self, obj, event) -> bool:  # noqa: ANN001
         et = event.type()
@@ -2674,7 +2774,17 @@ def _release_public_host_mouse_grab() -> None:
 
 
 def _prepare_external_ole_handoff() -> None:
-    """Release grabs and overlay freeze before OLE (WeChat / QQ handoff)."""
+    """Release grabs; keep overlay freeze; pass mouse through to the target app.
+
+    Must NOT call ``_end_overlay_drag_session`` here: ending the freeze restarted
+    keepalive / chrome raise and lifted Progman-owned fences + pet over Cursor
+    mid-OLE (visual cover + ``IgnoreAction`` because the drop hit us).
+
+    Must NOT ``processEvents()`` with user input: that can deliver LMB-up before
+    ``QDrag.exec`` starts (Cursor then never sees a live drag).
+    """
+    import time
+
     _release_public_host_mouse_grab()
     app = QApplication.instance()
     if app is None:
@@ -2691,11 +2801,61 @@ def _prepare_external_ole_handoff() -> None:
         ctypes.windll.user32.ReleaseCapture()
     except Exception:
         pass
+    desk = getattr(app, "_desktidy_app", None)
+    if desk is not None:
+        desk._overlay_drag_active = True
+        # Brief quiet while DoDragDrop runs — not tens of seconds. Clear path
+        # clamps again when OLE returns so FG/band heal is not delayed ~35s.
+        desk._shell_attach_quiet_until = max(
+            float(getattr(desk, "_shell_attach_quiet_until", 0.0)),
+            time.perf_counter() + 8.0,
+        )
+        arm = getattr(desk, "_arm_ole_handoff_overlays", None)
+        if callable(arm):
+            try:
+                arm()
+            except Exception:
+                pass
+        keepalive = getattr(desk, "_overlay_keepalive_timer", None)
+        if keepalive is not None:
+            try:
+                keepalive.stop()
+            except Exception:
+                pass
+    # ExcludeUserInputEvents — never drain LMB-up before QDrag.exec.
     try:
-        app.processEvents()
+        from PyQt6.QtCore import QEventLoop
+
+        app.processEvents(
+            QEventLoop.ProcessEventsFlag.ExcludeUserInputEvents
+            | QEventLoop.ProcessEventsFlag.ExcludeSocketNotifiers
+        )
     except Exception:
         pass
-    _end_overlay_drag_session(reconcile=False)
+
+
+def _clear_external_ole_handoff() -> None:
+    """Restore overlay hit-testing after OLE ``DoDragDrop`` returns."""
+    import time
+
+    app = QApplication.instance()
+    if app is None:
+        return
+    desk = getattr(app, "_desktidy_app", None)
+    if desk is None:
+        return
+    clear = getattr(desk, "_clear_ole_handoff_overlays", None)
+    if callable(clear):
+        try:
+            clear()
+        except Exception:
+            pass
+    # Mid-OLE quiet must not linger: otherwise ensure_live / FG reconcile wait
+    # ~8–35s and fences stay mis-ordered under/over apps after handoff.
+    try:
+        desk._shell_attach_quiet_until = time.perf_counter() + 1.2
+    except Exception:
+        pass
 
 
 def _ole_drag_source_widget(fallback: QWidget) -> QWidget:
@@ -2715,13 +2875,22 @@ def _exec_external_file_ole_drag(
     pixmap: QPixmap | None = None,
     hotspot: QPoint | None = None,
 ) -> Qt.DropAction:
-    """Deliver files to WeChat / QQ / Office after custom public/fence drag."""
+    """Deliver files to external apps after custom drag (Win32 DoDragDrop).
+
+    Qt ``QDrag.exec`` hangs against Electron (Cursor / VS Code / Chrome).
+    Explorer-class handoff uses native ``DoDragDrop`` + ``CF_HDROP`` instead.
+    Chat apps also accept clipboard Ctrl+V when LMB is already up.
+    """
     from src.app_logging import get_logger
+    from src.ole_file_drag import do_file_ole_drag, drop_effect_to_qt_name
     from src.win_shell import (
         deliver_files_to_external_chat,
         deliver_files_to_external_window,
+        is_ole_chat_handoff_at,
+        ole_handoff_process_at,
     )
 
+    _ = widget, pixmap, hotspot  # ghost already shown; drag session owns raise
     paths = (
         [file_path] if isinstance(file_path, Path) else [Path(p) for p in file_path if p]
     )
@@ -2731,23 +2900,79 @@ def _exec_external_file_ole_drag(
     gpos = QCursor.pos()
     gx, gy = int(gpos.x()), int(gpos.y())
 
-    if deliver_files_to_external_chat(gx, gy, paths):
+    _prepare_external_ole_handoff()
+    try:
+        lmb_down = False
+        try:
+            import ctypes
+
+            lmb_down = bool(ctypes.windll.user32.GetAsyncKeyState(0x01) & 0x8000)
+        except Exception:
+            pass
+
+        try:
+            target_proc = ole_handoff_process_at(gx, gy)
+        except Exception:
+            target_proc = ""
         get_logger().info(
-            "external handoff: clipboard paste ok count=%s path=%s",
+            "external OLE: begin lmb=%s proc=%s count=%s path=%s",
+            lmb_down,
+            target_proc or "?",
             len(paths),
             primary,
         )
-        return Qt.DropAction.CopyAction
 
-    _prepare_external_ole_handoff()
-    lmb_down = False
-    try:
-        import ctypes
+        if lmb_down:
+            t0 = time.perf_counter()
+            try:
+                effect = do_file_ole_drag(paths, copy=True, timeout_s=12.0)
+            except Exception:
+                get_logger().exception(
+                    "external OLE: DoDragDrop failed path=%s", primary
+                )
+                effect = 0
+            elapsed = int((time.perf_counter() - t0) * 1000)
+            get_logger().info(
+                "external OLE: DoDragDrop done effect=%s name=%s elapsed_ms=%s",
+                effect,
+                drop_effect_to_qt_name(effect),
+                elapsed,
+            )
+            # DoDragDrop runs a modal loop up to 12s — re-read cursor for fallbacks.
+            gpos = QCursor.pos()
+            gx, gy = int(gpos.x()), int(gpos.y())
+            if effect:
+                # Never report Move — we keep the source pin/float.
+                return Qt.DropAction.CopyAction
+            # WeChat sometimes ignores OLE — fall through to chat paste / WM_DROPFILES.
+            if is_ole_chat_handoff_at(gx, gy) and deliver_files_to_external_chat(
+                gx, gy, paths
+            ):
+                get_logger().info(
+                    "external handoff: clipboard paste ok count=%s path=%s",
+                    len(paths),
+                    primary,
+                )
+                return Qt.DropAction.CopyAction
+            if deliver_files_to_external_window(gx, gy, paths):
+                get_logger().info(
+                    "external OLE drag: WM_DROPFILES fallback ok count=%s path=%s",
+                    len(paths),
+                    primary,
+                )
+                return Qt.DropAction.CopyAction
+            return Qt.DropAction.IgnoreAction
 
-        lmb_down = bool(ctypes.windll.user32.GetAsyncKeyState(0x01) & 0x8000)
-    except Exception:
-        pass
-    if not lmb_down:
+        # LMB already up (release-armed path): chat paste or WM_DROPFILES only.
+        if is_ole_chat_handoff_at(gx, gy) and deliver_files_to_external_chat(
+            gx, gy, paths
+        ):
+            get_logger().info(
+                "external handoff: clipboard paste ok count=%s path=%s",
+                len(paths),
+                primary,
+            )
+            return Qt.DropAction.CopyAction
         if deliver_files_to_external_window(gx, gy, paths):
             get_logger().info(
                 "external handoff: WM_DROPFILES ok count=%s path=%s",
@@ -2756,57 +2981,8 @@ def _exec_external_file_ole_drag(
             )
             return Qt.DropAction.CopyAction
         return Qt.DropAction.IgnoreAction
-
-    source = _ole_drag_source_widget(widget)
-    drag = QDrag(source)
-    mime = QMimeData()
-    if not attach_external_file_drag_payload(mime, paths):
-        return Qt.DropAction.IgnoreAction
-    drag.setMimeData(mime)
-    if pixmap is not None and not pixmap.isNull():
-        drag.setPixmap(pixmap)
-        if hotspot is not None:
-            drag.setHotSpot(hotspot)
-    watchdog = QTimer()
-    watchdog.setSingleShot(True)
-    timed_out = False
-
-    def _on_ole_watchdog() -> None:
-        nonlocal timed_out
-        timed_out = True
-        drag.cancel()
-
-    watchdog.timeout.connect(_on_ole_watchdog)
-    watchdog.start(30000)
-    try:
-        result = drag.exec(
-            Qt.DropAction.CopyAction | Qt.DropAction.MoveAction,
-            Qt.DropAction.CopyAction,
-        )
     finally:
-        watchdog.stop()
-    if timed_out:
-        get_logger().warning(
-            "external OLE drag: timed out after 30s count=%s path=%s",
-            len(paths),
-            primary,
-        )
-        result = Qt.DropAction.IgnoreAction
-    if result == Qt.DropAction.IgnoreAction:
-        if deliver_files_to_external_window(gx, gy, paths):
-            get_logger().info(
-                "external OLE drag: WM_DROPFILES fallback ok count=%s path=%s",
-                len(paths),
-                primary,
-            )
-            return Qt.DropAction.CopyAction
-    # Chat apps sometimes report Move while only copying — keep the desktop file.
-    try:
-        if result == Qt.DropAction.MoveAction and Path(primary).exists():
-            return Qt.DropAction.CopyAction
-    except OSError:
-        pass
-    return result
+        _clear_external_ole_handoff()
 
 
 def _conceal_widgets_for_custom_drag(widgets) -> list[QWidget]:
@@ -2829,6 +3005,48 @@ def _reveal_widgets_after_custom_drag(hidden) -> None:
                 widget.show()
         except RuntimeError:
             pass
+
+
+def _abort_custom_drag_session(concealed) -> None:
+    """Event-loop death: free conceal + overlay freeze before re-raise.
+
+    Kept out of ``start_public_item_drag`` body so the normal-path guard
+    (no reveal between ``loop.exec`` and drop handling) stays source-clean.
+    """
+    _reveal_widgets_after_custom_drag(concealed)
+    _end_overlay_drag_session(reconcile=True)
+
+
+def _drop_concealed_for_paths(concealed: list, paths) -> None:
+    """Remove consumed drag sources so the drag ``finally`` does not re-show them.
+
+    Pet trash / folder-move hide or retire cells, then the outer ``finally`` used
+    to ``show()`` every concealed widget — deleted files reappeared on the desk.
+    """
+    if not concealed or not paths:
+        return
+    keys: set[str] = set()
+    for raw in paths:
+        try:
+            keys.add(str(Path(raw)).casefold())
+        except OSError:
+            keys.add(str(raw).casefold())
+    if not keys:
+        return
+    keep: list = []
+    for widget in list(concealed):
+        path = getattr(widget, "file_path", None)
+        if path is None:
+            keep.append(widget)
+            continue
+        try:
+            key = str(Path(path)).casefold()
+        except OSError:
+            key = str(path).casefold()
+        if key in keys:
+            continue
+        keep.append(widget)
+    concealed[:] = keep
 
 
 def _show_drag_ghost(ghost: QLabel, pix: QPixmap, hotspot: QPoint) -> None:
@@ -3011,6 +3229,10 @@ def start_public_item_drag(
         drop_anchor = _drag_drop_anchor(drop_pos, hotspot)
         cancelled = bool(filt.cancelled)
         handoff_external = bool(filt.handoff_external)
+    except BaseException:
+        # Event-loop death must not leak concealed floats / overlay drag freeze.
+        _abort_custom_drag_session(concealed)
+        raise
     finally:
         filt.stop()
         try:
@@ -3024,7 +3246,6 @@ def start_public_item_drag(
                 ghost.deleteLater()
             except RuntimeError:
                 pass
-        _reveal_widgets_after_custom_drag(concealed)
 
     try:
         settings = getattr(desk, "settings", None) if desk is not None else None
@@ -3177,10 +3398,22 @@ def start_public_item_drag(
                 len(payload),
                 file_path,
             )
+            # Reveal before OLE — DoDragDrop can block for seconds; hidden peers
+            # with a deleted ghost looked like the icons vanished mid-drag.
+            _reveal_widgets_after_custom_drag(concealed)
+            concealed.clear()
             result = _exec_external_file_ole_drag(
                 widget, payload, pixmap=pix, hotspot=hotspot
             )
-            _restore_float(ensure_public=False)
+            # Copy/Ignore: file stays on desktop — show the float again at its
+            # *original* place. Default drop_anchor is under the foreign app and
+            # would spawn a new public icon on the desktop plate (felt like
+            #「拖进应用后又在桌面冒出一个图标」).
+            _restore_float(
+                ensure_public=(result == Qt.DropAction.IgnoreAction)
+                or (result == Qt.DropAction.CopyAction),
+                place_at=_original_place(),
+            )
             get_logger().info(
                 "public drag: OLE handoff result=%s path=%s",
                 result.name if hasattr(result, "name") else result,
@@ -3235,6 +3468,7 @@ def start_public_item_drag(
         ):
             quiet_end = True
             _mark_pinned_done()
+            _drop_concealed_for_paths(concealed, drag_paths)
             return Qt.DropAction.MoveAction, False
 
         # Folder before fence — dropping onto a folder icon inside a fence must
@@ -3270,6 +3504,8 @@ def start_public_item_drag(
                         pass
                 quiet_end = True
                 _mark_pinned_done()
+                moved_paths = [p for p in drag_paths if p not in unmoved]
+                _drop_concealed_for_paths(concealed, moved_paths)
                 return Qt.DropAction.MoveAction, False
             if copied_any:
                 quiet_end = True
@@ -3317,9 +3553,38 @@ def start_public_item_drag(
             return Qt.DropAction.IgnoreAction, False
 
         try:
-            from src.win_shell import is_external_app_drop_point
+            from src.win_shell import (
+                is_external_app_drop_point,
+                should_ole_file_handoff_at,
+            )
 
             if is_external_app_drop_point(drop_pos.x(), drop_pos.y()):
+                # Mid-drag handoff may have been blocked while fences covered the
+                # app. LMB is up — still try chat paste / WM_DROPFILES / urls OLE.
+                if should_ole_file_handoff_at(drop_pos.x(), drop_pos.y()):
+                    payload = external_payload_paths_for_virtual_drag(drag_paths)
+                    if payload:
+                        get_logger().info(
+                            "public drag: late OLE handoff on release count=%s path=%s",
+                            len(payload),
+                            file_path,
+                        )
+                        _reveal_widgets_after_custom_drag(concealed)
+                        concealed.clear()
+                        result = _exec_external_file_ole_drag(
+                            widget, payload, pixmap=pix, hotspot=hotspot
+                        )
+                        get_logger().info(
+                            "public drag: late OLE result=%s path=%s",
+                            result.name if hasattr(result, "name") else result,
+                            file_path,
+                        )
+                        if result != Qt.DropAction.IgnoreAction:
+                            _restore_float(
+                                ensure_public=(result == Qt.DropAction.CopyAction),
+                                place_at=_original_place(),
+                            )
+                            return result, False
                 get_logger().info(
                     "public drag: external release — keep floats in place count=%s",
                     len(drag_paths),
@@ -3346,6 +3611,7 @@ def start_public_item_drag(
         _restore_float(ensure_public=True)
         return Qt.DropAction.CopyAction, True
     finally:
+        _reveal_widgets_after_custom_drag(concealed)
         _end_overlay_drag_session(reconcile=not quiet_end)
         get_logger().info(
             "public drag: custom end cancelled=%s handoff=%s quiet=%s drop=(%s,%s) count=%s path=%s",
@@ -3863,18 +4129,11 @@ def _move_public_into_folder(
 
     Returns ``\"moved\"``, ``\"copied\"``, or ``None``.
     Move drops the public entry; copy leaves the float in place.
-    Shortcuts stay as floats (virtual semantics).
+    Shortcuts (``.lnk`` / ``.url`` / ``.exe``) transfer like Explorer.
     """
     from src.app_logging import get_logger
-    from src.fence_rules import path_organize_kind
     from src.organize_suppress import suppress_desktop_item
     from src.win_shell import default_fs_drop_is_move, resolve_folder_drop_target
-
-    if path_organize_kind(file_path) == "icon":
-        get_logger().info(
-            "public drag: skip folder move for icon path=%s", file_path
-        )
-        return None
 
     try:
         src = _safe_abs_path(Path(file_path))
@@ -4812,11 +5071,37 @@ def _demote_clipboard_after_cut_paste(paths: list[Path]) -> None:
             pass
 
 
+def _resolve_paste_sources(
+    sources: list[Path] | None,
+    effect: int | None,
+    rewrite_clipboard: bool | None,
+) -> tuple[list[Path], int, bool]:
+    """Load clipboard when needed; demote only for real clipboard pastes.
+
+    Programmatic callers that pass *sources*/*effect* must not rewrite the
+    system clipboard (selftests / OLE import). ``dispatch_desktop_icon_chord``
+    pre-reads the clipboard then passes ``rewrite_clipboard=True``.
+    """
+    from src.shell_clipboard import clipboard_get_files_with_effect
+
+    from_clipboard = sources is None
+    if sources is None or effect is None:
+        clip_sources, clip_effect = clipboard_get_files_with_effect()
+        if sources is None:
+            sources = clip_sources
+        if effect is None:
+            effect = clip_effect
+    if rewrite_clipboard is None:
+        rewrite_clipboard = from_clipboard
+    return list(sources or []), int(effect or 0), bool(rewrite_clipboard)
+
+
 def paste_files_into_fence(
     anchor: QWidget,
     *,
     sources: list[Path] | None = None,
     effect: int | None = None,
+    rewrite_clipboard: bool | None = None,
 ) -> bool:
     """Paste CF_HDROP files into this fence (portal folder or desktop+pin)."""
     from src.fence_rules import (
@@ -4825,15 +5110,16 @@ def paste_files_into_fence(
         is_portal_fence,
     )
     from src.settings import get_desktop_path, save_settings
-    from src.shell_clipboard import DROPEFFECT_MOVE, clipboard_get_files_with_effect
+    from src.shell_clipboard import DROPEFFECT_MOVE
 
     fence = find_fence_widget(anchor)
     if fence is None and anchor.__class__.__name__ == "FenceWidget":
         fence = anchor
     if fence is None:
         return False
-    if sources is None or effect is None:
-        sources, effect = clipboard_get_files_with_effect()
+    sources, effect, rewrite_clipboard = _resolve_paste_sources(
+        sources, effect, rewrite_clipboard
+    )
     if not sources:
         return False
     cfg = getattr(fence, "config", None)
@@ -4889,7 +5175,7 @@ def paste_files_into_fence(
                 scrub_live_icons_for_claimed_paths(
                     [Path(old) for old, _new in moved_pairs]
                 )
-            if effect == DROPEFFECT_MOVE and moves_ok:
+            if rewrite_clipboard and effect == DROPEFFECT_MOVE and moves_ok:
                 _demote_clipboard_after_cut_paste(landed)
             refresh = getattr(fence, "refresh", None)
             if callable(refresh):
@@ -4970,7 +5256,7 @@ def paste_files_into_fence(
                 refresh = getattr(fence, "refresh", None)
                 if callable(refresh):
                     refresh(force=True)
-        if effect == DROPEFFECT_MOVE and moves_ok:
+        if rewrite_clipboard and effect == DROPEFFECT_MOVE and moves_ok:
             _demote_clipboard_after_cut_paste(landed)
 
     if _paste_sources_need_background(
@@ -5031,14 +5317,16 @@ def paste_files_to_public(
     *,
     sources: list[Path] | None = None,
     effect: int | None = None,
+    rewrite_clipboard: bool | None = None,
 ) -> bool:
     """Paste CF_HDROP files onto the public desktop (copy/move + float pins)."""
     from src.public_desktop import add_public_item
     from src.settings import get_desktop_path, save_settings
-    from src.shell_clipboard import DROPEFFECT_MOVE, clipboard_get_files_with_effect
+    from src.shell_clipboard import DROPEFFECT_MOVE
 
-    if sources is None or effect is None:
-        sources, effect = clipboard_get_files_with_effect()
+    sources, effect, rewrite_clipboard = _resolve_paste_sources(
+        sources, effect, rewrite_clipboard
+    )
     if not sources:
         return False
     app = QApplication.instance()
@@ -5104,7 +5392,7 @@ def paste_files_to_public(
             save_settings(settings)
         except OSError:
             pass
-        if effect == DROPEFFECT_MOVE and moves_ok:
+        if rewrite_clipboard and effect == DROPEFFECT_MOVE and moves_ok:
             _demote_clipboard_after_cut_paste(landed)
         refresh = getattr(desk_app, "refresh_public_desktop", None)
         if callable(refresh):
@@ -5134,17 +5422,178 @@ def paste_files_to_public(
     return True
 
 
+def folder_path_for_paste_anchor(anchor: QWidget | None) -> Path | None:
+    """If *anchor* selects exactly one folder (or folder ``.lnk``), return that dir.
+
+    Explorer: Ctrl+V with a single folder selected pastes *into* it. Multi-select
+    or a non-folder icon → ``None`` (caller uses fence/public paste).
+    """
+    if anchor is None:
+        return None
+    paths = selected_paths_from_anchor(anchor)
+    if len(paths) > 1:
+        return None
+    if len(paths) == 1:
+        candidate = Path(paths[0])
+    else:
+        raw = getattr(anchor, "file_path", None)
+        if raw is None:
+            return None
+        candidate = Path(raw)
+    try:
+        if candidate.is_dir():
+            return _safe_abs_path(candidate)
+    except OSError:
+        return None
+    # Folder shortcut → target directory (not file .lnk / namespace scrap).
+    if candidate.suffix.lower() != ".lnk":
+        return None
+    try:
+        from src.win_shell import get_lnk_namespace_clsid, resolve_folder_drop_target
+
+        if get_lnk_namespace_clsid(candidate):
+            return None
+        target = Path(resolve_folder_drop_target(candidate, for_move=True))
+        if target.is_dir():
+            return _safe_abs_path(target)
+    except OSError:
+        return None
+    return None
+
+
+def paste_files_into_folder(
+    folder: Path,
+    *,
+    sources: list[Path] | None = None,
+    effect: int | None = None,
+    rewrite_clipboard: bool | None = None,
+) -> bool:
+    """Paste CF_HDROP into an existing folder (Explorer selected-folder paste)."""
+    from src.settings import save_settings
+    from src.shell_clipboard import DROPEFFECT_MOVE
+
+    try:
+        target = _safe_abs_path(Path(folder))
+    except OSError:
+        return False
+    if not target.is_dir():
+        return False
+    sources, effect, rewrite_clipboard = _resolve_paste_sources(
+        sources, effect, rewrite_clipboard
+    )
+    if not sources:
+        return False
+
+    app = QApplication.instance()
+    desk_app = getattr(app, "_desktidy_app", None) if app else None
+    settings = getattr(desk_app, "settings", None) if desk_app is not None else None
+
+    def _skip_fs(src: Path) -> bool:
+        return _is_direct_child_of(src, target) and effect == DROPEFFECT_MOVE
+
+    def _finish(result: tuple) -> None:
+        landed, moved_pairs, moves_ok = _unpack_paste_result(result)
+        if not landed:
+            return
+        try:
+            from src.path_stat_cache import invalidate_path_stat_cache
+
+            for path in landed:
+                invalidate_path_stat_cache(path)
+            for old, new in moved_pairs:
+                invalidate_path_stat_cache(old)
+                invalidate_path_stat_cache(new)
+        except Exception:
+            pass
+        if isinstance(settings, dict) and moved_pairs:
+            _rewrite_pins_after_fs_move(settings, moved_pairs)
+            try:
+                from src.public_desktop import remove_public_paths
+
+                remove_public_paths(
+                    settings, [Path(old) for old, _new in moved_pairs]
+                )
+            except Exception:
+                pass
+            try:
+                save_settings(settings)
+            except OSError:
+                pass
+            scrub_live_icons_for_claimed_paths(
+                [Path(old) for old, _new in moved_pairs]
+            )
+        if rewrite_clipboard and effect == DROPEFFECT_MOVE and moves_ok:
+            _demote_clipboard_after_cut_paste(landed)
+        # Folder contents changed — refresh fences that may list the target.
+        if desk_app is not None:
+            try:
+                for fence in getattr(desk_app, "fences", None) or []:
+                    refresh = getattr(fence, "refresh", None)
+                    if callable(refresh):
+                        refresh(force=True)
+            except Exception:
+                pass
+            try:
+                refresh_pub = getattr(desk_app, "refresh_public_desktop", None)
+                if callable(refresh_pub):
+                    refresh_pub(relayout=False)
+            except Exception:
+                pass
+
+    if _paste_sources_need_background(
+        sources, target, effect=effect, skip_fs=_skip_fs
+    ):
+        _start_background_fs_paste(
+            lambda: _land_paste_sources_to_folder(
+                sources, target, effect=effect, skip_fs=_skip_fs
+            ),
+            on_success=_finish,
+            on_failure=lambda _exc: None,
+        )
+        return True
+
+    landed, moved_pairs, moves_ok = _land_paste_sources_to_folder(
+        sources, target, effect=effect, skip_fs=_skip_fs
+    )
+    if not landed:
+        return False
+    _finish((landed, moved_pairs, moves_ok))
+    return True
+
+
 def paste_files_into_context(
     anchor: QWidget,
     *,
     sources: list[Path] | None = None,
     effect: int | None = None,
+    rewrite_clipboard: bool | None = None,
 ) -> bool:
-    """Paste into a fence (portal/virtual) or onto the public desktop."""
+    """Paste into a selected folder, fence (portal/virtual), or public desktop.
+
+    Folder icon (single selection) wins — matches Explorer Ctrl+V into a folder.
+    """
+    folder = folder_path_for_paste_anchor(anchor)
+    if folder is not None:
+        return paste_files_into_folder(
+            folder,
+            sources=sources,
+            effect=effect,
+            rewrite_clipboard=rewrite_clipboard,
+        )
     if find_fence_widget(anchor) is not None or anchor.__class__.__name__ == "FenceWidget":
-        return paste_files_into_fence(anchor, sources=sources, effect=effect)
+        return paste_files_into_fence(
+            anchor,
+            sources=sources,
+            effect=effect,
+            rewrite_clipboard=rewrite_clipboard,
+        )
     if is_public_icon_context(anchor):
-        return paste_files_to_public(anchor, sources=sources, effect=effect)
+        return paste_files_to_public(
+            anchor,
+            sources=sources,
+            effect=effect,
+            rewrite_clipboard=rewrite_clipboard,
+        )
     return False
 
 
@@ -6122,7 +6571,12 @@ def dispatch_desktop_icon_chord(chord: str, anchor: QWidget | None = None) -> bo
             if not sources:
                 _toast("无法粘贴", "剪贴板里没有文件", msec=2200)
                 return False
-            ok = paste_files_into_context(target, sources=sources, effect=effect)
+            ok = paste_files_into_context(
+                target,
+                sources=sources,
+                effect=effect,
+                rewrite_clipboard=True,
+            )
             if ok:
                 _toast("已粘贴", "文件已放入目标位置")
             else:
