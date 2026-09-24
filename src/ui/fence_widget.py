@@ -1669,6 +1669,7 @@ class FenceWidget(QWidget):
             self.releaseMouse()
         except Exception:
             pass
+        self._finish_fence_panel_drag_session()
         self._update_chrome_visibility()
         self._update_lock_button()
         if emit:
@@ -2384,13 +2385,13 @@ class FenceWidget(QWidget):
         self._unpin_virtual_paths_impl([Path(path)], place_on_public=place_on_public)
 
     def _insert_index_at(self, widget: QWidget, pos: QPoint) -> int | None:
-        """Return insert index among icon items for a drop position in widget coords."""
-        items: list[QWidget] = []
-        for i in range(self.items_layout.count()):
-            child = self.items_layout.itemAt(i)
-            w = child.widget() if child else None
-            if isinstance(w, (FenceIconItem, FenceItemLabel)):
-                items.append(w)
+        """Return insert index among icon items for a drop position in widget coords.
+
+        Hit a cell → before/after its midpoint. Empty gutters → nearest cell
+        edge (same-row preferred). The old Y-first scan mapped the top-right
+        gutter to 0 whenever ``y`` was above the first cell's midpoint.
+        """
+        items = self._icon_item_widgets()
         if not items:
             return 0
         # Map to items_widget coordinates. Prefer global mapping — after shell
@@ -2402,17 +2403,44 @@ class FenceWidget(QWidget):
                 local = self.items_widget.mapFromGlobal(widget.mapToGlobal(pos))
             except RuntimeError:
                 local = self.items_widget.mapFrom(widget, pos)
+
+        list_mode = self._view_mode() == "list"
+
         for idx, w in enumerate(items):
             geo = w.geometry()
-            if local.y() < geo.center().y() or (
-                local.y() <= geo.bottom() and local.x() < geo.center().x()
-            ):
-                if geo.contains(local) or local.y() <= geo.bottom():
-                    # Drop on/before this cell.
-                    if geo.contains(local) and local.x() >= geo.center().x():
-                        return idx + 1
-                    return idx
-        return len(items)
+            if not geo.contains(local):
+                continue
+            if list_mode:
+                return idx + (1 if local.y() >= geo.center().y() else 0)
+            return idx + (1 if local.x() >= geo.center().x() else 0)
+
+        best_i = len(items)
+        best_d: int | None = None
+        for idx, w in enumerate(items):
+            geo = w.geometry()
+            if list_mode:
+                anchors = (
+                    (idx, QPoint(geo.center().x(), geo.top())),
+                    (idx + 1, QPoint(geo.center().x(), geo.bottom())),
+                )
+            else:
+                anchors = (
+                    (idx, QPoint(geo.left(), geo.center().y())),
+                    (idx + 1, QPoint(geo.right(), geo.center().y())),
+                )
+            for cand, anchor in anchors:
+                dx = abs(local.x() - anchor.x())
+                dy = abs(local.y() - anchor.y())
+                # Prefer same-row / same-column anchors so far gutters append
+                # after that row instead of snapping to index 0.
+                if list_mode:
+                    d = dy + dx * 3
+                else:
+                    d = dx + dy * 3
+                if best_d is None or d < best_d:
+                    best_d = d
+                    best_i = cand
+        return best_i
 
     def _icon_item_widgets(self) -> list[QWidget]:
         items: list[QWidget] = []
@@ -2524,6 +2552,7 @@ class FenceWidget(QWidget):
             return False
         self._panel_press_pending = None
         self._drag_pos = None
+        self._finish_fence_panel_drag_session()
         self._marquee_origin = QPoint(origin)
         self._marquee_additive = bool(additive)
         if not additive:
@@ -3383,7 +3412,7 @@ class FenceWidget(QWidget):
                 self._drag_pos = None
                 self.clear_item_selection()
             else:
-                self._drag_pos = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
+                self._start_fence_drag(event.globalPosition().toPoint())
                 # Clicking empty chrome/panel clears icon selection.
                 self.clear_item_selection()
             event.accept()
@@ -3700,16 +3729,9 @@ class FenceWidget(QWidget):
                             if hasattr(event, "position")
                             else QPoint(0, 0)
                         )
-                        from src.ui.fence_icon_item import PUBLIC_SOURCE_FENCE_ID
-
-                        src_id = desktidy_source_fence_id(event.mimeData()) or ""
-                        # Public→fence: never raise_() desktop-band HWNDs during
-                        # OLE (deadlocks Explorer). In-fence unpin still needs it.
-                        if src_id != PUBLIC_SOURCE_FENCE_ID:
-                            try:
-                                self.raise_()
-                            except Exception:
-                                pass
+                        # Never Qt-raise_() Progman-owned fences during OLE —
+                        # that lifts the whole owner group over Cursor/Chrome.
+                        # Drop caret alone is enough; band Z stays under apps.
                         self._update_drop_indicator(
                             obj if isinstance(obj, QWidget) else self.items_widget,
                             pos,
@@ -3722,9 +3744,9 @@ class FenceWidget(QWidget):
                     event.accept()
                     return True
             if et == QEvent.Type.DragLeave:
-                # Ignore noisy leave events while moving between sibling icons.
-                if not self.frameGeometry().contains(QCursor.pos()):
-                    self._hide_drop_indicator()
+                # Always clear caret — staying over frameGeometry used to leave
+                # the insertion bar after Esc / cancel while still on the fence.
+                self._hide_drop_indicator()
                 return False
             if et == QEvent.Type.Drop:
                 mime = event.mimeData()
@@ -3778,12 +3800,34 @@ class FenceWidget(QWidget):
         self._resize_start_pos = None
         self._drag_pos = global_press - self.frameGeometry().topLeft()
         self._update_chrome_visibility()
+        # Same under-apps arm as icon drag — header move used to Qt-raise the
+        # Progman owner group over Cursor/Chrome.
+        try:
+            from src.ui.fence_icon_item import _begin_overlay_drag_session
+
+            _begin_overlay_drag_session()
+            self._desktidy_panel_drag_armed = True  # type: ignore[attr-defined]
+        except Exception:
+            self._desktidy_panel_drag_armed = False  # type: ignore[attr-defined]
         self._ensure_drop_target_interactive()
         try:
             self.grabMouse()
         except RuntimeError:
             pass
         return True
+
+    def _finish_fence_panel_drag_session(self) -> None:
+        """Clear under-apps arm started by ``_start_fence_drag``."""
+        if not bool(getattr(self, "_desktidy_panel_drag_armed", False)):
+            return
+        self._desktidy_panel_drag_armed = False  # type: ignore[attr-defined]
+        try:
+            from src.ui.fence_icon_item import _end_overlay_drag_session
+
+            # Light restack (quiet_end path): no public refresh flash.
+            _end_overlay_drag_session(reconcile=False)
+        except Exception:
+            pass
 
     def _handle_header_press(self, event) -> bool:
         if event.button() != Qt.MouseButton.LeftButton:
@@ -3827,6 +3871,7 @@ class FenceWidget(QWidget):
             self.releaseMouse()
         except RuntimeError:
             pass
+        self._finish_fence_panel_drag_session()
         self._update_chrome_visibility()
         self.geometry_changed.emit()
         event.accept()
@@ -3938,6 +3983,7 @@ class FenceWidget(QWidget):
         self._resize_mode = None
         self._resize_start_geo = None
         self._resize_start_pos = None
+        self._finish_fence_panel_drag_session()
         if was_resizing:
             # Ensure we release captured mouse so Qt can route future clicks.
             try:

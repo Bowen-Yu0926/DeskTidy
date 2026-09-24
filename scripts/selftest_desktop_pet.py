@@ -778,6 +778,13 @@ def main() -> None:
     assert "self._trash_recycled = True" in start_trash
     assert callable(pet_mod.find_pet_trash_target)
     assert callable(pet_mod.deliver_paths_to_pet_trash)
+    find_src = inspect.getsource(pet_mod.find_pet_trash_target)
+    assert "_overlay_drag_active" in find_src
+    assert "is_visible_external_app_drop_point" in find_src
+    # Mid-drag: skip external WFP reject (overlays are click-through).
+    assert find_src.index("drag_active") < find_src.index(
+        "is_visible_external_app_drop_point"
+    )
     show_src = inspect.getsource(DesktopPetWidget.showEvent)
     assert "setAcceptDrops(False)" in show_src
     assert "_sync_drop_zone" in show_src

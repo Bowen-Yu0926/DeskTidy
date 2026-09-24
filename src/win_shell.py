@@ -1475,8 +1475,7 @@ def is_external_app_drop_point(x: int, y: int) -> bool:
 
     Sees *through* DeskTidy DefView chrome so a public-float release over WeChat
     (under a transparent plate) is not treated as desktop relocate. Mid-drag OLE
-    handoff uses the stricter ``should_ole_file_handoff_at`` allowlist so VPN /
-    utility panels are not woken as drop targets.
+    handoff uses ``should_ole_file_handoff_at`` (foreign app minus VPN deny-list).
 
     Do **not** use this to gate fence→public unpin — IDE / Cubism windows behind
     the desktop band look 「external」 after chrome-skip and block every drag-out.
@@ -1532,8 +1531,9 @@ def is_desknote_window_at(x: int, y: int) -> bool:
 def try_open_paths_in_desknote_at(x: int, y: int, paths: list[Path | str]) -> bool:
     """If release is over DeskNote, open openable paths there (no OLE / no Move).
 
-    DeskTidy custom drag never starts OLE over DeskNote (not on the handoff
-    allowlist). Without this, floats are restored and the file never opens.
+    DeskTidy custom drag opens DeskNote via ``try_open_paths_in_desknote_at``
+    (OLE handoff skips DeskNote). Without this, floats are restored and the
+    file never opens.
     """
     if not is_desknote_window_at(x, y):
         return False
@@ -1558,15 +1558,67 @@ def try_open_paths_in_desknote_at(x: int, y: int, paths: list[Path | str]) -> bo
         return False
 
 
-# Mid-drag OLE handoff allowlist — only apps users intentionally drop files onto.
-# Do NOT gate on WS_EX_ACCEPTFILES or generic Electron classes (Chrome_WidgetWin_1):
-# VPN / tunnel / status panels often set AcceptFiles or share Electron chrome, and
-# starting QDrag.exec over them wakes those dormant windows as OLE drop targets.
-_OLE_HANDOFF_PROCESS_HINTS = frozenset(
+# Mid-drag OLE: hand off to ANY foreign app except this deny-list.
+# Allowlists cannot cover "all software". VPN / tray utilities must still be
+# denied — QDrag.exec over them wakes dormant AcceptFiles panels.
+_OLE_HANDOFF_DENY_PROCESS_HINTS = frozenset(
+    {
+        # VPN / tunnel / SD-WAN
+        "clash",
+        "clashy",
+        "clashverge",
+        "clashforwindows",
+        "clash-verge",
+        "v2ray",
+        "v2rayn",
+        "v2rayng",
+        "xray",
+        "ssr",
+        "shadowsocks",
+        "ss-local",
+        "wireguard",
+        "tailscale",
+        "openvpn",
+        "openvpn-gui",
+        "ovpnhelper",
+        "astrill",
+        "expressvpn",
+        "nordvpn",
+        "surfshark",
+        "letsvpn",
+        "uutunnel",
+        "sangfor",
+        "atrust",
+        "atrusttray",
+        "easyconnect",
+        "sslvpnclient",
+        "forticlient",
+        "ciscoanyconnect",
+        "vpnui",
+        "vpnagent",
+        "softether",
+        "hiddify",
+        "nekoray",
+        "sing-box",
+        "tun2socks",
+        # Status / overlay utilities that AcceptFiles but are not drop targets
+        "rainmeter",
+        "wallpaperengine",
+        "translucenttb",
+        "powertoys",
+        "sharex",
+        "ditto",
+        "everything",
+    }
+)
+# Chat apps accept CF_HDROP via clipboard Ctrl+V after mouse-up. Browsers /
+# Office / IDEs need a live ``QDrag`` while LMB is still down.
+_OLE_CHAT_HANDOFF_PROCESS_HINTS = frozenset(
     {
         "wechat",
         "weixin",
         "qq",
+        "qqnt",
         "tim",
         "dingtalk",
         "feishu",
@@ -1575,30 +1627,7 @@ _OLE_HANDOFF_PROCESS_HINTS = frozenset(
         "discord",
         "slack",
         "teams",
-        "outlook",
-        "winword",
-        "excel",
-        "powerpnt",
         "foxmail",
-        "chrome",
-        "msedge",
-        "firefox",
-        "sogouexplorer",
-        "quark",
-        "360se",
-        "360chrome",
-    }
-)
-# Narrow, product-specific window classes only (never Chrome_WidgetWin_1 / Cef*).
-_OLE_HANDOFF_CLASS_HINTS = frozenset(
-    {
-        "WeChatMainWndForPC",
-        "TXGuiFoundation",  # QQ / TIM
-        "ChatWnd",
-        "OpusApp",  # Word
-        "XLMAIN",  # Excel
-        "PPTFrameClass",
-        "rctrl_renwnd32",  # Outlook
     }
 )
 
@@ -1638,41 +1667,87 @@ def _process_name_for_hwnd(hwnd: int) -> str:
     return ""
 
 
+def is_ole_chat_handoff_process(name: str | Path | None) -> bool:
+    """True when *name* is a chat app that accepts file paste via Ctrl+V."""
+    try:
+        proc = Path(str(name or "")).stem.casefold()
+    except OSError:
+        proc = str(name or "").casefold()
+    if not proc:
+        return False
+    if proc in _OLE_CHAT_HANDOFF_PROCESS_HINTS:
+        return True
+    return any(proc.startswith(h) for h in _OLE_CHAT_HANDOFF_PROCESS_HINTS)
+
+
+def is_ole_handoff_denied_process(name: str | Path | None) -> bool:
+    """True when *name* is a VPN / tray utility that must not receive OLE."""
+    try:
+        proc = Path(str(name or "")).stem.casefold()
+    except OSError:
+        proc = str(name or "").casefold()
+    if not proc:
+        return False
+    if proc in _OLE_HANDOFF_DENY_PROCESS_HINTS:
+        return True
+    return any(proc.startswith(h) for h in _OLE_HANDOFF_DENY_PROCESS_HINTS)
+
+
 def should_ole_file_handoff_at(x: int, y: int) -> bool:
-    """True only when mid-drag OLE to a real file-drop app is appropriate.
+    """True when mid-drag OLE to the window under the cursor is appropriate.
 
-    Crossing a dormant VPN / status / utility window while dragging a fence icon
-    must NOT start ``QDrag.exec`` — that wakes the window as an OLE drop target.
+    Hand off to **any foreign app** (Explorer-class file drop). Deny only:
+    desktop / Explorer / our chrome, DeskNote (custom open path), and a
+    VPN/utility deny-list (QDrag over those wakes dormant AcceptFiles panels).
 
-    Gate on process-name / narrow product class allowlists only. Never treat
-    ``WS_EX_ACCEPTFILES`` or generic Electron classes as enough.
+    Uses plain ``WindowFromPoint`` — during custom drag overlays are already
+    ``WS_EX_TRANSPARENT``, so hit-tests reach the real top window. The older
+    top-level Z-order scan on every handoff tick (~20Hz) made mid-desktop
+    drag hitch with many open apps.
+
+    Never gate on ``WS_EX_ACCEPTFILES`` alone — that bit is set by many trays.
     """
-    hwnd = _hwnd_under_drag_point(x, y)
+    try:
+        hwnd = int(win32gui.WindowFromPoint((int(x), int(y))) or 0)
+    except OSError:
+        return False
     if not hwnd or _is_desktop_or_explorer_hwnd(hwnd):
         return False
+    try:
+        if is_desknote_window_at(x, y):
+            return False
+    except Exception:
+        pass
     try:
         root = int(win32gui.GetAncestor(hwnd, 2) or hwnd)
     except OSError:
         root = hwnd
     proc = _process_name_for_hwnd(root) or _process_name_for_hwnd(hwnd)
-    if proc and (
-        proc in _OLE_HANDOFF_PROCESS_HINTS
-        or any(proc.startswith(h) for h in _OLE_HANDOFF_PROCESS_HINTS)
-    ):
-        return True
+    if is_ole_handoff_denied_process(proc):
+        return False
+    return True
+
+
+def ole_handoff_process_at(x: int, y: int) -> str:
+    """Casefolded process stem under (x, y), or empty."""
     try:
-        cls = (win32gui.GetClassName(root) or "").strip()
+        hwnd = int(win32gui.WindowFromPoint((int(x), int(y))) or 0)
     except OSError:
-        cls = ""
-    if cls in _OLE_HANDOFF_CLASS_HINTS:
-        return True
+        return ""
+    if not hwnd:
+        return ""
     try:
-        leaf = (win32gui.GetClassName(hwnd) or "").strip()
+        root = int(win32gui.GetAncestor(hwnd, 2) or hwnd)
     except OSError:
-        leaf = ""
-    if leaf in _OLE_HANDOFF_CLASS_HINTS:
-        return True
-    return False
+        root = hwnd
+    return _process_name_for_hwnd(root) or _process_name_for_hwnd(hwnd) or ""
+
+
+def is_ole_chat_handoff_at(x: int, y: int) -> bool:
+    """True when the window under (x, y) is a chat OLE handoff target."""
+    if not should_ole_file_handoff_at(x, y):
+        return False
+    return is_ole_chat_handoff_process(ole_handoff_process_at(x, y))
 
 
 _WM_DROPFILES = 0x0233
@@ -1722,12 +1797,14 @@ def _send_ctrl_v() -> None:
 def deliver_files_to_external_chat(
     x: int, y: int, paths: list[Path | str]
 ) -> bool:
-    """Put files on the clipboard and paste into WeChat / QQ (release handoff)."""
-    if not should_ole_file_handoff_at(x, y):
+    """Clipboard + Ctrl+V into WeChat / QQ (and similar chat) only.
+
+    Browsers and Office ignore file paste — calling this for chrome/word used
+    to return True after a no-op Ctrl+V and skip real OLE (「只能拖进微信」).
+    """
+    if not is_ole_chat_handoff_at(x, y):
         return False
     try:
-        import win32gui
-
         from src.shell_clipboard import clipboard_set_files
 
         hwnd = _hwnd_under_drag_point(x, y)

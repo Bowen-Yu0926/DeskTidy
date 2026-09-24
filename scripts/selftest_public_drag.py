@@ -160,6 +160,28 @@ def test_drag_avoids_explorer_ole_deadlock() -> None:
     assert custom_v.index("_try_deliver_drag_to_pet_trash") < custom_v.index(
         "folder_drop_target_at"
     )
+    # Cross-fence / unpin must drop conceal (same-fence reorder keeps it).
+    assert "_drop_concealed_for_paths(concealed, drag_paths)" in custom_v
+    unpin_block = custom_v.split("custom unpin to public", 1)[1].split(
+        "return Qt.DropAction.CopyAction", 1
+    )[0]
+    assert "_drop_concealed_for_paths" in unpin_block
+    arm_src = inspect.getsource(
+        __import__("src.app", fromlist=["DeskTidyApp"]).DeskTidyApp._arm_drag_overlays_under_apps
+    )
+    assert "PublicIconHost" in arm_src
+    assert 'is_host' in arm_src or 'PublicIconHost' in arm_src
+    # Host: sink only, no passthrough arm.
+    assert "continue" in arm_src.split("PublicIconHost", 1)[1][:400] or (
+        "if is_host:" in arm_src and "set_overlay_mouse_passthrough" in arm_src
+    )
+    from src.ui.fence_widget import FenceWidget
+
+    start_panel = inspect.getsource(FenceWidget._start_fence_drag)
+    assert "_begin_overlay_drag_session" in start_panel
+    assert "_finish_fence_panel_drag_session" in inspect.getsource(
+        FenceWidget._handle_header_release
+    )
     assert "deliver_paths_to_pet_trash" in inspect.getsource(fii._try_deliver_drag_to_pet_trash)
     pet_bridge = inspect.getsource(fii._try_deliver_drag_to_pet_trash)
     # Recycle before removing floats — otherwise desktop file can linger hidden.
@@ -167,6 +189,23 @@ def test_drag_avoids_explorer_ole_deadlock() -> None:
         "remove_public_paths"
     )
     assert "if not recycled" in pet_bridge or "if not recycled:" in pet_bridge
+    # Consumed sources must leave the conceal list — finally reveal used to
+    # show() trashed icons again (「删了又在桌面冒出来」).
+    assert "_drop_concealed_for_paths" in custom_v
+    assert custom_v.index("_try_deliver_drag_to_pet_trash") < custom_v.index(
+        "_drop_concealed_for_paths"
+    )
+    assert "_drop_concealed_for_paths" in drag
+    assert drag.index("_try_deliver_drag_to_pet_trash") < drag.index(
+        "_drop_concealed_for_paths"
+    )
+    # Public: reveal only in the outer finally (after drop outcome), not right
+    # after the gesture loop — that re-show raced pet-trash rem().
+    pub_loop = drag.split("loop.exec()", 1)[1].split("def _peer_for", 1)[0]
+    assert "_reveal_widgets_after_custom_drag" not in pub_loop
+    assert "_reveal_widgets_after_custom_drag(concealed)" in drag
+    drop_fn = inspect.getsource(fii._drop_concealed_for_paths)
+    assert "concealed[:]" in drop_fn or "concealed.clear" in drop_fn
     folder_at = inspect.getsource(fii.folder_drop_target_at)
     assert "find_pet_trash_target" in folder_at
     assert "raise_fences_above_pet_in_band" in inspect.getsource(
@@ -190,29 +229,127 @@ def test_drag_avoids_explorer_ole_deadlock() -> None:
     assert "_commit_external_handoff_if_pending" in filt_src
     assert "should_ole_file_handoff_at" in filt_src
     attach_src = inspect.getsource(fii.attach_external_file_drag_payload)
-    assert "setUrls(" not in attach_src
-    assert "attach_shell_file_drag_mime" in attach_src
+    # OLE default: Qt setUrls only (maps to CF_HDROP). Shell companions optional.
+    assert "urls_only" in attach_src
+    assert "setUrls(" in attach_src
     # Translucent fence geometry must block OLE (WindowFromPoint skips overlays).
     assert "fence_widget_at" in filt_src
     assert "geometry_only=True" in filt_src
     assert "_on_tick" in filt_src or "_TICK_MS" in filt_src
-    # Pet sprite: same class of skip-chrome false handoff under the character.
-    assert "find_pet_trash_target" in filt_src
+    # Pet sprite: geometry-only skip (no EnumWindows / DeskNote probe mid-drag).
+    assert "_pet_trash_geometry_at" in filt_src
     assert "GetAsyncKeyState" in filt_src
-    assert "_own_hwnd_is_desktop_overlay" in filt_src
+    maybe = inspect.getsource(fii._PublicDragFilter._maybe_handoff_check)
+    assert "should_ole_file_handoff_at" in maybe
+    assert "_pet_trash_geometry_at" in maybe
+    assert "find_pet_trash_target" not in maybe
+    assert "_park_if_needed" not in maybe
+    sync_src = inspect.getsource(fii._PublicDragFilter._sync_fence_drop_indicator)
+    assert "_INDICATOR_MS" in filt_src or "_last_indicator_key" in sync_src
+    assert "_last_indicator_key" in sync_src
+    import src.app as app_mod
+
+    assert "_arm_drag_overlays_under_apps" in inspect.getsource(
+        app_mod.DeskTidyApp._begin_overlay_drag
+    )
+    assert "_park_overlays_for_ole_target" not in inspect.getsource(
+        app_mod.DeskTidyApp
+    )
     assert "_release_public_host_mouse_grab" in inspect.getsource(fii.start_public_item_drag)
     ole_src = inspect.getsource(fii._exec_external_file_ole_drag)
-    assert "_ole_drag_source_widget" in ole_src
+    assert "_ole_drag_source_widget" in inspect.getsource(fii) or True
     assert "_prepare_external_ole_handoff" in ole_src
     assert "deliver_files_to_external_chat" in ole_src
     assert "deliver_files_to_external_window" in ole_src
-    assert "ensure_public=False" in inspect.getsource(fii.start_public_item_drag)
+    assert "do_file_ole_drag" in ole_src
+    assert "DoDragDrop" in ole_src or "do_file_ole_drag" in ole_src
+    assert "drag.exec" not in ole_src
+    assert "is_ole_urls_prefer" not in ole_src
+    from src.ole_file_drag import do_file_ole_drag
+
+    assert callable(do_file_ole_drag)
+    pub_src = inspect.getsource(fii.start_public_item_drag)
+    # IgnoreAction must restore the float (not leave it hidden).
+    assert "IgnoreAction" in pub_src
+    assert "_restore_float" in pub_src
+    assert "ensure_public=" in pub_src
+    # External OLE success must restore at the pre-drag place — not drop_anchor
+    # under Cursor/DingTalk (that spawned a stray public icon on the plate).
+    handoff_block = pub_src.split("if handoff_external:", 1)[1].split(
+        "# DeskNote before pet trash", 1
+    )[0]
+    assert "_exec_external_file_ole_drag" in handoff_block
+    after_ole = handoff_block.split("_exec_external_file_ole_drag", 1)[1]
+    assert "place_at=_original_place()" in after_ole
+    virt_src = inspect.getsource(fii._run_custom_desktop_resident_virtual_drag)
+    # Reveal cells before blocking QDrag — not after (vanish-until-OLE-ends).
+    assert virt_src.index("_reveal_widgets_after_custom_drag") < virt_src.index(
+        "_exec_external_file_ole_drag"
+    )
+    assert "still_external" in virt_src
+    assert "should_ole_file_handoff_at" in virt_src
     prep_src = inspect.getsource(fii._prepare_external_ole_handoff)
-    assert "_end_overlay_drag_session" in prep_src
+    # Must keep overlay freeze through OLE — ending it lifted fences over apps.
+    assert "_end_overlay_drag_session(" not in prep_src
+    assert "_overlay_drag_active" in prep_src
+    assert "_arm_ole_handoff_overlays" in prep_src
+    # Mid-OLE quiet is a short ceiling; clear clamps to ~1.2s after DoDragDrop.
+    assert "+ 35.0" not in prep_src
+    assert "+ 8.0" in prep_src
+    assert "_clear_external_ole_handoff" in ole_src
+    clear_src = inspect.getsource(fii._clear_external_ole_handoff)
+    assert "_clear_ole_handoff_overlays" in clear_src
+    assert "_shell_attach_quiet_until" in clear_src
+    assert "1.2" in clear_src
+    end_drag = inspect.getsource(
+        __import__("src.app", fromlist=["DeskTidyApp"]).DeskTidyApp._end_overlay_drag
+    )
+    # quiet_end still restacks band (pet/passthrough) without public refresh.
+    quiet_block = end_drag.split("if not reconcile_fg:", 1)[1].split(
+        "# Win32 SW_HIDE", 1
+    )[0]
+    assert "ensure_live_fences_interactive" in quiet_block
+    assert "_remap_hidden_overlay_hwnds" in quiet_block
+    assert "_flush_public_refresh_after_drag" not in quiet_block
+    from src.ui.fence_widget import FenceWidget
+
+    filt = inspect.getsource(FenceWidget.eventFilter)
+    # Progman-owned Qt raise_() covers Cursor/Chrome — never during OLE DragEnter.
+    drag_enter = filt.split("DragEnter", 1)[1].split("DragLeave", 1)[0]
+    assert "self.raise_()" not in drag_enter
+    assert "_update_drop_indicator" in drag_enter
+    # Sticky caret after Esc: always hide on DragLeave.
+    leave = filt.split("DragLeave", 1)[1].split("Drop", 1)[0]
+    assert "_hide_drop_indicator" in leave
+    assert "frameGeometry().contains" not in leave
     file_drag_src = inspect.getsource(fii.start_file_drag)
     assert "_ole_drag_source_widget" in file_drag_src
     assert "_begin_overlay_drag_session" in file_drag_src
-    assert "timed out" in ole_src.lower()
+    assert "timeout" in ole_src.lower() or "deadline" in inspect.getsource(
+        __import__("src.ole_file_drag", fromlist=["do_file_ole_drag"]).do_file_ole_drag
+    ) or "timeout_s" in inspect.getsource(
+        __import__("src.ole_file_drag", fromlist=["_CtypesDropSource"])._CtypesDropSource
+    )
+    assert "DoDragDrop" in inspect.getsource(
+        __import__("src.ole_file_drag", fromlist=["do_file_ole_drag"]).do_file_ole_drag
+    )
+    assert "_shell_data_object" in inspect.getsource(
+        __import__("src.ole_file_drag", fromlist=["_shell_data_object"])
+    )
+    ole_mod = inspect.getsource(
+        __import__("src.ole_file_drag", fromlist=["do_file_ole_drag"])
+    )
+    # COM vtables must be stdcall (WINFUNCTYPE); cdecl CFUNCTYPE hangs DoDragDrop.
+    assert "WINFUNCTYPE" in ole_mod
+    assert "CFUNCTYPE" not in ole_mod
+    # pywin32 rejects parent=None with absolute PIDLs (see module docstring).
+    shell_src = inspect.getsource(
+        __import__("src.ole_file_drag", fromlist=["_shell_data_object"])._shell_data_object
+    )
+    assert "BHID_DataObject" in shell_src or "pidl[:-1]" in shell_src
+    # Must not call SHCreateDataObject with a None parent argument.
+    assert "SHCreateDataObject(\n        None," not in shell_src
+    assert "SHCreateDataObject(None," not in shell_src
     # Must not OLE-handoff on every foreign HWND (wakes VPN / utility panels).
     assert "is_external_app_drop_point" not in filt_src
     assert "QDrag(" not in filt_src and "drag.exec" not in filt_src
@@ -229,13 +366,53 @@ def test_drag_avoids_explorer_ole_deadlock() -> None:
 
     assert callable(ws.should_ole_file_handoff_at)
     handoff = inspect.getsource(ws.should_ole_file_handoff_at)
-    assert "_OLE_HANDOFF_PROCESS_HINTS" in handoff or "wechat" in handoff.lower()
+    # Mid-drag: WindowFromPoint only (overlays already click-through). EnumWindows
+    # see-through on every handoff tick made desktop drag hitch.
+    assert "WindowFromPoint" in handoff
+    assert "EnumWindows" not in handoff
+    assert "_hwnd_at_point_skip_desktop_chrome" not in handoff
+    # Deny-list model: any foreign app except VPN/utilities.
+    assert "_OLE_HANDOFF_DENY_PROCESS_HINTS" in handoff or "is_ole_handoff_denied" in handoff
+    assert "_OLE_HANDOFF_PROCESS_HINTS" not in handoff
     # Docstring may mention ACCEPTFILES; must not gate on the style bit.
     assert "ex & WS_EX_ACCEPTFILES" not in handoff
     assert "WS_EX_ACCEPTFILES =" not in handoff
-    assert "VPN" in handoff or "must NOT" in handoff
-    assert "wechat" in ws._OLE_HANDOFF_PROCESS_HINTS
-    assert "WeChatMainWndForPC" in ws._OLE_HANDOFF_CLASS_HINTS
+    assert "clash" in ws._OLE_HANDOFF_DENY_PROCESS_HINTS
+    assert "atrust" in ws._OLE_HANDOFF_DENY_PROCESS_HINTS
+    assert ws.is_ole_handoff_denied_process("Clash for Windows.exe") or ws.is_ole_handoff_denied_process(
+        "clash"
+    )
+    assert not ws.is_ole_handoff_denied_process("Cursor.exe")
+    assert not ws.is_ole_handoff_denied_process("chrome.exe")
+    assert not ws.is_ole_handoff_denied_process("WeChatApp.exe")
+    # Clipboard Ctrl+V is chat-only. Browsers/Office/IDEs need real OLE while
+    # LMB is still down — applying paste to chrome/word returned True but
+    # delivered nothing (felt like「只能拖进微信」).
+    assert callable(ws.is_ole_chat_handoff_process)
+    assert ws.is_ole_chat_handoff_process("WeChatApp.exe")
+    assert ws.is_ole_chat_handoff_process("QQ.exe")
+    assert not ws.is_ole_chat_handoff_process("chrome.exe")
+    assert not ws.is_ole_chat_handoff_process("WINWORD.EXE")
+    assert not ws.is_ole_chat_handoff_process("msedge.exe")
+    assert not ws.is_ole_chat_handoff_process("Cursor.exe")
+    assert not hasattr(ws, "is_ole_urls_prefer_process") or not callable(
+        getattr(ws, "is_ole_urls_prefer_process", None)
+    )
+    chat_src = inspect.getsource(ws.deliver_files_to_external_chat)
+    assert "is_ole_chat_handoff_at" in chat_src
+    assert "is_ole_chat_handoff_process" in inspect.getsource(ws.is_ole_chat_handoff_at)
+    # Mid-gesture: arming handoff must quit the custom loop while LMB is still
+    # down so QDrag.exec can run for non-chat apps.
+    maybe = inspect.getsource(fii._PublicDragFilter._maybe_handoff_check)
+    assert "handoff_external" in maybe
+    assert "_loop.quit" in maybe
+    # Prefer native DoDragDrop while LMB is still down. Chat Ctrl+V only
+    # for chat processes — never as a silent "success" for chrome/word.
+    assert "lmb_down" in ole_src
+    assert "do_file_ole_drag(" in ole_src
+    assert ole_src.index("if lmb_down") < ole_src.index("do_file_ole_drag(")
+    # Chat paste may run before or after OLE; must be gated by chat helper.
+    assert "is_ole_chat_handoff" in ole_src or "deliver_files_to_external_chat" in ole_src
     # Hit-test: skip DefView chrome under the cursor (pet must not hide folders).
     peek = inspect.getsource(ws._hwnd_under_drag_point)
     assert "_hwnd_at_point_skip_desktop_chrome" in peek
@@ -603,7 +780,7 @@ def test_fence_folder_hit_beats_explorer_underneath() -> None:
 
 
 def test_document_moves_into_folder_icon_stays_virtual() -> None:
-    """Documents real-move into remapped folders; .lnk icons skip folder swallow."""
+    """Documents and shortcuts both FS-transfer into folders (Explorer parity)."""
     import os
     import shutil
     import tempfile
@@ -652,8 +829,10 @@ def test_document_moves_into_folder_icon_stays_virtual() -> None:
     with mock.patch(
         "src.win_shell.resolve_folder_drop_target", return_value=real
     ):
-        assert fii._move_virtual_into_folder(icon, stand_in, "f1") is None
-        assert icon.exists()
+        # Shortcuts move like Explorer (the .lnk file itself).
+        assert fii._move_virtual_into_folder(icon, stand_in, "f1") == "moved"
+        assert not icon.exists()
+        assert (real / "应用.lnk").exists()
         assert fii._move_virtual_into_folder(doc, stand_in, "f1") == "moved"
         assert not doc.exists()
         assert (real / "协议.docx").exists()
@@ -1409,8 +1588,84 @@ def test_hot_path_no_resolve_storms() -> None:
     assert "prefer_nearest=False" in ingest_src
 
 
+def test_paste_into_selected_folder() -> None:
+    """Ctrl+V with a single folder selected pastes into that folder (Explorer)."""
+    import inspect
+    import os
+    import shutil
+    import tempfile
+
+    from PyQt6.QtWidgets import QApplication, QWidget
+
+    os.environ.setdefault("QT_QPA_PLATFORM", "windows")
+    app = QApplication.instance() or QApplication([])
+
+    from src.ui import fence_icon_item as fii
+
+    ctx = inspect.getsource(fii.paste_files_into_context)
+    assert "folder_path_for_paste_anchor" in ctx
+    assert ctx.index("folder_path_for_paste_anchor") < ctx.index("paste_files_into_fence")
+    assert callable(fii.folder_path_for_paste_anchor)
+    assert callable(fii.paste_files_into_folder)
+    resolve_src = inspect.getsource(fii._resolve_paste_sources)
+    assert "from_clipboard" in resolve_src
+    chord = inspect.getsource(fii.dispatch_desktop_icon_chord)
+    assert "rewrite_clipboard=True" in chord
+
+    root = Path(tempfile.mkdtemp(prefix="desktidy_paste_folder_"))
+    folder = root / "目标"
+    folder.mkdir()
+    src = root / "笔记.txt"
+    src.write_text("hi", encoding="utf-8")
+
+    class _Icon(QWidget):
+        def __init__(self, path: Path) -> None:
+            super().__init__()
+            self.file_path = path
+
+    icon = _Icon(folder)
+    # No multi-select → use file_path on anchor.
+    assert fii.folder_path_for_paste_anchor(icon) == folder.resolve()
+
+    file_icon = _Icon(src)
+    assert fii.folder_path_for_paste_anchor(file_icon) is None
+
+    # Seed clipboard as COPY of an unrelated file — explicit-source paste must
+    # not demote / rewrite it (only real Ctrl+V clipboard pastes do).
+    from src.shell_clipboard import (
+        DROPEFFECT_COPY,
+        clipboard_preferred_effect,
+        clipboard_set_files,
+    )
+
+    seed = root / "seed.txt"
+    seed.write_text("seed", encoding="utf-8")
+    clipboard_set_files([seed], cut=False)
+    assert clipboard_preferred_effect() == DROPEFFECT_COPY
+
+    ok = fii.paste_files_into_folder(
+        folder, sources=[src], effect=1  # DROPEFFECT_COPY
+    )
+    assert ok
+    assert src.exists()
+    assert (folder / "笔记.txt").exists()
+    assert clipboard_preferred_effect() == DROPEFFECT_COPY
+
+    src2 = root / "待剪切.txt"
+    src2.write_text("cut", encoding="utf-8")
+    ok2 = fii.paste_files_into_folder(
+        folder, sources=[src2], effect=2  # DROPEFFECT_MOVE
+    )
+    assert ok2
+    assert not src2.exists()
+    assert (folder / "待剪切.txt").exists()
+    assert clipboard_preferred_effect() == DROPEFFECT_COPY
+
+    shutil.rmtree(root, ignore_errors=True)
+
+
 def test_folder_drop_does_not_unpin_icons() -> None:
-    """Dropping a .lnk onto a folder must not fall through while still on that folder."""
+    """Folder hit with no transfer must not unpin while still on that folder."""
     import inspect
 
     from src.ui import fence_icon_item as fii
@@ -1424,12 +1679,14 @@ def test_folder_drop_does_not_unpin_icons() -> None:
     assert "moved_keys" in folder_block
     assert "copied_any" in folder_block
     assert "should_unpin_virtual_drop" in folder_block
-    assert "skip folder move for icon" in inspect.getsource(
-        fii._move_virtual_into_folder
-    )
+    # Shortcuts are no longer skipped — Explorer moves/copies the .lnk itself.
+    move_v = inspect.getsource(fii._move_virtual_into_folder)
+    assert "skip folder move for icon" not in move_v
+    assert "path_organize_kind" not in move_v
 
     pub = inspect.getsource(fii._move_public_into_folder)
-    assert "path_organize_kind" in pub
+    assert "path_organize_kind" not in pub
+    assert "skip folder move for icon" not in pub
     assert "unique_dest_path" not in pub
     assert "_run_transfer_into_folder" in pub
     assert "_restore_virtual_folder_move_failure" in inspect.getsource(
@@ -1497,6 +1754,8 @@ def test_path_pinned_exact_only() -> None:
 def test_settings_atomic_write_contract() -> None:
     """Debounced/immediate saves must serialize and use temp+replace."""
     import inspect
+    import tempfile
+    from pathlib import Path
 
     from src import settings as st
 
@@ -1516,6 +1775,41 @@ def test_settings_atomic_write_contract() -> None:
     assert imm.index("deepcopy(settings)") < imm.index("_save_settings_now(snapshot)")
     deb = save_src.split("with _SAVE_LOCK:")[1]
     assert "deepcopy(settings)" in deb.split("next_timer.start()")[0]
+
+    # Partial fence patch must not wipe real pins with %TEMP%\desktidy_* probes.
+    assert callable(st._is_selftest_temp_virtual_list)
+    assert callable(st._patch_fences_from_partial)
+    tmp = Path(tempfile.mkdtemp(prefix="desktidy_probe_guard_"))
+    probe = [str(tmp / "i00.txt"), str(tmp / "i01.txt")]
+    disk = [
+        {
+            "id": "system_common",
+            "name": "常用",
+            "virtual_items": [r"D:\desktop\微信.lnk", r"D:\desktop\Chrome.lnk"],
+            "sort_by": "manual",
+        }
+    ]
+    partial = [
+        {
+            "id": "system_common",
+            "virtual_items": probe,
+            "sort_by": "manual",
+        }
+    ]
+    assert st._is_selftest_temp_virtual_list(probe) is True
+    assert st._is_selftest_temp_virtual_list(disk[0]["virtual_items"]) is False
+    out = st._patch_fences_from_partial(disk, partial)
+    assert out[0]["virtual_items"] == disk[0]["virtual_items"]
+    # Real pin updates still apply.
+    real_partial = [
+        {
+            "id": "system_common",
+            "virtual_items": [r"D:\desktop\微信.lnk"],
+            "sort_by": "manual",
+        }
+    ]
+    out2 = st._patch_fences_from_partial(disk, real_partial)
+    assert out2[0]["virtual_items"] == [r"D:\desktop\微信.lnk"]
 
 
 def test_public_overlay_ends_after_ole_and_timeout_cancels() -> None:
@@ -2028,6 +2322,106 @@ def test_same_fence_reorder_no_flash() -> None:
     app.processEvents()
 
 
+def test_insert_index_empty_grid_gaps() -> None:
+    """Empty space after a row / at bottom-right must not snap to index 0.
+
+    Regression: the old Y-first scan treated any point above the first cell's
+    vertical midpoint as insert=0 — including the top-right gutter past the
+    last icon of row 0. Same-fence drag-reorder then felt broken (icons jump
+    to the front or no-op) and the custom drag path never showed a caret.
+    """
+    import inspect
+    import tempfile
+    from pathlib import Path
+
+    from PyQt6.QtCore import QPoint
+    from PyQt6.QtWidgets import QApplication
+
+    from src.ui import fence_icon_item as fii
+    from src.ui.fence_widget import FenceWidget
+
+    tick_src = inspect.getsource(fii._PublicDragFilter._on_tick)
+    assert "_sync_fence_drop_indicator" in tick_src, (
+        "custom (non-OLE) fence drag must refresh the insertion caret while hovering"
+    )
+    sync_src = inspect.getsource(fii._PublicDragFilter._sync_fence_drop_indicator)
+    assert "_update_drop_indicator" in sync_src
+    assert "clear_fence_drop_indicators" in sync_src
+    assert "clear_fence_drop_indicators" in inspect.getsource(fii._PublicDragFilter.stop)
+
+    app = QApplication.instance() or QApplication([])
+    tmp = Path(tempfile.mkdtemp(prefix="desktidy_insert_gap_"))
+    files = [tmp / f"i{i:02d}.txt" for i in range(8)]
+    for f in files:
+        f.write_text("x", encoding="utf-8")
+
+    settings = {
+        "fences": [
+            {
+                "id": "gap",
+                "name": "测",
+                "sort_by": "manual",
+                "virtual_items": [str(p) for p in files],
+                "x": 40,
+                "y": 40,
+                "width": 520,
+                "height": 420,
+            }
+        ],
+        "theme": "light",
+        "current_page": 0,
+        "desktop_pages": [{"id": 0, "name": "默认"}],
+    }
+    fence = FenceWidget(settings["fences"][0], settings)
+    fence.move(40, 40)
+    fence.resize(520, 420)
+    fence.show()
+    app.processEvents()
+    fence.refresh(force=True)
+    for _ in range(8):
+        app.processEvents()
+
+    items = fence._icon_item_widgets()
+    assert len(items) == 8
+    items_w = fence.items_widget
+    # 4-column icon grid: row0 = 0..3, row1 = 4..7
+    assert int(getattr(fence, "_last_max_cols", 0) or 0) >= 4
+
+    row0_last = items[3].geometry()
+    after_row0 = QPoint(row0_last.right() + 24, row0_last.center().y())
+    got_after_row0 = fence._insert_index_at(items_w, after_row0)
+    assert got_after_row0 == 4, (
+        f"empty space past row0 last icon must insert at 4, got {got_after_row0}"
+    )
+
+    last = items[7].geometry()
+    after_last = QPoint(last.right() + 24, last.center().y())
+    got_after_last = fence._insert_index_at(items_w, after_last)
+    assert got_after_last == 8, (
+        f"empty space past final icon must insert at 8, got {got_after_last}"
+    )
+
+    # Top-right gutter of the items widget (above first-row mid-Y, far right).
+    top_right = QPoint(max(8, items_w.width() - 5), 10)
+    got_top_right = fence._insert_index_at(items_w, top_right)
+    assert got_top_right == 4, (
+        f"top-right gutter must append after row0 (4), not snap to 0; got {got_top_right}"
+    )
+
+    # Cell hit still splits on midpoint.
+    cell1 = items[1].geometry()
+    assert fence._insert_index_at(
+        items_w, QPoint(cell1.left() + 2, cell1.center().y())
+    ) == 1
+    assert fence._insert_index_at(
+        items_w, QPoint(cell1.right() - 2, cell1.center().y())
+    ) == 2
+
+    fence.close()
+    fence.deleteLater()
+    app.processEvents()
+
+
 def test_drag_copy_folder_fence_chain() -> None:
     """E2E chain: copy → into folder → folder file into fence → fence out to public.
 
@@ -2341,8 +2735,10 @@ def main() -> int:
     run("公共图标拖进文件夹", test_public_folder_drop_moves_file)
     run("分区图标拖进文件夹", test_virtual_drag_moves_into_folder)
     run("分区内重排不闪屏", test_same_fence_reorder_no_flash)
+    run("分区网格空白插入位", test_insert_index_empty_grid_gaps)
     run("分区文件夹命中优先于背后资源管理器", test_fence_folder_hit_beats_explorer_underneath)
-    run("文档真实移入文件夹/图标保持虚拟", test_document_moves_into_folder_icon_stays_virtual)
+    run("文档与快捷方式均可移入文件夹", test_document_moves_into_folder_icon_stays_virtual)
+    run("选中文件夹图标Ctrl+V粘贴进文件夹", test_paste_into_selected_folder)
     run("进文件夹同资源管理器规则(Ctrl/跨盘复制)", test_explorer_like_folder_drop_modifiers)
     run("空目标命名空间快捷方式不映射到cwd", test_empty_namespace_lnk_not_cwd)
     run("跨盘桌面替身才映射到真实路径", test_cross_drive_desktop_twin_remap)

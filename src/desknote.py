@@ -251,10 +251,17 @@ def sync_desknote_shortcuts(settings: dict | None = None) -> None:
                     find_public_entry,
                     sync_loose_desktop_items,
                 )
+                from src.fence_rules import all_fence_pinned_keys, path_in_pinned_keys
 
                 sync_loose_desktop_items(settings, force=True)
                 desk = desktop_link_path()
-                if desk.is_file() and find_public_entry(settings, desk) is None:
+                # Already in a fence → do not also spawn a public-desktop float
+                # (looks like a second DeskNote icon on the plate).
+                if (
+                    desk.is_file()
+                    and find_public_entry(settings, desk) is None
+                    and not path_in_pinned_keys(desk, all_fence_pinned_keys(settings))
+                ):
                     from src.public_desktop import add_public_item
 
                     try:

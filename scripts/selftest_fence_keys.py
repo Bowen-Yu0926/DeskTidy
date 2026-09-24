@@ -177,10 +177,13 @@ def test_clipboard_roundtrip() -> None:
     from src.ui import fence_icon_item as fii
 
     paste_fence = inspect.getsource(fii.paste_files_into_fence)
-    assert "clipboard_get_files_with_effect" in paste_fence
+    assert "_resolve_paste_sources" in paste_fence
     assert "clipboard_preferred_effect" not in paste_fence
     paste_pub = inspect.getsource(fii.paste_files_to_public)
-    assert "clipboard_get_files_with_effect" in paste_pub
+    assert "_resolve_paste_sources" in paste_pub
+    resolve_src = inspect.getsource(fii._resolve_paste_sources)
+    assert "clipboard_get_files_with_effect" in resolve_src
+    assert "from_clipboard" in resolve_src
 
 
 def test_keyboard_and_rename_contracts() -> None:
@@ -534,7 +537,7 @@ def test_paste_move_rewrites_pins_and_copies_dirs() -> None:
     from src.ui import fence_icon_item as fii
 
     paste_src = inspect.getsource(fii.paste_files_into_fence)
-    assert "clipboard_get_files_with_effect" in paste_src
+    assert "_resolve_paste_sources" in paste_src
     assert "_unpack_paste_result" in paste_src
     assert "suppress_desktop_item" in paste_src
     assert "_rewrite_pins_after_fs_move" in paste_src
@@ -542,6 +545,10 @@ def test_paste_move_rewrites_pins_and_copies_dirs() -> None:
     assert "_demote_clipboard_after_cut_paste" in paste_src
     assert "quiet_finish=True" in paste_src
     assert "invalidate_path_stat_cache" in paste_src
+    assert "rewrite_clipboard" in paste_src
+    assert "clipboard_get_files_with_effect" in inspect.getsource(
+        fii._resolve_paste_sources
+    )
     from src.ui.fence_widget import FenceWidget
 
     # Quiet paste must still scrub live public floats (settings-only used to leave ghosts).

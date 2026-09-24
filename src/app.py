@@ -1515,6 +1515,89 @@ class DeskTidyApp:
                 poll.stop()
         except Exception:
             pass
+        # Click-to-drag Qt-raises Progman-owned fences over Cursor. Re-bind to
+        # DefView + click-through immediately so the editor stays on top.
+        try:
+            self._arm_drag_overlays_under_apps()
+        except Exception:
+            pass
+
+    def _arm_drag_overlays_under_apps(self) -> None:
+        """Re-attach fences/pet to DefView and pass mouse through for the drag.
+
+        Qt ``raise_()`` on icon press lifts the Progman owner group above
+        normal apps (Cursor / Chrome). Detach+reattach restores the desktop
+        band; ``WS_EX_TRANSPARENT`` lets hit-tests reach the app underneath.
+
+        PublicIconHost is only HWND_BOTTOM'd (no detach flash, no passthrough) —
+        a full-desktop transparent host black-holes clicks after a failed clear.
+        """
+        from src.desktop_shell_host import (
+            attach_overlay_to_desktop,
+            detach_overlay_from_desktop,
+            is_attached_to_desktop,
+            place_overlay_in_desktop_band,
+        )
+        from src.win_shell import set_overlay_mouse_passthrough
+
+        armed: list = list(getattr(self, "_ole_handoff_passthrough", None) or [])
+        for widget, peek in self._iter_overlay_widgets():
+            if peek or widget is None:
+                continue
+            try:
+                hwnd = int(widget.winId()) if widget.winId() else 0
+            except Exception:
+                continue
+            if not hwnd:
+                continue
+            is_host = widget.__class__.__name__ == "PublicIconHost"
+            try:
+                if is_host:
+                    # Sink only — remounting the plate flashes the whole desktop.
+                    place_overlay_in_desktop_band(hwnd, force=True)
+                elif is_attached_to_desktop(hwnd):
+                    # Force re-owner — click-raise lifts the Progman group.
+                    detach_overlay_from_desktop(hwnd)
+                    attach_overlay_to_desktop(hwnd, show=True)
+                    place_overlay_in_desktop_band(hwnd, force=True)
+                else:
+                    attach_overlay_to_desktop(hwnd, show=True)
+                    place_overlay_in_desktop_band(hwnd, force=True)
+            except Exception:
+                pass
+            if is_host:
+                continue
+            try:
+                set_overlay_mouse_passthrough(widget, True)
+                if widget not in armed:
+                    armed.append(widget)
+            except Exception:
+                continue
+        self._ole_handoff_passthrough = armed
+
+    def _arm_ole_handoff_overlays(self) -> None:
+        """Re-bind overlays under apps before ``QDrag.exec``."""
+        self._arm_drag_overlays_under_apps()
+        get_logger().info(
+            "ole handoff: overlay passthrough count=%s",
+            len(getattr(self, "_ole_handoff_passthrough", None) or []),
+        )
+
+    def _clear_ole_handoff_overlays(self) -> None:
+        """Restore hit-testing after external OLE / drag end."""
+        from src.win_shell import set_overlay_mouse_passthrough
+
+        armed = list(getattr(self, "_ole_handoff_passthrough", None) or [])
+        self._ole_handoff_passthrough = []
+        for widget in armed:
+            try:
+                set_overlay_mouse_passthrough(widget, False)
+            except Exception:
+                continue
+        if armed:
+            get_logger().info(
+                "ole handoff: overlay passthrough cleared count=%s", len(armed)
+            )
 
     def _set_public_drag_path(self, path: Path | str | None) -> None:
         """Remember the float being dragged so refresh will not park/drop it."""
@@ -1559,6 +1642,11 @@ class DeskTidyApp:
 
         destroy_unpin_catchers()
         self._overlay_drag_active = False
+        # Drop any OLE-era click-through / park left if QDrag aborted oddly.
+        try:
+            self._clear_ole_handoff_overlays()
+        except Exception:
+            pass
         # Keep suppressing full shell re-attach briefly after QDrag.exec returns.
         self._shell_attach_quiet_until = max(
             float(getattr(self, "_shell_attach_quiet_until", 0.0)),
@@ -1586,6 +1674,17 @@ class DeskTidyApp:
         if not reconcile_fg:
             self._public_drag_path = None
             self._public_drag_keys = set()
+            # quiet_end (pet trash / folder / same-fence): skip public refresh
+            # flash, but still restore band Z + clear stuck passthrough left by
+            # ``_arm_drag_overlays_under_apps`` (pet buried / Win32-hidden).
+            try:
+                self._remap_hidden_overlay_hwnds()
+            except Exception:
+                pass
+            try:
+                self.ensure_live_fences_interactive()
+            except Exception:
+                pass
             return
         # Win32 SW_HIDE can lag Qt after custom drag — remap fences immediately.
         QTimer.singleShot(0, self._heal_overlays_after_shell_menu)
@@ -6991,8 +7090,9 @@ class DeskTidyApp:
             if fence.config.get("id")
         }
 
-        # Defer park/retire until after incoming fences are revealed so the
-        # desktop never paints an empty wallpaper hole mid-swap.
+        # Collect leavers first; _swap_page_overlays parks/retires them before
+        # any incoming show (page switch and settings/rebuild alike) so pages
+        # never stack during the reveal.
         to_park: list[tuple[str, FenceWidget]] = []
         to_retire: list[FenceWidget] = []
         for fence_id, fence in list(existing.items()):
@@ -7015,12 +7115,13 @@ class DeskTidyApp:
             batch = getattr(self, "_page_switch_geo_batch", None) if page_switch else None
             sync = getattr(self, "_page_switch_qt_sync", None) if page_switch else None
 
-            if page_switch:
-                # Hide leavers before any incoming batch show (zero-overlap swap).
+            # Hide leavers before any incoming show (page switch and
+            # settings/rebuild alike) — park-after-reveal briefly stacked pages.
+            if to_retire or to_park:
                 for fence in to_retire:
                     self._retire_overlay_widget(fence)
                 for fence_id, fence in to_park:
-                    self._park_fence(fence_id, fence, soft=True)
+                    self._park_fence(fence_id, fence, soft=page_switch)
                 to_retire.clear()
                 to_park.clear()
 
@@ -7149,7 +7250,8 @@ class DeskTidyApp:
                         self._soft_show_fence_for_page(fence)
                 except RuntimeError:
                     continue
-            # Park/retire leaving page only after arriving overlays are shown.
+            # Leavers already parked/retired above (zero-overlap). Keep loops for
+            # any late appends; normally both lists are empty here.
             for fence in to_retire:
                 self._retire_overlay_widget(fence)
             for fence_id, fence in to_park:
