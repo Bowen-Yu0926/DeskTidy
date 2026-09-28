@@ -107,15 +107,20 @@ def _hwnd_is_own_desktop_chrome(hwnd: int) -> bool:
 
 
 def _hwnd_is_shell_menu_surface(hwnd: int) -> bool:
-    """Classic / Win11 shell menus and DeskTidy TrackPopupMenu host."""
-    name = _class_name(int(hwnd or 0))
-    if name in _SHELL_MENU_SURFACE_CLASSES:
-        return True
+    """Classic / Win11 Explorer menus and DeskTidy TrackPopupMenu host.
+
+    Delegates to ``hwnd_is_desktop_shell_menu`` so Mail / new Outlook WinUI
+    islands are not treated as the desktop surface.
+    """
     try:
-        root = int(user32.GetAncestor(int(hwnd or 0), 2) or 0)  # GA_ROOT
+        from src.win_shell import hwnd_is_desktop_shell_menu
+
+        return hwnd_is_desktop_shell_menu(int(hwnd or 0))
     except Exception:
-        root = 0
-    return bool(root) and _class_name(root) in _SHELL_MENU_SURFACE_CLASSES
+        name = _class_name(int(hwnd or 0))
+        if name in {"#32768", "DeskTidyShellMenuHost"}:
+            return True
+        return False
 
 
 def _hwnd_is_shell_taskbar_surface(hwnd: int) -> bool:

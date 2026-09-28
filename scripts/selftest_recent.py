@@ -2933,6 +2933,21 @@ def test_page_switch_click() -> None:
         assert "_raise_open_tool_panels_above_pet" in inspect.getsource(
             DeskTidyApp._on_vault_requested
         )
+        vault_req = inspect.getsource(DeskTidyApp._on_vault_requested)
+        assert "raise_band=False" in vault_req
+        assert "_sink_fences_and_public_under_apps" in vault_req
+        assert "raise_band=True" not in vault_req
+        assert callable(DeskTidyApp._sink_fences_and_public_under_apps)
+        sink_fences = inspect.getsource(DeskTidyApp._sink_fences_and_public_under_apps)
+        assert "place_overlay_in_desktop_band" in sink_fences
+        assert "vault_panel" in sink_fences
+        raise_panel = inspect.getsource(
+            __import__(
+                "src.ui.account_vault_widget", fromlist=["AccountVaultWidget"]
+            ).AccountVaultWidget.raise_panel
+        )
+        assert "self.activateWindow()" not in raise_panel
+        assert "Do not activateWindow" in raise_panel or "Progman-owned" in raise_panel
         assert "_raise_open_tool_panels_above_pet" in inspect.getsource(
             DeskTidyApp.ensure_live_fences_interactive
         )
@@ -3180,7 +3195,20 @@ def test_page_switch_click() -> None:
             "_schedule_startup_offpage_warmup"
         )
         assert "immediate=True" in overlays_src
+        assert "sync_public=False" in overlays_src
+        assert "_startup_overlays_secondary" in overlays_src
+        assert overlays_src.index("_startup_force_overlay_attach") < overlays_src.index(
+            "_startup_overlays_secondary"
+        )
+        assert "_setup_desktop_pet" not in overlays_src
         assert "_startup_force_overlay_attach" in overlays_src
+        secondary = inspect.getsource(DeskTidyApp._startup_overlays_secondary)
+        assert "_setup_desktop_pet" in secondary
+        assert "warm_desktop_capture" in secondary
+        show_fences_src = inspect.getsource(DeskTidyApp.show_fences)
+        assert "sync_public: bool = True" in show_fences_src
+        assert "_desktidy_defer_refresh" in show_fences_src
+        assert "fence._refresh_impl()" in show_fences_src
         boot_attach = inspect.getsource(DeskTidyApp._startup_force_overlay_attach)
         assert "ensure_live_fences_interactive" in boot_attach
         assert "_heal_boot_fence_surfaces" in boot_attach
@@ -3196,7 +3224,6 @@ def test_page_switch_click() -> None:
         assert "ensure_live_fences_interactive" in pending_force
         # Ongoing force-attach must not rebuild icon grids (flicker loop).
         assert "self._heal_boot_fence_surfaces()" not in pending_force
-        assert "warm_desktop_capture" in overlays_src
         assert "processEvents" in inspect.getsource(DeskTidyApp._warmup_all_offpage_fences)
         assert "fence.show()" not in inspect.getsource(
             DeskTidyApp._warmup_one_offpage_fence
@@ -3683,8 +3710,32 @@ def test_page_switch_click() -> None:
         desk_fg = inspect.getsource(
             __import__("src.win_shell", fromlist=["x"]).is_desktop_foreground
         )
-        assert "_SHELL_MENU_FG_CLASSES" in desk_fg or "DeskTidyShellMenuHost" in desk_fg
+        assert "hwnd_is_desktop_shell_menu" in desk_fg
         assert "_hwnd_is_shell_taskbar" in desk_fg
+        menu_src = inspect.getsource(
+            __import__("src.win_shell", fromlist=["x"]).hwnd_is_desktop_shell_menu
+        )
+        assert "XamlExplorerHostIslandWindow" in menu_src
+        assert '== "explorer"' in menu_src
+        # Mail / new Outlook reuse the Win11 island class — must not count as desktop.
+        import src.win_shell as ws
+
+        orig_cls = ws._window_class_name
+        orig_proc = ws._process_name_for_hwnd
+        try:
+            ws._window_class_name = lambda _h: "XamlExplorerHostIslandWindow"
+            ws._process_name_for_hwnd = lambda _h: "olk"
+            assert ws.hwnd_is_desktop_shell_menu(1) is False
+            ws._process_name_for_hwnd = lambda _h: "hxoutlook"
+            assert ws.hwnd_is_desktop_shell_menu(1) is False
+            ws._process_name_for_hwnd = lambda _h: "explorer"
+            assert ws.hwnd_is_desktop_shell_menu(1) is True
+            ws._window_class_name = lambda _h: "#32768"
+            ws._process_name_for_hwnd = lambda _h: "olk"
+            assert ws.hwnd_is_desktop_shell_menu(1) is True
+        finally:
+            ws._window_class_name = orig_cls
+            ws._process_name_for_hwnd = orig_proc
         assert "Shell_TrayWnd" in inspect.getsource(
             __import__("src.win_shell", fromlist=["x"])
         )
@@ -4968,7 +5019,21 @@ def test_page_switch_click() -> None:
         assert "close_to_tray" in run_src
         assert "close_behavior_prompted" in run_src
         assert "first_open" in run_src
-        assert "self.window.show()" in run_src
+        # Must not show() before exec — that blocked first paint on fresh PCs.
+        assert "self.window.show()" not in run_src
+        assert "_startup_reveal_main_window" in run_src
+        reveal = inspect.getsource(DeskTidyApp._startup_reveal_main_window)
+        assert "self.window.show()" in reveal
+
+        # Source under python.exe must re-launch pythonw (no console 黑框).
+        import main as desktidy_main
+
+        reexec = inspect.getsource(desktidy_main._reexec_with_pythonw_if_needed)
+        assert "pythonw.exe" in reexec
+        assert "DESKTIDY_ALLOW_CONSOLE" in reexec
+        assert "_reexec_with_pythonw_if_needed" in inspect.getsource(
+            desktidy_main._entry
+        )
 
         from src.settings import migrate_legacy_autostart
 
@@ -5073,10 +5138,12 @@ def test_page_switch_click() -> None:
         show_ev = inspect.getsource(MainWindow.showEvent)
         # Re-open after hideEvent→release_lazy_pages must refresh organize metrics.
         assert 'page_id == "files"' in show_ev
-        assert "refresh_data()" in show_ev
-        # Must refresh after _ensure_page, not only emit settings_ui_shown.
-        assert show_ev.index("_ensure_page") < show_ev.index("refresh_data()")
-        assert show_ev.index("refresh_data()") < show_ev.index("settings_ui_shown")
+        assert "refresh_data" in show_ev
+        # Defer scan so showEvent cannot freeze on a blank/black frame.
+        assert "QTimer.singleShot(0, self.refresh_data)" in show_ev
+        # Must schedule refresh after _ensure_page, not only emit settings_ui_shown.
+        assert show_ev.index("_ensure_page") < show_ev.index("refresh_data")
+        assert show_ev.index("refresh_data") < show_ev.index("settings_ui_shown")
 
     def _cursor_flash_regression():
         import inspect

@@ -1,10 +1,56 @@
 """DeskTidy - Desktop Organization Tool"""
 
 import os
+import subprocess
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+
+def _reexec_with_pythonw_if_needed() -> None:
+    """Source runs under ``python.exe`` open a console (长方形黑框) then look hung.
+
+    Other PCs often double-click ``main.py`` or type ``python main.py``. Re-launch
+    with sibling ``pythonw.exe`` so startup matches the intended windowed mode.
+    Opt out: ``DESKTIDY_ALLOW_CONSOLE=1`` (debug) or ``DESKTIDY_SELFTEST=1``.
+    """
+    if getattr(sys, "frozen", False):
+        return
+    if os.environ.get("DESKTIDY_SELFTEST") == "1":
+        return
+    if os.environ.get("DESKTIDY_ALLOW_CONSOLE") == "1":
+        return
+    if os.environ.get("DESKTIDY_PYTHONW_REEXEC") == "1":
+        return
+    exe = Path(sys.executable)
+    if exe.name.lower() != "python.exe":
+        return
+    windowed = exe.with_name("pythonw.exe")
+    if not windowed.is_file():
+        return
+    script = Path(sys.argv[0]).resolve() if sys.argv else Path(__file__).resolve()
+    cmd = [str(windowed), "-u", str(script), *sys.argv[1:]]
+    env = os.environ.copy()
+    env["DESKTIDY_PYTHONW_REEXEC"] = "1"
+    creationflags = 0
+    try:
+        creationflags = int(getattr(subprocess, "DETACHED_PROCESS", 0)) | int(
+            getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        )
+    except Exception:
+        creationflags = 0
+    try:
+        subprocess.Popen(  # noqa: S603
+            cmd,
+            cwd=os.getcwd(),
+            env=env,
+            close_fds=True,
+            creationflags=creationflags,
+        )
+    except OSError:
+        return
+    raise SystemExit(0)
 
 
 def _sanitize_qt_platform() -> None:
@@ -90,6 +136,7 @@ def _run_notepad_entry(logger) -> int:
 
 
 def _entry() -> int:
+    _reexec_with_pythonw_if_needed()
     _sanitize_qt_platform()
     from src.app_logging import (
         get_logger,

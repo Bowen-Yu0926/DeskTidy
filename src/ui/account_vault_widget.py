@@ -987,7 +987,12 @@ class AccountVaultWidget(QWidget):
         )
 
     def raise_panel(self) -> None:
-        """Show cached list immediately — no network sync on open."""
+        """Show cached list immediately — no network sync on open.
+
+        Do not call activateWindow: this panel is Progman-owned. Taking FG would
+        lift the whole desktop owner group above Mail / Outlook, so partitions
+        cover the inbox after clicking the「账」buoy.
+        """
         self._apply_theme()
         self._sync_session_label()
         if not self._items and not load_session():
@@ -998,7 +1003,6 @@ class AccountVaultWidget(QWidget):
         self._place_beside_anchor()
         self.show()
         self.raise_()
-        self.activateWindow()
 
     def _sync_session_label(self) -> None:
         session = load_session() or {}

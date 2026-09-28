@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (
     QCheckBox,
     QFrame,
@@ -1347,8 +1347,10 @@ class MainWindow(QMainWindow):
                 # hideEvent releases lazy pages; rebuild leaves OrganizeStatTiles at 0.
                 # Initial nav currentRowChanged also fires before the slot is connected,
                 # so opening on「整理」must refresh here (not only on re-click).
+                # Defer the desktop scan so the first paint is not a black/frozen frame
+                # (fresh machines used to block showEvent on scan_desktop).
                 if page_id == "files":
-                    self.refresh_data()
+                    QTimer.singleShot(0, self.refresh_data)
                 elif page_id == "vault":
                     self._ensure_page("vault")
                     if self._vault_settings_widget is not None:

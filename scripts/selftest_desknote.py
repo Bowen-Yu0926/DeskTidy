@@ -527,6 +527,9 @@ def main() -> int:
         trash_src = inspect.getsource(find_pet_trash_target)
         assert "is_desknote_window_at" in trash_src
         assert "is_visible_external_app_drop_point" in trash_src
+        # Mid-drag still rejects DeskNote (open-fail / non-openable must not recycle).
+        assert "not drag_active and is_visible_external_app_drop_point" in trash_src
+        assert "DeskNote hit without open" in fii_src
         ok("DeskTidy drag → DeskNote open handoff")
     except Exception as e:
         fail("desknote drag handoff", e)

@@ -500,7 +500,12 @@ class DeskTidyApp:
         QTimer.singleShot(100, lambda g=gen: self._poll_explorer_shell_for_startup(g))
 
     def _run_startup_overlays(self) -> None:
-        """Critical overlay restore once the desktop shell is reachable."""
+        """Critical overlay restore once the desktop shell is reachable.
+
+        Keep the first paint path short: session view → fences (eager icons) →
+        public floats → page chrome → attach/heal. Pet / vault / capture warm
+        run on the next event-loop turn so cold boot is not one long hitch.
+        """
         if getattr(self, "_startup_overlays_done", False):
             return
         self._startup_overlays_done = True
@@ -513,7 +518,8 @@ class DeskTidyApp:
             mark("session_desktop_view_applied")
         self._schedule_startup_session_retries()
         if self.settings.get("show_fences", True):
-            self.show_fences()
+            # One public sync below — skip show_fences' deferred refresh.
+            self.show_fences(sync_public=False)
         if callable(mark):
             mark("fences_shown")
         self.refresh_public_desktop(relayout=True, immediate=True)
@@ -525,18 +531,7 @@ class DeskTidyApp:
                 pass
         self._setup_page_indicator()
         self._setup_dock()
-        self._setup_todo_panel()
-        self._setup_account_vault_panel()
-        self._setup_desktop_pet()
         self._start_overlay_keepalive_timer()
-        try:
-            from src.ui.fence_icon_item import ensure_desktop_icon_key_hook
-
-            ensure_desktop_icon_key_hook()
-        except Exception:
-            pass
-        if callable(mark):
-            mark("overlays_ready")
         # Register capture hotkeys *before* off-page HWND warmup. That loop can
         # take a long time after reboot (cold icon extract); F1/F3 must already
         # be live, and the loop must yield so those keys are dispatched.
@@ -544,8 +539,45 @@ class DeskTidyApp:
             self._setup_hotkeys()
         except Exception:
             get_logger().exception("startup: hotkey registration before overlay warmup failed")
-        # Construct capture managers now so FFmpeg/GDI warm threads start during
-        # fence HWND priming instead of on the first user click after reboot.
+        # Attach before returning to the event loop. A zero-delay timer loses to
+        # deferred work that expired while fences were being built, so the boot
+        # heal ran ~2s after the fences were already on screen.
+        self._startup_force_overlay_attach()
+        if callable(mark):
+            mark("overlays_ready")
+        # Secondary chrome + GDI/FFmpeg warm — next turn, after fences paint.
+        QTimer.singleShot(0, self._startup_overlays_secondary)
+        if len(self._get_pages()) > 1 and self.settings.get("show_fences", True):
+            # Prime off-page HWNDs in the background so the current page paints first.
+            self._schedule_startup_offpage_warmup()
+        # Arm COM/registry/watcher timers only after overlays, or their deadlines
+        # expire during this call and they run as one hitch before the heal.
+        self._schedule_startup_deferred()
+
+    def _startup_overlays_secondary(self) -> None:
+        """Pet / todo / vault / hooks / capture warm after first overlay paint."""
+        if self._exiting or self._icons_hidden:
+            return
+        try:
+            self._setup_todo_panel()
+        except Exception:
+            get_logger().exception("startup: todo panel failed")
+        try:
+            self._setup_account_vault_panel()
+        except Exception:
+            get_logger().exception("startup: vault panel failed")
+        try:
+            self._setup_desktop_pet()
+        except Exception:
+            get_logger().exception("startup: desktop pet failed")
+        try:
+            from src.ui.fence_icon_item import ensure_desktop_icon_key_hook
+
+            ensure_desktop_icon_key_hook()
+        except Exception:
+            pass
+        # Construct capture managers so FFmpeg/GDI warm threads start after
+        # fences are interactive — not on the first user click after reboot.
         try:
             _ = self.screenshot_manager
         except Exception:
@@ -564,16 +596,9 @@ class DeskTidyApp:
             warm_desktop_capture()
         except Exception:
             pass
-        if len(self._get_pages()) > 1 and self.settings.get("show_fences", True):
-            # Prime off-page HWNDs in the background so the current page paints first.
-            self._schedule_startup_offpage_warmup()
-        # Attach before returning to the event loop. A zero-delay timer loses to
-        # deferred work that expired while fences were being built, so the boot
-        # heal ran ~2s after the fences were already on screen.
-        self._startup_force_overlay_attach()
-        # Arm COM/registry/watcher timers only after overlays, or their deadlines
-        # expire during this call and they run as one hitch before the heal.
-        self._schedule_startup_deferred()
+        mark = getattr(self, "_startup_mark", None)
+        if callable(mark):
+            mark("overlays_secondary_ready")
 
     def _schedule_startup_deferred(self) -> None:
         """Stagger shell/registry work after overlays are attached.
@@ -4647,6 +4672,50 @@ class DeskTidyApp:
             panel.show()
             self._ensure_page_chrome_visible()
 
+    def _sink_fences_and_public_under_apps(self) -> None:
+        """Sink fence / public overlays into the desktop band (under Mail, etc.).
+
+        Unlike ``_sink_overlays_for_foreign_app``, this does **not** require
+        foreign FG — vault/todo TOOLWINDOW clicks often already stole FG via the
+        buoy, so ``_foreign_app_owns_foreground`` is False. Chrome stays raised
+        separately; only partitions and the public plate are sunk.
+        """
+        if self._exiting or self._icons_hidden:
+            return
+        from src.desktop_shell_host import (
+            attach_overlay_to_desktop,
+            is_attached_to_desktop,
+            is_stuck_under_wallpaper,
+            place_overlay_in_desktop_band,
+        )
+
+        chrome = {
+            self.page_indicator,
+            self.dock,
+            getattr(self, "todo_panel", None),
+            getattr(self, "vault_panel", None),
+            getattr(self, "vault_launcher", None),
+            getattr(self, "pet_widget", None),
+        }
+        for widget, peek in self._iter_overlay_widgets():
+            if peek or widget in chrome:
+                continue
+            try:
+                hwnd = int(widget.winId())
+            except Exception:
+                continue
+            if not hwnd:
+                continue
+            try:
+                if is_stuck_under_wallpaper(hwnd):
+                    attach_overlay_to_desktop(hwnd, show=True)
+                    continue
+                if not is_attached_to_desktop(hwnd):
+                    attach_overlay_to_desktop(hwnd, show=True)
+                place_overlay_in_desktop_band(hwnd, force=True)
+            except Exception:
+                continue
+
     def _on_todo_requested(self) -> None:
         """Page-bar「待办」: show / raise the sticky panel."""
         from src.todos import desktop_todos_enabled
@@ -4664,8 +4733,10 @@ class DeskTidyApp:
                 panel.show()
             panel.raise_()
             panel.reload()
-            self._ensure_page_chrome_visible(raise_band=True)
+            # raise_band=True after chrome FG would lift Progman over Mail.
+            self._ensure_page_chrome_visible(raise_band=False)
             self._raise_open_tool_panels_above_pet()
+            self._sink_fences_and_public_under_apps()
         except RuntimeError:
             pass
 
@@ -4831,8 +4902,11 @@ class DeskTidyApp:
                 panel.hide()
                 return
             panel.raise_panel()
-            self._ensure_page_chrome_visible(raise_band=True)
+            # Never raise_band here: buoy/panel are Progman-owned; HWND_TOP without
+            # a careful path (or activateWindow) lifts fences over Mail/Outlook.
+            self._ensure_page_chrome_visible(raise_band=False)
             self._raise_open_tool_panels_above_pet()
+            self._sink_fences_and_public_under_apps()
         except RuntimeError:
             pass
 
@@ -7055,7 +7129,11 @@ class DeskTidyApp:
                 continue
 
     def show_fences(
-        self, *, force_rebuild: bool = False, relayout_public: bool | None = None
+        self,
+        *,
+        force_rebuild: bool = False,
+        relayout_public: bool | None = None,
+        sync_public: bool = True,
     ) -> None:
         started = time.perf_counter()
         # Soft-hide only while the switch freeze owns a batch. Pending is set
@@ -7219,6 +7297,18 @@ class DeskTidyApp:
                     emit=False,
                     layout=not page_switch,
                 )
+                # Boot/settings create: fill icons now. Ctor only schedules a
+                # deferred refresh — boot heal used to see an empty grid and
+                # re-run SHGetFileInfo after public/pet setup (cold-boot hitch).
+                if not page_switch:
+                    setattr(fence, "_desktidy_defer_refresh", True)
+                    try:
+                        fence._refresh_impl()
+                    except Exception:
+                        get_logger().exception(
+                            "show_fences: eager icon refresh failed fid=%s",
+                            fence_id,
+                        )
                 self._wire_fence_signals(fence)
                 if self._overlay_widgets_may_show():
                     if page_switch:
@@ -7275,9 +7365,10 @@ class DeskTidyApp:
             else:
                 do_relayout = bool(relayout_public)
             # Page click: sync floats in the same paint freeze (not +200ms later).
+            # Boot path passes sync_public=False and refreshes once outside.
             if page_switch:
                 self.refresh_public_desktop(immediate=True, relayout=do_relayout)
-            else:
+            elif sync_public:
                 self.refresh_public_desktop(relayout=do_relayout)
             return created_new, restored_fence
 
@@ -8727,15 +8818,31 @@ class DeskTidyApp:
         # Belt-and-suspenders: some Windows builds keep the process alive after quit().
         QTimer.singleShot(0, lambda: self.qt_app.exit(0))
 
+    def _startup_reveal_main_window(self) -> None:
+        """Show settings after the event loop starts (never before ``exec``).
+
+        Fresh installs used to ``show()`` synchronously in ``run()`` — that ran
+        ``showEvent`` → desktop scan on the UI thread before overlay timers,
+        so other PCs saw a blank/black window and a frozen process.
+        """
+        if self._exiting:
+            return
+        try:
+            self.window.show()
+        except RuntimeError:
+            return
+        QTimer.singleShot(
+            0, lambda: bring_widget_to_foreground(self.window, was_mapped=False)
+        )
+
     def run(self) -> int:
         # First install/open: always show the main window (do not start tray-only).
         # Later launches honor close_to_tray after the user has chosen close behavior.
+        # Defer show until after ``exec`` so overlay singleShot(0) from __init__
+        # runs first (tray + fences) instead of blocking on the settings scan.
         first_open = not bool(self.settings.get("close_behavior_prompted", False))
         if first_open or not self.settings.get("close_to_tray", True):
-            self.window.show()
-            QTimer.singleShot(
-                0, lambda: bring_widget_to_foreground(self.window, was_mapped=False)
-            )
+            QTimer.singleShot(0, self._startup_reveal_main_window)
         return self.qt_app.exec()
 
 

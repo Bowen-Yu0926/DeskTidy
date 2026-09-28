@@ -1727,12 +1727,23 @@ def _run_custom_desktop_resident_virtual_drag(
         desk = getattr(app, "_desktidy_app", None)
         settings = getattr(desk, "settings", None) if desk is not None else None
         try:
-            from src.win_shell import try_open_paths_in_desknote_at
+            from src.win_shell import (
+                is_desknote_window_at,
+                try_open_paths_in_desknote_at,
+            )
 
             if try_open_paths_in_desknote_at(drop_pos.x(), drop_pos.y(), drag_paths):
                 get_logger().info(
                     "virtual drag: open in DeskNote count=%s drop=(%s,%s)",
                     len(drag_paths),
+                    drop_pos.x(),
+                    drop_pos.y(),
+                )
+                return Qt.DropAction.IgnoreAction, False
+            # DeskNote owns the release even when open fails / non-openable.
+            if is_desknote_window_at(drop_pos.x(), drop_pos.y()):
+                get_logger().info(
+                    "virtual drag: DeskNote hit without open drop=(%s,%s)",
                     drop_pos.x(),
                     drop_pos.y(),
                 )
@@ -3424,12 +3435,24 @@ def start_public_item_drag(
         # DeskNote before pet trash: pet hit-test is geometry-only and used to
         # recycle files released over a DeskNote window that overlaps the sprite.
         try:
-            from src.win_shell import try_open_paths_in_desknote_at
+            from src.win_shell import (
+                is_desknote_window_at,
+                try_open_paths_in_desknote_at,
+            )
 
             if try_open_paths_in_desknote_at(drop_pos.x(), drop_pos.y(), drag_paths):
                 get_logger().info(
                     "public drag: open in DeskNote count=%s drop=(%s,%s)",
                     len(drag_paths),
+                    drop_pos.x(),
+                    drop_pos.y(),
+                )
+                _restore_float(ensure_public=True, place_at=_original_place())
+                return Qt.DropAction.IgnoreAction, False
+            # DeskNote owns the release even when open fails / non-openable.
+            if is_desknote_window_at(drop_pos.x(), drop_pos.y()):
+                get_logger().info(
+                    "public drag: DeskNote hit without open drop=(%s,%s)",
                     drop_pos.x(),
                     drop_pos.y(),
                 )

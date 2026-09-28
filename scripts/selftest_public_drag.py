@@ -350,6 +350,10 @@ def test_drag_avoids_explorer_ole_deadlock() -> None:
     # Must not call SHCreateDataObject with a None parent argument.
     assert "SHCreateDataObject(\n        None," not in shell_src
     assert "SHCreateDataObject(None," not in shell_src
+    # Multi-file: never silently BindToHandler the first path after batch fail.
+    assert "refusing first-file-only fallback" in shell_src
+    assert "refusing partial ShellItem batch" in shell_src
+    assert shell_src.rstrip().endswith("return None")
     # Must not OLE-handoff on every foreign HWND (wakes VPN / utility panels).
     assert "is_external_app_drop_point" not in filt_src
     assert "QDrag(" not in filt_src and "drag.exec" not in filt_src

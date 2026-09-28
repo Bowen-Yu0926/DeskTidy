@@ -780,11 +780,14 @@ def main() -> None:
     assert callable(pet_mod.deliver_paths_to_pet_trash)
     find_src = inspect.getsource(pet_mod.find_pet_trash_target)
     assert "_overlay_drag_active" in find_src
+    assert "is_desknote_window_at" in find_src
     assert "is_visible_external_app_drop_point" in find_src
-    # Mid-drag: skip external WFP reject (overlays are click-through).
-    assert find_src.index("drag_active") < find_src.index(
+    # DeskNote reject always; mid-drag only skips generic external WFP
+    # (overlays are click-through — Cursor under pet must not block trash).
+    assert find_src.index("is_desknote_window_at") < find_src.index(
         "is_visible_external_app_drop_point"
     )
+    assert "not drag_active and is_visible_external_app_drop_point" in find_src
     show_src = inspect.getsource(DesktopPetWidget.showEvent)
     assert "setAcceptDrops(False)" in show_src
     assert "_sync_drop_zone" in show_src

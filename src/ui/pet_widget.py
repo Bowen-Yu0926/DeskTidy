@@ -2295,14 +2295,14 @@ class DesktopPetWidget(QWidget):
 def find_pet_trash_target(global_pos: QPoint | None = None) -> DesktopPetWidget | None:
     """Visible pet whose sprite contains *global_pos* (custom-drag hit test).
 
-    When DeskTidy is **not** mid-drag, geometry alone is not enough: DeskNote /
-    other apps can cover the pet's screen rect while staying on top. Without a
-    z-order check, releasing on DeskNote still recycled the file.
+    DeskNote can cover the pet's screen rect while staying on top. Without a
+    z-order check, releasing on DeskNote recycled the file — including mid
+    custom-drag (DeskNote is a real HWND; ``WindowFromPoint`` hits it).
 
     Mid custom-drag overlays are ``WS_EX_TRANSPARENT``, so ``WindowFromPoint``
-    sees through the pet to whatever sits under it — the external-app check
-    would false-reject every trash drop over Cursor/Chrome. Trust sprite
-    geometry while ``_overlay_drag_active``.
+    sees through the *pet* to Cursor/Chrome underneath — the generic
+    external-app check would false-reject every trash drop over those apps.
+    Skip that check while ``_overlay_drag_active``; still reject DeskNote.
     """
     pos = global_pos if global_pos is not None else QCursor.pos()
     app = QApplication.instance()
@@ -2310,19 +2310,18 @@ def find_pet_trash_target(global_pos: QPoint | None = None) -> DesktopPetWidget 
         return None
     desk = getattr(app, "_desktidy_app", None)
     drag_active = bool(getattr(desk, "_overlay_drag_active", False)) if desk else False
-    if not drag_active:
-        try:
-            from src.win_shell import (
-                is_desknote_window_at,
-                is_visible_external_app_drop_point,
-            )
+    try:
+        from src.win_shell import (
+            is_desknote_window_at,
+            is_visible_external_app_drop_point,
+        )
 
-            if is_desknote_window_at(pos.x(), pos.y()):
-                return None
-            if is_visible_external_app_drop_point(pos.x(), pos.y()):
-                return None
-        except Exception:
-            pass
+        if is_desknote_window_at(pos.x(), pos.y()):
+            return None
+        if not drag_active and is_visible_external_app_drop_point(pos.x(), pos.y()):
+            return None
+    except Exception:
+        pass
     for top in app.topLevelWidgets():
         if not isinstance(top, DesktopPetWidget):
             continue

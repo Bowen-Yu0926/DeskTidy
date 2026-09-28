@@ -411,6 +411,38 @@ def overlay_win32_visible(widget) -> bool:
     return True
 
 
+def hwnd_is_desktop_shell_menu(hwnd: int) -> bool:
+    """True for Explorer / DeskTidy context menus — not WinUI apps.
+
+    ``XamlExplorerHostIslandWindow`` is used by the Win11 desktop menu *and*
+    by Mail / new Outlook. Treating the class as always-desktop left fences
+    raised over the inbox (no foreign-FG sink).
+    """
+    cur = int(hwnd or 0)
+    if not cur:
+        return False
+    checked: list[tuple[int, str]] = []
+    name = _window_class_name(cur)
+    if name:
+        checked.append((cur, name))
+    try:
+        root = int(win32gui.GetAncestor(cur, 2) or 0)
+    except Exception:
+        root = 0
+    if root and root != cur:
+        rname = _window_class_name(root)
+        if rname:
+            checked.append((root, rname))
+    for handle, cls in checked:
+        if cls == "DeskTidyShellMenuHost":
+            return _is_own_tool_window(handle)
+        if cls == "#32768":
+            return True
+        if cls in _XAML_SHELL_MENU_CLASSES:
+            return _process_name_for_hwnd(handle) == "explorer"
+    return False
+
+
 def is_desktop_foreground() -> bool:
     """True when Explorer desktop *or* DeskTidy desktop chrome owns FG.
 
@@ -418,9 +450,9 @@ def is_desktop_foreground() -> bool:
     stay mapped underneath); Explorer FG → shell repair. Own *app* windows
     (settings / notepad) use ``_desk_app_ui_open`` instead.
 
-    Shell context menus (#32768 / XAML popup / DeskTidyShellMenuHost) count as
-    desktop-side so the first RMB cannot latch a foreign-FG sink while fences
-    are still Win32-hidden after TrackPopupMenu.
+    Shell context menus (#32768 / Explorer XAML popup / DeskTidyShellMenuHost)
+    count as desktop-side so the first RMB cannot latch a foreign-FG sink while
+    fences are still Win32-hidden after TrackPopupMenu.
 
     Taskbar / notification area also counts as desktop-side — clicking the
     tray must not HWND_BOTTOM partitions under the wallpaper.
@@ -430,16 +462,9 @@ def is_desktop_foreground() -> bool:
         return False
     if _is_own_desktop_chrome(hwnd):
         return True
-    name = _window_class_name(int(hwnd))
-    if name in _SHELL_MENU_FG_CLASSES:
+    if hwnd_is_desktop_shell_menu(int(hwnd)):
         return True
     if _hwnd_is_shell_taskbar(int(hwnd)):
-        return True
-    try:
-        root = int(win32gui.GetAncestor(int(hwnd), 2) or 0)
-    except OSError:
-        root = 0
-    if root and _window_class_name(root) in _SHELL_MENU_FG_CLASSES:
         return True
     return is_explorer_desktop_foreground()
 
@@ -483,6 +508,15 @@ _SHELL_MENU_FG_CLASSES = frozenset(
         "XamlExplorerHostIslandWindow",
         "Microsoft.UI.Content.PopupWindowSiteBridge",
         "DeskTidyShellMenuHost",
+    }
+)
+# WinUI / XAML islands — Explorer desktop menus *and* Mail / new Outlook.
+# Class alone is not enough: olk / HxOutlook use the same island class.
+_XAML_SHELL_MENU_CLASSES = frozenset(
+    {
+        "Xaml_WindowedPopupClass",
+        "XamlExplorerHostIslandWindow",
+        "Microsoft.UI.Content.PopupWindowSiteBridge",
     }
 )
 # Taskbar / notification area — shell chrome, not a foreign app.
@@ -547,28 +581,14 @@ def is_shell_context_menu_open(*, allow_enum: bool = True) -> bool:
     high-frequency dismiss polling when many apps are open.
     """
     fg = int(user32.GetForegroundWindow() or 0)
-    if fg:
-        name = _window_class_name(fg)
-        if name in _SHELL_MENU_FG_CLASSES:
-            cache = getattr(is_shell_context_menu_open, "_cache", None)
-            if not isinstance(cache, dict):
-                cache = {"t": 0.0, "v": False}
-                is_shell_context_menu_open._cache = cache  # type: ignore[attr-defined]
-            cache["t"] = time.monotonic()
-            cache["v"] = True
-            return True
-        try:
-            root = int(win32gui.GetAncestor(fg, 2) or 0)
-        except OSError:
-            root = 0
-        if root and _window_class_name(root) in _SHELL_MENU_FG_CLASSES:
-            cache = getattr(is_shell_context_menu_open, "_cache", None)
-            if not isinstance(cache, dict):
-                cache = {"t": 0.0, "v": False}
-                is_shell_context_menu_open._cache = cache  # type: ignore[attr-defined]
-            cache["t"] = time.monotonic()
-            cache["v"] = True
-            return True
+    if fg and hwnd_is_desktop_shell_menu(fg):
+        cache = getattr(is_shell_context_menu_open, "_cache", None)
+        if not isinstance(cache, dict):
+            cache = {"t": 0.0, "v": False}
+            is_shell_context_menu_open._cache = cache  # type: ignore[attr-defined]
+        cache["t"] = time.monotonic()
+        cache["v"] = True
+        return True
 
     # Full EnumWindows is expensive with many apps; throttle to ~250ms.
     now = time.monotonic()
@@ -596,8 +616,7 @@ def is_shell_context_menu_open(*, allow_enum: bool = True) -> bool:
         try:
             if not user32.IsWindowVisible(hwnd):
                 return True
-            name = _window_class_name(int(hwnd))
-            if name in _SHELL_MENU_ENUM_CLASSES:
+            if hwnd_is_desktop_shell_menu(int(hwnd)):
                 found = True
                 return False
         except OSError:

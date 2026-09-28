@@ -82,6 +82,8 @@ def _shell_data_object(abs_paths: list[str]):
     ``SHCreateDataObject`` with a ``None`` parent and absolute PIDLs raises in
     pywin32 — use parent folder + relative PIDLs (same-folder batch) or
     ``BHID_DataObject`` for a single item.
+
+    Multi-file batches must never silently succeed with only the first file.
     """
     if not abs_paths:
         return None
@@ -94,7 +96,7 @@ def _shell_data_object(abs_paths: list[str]):
                 None, shell.BHID_DataObject, pythoncom.IID_IDataObject
             )
         except Exception:
-            pass
+            return None
 
     # Group by parent folder; one SHCreateDataObject per parent, prefer first
     # parent that yields a data object covering all paths when co-located.
@@ -107,6 +109,19 @@ def _shell_data_object(abs_paths: list[str]):
         if pidl:
             parsed.append((path, pidl))
     if not parsed:
+        return None
+    # Incomplete parse → refuse subset (would look like a successful partial drag).
+    if len(parsed) != len(abs_paths):
+        try:
+            from src.app_logging import get_logger
+
+            get_logger().warning(
+                "OLE: refusing partial ShellItem batch parsed=%s requested=%s",
+                len(parsed),
+                len(abs_paths),
+            )
+        except Exception:
+            pass
         return None
 
     by_parent: dict[tuple, list] = {}
@@ -129,7 +144,6 @@ def _shell_data_object(abs_paths: list[str]):
             continue
 
     # Multi-parent batch: absolute PIDLs via IShellItemArray → BHID_DataObject.
-    # SHCreateDataObject needs one relative parent; first-file-only dropped the rest.
     try:
         from win32com.shell.shell import SHCreateShellItemArrayFromIDLists
 
@@ -137,19 +151,29 @@ def _shell_data_object(abs_paths: list[str]):
         return array.BindToHandler(
             None, shell.BHID_DataObject, pythoncom.IID_IDataObject
         )
+    except Exception as exc:
+        try:
+            from src.app_logging import get_logger
+
+            get_logger().warning(
+                "OLE: multi-parent ShellItemArray failed count=%s err=%s",
+                len(parsed),
+                exc,
+            )
+        except Exception:
+            pass
+
+    # Do not fall back to first-file-only — that silently dropped the rest.
+    try:
+        from src.app_logging import get_logger
+
+        get_logger().error(
+            "OLE: refusing first-file-only fallback for %s paths",
+            len(parsed),
+        )
     except Exception:
         pass
-
-    # Last resort: first file only via BindToHandler.
-    try:
-        item = shell.SHCreateItemFromParsingName(
-            parsed[0][0], None, shell.IID_IShellItem
-        )
-        return item.BindToHandler(
-            None, shell.BHID_DataObject, pythoncom.IID_IDataObject
-        )
-    except Exception:
-        return None
+    return None
 
 
 class _CtypesDropSource:
