@@ -3058,10 +3058,16 @@ def test_page_switch_click() -> None:
         assert "_hwnd_owns_foreground" in keep
         assert "_notepad_window_hwnd()" in keep
         assert "_foreign_app_owns_foreground" in keep
-        # Attached DefView overlays must not HWND_BOTTOM (tray/settings vanish root).
+        # Attached: skip HWND_BOTTOM for settings FG; foreign FG must sink
+        # (Mail/Outlook under raised Progman-owned fences).
         assert "is_attached_to_desktop" in keep
         assert "is_stuck_under_wallpaper" in keep
         assert "attach_overlay_to_desktop" in keep
+        assert "if foreign_fg:" in keep
+        attached_keep = keep.split("if is_attached_to_desktop(hwnd):", 1)[1]
+        assert "place_overlay_in_desktop_band(hwnd, force=False)" in attached_keep.split(
+            "continue", 1
+        )[0]
         assert keep.index("is_attached_to_desktop") < keep.index(
             "place_overlay_in_desktop_band(hwnd"
         )
@@ -3653,6 +3659,9 @@ def test_page_switch_click() -> None:
         mon_src = inspect.getsource(DesktopForegroundMonitor._on_win_event)
         assert "_prev_desktop" in mon_src
         assert "_on_desktop_surface" in mon_src
+        # Desktop↔desktop silent; foreign FG (incl. app↔app) still emits to re-sink.
+        assert "if on_surface and self._prev_desktop:" in mon_src
+        assert "edge or not on_surface" in mon_src
         # Own chrome is desktop-side (no leave emit) — not an own→app bandaid edge.
         assert "_hwnd_is_own_desktop_chrome" in inspect.getsource(fgmon._on_desktop_surface)
         assert "_prev_ours" not in mon_src

@@ -2509,12 +2509,10 @@ class DeskTidyApp:
     def _keep_overlays_under_apps(self) -> None:
         """Sink overlays into the desktop band (under settings / notepad / other apps).
 
-        Fences-class: DefView-attached overlays already sit under APPWINDOWs —
-        do **not** HWND_BOTTOM healthy attached HWNDs (tray open / settings show
-        used that and buried partitions under the wallpaper).
-
-        Only sink unattached overlays that would float over settings/apps.
-        Stuck-under-wallpaper HWNDs are reattached, never sunk again.
+        Unattached overlays always sink. Attached Progman-owned overlays skip
+        HWND_BOTTOM while settings/notepad own FG (raise the app instead); on
+        foreign FG they must sink — Explorer-desktop HWND_TOP can leave them
+        above Mail/Outlook. Stuck-under-wallpaper HWNDs reattach, never sink.
         """
         from src.desktop_shell_host import (
             attach_overlay_to_desktop,
@@ -2571,7 +2569,12 @@ class DeskTidyApp:
                     attach_overlay_to_desktop(hwnd, show=True)
                     continue
                 if is_attached_to_desktop(hwnd):
-                    # Already in the desktop band — HWND_BOTTOM buries under wallpaper.
+                    # Healthy Progman-owned overlays usually sit under APPWINDOWs.
+                    # After Explorer-desktop HWND_TOP (ensure_live_fences), they can
+                    # float above Mail/Outlook — HWND_BOTTOM+NOOWNERZORDER parks
+                    # them just above Progman again (under apps, not wallpaper).
+                    if foreign_fg:
+                        place_overlay_in_desktop_band(hwnd, force=False)
                     continue
             except Exception:
                 pass

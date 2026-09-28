@@ -153,12 +153,13 @@ def _on_desktop_surface(hwnd: int) -> bool:
 
 
 class DesktopForegroundMonitor(QObject):
-    """Emit on desktop-surface enter/leave edges (foreign app ↔ desktop side).
+    """Emit on desktop-surface enter/leave, and on foreign-app FG changes.
 
     Desktop side = Explorer Progman/WorkerW/DefView **or** DeskTidy chrome.
-    App↔app Alt-Tab and Explorer↔own-chrome churn are silent. Foreign FG sinks
-    overlays under windows (stay visible); shell repair still gates on Explorer
-    FG in app.py.
+    Desktop↔desktop chrome/menu churn is silent. Foreign→foreign still emits so
+    Progman-owned overlays raised on the desktop can re-sink under Mail/Outlook
+    after Alt-Tab from another app. Shell repair still gates on Explorer FG
+    in app.py.
     """
 
     foreground_changed = pyqtSignal()
@@ -182,13 +183,14 @@ class DesktopForegroundMonitor(QObject):
         if event != EVENT_SYSTEM_FOREGROUND:
             return
         on_surface = _on_desktop_surface(int(hwnd or 0))
-        # No edge: still on surface, or still in foreign apps.
-        if on_surface == self._prev_desktop:
+        # Still on desktop surface (chrome / menu / taskbar) — no emit.
+        if on_surface and self._prev_desktop:
             return
-        if not on_surface and not self._prev_desktop:
-            return
+        edge = on_surface != self._prev_desktop
         self._prev_desktop = on_surface
-        self.foreground_changed.emit()
+        # Desktop↔foreign edge, or any foreign FG (app↔app re-sink).
+        if edge or not on_surface:
+            self.foreground_changed.emit()
 
     def start(self) -> None:
         if self._hook:
