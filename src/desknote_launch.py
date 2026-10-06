@@ -146,6 +146,12 @@ def run_desknote_process(argv: list[str] | None = None) -> int:
 
     logger = get_logger()
     args = list(argv if argv is not None else sys.argv[1:])
+    elev_save_target: str | None = None
+    if "--elevated-save" in args:
+        idx = args.index("--elevated-save")
+        if idx + 1 < len(args):
+            elev_save_target = args[idx + 1]
+        args = args[:idx] + args[idx + 2 :]
     paths = _parse_cli_paths(args)
 
     acquire = try_acquire_notepad_instance()
@@ -160,15 +166,20 @@ def run_desknote_process(argv: list[str] | None = None) -> int:
         logger.error("deskNote mutex failed; continuing without exclusivity")
 
     try:
-        return _run_ui(paths)
+        return _run_ui(paths, elev_save_target=elev_save_target)
     finally:
         release_notepad_instance()
 
 
-def _run_ui(initial_paths: list[Path]) -> int:
+def _run_ui(
+    initial_paths: list[Path],
+    *,
+    elev_save_target: str | None = None,
+) -> int:
     from PyQt6.QtCore import Qt
     from PyQt6.QtWidgets import QApplication
 
+    from src.app_logging import get_logger
     from src.icon_utils import get_desknote_icon
     from src.i18n import setup_chinese
     from src.notepad_app import attach_desknote_ipc
@@ -187,6 +198,8 @@ def _run_ui(initial_paths: list[Path]) -> int:
     except Exception:
         pass
 
+    logger = get_logger()
+
     qt_app = QApplication.instance() or QApplication(sys.argv)
     qt_app.setQuitOnLastWindowClosed(True)
     setup_chinese(qt_app)
@@ -201,6 +214,20 @@ def _run_ui(initial_paths: list[Path]) -> int:
     if not icon.isNull():
         qt_app.setWindowIcon(icon)
 
+    # Elevated-save handoff: write the pending payload BEFORE the window
+    # restores its session, so the restored tab shows the freshly saved
+    # content (not the stale pre-save bytes).
+    elev_save_ok: bool | None = None
+    if elev_save_target:
+        from src.notepad import consume_elevated_pending
+
+        try:
+            elev_save_ok = consume_elevated_pending(elev_save_target)
+        except Exception:
+            logger.exception("elevated save: consume pending failed")
+            elev_save_ok = False
+        logger.info("elevated save target=%r ok=%r", elev_save_target, elev_save_ok)
+
     win = show_notepad(settings, parent=None)
     win.setWindowTitle("DeskNote")
     win.setAttribute(Qt.WidgetAttribute.WA_QuitOnClose, True)
@@ -213,4 +240,27 @@ def _run_ui(initial_paths: list[Path]) -> int:
         except Exception:
             pass
 
+    if elev_save_target:
+        # Show the saved file (fresh content) and report the outcome.
+        try:
+            win.open_paths([elev_save_target])
+        except Exception:
+            pass
+        _notify_elevated_save(win, elev_save_target, bool(elev_save_ok))
+
     return int(qt_app.exec())
+
+
+def _notify_elevated_save(win, target: str, ok: bool) -> None:
+    """Report the elevated-save result once the window is up."""
+    from PyQt6.QtCore import QTimer
+
+    def _do() -> None:
+        from PyQt6.QtWidgets import QMessageBox
+
+        if ok:
+            QMessageBox.information(win, "保存", f"已以管理员权限保存：\n{target}")
+        else:
+            QMessageBox.warning(win, "保存", f"以管理员权限保存失败：\n{target}")
+
+    QTimer.singleShot(0, _do)

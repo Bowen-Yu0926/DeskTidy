@@ -6,6 +6,7 @@ import sys
 import time
 import traceback
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -7616,18 +7617,24 @@ def test_page_folders() -> None:
         from src.notepad import (
             NOTES_DIR_NAME,
             NOTE_OPEN_SUFFIXES,
+            consume_elevated_pending,
             default_notes_folder,
             document_open_shell_commands,
+            is_library_note_path,
             is_notepad_openable_path,
             notepad_open_dialog_filter,
             notepad_settings,
+            read_elevated_pending,
             resolve_notes_folder,
             resolve_openable_notes_folder,
             temporary_session_file,
+            temporary_elevated_pending_file,
+            write_elevated_pending,
         )
         from src.settings import install_root
         from src.ui.notepad_window import NotepadWindow, show_notepad
         from src.app import DeskTidyApp
+        from src.elevated_io import relaunch_desknote_elevated
         import inspect
 
         present = inspect.getsource(NotepadWindow.present)
@@ -7666,6 +7673,29 @@ def test_page_folders() -> None:
         assert "Popen" in picker_src
         assert "用记事本打开" in inspect.getsource(document_open_shell_commands)
         assert "打开方式" in inspect.getsource(document_open_shell_commands)
+        # Notepad++-style elevated save: _write_page hands off through a
+        # relaunch with a pending payload, not a quiet failure.
+        wp_src = inspect.getsource(NotepadWindow._write_page)
+        assert "PermissionError" in wp_src and "_relaunch_elevated_save" in wp_src
+        rel = inspect.getsource(NotepadWindow._relaunch_elevated_save)
+        assert "relaunch_desknote_elevated" in rel
+        assert "write_elevated_pending" in rel
+        assert "_elevating" in rel
+        assert "release_notepad_instance" in rel
+        elev = inspect.getsource(relaunch_desknote_elevated)
+        assert "RunAs" in elev and "--elevated-save" in elev and "EncodedCommand" in elev
+        # relaunch_desknote_elevated calls _ps_quote; it must resolve at call time.
+        assert "_ps_quote" in relaunch_desknote_elevated.__globals__
+        assert "try_acquire_notepad_instance" in rel  # re-acquire mutex on failure
+        auto = inspect.getsource(NotepadWindow._autosave_page)
+        assert "_elevating" in auto
+        run_ui = inspect.getsource(
+            __import__("src.desknote_launch", fromlist=["_run_ui"])._run_ui
+        )
+        # Elevated handoff must write BEFORE the window restores its session,
+        # so the restored tab shows the saved bytes (not stale pre-save bytes).
+        assert run_ui.index("consume_elevated_pending") < run_ui.index("show_notepad(settings")
+        assert run_ui.index("show_notepad(settings") < run_ui.index("open_paths([elev_save_target])")
         assert "open_paths_in_notepad" in inspect.getsource(DeskTidyApp)
         fence_extra_src = inspect.getsource(
             __import__("src.ui.fence_icon_item", fromlist=["build_file_icon_shell_extras"]).build_file_icon_shell_extras
@@ -7685,6 +7715,61 @@ def test_page_folders() -> None:
             assert is_notepad_openable_path(sample)
             assert not is_notepad_openable_path(Path(td) / "missing.py")
             assert "*.py" in notepad_open_dialog_filter()
+            # Notepad++-style open: no whitelist — extensionless / binary open too.
+            hosts_like = Path(td) / "hosts"
+            hosts_like.write_text("127.0.0.1 localhost\n", encoding="utf-8")
+            assert is_notepad_openable_path(hosts_like)
+            blob = Path(td) / "photo.png"
+            blob.write_bytes(b"\x89PNG\r\n\x1a\n")
+            assert is_notepad_openable_path(blob)
+            # Library scan stays text-only.
+            assert is_library_note_path(sample)
+            assert is_library_note_path(hosts_like)
+            assert not is_library_note_path(blob)
+            # Elevated-save handoff (Notepad++-style) round-trips via a pending
+            # file — redirected so the user's real handoff is never touched.
+            elev_dir = Path(td) / "etc"
+            elev_dir.mkdir()
+            elev_target = elev_dir / "hosts"
+            elev_target.write_text("old\n", encoding="utf-8")
+            with temporary_elevated_pending_file(
+                Path(td) / "elevated_save_pending.json"
+            ):
+                assert write_elevated_pending(elev_target, "new\n")
+                pending = read_elevated_pending()
+                assert pending == {
+                    "target": str(elev_target),
+                    "text": "new\n",
+                }, pending
+                assert consume_elevated_pending(elev_target)
+                assert elev_target.read_text(encoding="utf-8") == "new\n"
+                assert read_elevated_pending() is None
+                assert not consume_elevated_pending(elev_dir / "other")
+            # Dry-run: the PowerShell relaunch command must be well-formed. A
+            # typo here silently breaks the UAC child launch.
+            import base64 as _b64
+
+            _caps: dict = {}
+
+            def _fake_run(cmd, **kw):
+                _caps["cmd"] = cmd
+                return type("P", (), {"returncode": 0})()
+
+            with mock.patch("subprocess.run", side_effect=_fake_run):
+                assert relaunch_desknote_elevated(elev_target) is True
+            _cmd = _caps["cmd"]
+            assert _cmd[0].endswith("powershell.exe")
+            _inner = _b64.b64decode(_cmd[_cmd.index("-EncodedCommand") + 1]).decode(
+                "utf-16-le"
+            )
+            for _needle in ("RunAs", "--elevated-save", str(elev_target)):
+                assert _needle in _inner
+            # Launch failures must return False, never raise.
+            def _boom(*a, **k):
+                raise OSError("boom")
+
+            with mock.patch("subprocess.run", side_effect=_boom):
+                assert relaunch_desknote_elevated(elev_target) is False
 
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)

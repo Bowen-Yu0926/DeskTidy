@@ -11,6 +11,7 @@ from typing import Iterator
 from src.settings import APP_DIR, ensure_app_dir, install_root
 
 SESSION_FILE = APP_DIR / "notepad_session.json"
+ELEVATED_SAVE_PENDING_FILE = APP_DIR / "elevated_save_pending.json"
 BACKUP_DIR_NAME = "notepad_backup"
 NOTES_DIR_NAME = "笔记"
 # Notepad++-style text / config / code suffixes the built-in editor can open.
@@ -105,13 +106,36 @@ NOTE_OPEN_SUFFIXES = frozenset(
 )
 # Backward-compatible alias used by older call sites / tests.
 _NOTE_SUFFIXES = NOTE_OPEN_SUFFIXES
+# Extensionless text-ish names still listed in the notes *library* scan. The
+# editor itself opens any file (Notepad-style), so these only matter for the
+# library / recent lists, which must stay text-only.
+_LIBRARY_EXTENSIONLESS_NAMES = frozenset(
+    {
+        "dockerfile",
+        "makefile",
+        "gnumakefile",
+        "license",
+        "licence",
+        "readme",
+        "changelog",
+        "authors",
+        "copying",
+        "cmakelists.txt",
+        "hosts",
+    }
+)
 # Tests may redirect the session file so they never clobber the user's reopen list.
 _session_file_override: Path | None = None
 _backup_dir_override: Path | None = None
+_elevated_pending_override: Path | None = None
 
 
 def session_file_path() -> Path:
     return _session_file_override or SESSION_FILE
+
+
+def elevated_pending_path() -> Path:
+    return _elevated_pending_override or ELEVATED_SAVE_PENDING_FILE
 
 
 @contextmanager
@@ -138,6 +162,18 @@ def temporary_backup_dir(path: Path) -> Iterator[Path]:
         yield folder
     finally:
         _backup_dir_override = prev
+
+
+@contextmanager
+def temporary_elevated_pending_file(path: Path) -> Iterator[Path]:
+    """Redirect the elevated-save handoff (selftests must not touch the user's)."""
+    global _elevated_pending_override
+    prev = _elevated_pending_override
+    _elevated_pending_override = Path(path)
+    try:
+        yield _elevated_pending_override
+    finally:
+        _elevated_pending_override = prev
 
 
 def notepad_settings(settings: dict) -> dict:
@@ -293,7 +329,27 @@ def next_auto_save_path(folder: Path, when: datetime | None = None) -> Path:
 
 
 def is_notepad_openable_path(path: Path | str | None) -> bool:
-    """True when the built-in notepad can open *path* as text (N++-style)."""
+    """True for any regular file — Notepad-style open, no whitelist.
+
+    Windows Notepad opens whatever path it is handed; decoding is the
+    reader's problem (DeskNote falls back utf-8/gbk/utf-16 and never
+    hard-fails). Extension filtering lives only in the notes library scan
+    (``is_library_note_path``) so binary junk never floods the library list.
+    """
+    if path is None:
+        return False
+    try:
+        p = Path(path)
+    except OSError:
+        return False
+    try:
+        return p.is_file()
+    except OSError:
+        return False
+
+
+def is_library_note_path(path: Path | str | None) -> bool:
+    """True when *path* belongs in the notes library / recent lists (text only)."""
     if path is None:
         return False
     try:
@@ -305,27 +361,12 @@ def is_notepad_openable_path(path: Path | str | None) -> bool:
             return False
     except OSError:
         return False
-    suffix = p.suffix.casefold()
-    if suffix in NOTE_OPEN_SUFFIXES:
+    if p.suffix.casefold() in NOTE_OPEN_SUFFIXES:
         return True
-    # Extensionless text-ish names (Dockerfile, Makefile, LICENSE, …).
     name = p.name.casefold()
-    if name in {
-        "dockerfile",
-        "makefile",
-        "gnumakefile",
-        "license",
-        "licence",
-        "readme",
-        "changelog",
-        "authors",
-        "copying",
-        "cmakelists.txt",
-    }:
+    if name in _LIBRARY_EXTENSIONLESS_NAMES:
         return True
-    if name.startswith("dockerfile") or name.startswith("makefile"):
-        return True
-    return False
+    return name.startswith("dockerfile") or name.startswith("makefile")
 
 
 def notepad_open_dialog_filter() -> str:
@@ -410,7 +451,7 @@ def recent_note_files(folder: Path, *, limit: int = 20) -> list[Path]:
         return []
     for path in entries:
         try:
-            if not is_notepad_openable_path(path):
+            if not is_library_note_path(path):
                 continue
             # Skip selftest litter and hidden files.
             name = path.name
@@ -489,3 +530,62 @@ def save_notepad_session(
         json.dumps(payload, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
+
+
+def write_elevated_pending(target: Path | str, text: str) -> bool:
+    """Persist a pending elevated save (Notepad++ relaunch handoff).
+
+    The non-elevated instance writes the payload here (user-writable APP_DIR);
+    the UAC-elevated relaunch reads it, performs its own ``write_text``, then
+    removes the file.
+    """
+    ensure_app_dir()
+    payload = {"target": str(target), "text": text}
+    try:
+        elevated_pending_path().write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        return True
+    except OSError:
+        return False
+
+
+def read_elevated_pending() -> dict | None:
+    """Return ``{target, text}`` from the pending file, or None."""
+    try:
+        data = json.loads(elevated_pending_path().read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    target = data.get("target")
+    text = data.get("text")
+    if not isinstance(target, str) or not isinstance(text, str):
+        return None
+    return {"target": target, "text": text}
+
+
+def consume_elevated_pending(target: Path | str) -> bool:
+    """Write the pending payload to *target* and clear the handoff file.
+
+    Called from the elevated relaunch. Returns False when the payload does not
+    match *target* or the write fails.
+    """
+    data = read_elevated_pending()
+    if data is None:
+        return False
+    try:
+        if Path(data["target"]).resolve() != Path(target).resolve():
+            return False
+    except OSError:
+        return False
+    try:
+        Path(target).write_text(data["text"], encoding="utf-8")
+    except OSError:
+        return False
+    try:
+        elevated_pending_path().unlink(missing_ok=True)
+    except OSError:
+        pass
+    return True

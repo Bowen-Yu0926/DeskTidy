@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from src.notepad import NOTE_OPEN_SUFFIXES, is_notepad_openable_path
+from src.notepad import NOTE_OPEN_SUFFIXES, is_library_note_path
 
 # Skip huge files during content search (bytes).
 MAX_SEARCH_FILE_BYTES = 512 * 1024
@@ -79,7 +79,7 @@ def iter_openable_files(root: Path, *, max_files: int = 5000) -> list[Path]:
                 parts = {p.casefold() for p in path.parts}
                 if parts & {".git", "node_modules", "__pycache__", ".venv", "venv"}:
                     continue
-                if not is_notepad_openable_path(path):
+                if not is_library_note_path(path):
                     continue
                 out.append(path.resolve())
             except OSError:

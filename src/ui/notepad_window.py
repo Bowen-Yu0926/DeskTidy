@@ -2187,6 +2187,9 @@ class NotepadWindow(QMainWindow):
 
     def _autosave_page(self, page: _NotePage) -> bool:
         """Named files write through; untitled snapshots go to the backup folder."""
+        if getattr(page, "_elevating", False):
+            # Handed off to a UAC-elevated relaunch — do not re-save here.
+            return True
         text = page.editor.toPlainText()
         if page.path is None and not page.dirty and not text:
             return True
@@ -2207,9 +2210,14 @@ class NotepadWindow(QMainWindow):
     def _write_page(
         self, page: _NotePage, path: Path, *, ephemeral: bool | None = None
     ) -> bool:
+        text = page.editor.toPlainText()
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(page.editor.toPlainText(), encoding="utf-8")
+            path.write_text(text, encoding="utf-8")
+        except PermissionError:
+            # System-protected path (hosts, …): offer Notepad++-style elevated
+            # relaunch instead of just failing.
+            return self._relaunch_elevated_save(page, path, text)
         except OSError as exc:
             QMessageBox.warning(self, "笔记", f"保存失败：{exc}")
             return False
@@ -2224,6 +2232,73 @@ class NotepadWindow(QMainWindow):
             self._refresh_library()
             self.library.highlight_path(page.path)
         self._persist_session()
+        return True
+
+    def _relaunch_elevated_save(self, page: _NotePage, path: Path, text: str) -> bool:
+        """Notepad++-style: ask to relaunch DeskNote elevated and save there.
+
+        Returns True when the handoff happened (the current instance then
+        exits); False when the user declined or the relaunch failed (stay put).
+        """
+        from PyQt6.QtWidgets import QApplication
+
+        from src.elevated_io import relaunch_desknote_elevated
+        from src.notepad import write_elevated_pending
+
+        box = QMessageBox(self)
+        box.setWindowTitle("保存")
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setText(
+            f"「{path}」受系统保护，无法直接保存。\n\n"
+            "是否以管理员权限重启 DeskNote 并保存？\n"
+            "（将弹出 UAC 确认框，重启后自动保存该文件）"
+        )
+        allow = box.addButton("以管理员权限保存", QMessageBox.ButtonRole.AcceptRole)
+        box.addButton("取消", QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(allow)
+        box.exec()
+        if box.clickedButton() is not allow:
+            return False
+
+        if not write_elevated_pending(path, text):
+            QMessageBox.warning(self, "笔记", "无法准备提权保存的暂存内容。")
+            return False
+
+        # Hand mutex to the elevated instance before it tries to acquire it.
+        try:
+            from src.instance_lock import release_notepad_instance
+
+            release_notepad_instance()
+        except Exception:
+            pass
+
+        if not relaunch_desknote_elevated(path):
+            # UAC declined / launch failed — take the mutex back, stay running.
+            try:
+                from src.instance_lock import try_acquire_notepad_instance
+
+                try_acquire_notepad_instance()
+            except Exception:
+                pass
+            page._elevating = False
+            QMessageBox.warning(
+                self,
+                "保存",
+                "已取消提权保存（UAC 未确认）。\n可尝试以管理员身份运行 DeskNote 后重试。",
+            )
+            return False
+
+        # Handoff accepted: skip autosave on close, then let the window quit.
+        page._elevating = True
+        self.close()
+
+        # If close was cancelled for some other reason, force quit anyway.
+        app = QApplication.instance()
+        if app is not None:
+            try:
+                app.quit()
+            except Exception:
+                pass
         return True
 
     def _delete_tab_file(self, page: _NotePage) -> None:
