@@ -2336,7 +2336,11 @@ def test_fence_grid_fit() -> None:
         # Fence captions stay Explorer/Fences-style white (not theme ink).
         assert "color: #FFFFFF;" in sheet
         assert "color: #CBD5E1;" in sheet
-        assert "padding: 1px 2px 3px 2px;" in sheet
+        # Descent lives in caption_box_height — caption padding must stay 0
+        # (the old 1px 2px 3px 2px clipped line-2 names).
+        parts = sheet.split("QLabel#fenceItem {", 1)
+        assert len(parts) == 2, "fenceItem rule missing"
+        assert "padding: 0px;" in parts[1].split("}", 1)[0]
         assert pub._LABEL_HEIGHT >= 16
         assert pub._WIDGET_H >= 48
         from src.desktop_icon_metrics import system_desktop_icon_cell as _sys_cell
@@ -2344,7 +2348,13 @@ def test_fence_grid_fit() -> None:
         assert pub._WIDGET_W == _sys_cell().width
         assert abs(pub._WIDGET_H - _sys_cell().height) <= 2
         # Height tracks the caption shelf, not an inflated empty band under text.
-        assert pub._WIDGET_H <= _sys_cell().icon_size + pub._LABEL_HEIGHT + 24
+        # _LABEL_HEIGHT may be the import-time no-QApplication fallback (39);
+        # recompute with live font metrics like the real app does.
+        label_now = pub._default_label_height(_sys_cell())
+        assert pub._WIDGET_H <= _sys_cell().icon_size + label_now + 24, (
+            f"WIDGET_H={pub._WIDGET_H} icon_size={_sys_cell().icon_size} "
+            f"LABEL={label_now} cell={_sys_cell()}"
+        )
 
     def _icon_zoom_persists():
         """Zoom must round-trip through config so quit/reopen keeps icon size."""

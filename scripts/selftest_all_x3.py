@@ -54,6 +54,7 @@ CORE_SUITE: list[str] = [
     "selftest_desknote.py",
     "selftest_multimon_chrome.py",
     "selftest_recording_indicator.py",
+    "selftest_update_checker.py",
     "selftest_perf_stress.py",
     "selftest_system.py",
 ]
@@ -85,6 +86,7 @@ DEFAULT_TIMEOUT_S = {
     "selftest_desknote.py": 120,
     "selftest_multimon_chrome.py": 180,
     "selftest_recording_indicator.py": 180,
+    "selftest_update_checker.py": 60,
     "selftest_perf_stress.py": 300,
     "selftest_system.py": 600,
     "selftest_live_e2e.py": 300,

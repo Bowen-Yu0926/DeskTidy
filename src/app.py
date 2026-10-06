@@ -613,6 +613,8 @@ class DeskTidyApp:
         QTimer.singleShot(800, self._startup_deferred_shell_menu_warm)
         QTimer.singleShot(1000, self._startup_deferred_window_data)
         QTimer.singleShot(2000, self._startup_deferred_legacy_storage_migrate)
+        # Late so the GitHub fetch never competes with boot shell work.
+        QTimer.singleShot(15000, self._startup_deferred_update_check)
         if not self.settings.get("first_run_organize_done", True):
             QTimer.singleShot(2500, self._startup_deferred_first_run)
         elif self.settings.get("auto_organize_on_startup"):
@@ -636,6 +638,16 @@ class DeskTidyApp:
         except Exception:
             pass
         QTimer.singleShot(0, self._apply_foreground_overlay_visibility)
+
+    def _startup_deferred_update_check(self) -> None:
+        """Background release check — silent unless a newer tag exists."""
+        if self._exiting:
+            return
+        if not self.settings.get("check_update_on_startup", True):
+            return
+        from src.update_checker import notify_update_on_startup
+
+        notify_update_on_startup(self.window, settings=self.settings)
 
     def _startup_deferred_shell_menu_warm(self) -> None:
         """Pre-create shell menu host so the first icon RMB is not paying CreateWindow."""

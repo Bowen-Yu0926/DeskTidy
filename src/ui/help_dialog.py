@@ -65,6 +65,12 @@ class HelpHomePage(QWidget):
         self._guide_btn.setToolTip("在桌面上再次查看分步小提示")
         self._guide_btn.clicked.connect(self._open_first_run_guide)
         row.addWidget(self._guide_btn)
+
+        self._update_btn = QPushButton("检查更新")
+        self._update_btn.setObjectName("guideOpenBtn")
+        self._update_btn.setToolTip("联网查询 GitHub 是否发布了新版本")
+        self._update_btn.clicked.connect(self._check_update)
+        row.addWidget(self._update_btn)
         row.addStretch(1)
         root.addLayout(row)
 
@@ -118,6 +124,14 @@ class HelpHomePage(QWidget):
             self.window() if self.window() else self,
             self._settings,
             mark_done=False,
+        )
+
+    def _check_update(self) -> None:
+        from src.update_checker import check_update_interactive
+
+        check_update_interactive(
+            self.window() or self,
+            settings=self._settings if isinstance(self._settings, dict) else None,
         )
 
 

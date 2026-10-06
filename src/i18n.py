@@ -80,17 +80,42 @@ def show_info(parent: QWidget | None, title: str, text: str) -> None:
 
 
 def show_about(parent: QWidget | None = None) -> None:
-    """Compact About dialog — version from a single source of truth."""
+    """Compact About dialog — version from a single source of truth.
+
+    Extra「检查更新」button runs the GitHub release check after the dialog
+    closes (QMessageBox.exec blocks; start work only afterwards).
+    """
     from src._version import __version__
 
-    text = (
+    box = QMessageBox(parent)
+    box.setIcon(QMessageBox.Icon.Information)
+    box.setWindowTitle("关于")
+    box.setText(
         f"{APP_NAME_ZH}\n"
         f"版本 {__version__}\n\n"
         "桌面分区整理工具。整理只钉选显示，文件仍留在桌面。\n"
         "录屏需安装版内置 FFmpeg，或自行安装 FFmpeg。\n"
         "笔记与录屏默认保存在安装目录下的「笔记」「录屏」文件夹。"
     )
-    show_info(parent, "关于", text)
+    check_btn = box.addButton("检查更新", QMessageBox.ButtonRole.ActionRole)
+    box.addButton("关闭", QMessageBox.ButtonRole.AcceptRole)
+    _prepare_message_box(box)
+    box.exec()
+    if box.clickedButton() is check_btn:
+        from src.update_checker import check_update_interactive
+
+        # MainWindow (typical parent) owns the settings dict; fall back to the
+        # app singleton when About is opened from the tray with no parent.
+        settings = getattr(parent, "settings", None)
+        if not isinstance(settings, dict):
+            from PyQt6.QtWidgets import QApplication
+
+            app = QApplication.instance()
+            desk = getattr(app, "_desktidy_app", None) if app else None
+            settings = getattr(desk, "settings", None)
+        check_update_interactive(
+            parent, settings=settings if isinstance(settings, dict) else None
+        )
 
 
 def show_scrollable_info(parent: QWidget | None, title: str, text: str) -> None:

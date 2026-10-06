@@ -137,6 +137,12 @@ class TrayManager:
         help_action = QAction("使用说明", help_menu)
         help_action.triggered.connect(self._show_help)
         help_menu.addAction(help_action)
+        update_action = QAction("检查更新", help_menu)
+        update_action.triggered.connect(
+            lambda *_a: self._check_update(),
+            Qt.ConnectionType.QueuedConnection,
+        )
+        help_menu.addAction(update_action)
         help_menu.addSeparator()
         about_action = QAction("关于", help_menu)
         about_action.triggered.connect(lambda: show_about(self.window))
@@ -201,6 +207,14 @@ class TrayManager:
         from src.ui.help_dialog import show_help
 
         show_help(self.window, settings)
+
+    def _check_update(self) -> None:
+        from src.update_checker import check_update_interactive
+
+        settings = getattr(self.window, "settings", None)
+        check_update_interactive(
+            self.window, settings=settings if isinstance(settings, dict) else None
+        )
 
     def show_message(self, title: str, message: str, *, msec: int = 4500) -> None:
         self.tray.showMessage(

@@ -392,6 +392,15 @@ ALL_TEST_CASES: list[TestCase] = [
         "注册表项可清理",
         "selftest_recent.py",
     ),
+    TestCase(
+        "TC-153",
+        "设置与备份",
+        "检查更新（版本比较 / Release 解析 / UI 接线）",
+        "parse_version、GitHub release feed 解析、托盘与帮助页入口、启动检查开关",
+        "新版本识别正确；接线齐全；设置默认键存在",
+        "selftest_update_checker.py",
+        "P2",
+    ),
     # --- 多显示器 ---
     TestCase(
         "TC-160",

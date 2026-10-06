@@ -4,6 +4,8 @@
   "auto_organize_on_startup": false,
   "auto_organize_watch": false,
   "auto_snapshot_on_change": false,
+  "check_update_on_startup": true,
+  "update_notified_tag": "",
   "show_fences": true,
   "show_page_indicator": true,
   "current_page": 0,

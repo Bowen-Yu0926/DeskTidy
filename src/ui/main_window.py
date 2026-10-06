@@ -684,6 +684,16 @@ class MainWindow(QMainWindow):
         )
         self.public_desktop_cb.stateChanged.connect(self._on_public_desktop_changed)
 
+        self.check_update_cb = QCheckBox("启动时检查更新")
+        self.check_update_cb.setChecked(
+            bool(self.settings.get("check_update_on_startup", True))
+        )
+        self.check_update_cb.setToolTip(
+            "启动后联网查询 GitHub 是否有新版本；发现新版本时提示一次。"
+            "托盘「帮助 → 检查更新」与帮助页按钮可随时手动检查。"
+        )
+        self.check_update_cb.stateChanged.connect(self._on_check_update_changed)
+
         for cb in (
             self.auto_start_cb,
             self._show_fences_cb,
@@ -693,6 +703,7 @@ class MainWindow(QMainWindow):
             self.close_to_tray_cb,
             self.desktop_menu_cb,
             self.public_desktop_cb,
+            self.check_update_cb,
         ):
             general_body.addWidget(cb)
 
@@ -1205,6 +1216,13 @@ class MainWindow(QMainWindow):
         heal_public_area_scope(self.settings, page_id)
         save_settings(self.settings)
         self.settings_changed.emit()
+
+    def _on_check_update_changed(self, state: int) -> None:
+        enabled = state == Qt.CheckState.Checked.value
+        self.settings["check_update_on_startup"] = enabled
+        if not enabled:
+            self.settings["update_notified_tag"] = ""
+        save_settings(self.settings)
 
     def _apply_sidebar_accent(self, theme: str | None = None) -> None:
         palette = get_theme_palette(normalize_theme(theme or self.settings.get("theme")))
