@@ -10,16 +10,22 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 import urllib.error
 import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 
 RELEASES_LATEST_URL = (
     "https://api.github.com/repos/Bowen-Yu0926/DeskTidy-Releases/releases/latest"
 )
 RELEASES_PAGE_URL = "https://github.com/Bowen-Yu0926/DeskTidy-Releases/releases/latest"
 _USER_AGENT = "DeskTidy-Updater"
+_CACHE_FILE_NAME = "update_check_cache.json"
+# Unauthenticated GitHub API is 60 requests/hour per IP, so a shared corporate
+# NAT would burn it. Startup checks reuse a fresh result instead of re-fetching.
+_CACHE_TTL_SECONDS = 6 * 3600
 
 STATUS_UP_TO_DATE = "up-to-date"
 STATUS_UPDATE_AVAILABLE = "update-available"
@@ -45,8 +51,13 @@ class UpdateCheckResult:
 
 
 def parse_version(raw: str) -> tuple[int, ...]:
-    """``v4.0.26`` / ``4.0.26`` / ``4.0.26.1`` -> numeric tuple for compare."""
-    text = str(raw or "").strip().lstrip("vV")
+    """``v4.0.26`` / ``4.0.26`` / ``4.0.26.1`` -> numeric tuple for compare.
+
+    ``-rc1`` / ``+build`` metadata is dropped first, otherwise ``4.0.26-rc1``
+    would parse as ``(4, 0, 261)`` and a pre-release tag would be reported as
+    a newer release than the one it derives from.
+    """
+    text = str(raw or "").strip().lstrip("vV").split("-", 1)[0].split("+", 1)[0]
     parts: list[int] = []
     for piece in text.split("."):
         digits = "".join(ch for ch in piece if ch.isdigit())
@@ -92,6 +103,64 @@ def fetch_latest_release(timeout: float = 8.0) -> dict:
     return data
 
 
+def _cache_path() -> Path | None:
+    try:
+        from src.settings import APP_DIR, ensure_app_dir
+
+        ensure_app_dir()
+        return APP_DIR / _CACHE_FILE_NAME
+    except Exception:
+        return None
+
+
+def _read_cache(now: float) -> UpdateCheckResult | None:
+    """Fresh cached result, or None when stale / unreadable."""
+    path = _cache_path()
+    if path is None:
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            return None
+        if float(data.get("checked_at") or 0) + _CACHE_TTL_SECONDS < now:
+            return None
+        return UpdateCheckResult(
+            status=str(data.get("status") or STATUS_ERROR),
+            current=str(data.get("current") or ""),
+            latest=str(data.get("latest") or ""),
+            html_url=str(data.get("html_url") or ""),
+            notes=str(data.get("notes") or ""),
+            error=str(data.get("error") or ""),
+        )
+    except Exception:
+        return None
+
+
+def _write_cache(result: UpdateCheckResult) -> None:
+    """Remember a successful result; errors stay uncached so a retry happens."""
+    path = _cache_path()
+    if path is None or result.status == STATUS_ERROR:
+        return
+    try:
+        path.write_text(
+            json.dumps(
+                {
+                    "checked_at": time.time(),
+                    "status": result.status,
+                    "current": result.current,
+                    "latest": result.latest,
+                    "html_url": result.html_url,
+                    "notes": result.notes[:4000],
+                    "error": result.error,
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+    except Exception:
+        pass
+
+
 def check_for_update(timeout: float = 8.0) -> UpdateCheckResult:
     """Blocking check — run in a worker thread, never on the GUI thread."""
     from src._version import __version__
@@ -130,10 +199,12 @@ def check_for_update_async(
     on_result: Callable[[UpdateCheckResult], None],
     *,
     timeout: float = 8.0,
+    force: bool = False,
 ) -> bool:
     """Background check; *on_result* runs on the GUI thread.
 
-    Returns False when a check is already in flight (single-flight guard).
+    ``force=True`` bypasses the disk cache (manual entry points). Returns False
+    when a check is already in flight, or when the worker thread cannot start.
     """
     global _check_inflight
     if _check_inflight:
@@ -146,23 +217,39 @@ def check_for_update_async(
     def worker() -> None:
         global _check_inflight
         try:
-            result = check_for_update(timeout=timeout)
+            result = _fetch_or_cached(timeout, force=force)
         except Exception as exc:  # noqa: BLE001 — defensive; deliver as error
             from src._version import __version__
 
             result = UpdateCheckResult(
                 status=STATUS_ERROR, current=__version__, error=str(exc)
             )
-        _check_inflight = False
+        finally:
+            _check_inflight = False
         try:
             call_on_main_thread(lambda: on_result(result))
         except Exception:
             pass
 
-    threading.Thread(
-        target=worker, name="desktidy-update-check", daemon=True
-    ).start()
+    try:
+        threading.Thread(
+            target=worker, name="desktidy-update-check", daemon=True
+        ).start()
+    except Exception:
+        # Without this reset the guard would stay True forever and every later
+        # check — including the startup check — would silently no-op.
+        _check_inflight = False
+        return False
     return True
+
+
+def _fetch_or_cached(timeout: float, *, force: bool) -> UpdateCheckResult:
+    """Serve a fresh cached result, else fetch live and cache the success."""
+    result = _read_cache(time.time()) if not force else None
+    if result is None:
+        result = check_for_update(timeout=timeout)
+        _write_cache(result)
+    return result
 
 
 def open_download_page(url: str | None = None) -> bool:
@@ -174,6 +261,24 @@ def open_download_page(url: str | None = None) -> bool:
         return bool(webbrowser.open(target))
     except Exception:  # noqa: BLE001 — browser launch is best-effort
         return False
+
+
+def _ask_yes_no_safe(parent, title: str, text: str) -> bool:
+    """``ask_yes_no`` that survives a destroyed parent widget.
+
+    The result callback can fire after its parent dialog was closed. QMessageBox
+    on a deleted C++ parent raises, which would abort before
+    ``update_notified_tag`` is persisted — so the user gets nagged again next
+    launch with no way to see what the check found.
+    """
+    from src.i18n import ask_yes_no
+
+    for target in (parent, None):
+        try:
+            return ask_yes_no(target, title, text)
+        except Exception:
+            continue
+    return False
 
 
 def _finish_interactive(
@@ -201,9 +306,7 @@ def _finish_interactive(
                 level="success",
             )
         return
-    from src.i18n import ask_yes_no
-
-    if ask_yes_no(
+    if _ask_yes_no_safe(
         parent,
         "发现新版本",
         f"新版本 {result.latest} 已发布（当前 {result.current}）。\n\n"
@@ -234,7 +337,8 @@ def check_update_interactive(
     from src.ui.toast import show_toast
 
     started = check_for_update_async(
-        lambda r: _finish_interactive(parent, r, settings, silent_up_to_date)
+        lambda r: _finish_interactive(parent, r, settings, silent_up_to_date),
+        force=True,  # manual click should not be answered from the startup cache
     )
     if not started:
         show_toast("检查更新", "正在检查中，请稍候…", msec=2500)
@@ -252,9 +356,7 @@ def notify_update_on_startup(parent=None, *, settings: dict | None = None) -> bo
         tag = f"v{result.latest}"
         if settings is not None and str(settings.get("update_notified_tag") or "") == tag:
             return
-        from src.i18n import ask_yes_no
-
-        opened = ask_yes_no(
+        opened = _ask_yes_no_safe(
             parent,
             "发现新版本",
             f"新版本 {result.latest} 已发布（当前 {result.current}）。\n\n"
