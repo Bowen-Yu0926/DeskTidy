@@ -6893,6 +6893,10 @@ class DeskTidyApp:
         if self._exiting or self._overlay_restack_blocked():
             return
         self._sync_overlays_to_foreground()
+        # A public refresh that ran while notepad owned FG skipped icon.show()
+        # (may_show gate), and _remap_hidden_overlay_hwnds only repairs
+        # Win32-hidden HWNDs — floats left Qt-hidden stayed gone after close.
+        QTimer.singleShot(0, self.refresh_public_desktop)
         self._schedule_overlay_keepalive()
         need_force = bool(getattr(self, "_shell_attach_after_settings", False))
         self._shell_attach_after_settings = False

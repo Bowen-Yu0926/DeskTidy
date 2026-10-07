@@ -8182,6 +8182,125 @@ def test_page_folders() -> None:
     run("内置记事本契约", _builtin_notepad)
 
 
+def test_notepad_close_rescues_hidden_floats() -> None:
+    begin("19) 关记事本后 FG 期间被藏住的浮标应恢复显示")
+
+    def _body():
+        """Floats a refresh skipped while notepad owned FG must come back.
+
+        Clicking a document opens notepad. While it owns foreground a public
+        refresh skips icon.show() (may_show gate) and leaves floats Qt-hidden;
+        closing notepad used to only repair Win32-hidden HWNDs, so the floats
+        stayed gone (页面刷新后不显示).
+        """
+        import inspect
+        import shutil
+        import tempfile
+
+        from PyQt6.QtWidgets import QApplication
+
+        from src.app import DeskTidyApp
+        from src.public_desktop import add_public_item
+        from src.ui.public_icon_widget import PublicIconWidget
+
+        app = QApplication.instance() or QApplication([])
+        _ = app
+
+        src = inspect.getsource(DeskTidyApp._on_notepad_destroyed)
+        assert "refresh_public_desktop" in src, (
+            "notepad close must re-sync public floats the may_show gate left hidden"
+        )
+
+        root = Path(tempfile.mkdtemp(prefix="desktidy_fg_close_"))
+        widget = None
+        host = None
+        try:
+            folder = root / "notes"
+            folder.mkdir()
+            settings = {
+                "enable_public_desktop": False,
+                "current_page": 0,
+                "public_desktop_items": [],
+                "fences": [],
+                "theme": "mist",
+            }
+            add_public_item(
+                settings, folder, x=40, y=40, page_id=0, auto_arrange=False
+            )
+
+            class Fake:
+                pass
+
+            fake = Fake()
+            fake._exiting = False
+            fake._icons_hidden = False
+            fake._public_relayout_pending = False
+            fake._public_force_relayout = False
+            fake._last_public_sync_sig = None
+            fake._last_public_fence_key = None
+            fake._parked_public_icons = {}
+            fake._max_parked_public_icons = 80
+            fake._public_drag_path = None
+            fake._public_drag_keys = set()
+            fake._public_icon_host = None
+            fake.settings = settings
+            fake.public_icons = []
+            fake._retire_overlay_widget = (
+                DeskTidyApp._retire_overlay_widget.__get__(fake)
+            )
+            fake._park_public_icon = DeskTidyApp._park_public_icon.__get__(fake)
+            fake._take_parked_public_icon = (
+                DeskTidyApp._take_parked_public_icon.__get__(fake)
+            )
+            fake._ensure_public_icon_host = (
+                DeskTidyApp._ensure_public_icon_host.__get__(fake)
+            )
+            fake._configure_public_float_overlay = (
+                DeskTidyApp._configure_public_float_overlay.__get__(fake)
+            )
+            fake._ensure_shell_attachments = lambda **kw: None
+            fake._ensure_desktop_overlays_visible = lambda **kw: None
+            fake.ensure_live_fences_interactive = lambda: None
+            fake._schedule_overlay_keepalive = lambda: None
+            fake._current_page = lambda: 0
+            fake._on_public_icon_moved = lambda *a, **k: None
+            fake._on_public_icon_pinned = lambda *a, **k: None
+            fake._on_public_icon_removed = lambda *a, **k: None
+            fake._public_drop_surface_needed = lambda host: False
+            fake._purge_temp_desktop_refs = lambda: False
+            fake._start_loose_sync_background = lambda: None
+            # notepad owns foreground: the may-show gate holds floats back.
+            fake._overlay_widgets_may_show = lambda: False  # type: ignore[assignment]
+
+            host = DeskTidyApp._ensure_public_icon_host(fake)
+            widget = PublicIconWidget(folder, 40, 40, parent=host)
+            widget.hide()
+            fake.public_icons = [widget]
+            with mock.patch("src.app.save_settings", lambda *_a, **_k: None):
+                DeskTidyApp._refresh_public_desktop_impl(fake, relayout=False)
+            assert widget in fake.public_icons, "float must stay listed, not dropped"
+            assert not widget.isVisible(), "may_show gate must hold the float hidden"
+
+            # Notepad closes: the gate opens and the deferred refresh re-shows it.
+            fake._overlay_widgets_may_show = lambda: True  # type: ignore[assignment]
+            with mock.patch("src.app.save_settings", lambda *_a, **_k: None):
+                DeskTidyApp._refresh_public_desktop_impl(fake, relayout=False)
+            assert widget.isVisible(), (
+                "float left hidden must be re-shown on notepad close"
+            )
+        finally:
+            for w in (widget, host):
+                try:
+                    w.close()
+                    w.deleteLater()
+                except Exception:
+                    pass
+            app.processEvents()
+            shutil.rmtree(root, ignore_errors=True)
+
+    run("关记事本救回 FG 期间被藏住的浮标", _body)
+
+
 def main() -> int:
     print("DeskTidy 近期功能回归")
     print(f"ROOT = {ROOT}")
@@ -8210,6 +8329,7 @@ def main() -> int:
         test_wallpaper()
         test_pinned_desktop_folder_standin()
         test_organize_metrics_on_reshow()
+        test_notepad_close_rescues_hidden_floats()
     finally:
         # Drain Qt before process teardown — avoids intermittent
         # STATUS_FATAL_USER_CALLBACK_EXCEPTION (0xC000041D) on interpreter exit.
