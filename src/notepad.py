@@ -589,3 +589,15 @@ def consume_elevated_pending(target: Path | str) -> bool:
     except OSError:
         pass
     return True
+
+
+def clear_elevated_pending() -> None:
+    """Drop a handoff payload whose save was aborted (e.g. UAC declined).
+
+    The pending file holds the unsaved text in plaintext, so it must not
+    linger on disk once the handoff is off the table.
+    """
+    try:
+        elevated_pending_path().unlink(missing_ok=True)
+    except OSError:
+        pass

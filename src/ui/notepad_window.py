@@ -2273,7 +2273,14 @@ class NotepadWindow(QMainWindow):
             pass
 
         if not relaunch_desknote_elevated(path):
-            # UAC declined / launch failed — take the mutex back, stay running.
+            # UAC declined / launch failed — drop the payload, take the mutex
+            # back, and stay running.
+            try:
+                from src.notepad import clear_elevated_pending
+
+                clear_elevated_pending()
+            except Exception:
+                pass
             try:
                 from src.instance_lock import try_acquire_notepad_instance
 

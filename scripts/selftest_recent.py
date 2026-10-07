@@ -7617,6 +7617,7 @@ def test_page_folders() -> None:
         from src.notepad import (
             NOTES_DIR_NAME,
             NOTE_OPEN_SUFFIXES,
+            clear_elevated_pending,
             consume_elevated_pending,
             default_notes_folder,
             document_open_shell_commands,
@@ -7635,6 +7636,9 @@ def test_page_folders() -> None:
         from src.ui.notepad_window import NotepadWindow, show_notepad
         from src.app import DeskTidyApp
         from src.elevated_io import relaunch_desknote_elevated
+        from src.instance_lock import AcquireResult
+        import src.desknote_launch as _dl
+        from src.desknote_launch import run_desknote_process
         import inspect
 
         present = inspect.getsource(NotepadWindow.present)
@@ -7680,6 +7684,7 @@ def test_page_folders() -> None:
         rel = inspect.getsource(NotepadWindow._relaunch_elevated_save)
         assert "relaunch_desknote_elevated" in rel
         assert "write_elevated_pending" in rel
+        assert "clear_elevated_pending" in rel  # no plaintext payload on decline
         assert "_elevating" in rel
         assert "release_notepad_instance" in rel
         elev = inspect.getsource(relaunch_desknote_elevated)
@@ -7692,12 +7697,16 @@ def test_page_folders() -> None:
         assert "try_acquire_notepad_instance" in rel  # re-acquire mutex on failure
         auto = inspect.getsource(NotepadWindow._autosave_page)
         assert "_elevating" in auto
-        run_ui = inspect.getsource(
-            __import__("src.desknote_launch", fromlist=["_run_ui"])._run_ui
-        )
-        # Elevated handoff must write BEFORE the window restores its session,
-        # so the restored tab shows the saved bytes (not stale pre-save bytes).
-        assert run_ui.index("consume_elevated_pending") < run_ui.index("show_notepad(settings")
+        rdp = inspect.getsource(_dl.run_desknote_process)
+        # The elevated payload is applied BEFORE the single-instance check, so a
+        # busy mutex cannot silently drop the save the user just confirmed.
+        assert rdp.index("consume_elevated_pending") < rdp.index("try_acquire_notepad_instance")
+        assert rdp.index("try_acquire_notepad_instance") < rdp.index("_run_ui(")
+        run_ui = inspect.getsource(_dl._run_ui)
+        # ...and BEFORE the window restores its session, so the restored tab shows
+        # the saved bytes rather than the stale pre-save content.
+        assert "elev_save_ok" in run_ui
+        assert "consume_elevated_pending" not in run_ui
         assert run_ui.index("show_notepad(settings") < run_ui.index("open_paths([elev_save_target])")
         assert "open_paths_in_notepad" in inspect.getsource(DeskTidyApp)
         fence_extra_src = inspect.getsource(
@@ -7748,6 +7757,19 @@ def test_page_folders() -> None:
                 assert elev_target.read_text(encoding="utf-8") == "new\n"
                 assert read_elevated_pending() is None
                 assert not consume_elevated_pending(elev_dir / "other")
+                # Declining UAC must drop the payload (no plaintext left behind).
+                write_elevated_pending(elev_target, "draft\n")
+                clear_elevated_pending()
+                assert read_elevated_pending() is None
+                # A BUSY mutex must not drop the confirmed elevated save: the child
+                # applies the payload before the single-instance check.
+                write_elevated_pending(elev_target, "busy\n")
+                with mock.patch.object(
+                    _dl, "try_acquire_notepad_instance", return_value=AcquireResult.BUSY
+                ), mock.patch.object(_dl, "send_to_running_desknote", return_value=True):
+                    assert run_desknote_process(["--elevated-save", str(elev_target)]) == 0
+                assert elev_target.read_text(encoding="utf-8") == "busy\n"
+                assert read_elevated_pending() is None
             # Dry-run: the ShellExecuteW handoff must carry the launcher exe
             # and the --elevated-save target. A typo here silently breaks the
             # UAC child launch.

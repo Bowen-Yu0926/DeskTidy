@@ -154,6 +154,20 @@ def run_desknote_process(argv: list[str] | None = None) -> int:
         args = args[:idx] + args[idx + 2 :]
     paths = _parse_cli_paths(args)
 
+    # Elevated handoff needs neither the mutex nor the UI, so apply it before
+    # the single-instance check: on the BUSY path we would otherwise forward
+    # and exit, silently dropping the save the user just confirmed.
+    elev_save_ok: bool | None = None
+    if elev_save_target:
+        from src.notepad import consume_elevated_pending
+
+        try:
+            elev_save_ok = consume_elevated_pending(elev_save_target)
+        except Exception:
+            logger.exception("elevated save: consume pending failed")
+            elev_save_ok = False
+        logger.info("elevated save target=%r ok=%r", elev_save_target, elev_save_ok)
+
     acquire = try_acquire_notepad_instance()
     if acquire is AcquireResult.BUSY:
         logger.info("deskNote already running; forwarding via IPC")
@@ -166,7 +180,11 @@ def run_desknote_process(argv: list[str] | None = None) -> int:
         logger.error("deskNote mutex failed; continuing without exclusivity")
 
     try:
-        return _run_ui(paths, elev_save_target=elev_save_target)
+        return _run_ui(
+            paths,
+            elev_save_target=elev_save_target,
+            elev_save_ok=elev_save_ok,
+        )
     finally:
         release_notepad_instance()
 
@@ -175,6 +193,7 @@ def _run_ui(
     initial_paths: list[Path],
     *,
     elev_save_target: str | None = None,
+    elev_save_ok: bool | None = None,
 ) -> int:
     from PyQt6.QtCore import Qt
     from PyQt6.QtWidgets import QApplication
@@ -214,20 +233,9 @@ def _run_ui(
     if not icon.isNull():
         qt_app.setWindowIcon(icon)
 
-    # Elevated-save handoff: write the pending payload BEFORE the window
-    # restores its session, so the restored tab shows the freshly saved
-    # content (not the stale pre-save bytes).
-    elev_save_ok: bool | None = None
-    if elev_save_target:
-        from src.notepad import consume_elevated_pending
-
-        try:
-            elev_save_ok = consume_elevated_pending(elev_save_target)
-        except Exception:
-            logger.exception("elevated save: consume pending failed")
-            elev_save_ok = False
-        logger.info("elevated save target=%r ok=%r", elev_save_target, elev_save_ok)
-
+    # The elevated payload was written by run_desknote_process before we got
+    # here, so the session restore below loads the freshly saved bytes rather
+    # than the stale pre-save content.
     win = show_notepad(settings, parent=None)
     win.setWindowTitle("DeskNote")
     win.setAttribute(Qt.WidgetAttribute.WA_QuitOnClose, True)
