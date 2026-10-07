@@ -5,6 +5,7 @@ from __future__ import annotations
 import ctypes
 import sys
 import threading
+import time
 import uuid
 from collections import OrderedDict
 from ctypes import wintypes
@@ -19,9 +20,12 @@ _FILE_PIXMAP_CACHE: OrderedDict[tuple[str, int, float], QPixmap] = OrderedDict()
 _SHELL_RAW_CACHE: OrderedDict[str, QPixmap] = OrderedDict()
 _MAX_FILE_PIXMAP_CACHE = 96
 _MAX_SHELL_RAW_CACHE = 48
-_SHELL_INDEX_CACHE: dict[str, int] = {}
+_SHELL_INDEX_CACHE: dict[str, tuple[int, float]] = {}
 _SHELL_INDEX_LOCK = threading.Lock()
 _MAX_SHELL_INDEX_CACHE = 512
+# Failed / blank resolutions are not permanent: a brand-new user profile has a
+# cold shell icon cache, and SHGetFileInfo can report no icon for a while.
+_ICON_INDEX_RETRY_SECONDS = 5.0
 
 # Known desktop namespace items → CLSID (same shell path every icon uses).
 _NAMESPACE_NAME_CLSID = {
@@ -447,6 +451,19 @@ def _imagelist_icon(index: int, shil: int) -> QPixmap:
         Release(iml)
 
 
+def _valid_icon_index(value: int) -> int:
+    """Normalise an ``SHGetFileInfo`` icon index; ``-1`` means "no icon".
+
+    Index 0 in every ``SHIL_*`` image list is the blank *document* glyph — a
+    white page.  ``SHGetFileInfoW`` reports 0 both when the call fails and
+    when it succeeds for an item the shell cannot resolve yet (typical on a
+    fresh profile whose icon cache is still cold), so drawing it made the
+    hosted Recycle Bin / This PC floats render as a white rectangle.
+    """
+    idx = int(value)
+    return idx if idx > 0 else -1
+
+
 def _sys_icon_index(lookup: str) -> int:
     """Return system image-list index for a filesystem path or ``::{CLSID}``."""
     if not _ensure_shell():
@@ -468,14 +485,14 @@ def _sys_icon_index(lookup: str) -> int:
                 ctypes.sizeof(info),
                 _SHGFI_SYSICONINDEX | _SHGFI_PIDL,
             )
-            return int(info.iIcon) if result else -1
+            return _valid_icon_index(info.iIcon) if result else -1
         finally:
             _shell32.ILFree(pidl)
     result = _shell32.SHGetFileInfoW(
         lookup, 0, ctypes.byref(info), ctypes.sizeof(info), _SHGFI_SYSICONINDEX
     )
     if result:
-        return int(info.iIcon)
+        return _valid_icon_index(info.iIcon)
     # Missing / inaccessible path: SHGetFileInfo fails with iIcon=0 (blank
     # document). Fall back to the extension association — same as Explorer
     # for sticky pins and briefly-missing Office files.
@@ -487,15 +504,20 @@ def _sys_icon_index(lookup: str) -> int:
         ctypes.sizeof(info2),
         _SHGFI_SYSICONINDEX | _SHGFI_USEFILEATTRIBUTES,
     )
-    return int(info2.iIcon) if result2 else -1
+    return _valid_icon_index(info2.iIcon) if result2 else -1
 
 
 def _sys_icon_index_cached(lookup: str) -> int:
     key = lookup.casefold()
+    now = time.monotonic()
     with _SHELL_INDEX_LOCK:
         cached = _SHELL_INDEX_CACHE.get(key)
     if cached is not None:
-        return cached
+        idx, recorded = cached
+        # Good indices stay cached; failures may be retried so a cold shell
+        # icon cache can recover without a restart.
+        if idx > 0 or now - recorded < _ICON_INDEX_RETRY_SECONDS:
+            return idx
     idx = _sys_icon_index(lookup)
     with _SHELL_INDEX_LOCK:
         if len(_SHELL_INDEX_CACHE) >= _MAX_SHELL_INDEX_CACHE:
@@ -503,7 +525,7 @@ def _sys_icon_index_cached(lookup: str) -> int:
                 _SHELL_INDEX_CACHE.pop(next(iter(_SHELL_INDEX_CACHE)))
             except StopIteration:
                 pass
-        _SHELL_INDEX_CACHE[key] = idx
+        _SHELL_INDEX_CACHE[key] = (idx, time.monotonic())
     return idx
 
 

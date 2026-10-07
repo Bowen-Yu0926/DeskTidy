@@ -3607,6 +3607,96 @@ def test_page_switch_click() -> None:
         full.fill(QColor(10, 120, 200, 255))
         assert _trim_icon_padding(full).width() == 256
 
+    def _namespace_icon_never_draws_blank_document():
+        """Regression: a fresh profile has a cold shell icon cache, and
+        SHGetFileInfoW can report *success* with iIcon == 0 — the blank document
+        glyph, i.e. a white page. The hosted Recycle Bin / This PC floats then
+        rendered as a white rectangle. Index 0 must never be drawn, and a failed
+        resolution must stay retryable instead of being pinned for the session.
+        """
+        import ctypes
+
+        from PyQt6.QtGui import QPixmap
+        from PyQt6.QtWidgets import QApplication
+
+        from src import icon_utils
+
+        app = QApplication.instance() or QApplication([])
+        _ = app
+
+        # Index 0 in every SHIL_* list is the blank document glyph.
+        assert icon_utils._valid_icon_index(0) == -1
+        assert icon_utils._valid_icon_index(-1) == -1
+        assert icon_utils._valid_icon_index(55) == 55
+
+        lookup = "::{645FF040-5081-101B-9F08-00AA002F954E}"
+
+        # Real production path: the shell reports the blank index for the
+        # recycle bin namespace item.
+        assert icon_utils._ensure_shell()
+        real_shget = icon_utils._shell32.SHGetFileInfoW
+        SHGFI_SYSICONINDEX = 0x000004000
+
+        def cold_shget(data, flags, psfi, csfi, uflags):
+            if psfi is not None and (uflags & SHGFI_SYSICONINDEX):
+                info = ctypes.cast(psfi, ctypes.POINTER(icon_utils._SHFILEINFOW)).contents
+                info.iIcon = 0
+                info.dwAttributes = 0
+                return 0x1000
+            return real_shget(data, flags, psfi, csfi, uflags)
+
+        icon_utils._SHELL_INDEX_CACHE.clear()
+        icon_utils._SHELL_RAW_CACHE.clear()
+        seen: list[int] = []
+        orig_idx = icon_utils._sys_icon_index
+        orig_iml = icon_utils._imagelist_icon
+        orig_retry = icon_utils._ICON_INDEX_RETRY_SECONDS
+
+        try:
+            icon_utils._shell32.SHGetFileInfoW = cold_shget  # type: ignore[assignment]
+
+            def _recording_iml(index: int, shil: int) -> QPixmap:
+                seen.append(int(index))
+                return QPixmap()
+
+            icon_utils._imagelist_icon = _recording_iml  # type: ignore[assignment]
+            icon_utils._shell_icon_pixmap(lookup, 64)
+            assert 0 not in seen, "blank document glyph must never be drawn"
+
+            # A failed resolution is retried once the shell cache is warm.
+            icon_utils._shell32.SHGetFileInfoW = real_shget  # type: ignore[assignment]
+            icon_utils._SHELL_INDEX_CACHE.clear()
+            icon_utils._ICON_INDEX_RETRY_SECONDS = 0.0
+            calls = [0]
+
+            def flaky_idx(_lookup: str) -> int:
+                calls[0] += 1
+                return -1 if calls[0] == 1 else 55
+
+            icon_utils._sys_icon_index = flaky_idx  # type: ignore[assignment]
+            assert icon_utils._sys_icon_index_cached(lookup) == -1
+            assert icon_utils._sys_icon_index_cached(lookup) == 55
+
+            # Good indices stay pinned — no gratuitous re-resolution.
+            icon_utils._SHELL_INDEX_CACHE.clear()
+            hits = [0]
+
+            def counting_idx(_lookup: str) -> int:
+                hits[0] += 1
+                return 55
+
+            icon_utils._sys_icon_index = counting_idx  # type: ignore[assignment]
+            for _ in range(5):
+                icon_utils._sys_icon_index_cached(lookup)
+            assert hits[0] == 1
+        finally:
+            icon_utils._shell32.SHGetFileInfoW = real_shget  # type: ignore[assignment]
+            icon_utils._ICON_INDEX_RETRY_SECONDS = orig_retry
+            icon_utils._sys_icon_index = orig_idx  # type: ignore[assignment]
+            icon_utils._imagelist_icon = orig_iml  # type: ignore[assignment]
+            icon_utils._SHELL_INDEX_CACHE.clear()
+            icon_utils._SHELL_RAW_CACHE.clear()
+
 
     def _wallpaper_stuck_repair_contract():
         import inspect
@@ -5320,6 +5410,7 @@ def test_page_switch_click() -> None:
     run("拖动冻结公共刷新+64图标优先jumbo", _drag_defers_public_refresh)
     run("64图标用高清shell源", _icon_64_uses_hires_shell_source)
     run("稀疏jumbo图标裁剪后铺满", _trim_sparse_jumbo_icon)
+    run("命名空间图标不画空白文档页", _namespace_icon_never_draws_blank_document)
     run("壁纸WorkerW卡住会重挂契约", _wallpaper_stuck_repair_contract)
     run("截屏贴图冻结层级防闪", _screenshot_freezes_restack)
     run("F2贴图右键另存为", _f2_pin_context_save_as)
