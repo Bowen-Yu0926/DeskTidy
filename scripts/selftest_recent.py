@@ -7683,9 +7683,12 @@ def test_page_folders() -> None:
         assert "_elevating" in rel
         assert "release_notepad_instance" in rel
         elev = inspect.getsource(relaunch_desknote_elevated)
-        assert "RunAs" in elev and "--elevated-save" in elev and "EncodedCommand" in elev
-        # relaunch_desknote_elevated calls _ps_quote; it must resolve at call time.
-        assert "_ps_quote" in relaunch_desknote_elevated.__globals__
+        assert "--elevated-save" in elev and "_shell_execute_runas" in elev
+        # UAC goes through ShellExecuteW("runas"), not a powershell hop.
+        _ei = __import__("src.elevated_io", fromlist=["_shell_execute_runas"])
+        se = inspect.getsource(_ei._shell_execute_runas)
+        assert "ShellExecuteW" in se and "runas" in se
+        assert _ei._SE_SUCCESS_THRESHOLD == 32
         assert "try_acquire_notepad_instance" in rel  # re-acquire mutex on failure
         auto = inspect.getsource(NotepadWindow._autosave_page)
         assert "_elevating" in auto
@@ -7745,31 +7748,32 @@ def test_page_folders() -> None:
                 assert elev_target.read_text(encoding="utf-8") == "new\n"
                 assert read_elevated_pending() is None
                 assert not consume_elevated_pending(elev_dir / "other")
-            # Dry-run: the PowerShell relaunch command must be well-formed. A
-            # typo here silently breaks the UAC child launch.
-            import base64 as _b64
-
+            # Dry-run: the ShellExecuteW handoff must carry the launcher exe
+            # and the --elevated-save target. A typo here silently breaks the
+            # UAC child launch.
             _caps: dict = {}
 
-            def _fake_run(cmd, **kw):
-                _caps["cmd"] = cmd
-                return type("P", (), {"returncode": 0})()
+            def _fake_se(file_, params, cwd):
+                _caps["file"] = file_
+                _caps["params"] = params
+                _caps["cwd"] = cwd
+                return 2**32
 
-            with mock.patch("subprocess.run", side_effect=_fake_run):
+            with mock.patch.object(_ei, "_shell_execute_runas", side_effect=_fake_se):
                 assert relaunch_desknote_elevated(elev_target) is True
-            _cmd = _caps["cmd"]
-            assert _cmd[0].endswith("powershell.exe")
-            _inner = _b64.b64decode(_cmd[_cmd.index("-EncodedCommand") + 1]).decode(
-                "utf-16-le"
-            )
-            for _needle in ("RunAs", "--elevated-save", str(elev_target)):
-                assert _needle in _inner
-            # Launch failures must return False, never raise.
+            assert _caps["file"].endswith(".exe")
+            assert "--elevated-save" in _caps["params"]
+            assert str(elev_target) in _caps["params"]
+            # Shell failures return False, never raise; success is rc > 32.
             def _boom(*a, **k):
                 raise OSError("boom")
 
-            with mock.patch("subprocess.run", side_effect=_boom):
+            with mock.patch.object(_ei, "_shell_execute_runas", side_effect=_boom):
                 assert relaunch_desknote_elevated(elev_target) is False
+            with mock.patch.object(_ei, "_shell_execute_runas", return_value=5):
+                assert relaunch_desknote_elevated(elev_target) is False
+            with mock.patch.object(_ei, "_shell_execute_runas", return_value=2**32):
+                assert relaunch_desknote_elevated(elev_target) is True
 
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)

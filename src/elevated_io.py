@@ -5,6 +5,12 @@ PermissionError, DeskNote offers to relaunch itself elevated. The elevated
 instance then runs its *own* write code on the pending payload, so every
 later save in that session also works — exactly how Notepad++ handles
 protected files.
+
+The relaunch goes through ``ShellExecuteW("runas")`` rather than spawning
+``powershell.exe -Verb RunAs``: the shell handles the UAC prompt natively,
+so no interpreter has to be launched first (CreateProcess for powershell is
+denied for the frozen GUI build on some machines, which silently skipped the
+whole handoff).
 """
 from __future__ import annotations
 
@@ -12,11 +18,9 @@ import sys
 from pathlib import Path
 
 _ELEVATED_SAVE_ARG = "--elevated-save"
-
-
-def _ps_quote(value: str) -> str:
-    """Return *value* as a PowerShell single-quoted string literal."""
-    return "'" + str(value).replace("'", "''") + "'"
+_SW_SHOWNORMAL = 1
+# ShellExecuteW returns an HINSTANCE on success; SE_ERR_* failures are <= 32.
+_SE_SUCCESS_THRESHOLD = 32
 
 
 def _desknote_launch_parts() -> tuple[str, str, str]:
@@ -37,50 +41,56 @@ def _desknote_launch_parts() -> tuple[str, str, str]:
     return launcher, str(script), str(script.parent)
 
 
+def _shell_execute_runas(file_: str, params: str, cwd: str) -> int:
+    """``ShellExecuteW(None, "runas", ...)``; > 32 means the shell accepted it."""
+    import ctypes
+    import ctypes.wintypes as wt
+
+    shell32 = ctypes.WinDLL("shell32", use_last_error=True)
+    shell32.ShellExecuteW.argtypes = [
+        wt.HWND,
+        wt.LPCWSTR,
+        wt.LPCWSTR,
+        wt.LPCWSTR,
+        wt.LPCWSTR,
+        wt.INT,
+    ]
+    shell32.ShellExecuteW.restype = ctypes.c_ssize_t
+    handle = shell32.ShellExecuteW(None, "runas", file_, params, cwd, _SW_SHOWNORMAL)
+    return int(handle or 0)
+
+
 def relaunch_desknote_elevated(target: Path | str) -> bool:
     """Ask UAC to relaunch DeskNote with ``--elevated-save <target>``.
 
-    Returns False when the user declines UAC or the launch fails (the current
-    process should then stay put). The elevated child starts asynchronously;
-    we never wait for it to exit.
+    Returns False when the user declines UAC or the shell refuses the launch
+    (the current process should then stay put). The elevated child starts
+    asynchronously; we never wait for it to exit.
     """
-    import base64
-    import subprocess
-
     from src.app_logging import get_logger
 
     logger = get_logger()
     exe, script, cwd = _desknote_launch_parts()
-    t = _ps_quote(str(target))
-    if script:
-        inner = (
-            f"$t={t}; "
-            f"Start-Process -FilePath {_ps_quote(exe)} "
-            f"-WorkingDirectory {_ps_quote(cwd)} -Verb RunAs "
-            f"-ArgumentList @({_ps_quote(script)},'{_ELEVATED_SAVE_ARG}',$t)"
-        )
-    else:
-        inner = (
-            f"$t={t}; "
-            f"Start-Process -FilePath {_ps_quote(exe)} "
-            f"-WorkingDirectory {_ps_quote(cwd)} -Verb RunAs "
-            f"-ArgumentList @('{_ELEVATED_SAVE_ARG}',$t)"
-        )
-    logger.info("elevated relaunch: exe=%r script=%r cwd=%r target=%r",
-                exe, script, cwd, str(target))
-    logger.debug("elevated relaunch inner ps: %s", inner)
-    encoded = base64.b64encode(inner.encode("utf-16-le")).decode("ascii")
+    params = (
+        f'"{script}" {_ELEVATED_SAVE_ARG} "{target}"'
+        if script
+        else f'{_ELEVATED_SAVE_ARG} "{target}"'
+    )
+    logger.info(
+        "elevated relaunch: verb=runas file=%r params=%r cwd=%r", exe, params, cwd
+    )
     try:
-        proc = subprocess.run(
-            ["powershell.exe", "-NoProfile", "-EncodedCommand", encoded],
-            creationflags=subprocess.CREATE_NO_WINDOW,
-            timeout=60,
+        code = _shell_execute_runas(exe, params, cwd)
+        logger.info("elevated relaunch ShellExecuteW rc=%s", code)
+        return code > _SE_SUCCESS_THRESHOLD
+    except OSError as exc:
+        logger.warning(
+            "elevated relaunch failed: errno=%s winerror=%s msg=%s",
+            getattr(exc, "errno", None),
+            getattr(exc, "winerror", None),
+            exc,
         )
-        logger.info("elevated relaunch powershell rc=%s", proc.returncode)
-        return proc.returncode == 0
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        logger.warning("elevated relaunch failed: %r", exc)
         return False
     except Exception:
-        logger.exception("elevated relaunch unexpected error")
+        logger.exception("elevated relaunch failed")
         return False
