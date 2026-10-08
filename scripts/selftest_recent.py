@@ -8210,6 +8210,10 @@ def test_notepad_close_rescues_hidden_floats() -> None:
         assert "refresh_public_desktop" in src, (
             "notepad close must re-sync public floats the may_show gate left hidden"
         )
+        assert "ensure_live_fences_interactive" in src, (
+            "notepad close must also re-assert fence clickability; the refresh "
+            "early-returns when all floats are visible and skips it"
+        )
 
         root = Path(tempfile.mkdtemp(prefix="desktidy_fg_close_"))
         widget = None

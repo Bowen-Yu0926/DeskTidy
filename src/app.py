@@ -6897,6 +6897,10 @@ class DeskTidyApp:
         # (may_show gate), and _remap_hidden_overlay_hwnds only repairs
         # Win32-hidden HWNDs — floats left Qt-hidden stayed gone after close.
         QTimer.singleShot(0, self.refresh_public_desktop)
+        # If all floats were already visible the refresh early-returns and
+        # skips ensure_live_fences_interactive, leaving host.present()'s
+        # restack of the public plate above fences to eat their clicks.
+        QTimer.singleShot(250, self.ensure_live_fences_interactive)
         self._schedule_overlay_keepalive()
         need_force = bool(getattr(self, "_shell_attach_after_settings", False))
         self._shell_attach_after_settings = False
