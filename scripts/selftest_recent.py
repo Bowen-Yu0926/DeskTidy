@@ -1564,8 +1564,15 @@ def test_desktop_context_contract() -> None:
                     fence.header_widget, fence.lock_btn.rect().center()
                 )
                 assert mask.contains(lock_in_header)
-                # Center stretch between title and right_slot stays unmasked so
-                # top-row icons accept foreign file drags.
+                # Full-width top grip restores panel move on wide fences; mid
+                # stretch below the grip stays unmasked for top-row file drags.
+                assert int(getattr(FenceWidget, "HEADER_DRAG_GRIP_HEIGHT", 0)) >= 12
+                grip_y = max(0, int(FenceWidget.HEADER_DRAG_GRIP_HEIGHT) // 2)
+                far_top = QPoint(
+                    max(120, fence.header_widget.width() // 2),
+                    grip_y,
+                )
+                assert mask.contains(far_top)
                 title_in_header = QRect(
                     fence.title_label.mapTo(fence.header_widget, QPoint(0, 0)),
                     fence.title_label.size(),
@@ -1580,6 +1587,7 @@ def test_desktop_context_contract() -> None:
                     fence.HEADER_OVERLAY_HEIGHT // 2,
                 )
                 assert not title_in_header.contains(hole)
+                assert hole.y() >= int(FenceWidget.HEADER_DRAG_GRIP_HEIGHT)
                 assert not mask.contains(hole)
                 # Hit-test must find the button under the header (not skip subtree).
                 lock_local = fence.lock_btn.mapTo(fence, fence.lock_btn.rect().center())

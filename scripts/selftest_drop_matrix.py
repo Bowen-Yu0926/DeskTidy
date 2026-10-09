@@ -84,14 +84,19 @@ def test_custom_drag_bridges() -> None:
 
     src = inspect.getsource(fii)
     assert "_try_deliver_drag_to_pet_trash" in src
+    assert "_try_deliver_drag_to_recycle_bin" in src
+    assert "recycle_bin_icon_at" in src
     assert "folder_drop_target_at" in src
     assert "find_pet_trash_target" in src
     pet_block = inspect.getsource(fii.folder_drop_target_at)
     assert "find_pet_trash_target" in pet_block
+    assert "recycle_bin_icon_at" in pet_block
 
     deliver = inspect.getsource(fii._try_deliver_drag_to_pet_trash)
     assert "deliver_paths_to_pet_trash" in deliver
-    assert "remove_public_paths" in deliver
+    assert "remove_public_paths" in deliver or "_finalize_recycled_drag_paths" in deliver
+    bin_deliver = inspect.getsource(fii._try_deliver_drag_to_recycle_bin)
+    assert "recycle_bin_icon_at" in bin_deliver
 
 
 def test_post_drop_fence_interactive() -> None:

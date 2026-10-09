@@ -540,6 +540,9 @@ class FenceWidget(QWidget):
     MIN_HEIGHT = 180
     COLLAPSED_HEIGHT = 44
     HEADER_OVERLAY_HEIGHT = 56
+    # Full-width top strip always moves the fence when icons sit under the
+    # chrome; lower empty header stays unmasked so top-row file drags work.
+    HEADER_DRAG_GRIP_HEIGHT = 18
     FOOTER_OVERLAY_HEIGHT = 22
     EDGE_SNAP_THRESHOLD = 24
     # Default desktop-medium-ish glyph (40px). Users can Alt+wheel / menu to enlarge.
@@ -1284,6 +1287,18 @@ class FenceWidget(QWidget):
         except RuntimeError:
             pass
         region = QRegion()
+        # Wide icon fences: title text alone is a tiny grip — a full-width top
+        # strip restores panel move without covering icon glyph bodies below.
+        try:
+            grip_h = min(
+                int(self.HEADER_DRAG_GRIP_HEIGHT),
+                max(1, int(header.height())),
+            )
+            grip_w = max(1, int(header.width()))
+            if grip_w > 0 and grip_h > 0:
+                region = region.united(QRegion(QRect(0, 0, grip_w, grip_h)))
+        except RuntimeError:
+            pass
 
         def _add_in_header(widget: QWidget | None) -> None:
             nonlocal region

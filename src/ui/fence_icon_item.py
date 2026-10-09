@@ -1765,6 +1765,20 @@ def _run_custom_desktop_resident_virtual_drag(
             _drop_concealed_for_paths(concealed, drag_paths)
             return Qt.DropAction.MoveAction, False
 
+        # Hosted Recycle Bin icon — custom drag never reaches Shell OLE drop.
+        if _try_deliver_drag_to_recycle_bin(
+            desk,
+            settings if isinstance(settings, dict) else None,
+            drag_paths,
+            drop_pos,
+            fence_id=str(source_id or fence_id or ""),
+            virtual_items=list(drag_sources),
+            exclude=primary,
+        ):
+            quiet_end = True
+            _drop_concealed_for_paths(concealed, drag_paths)
+            return Qt.DropAction.MoveAction, False
+
         folder = folder_drop_target_at(drop_pos, exclude=primary)
         if folder is not None:
             from src.win_shell import resolve_folder_drop_target
@@ -3494,6 +3508,20 @@ def start_public_item_drag(
             _drop_concealed_for_paths(concealed, drag_paths)
             return Qt.DropAction.MoveAction, False
 
+        # Hosted Recycle Bin icon — custom drag never reaches Shell OLE drop.
+        if _try_deliver_drag_to_recycle_bin(
+            desk,
+            settings if isinstance(settings, dict) else None,
+            drag_paths,
+            drop_pos,
+            public_peers=peer_widgets,
+            exclude=file_path,
+        ):
+            quiet_end = True
+            _mark_pinned_done()
+            _drop_concealed_for_paths(concealed, drag_paths)
+            return Qt.DropAction.MoveAction, False
+
         # Folder before fence — dropping onto a folder icon inside a fence must
         # move into that folder, not pin beside it.
         folder = folder_drop_target_at(drop_pos, exclude=file_path)
@@ -3858,20 +3886,105 @@ def fence_folder_at(
     return hit
 
 
+# Hosted desktop Recycle Bin shortcut (namespace CLSID).
+_RECYCLE_BIN_CLSID = "{645FF040-5081-101B-9F08-00AA002F954E}"
+
+
+def _is_recycle_bin_path(path: Path) -> bool:
+    """True when *path* is a namespace shortcut to the Recycle Bin."""
+    try:
+        p = Path(path)
+    except OSError:
+        return False
+    if p.suffix.lower() != ".lnk":
+        return False
+    try:
+        from src.win_shell import get_lnk_namespace_clsid
+
+        clsid = get_lnk_namespace_clsid(p)
+    except Exception:
+        return False
+    return bool(clsid) and str(clsid).upper() == _RECYCLE_BIN_CLSID.upper()
+
+
+def recycle_bin_icon_at(
+    global_pos: QPoint | None = None, *, exclude: Path | None = None
+) -> bool:
+    """True when a hosted Recycle Bin float/fence icon is under the cursor."""
+    pos = global_pos if global_pos is not None else QCursor.pos()
+    exclude_key = _exclude_path_key(exclude)
+    app = QApplication.instance()
+    desk = getattr(app, "_desktidy_app", None) if app is not None else None
+
+    def _hit_widget(widget: QWidget, path: Path) -> bool:
+        if exclude_key:
+            key = str(path).casefold().replace("/", "\\")
+            if key == exclude_key:
+                return False
+        if not _is_recycle_bin_path(path):
+            return False
+        try:
+            if not widget.isVisible():
+                return False
+            top_left = widget.mapToGlobal(QPoint(0, 0))
+            rect = QRect(top_left, widget.size()).adjusted(-8, -8, 8, 8)
+            return bool(rect.contains(pos))
+        except RuntimeError:
+            return False
+
+    for icon in list(getattr(desk, "public_icons", None) or []):
+        try:
+            path = Path(getattr(icon, "file_path", "") or "")
+        except OSError:
+            continue
+        if path and _hit_widget(icon, path):
+            return True
+
+    for top in QApplication.topLevelWidgets():
+        if top.__class__.__name__ != "FenceWidget" or not top.isVisible():
+            continue
+        layout = getattr(top, "items_layout", None)
+        if layout is None:
+            continue
+        try:
+            count = int(layout.count())
+        except Exception:
+            continue
+        for index in range(count):
+            try:
+                child = layout.itemAt(index)
+                widget = child.widget() if child is not None else None
+                if widget is None:
+                    continue
+                path = Path(getattr(widget, "file_path", "") or "")
+                if path and _hit_widget(widget, path):
+                    return True
+            except RuntimeError:
+                continue
+            except Exception:
+                continue
+    return False
+
+
 def folder_drop_target_at(
     global_pos: QPoint | None = None, *, exclude: Path | None = None
 ) -> Path | None:
     """Folder under cursor: fence icon, public float, then open Explorer.
 
-    Returns None when the pet sprite owns the point — callers that still check
-    folders before pet trash must not steal crumple into an Explorer folder
-    under chrome / a folder icon under the character.
+    Returns None when the pet sprite or hosted Recycle Bin owns the point —
+    callers that still check folders before those bridges must not steal the
+    drop into an Explorer folder under chrome / under the character.
     """
     pos = global_pos if global_pos is not None else QCursor.pos()
     try:
         from src.ui.pet_widget import find_pet_trash_target
 
         if find_pet_trash_target(pos) is not None:
+            return None
+    except Exception:
+        pass
+    try:
+        if recycle_bin_icon_at(pos, exclude=exclude):
             return None
     except Exception:
         pass
@@ -3889,43 +4002,57 @@ def folder_drop_target_at(
         return None
 
 
-def _try_deliver_drag_to_pet_trash(
+def _recycle_drag_paths_now(paths: list[Path]) -> list[Path]:
+    """Send *paths* to the Recycle Bin. Returns successes (incl. already gone)."""
+    from src.win_shell import delete_to_trash
+
+    try:
+        from src.organize_suppress import (
+            clear_organize_suppress,
+            suppress_desktop_item,
+        )
+    except Exception:
+        clear_organize_suppress = None  # type: ignore[assignment]
+        suppress_desktop_item = None  # type: ignore[assignment]
+
+    done: list[Path] = []
+    for raw in paths:
+        try:
+            path = Path(raw)
+        except OSError:
+            continue
+        if _is_recycle_bin_path(path):
+            continue
+        try:
+            if not path.exists():
+                done.append(path)
+                continue
+            if suppress_desktop_item is not None:
+                suppress_desktop_item(path)
+            delete_to_trash(path)
+            done.append(path)
+            if clear_organize_suppress is not None:
+                clear_organize_suppress(path)
+        except Exception:
+            if clear_organize_suppress is not None:
+                try:
+                    clear_organize_suppress(raw)
+                except Exception:
+                    pass
+            continue
+    return done
+
+
+def _finalize_recycled_drag_paths(
     desk,
     settings: dict | None,
-    paths: list[Path],
-    drop_pos: QPoint,
+    recycled: list[Path],
     *,
     public_peers: list[QWidget] | None = None,
     fence_id: str = "",
     virtual_items: list[QWidget] | None = None,
-) -> bool:
-    """If release is on the pet sprite, recycle files then drop DeskTidy pins.
-
-    Public/fence icon drags are custom (non-OLE). The pet's Qt AcceptDrops only
-    sees Explorer OLE — without this bridge, dropping a desktop float on the pet
-    just relocates the icon with no crumple animation.
-
-    Files are sent to the Recycle Bin *before* floats/pins are removed, so a
-    failed delete cannot leave a hidden desktop file that later triggers
-    Explorer「替换或跳过文件」when the same name is moved back.
-    """
-    from src.app_logging import get_logger
-    from src.ui.pet_widget import deliver_paths_to_pet_trash
-
-    clean = [Path(p) for p in paths if p]
-    if not clean:
-        return False
-    recycled = deliver_paths_to_pet_trash(clean, global_pos=drop_pos)
-    if not recycled:
-        return False
-
-    get_logger().info(
-        "drag: pet trash recycled=%s drop=(%s,%s)",
-        len(recycled),
-        drop_pos.x(),
-        drop_pos.y(),
-    )
-
+) -> None:
+    """Unpin / remove DeskTidy UI for paths already sent to the Recycle Bin."""
     recycled_keys = {str(p).casefold() for p in recycled}
 
     def _is_recycled(path: Path) -> bool:
@@ -4021,6 +4148,99 @@ def _try_deliver_drag_to_pet_trash(
             except RuntimeError:
                 pass
 
+
+def _try_deliver_drag_to_pet_trash(
+    desk,
+    settings: dict | None,
+    paths: list[Path],
+    drop_pos: QPoint,
+    *,
+    public_peers: list[QWidget] | None = None,
+    fence_id: str = "",
+    virtual_items: list[QWidget] | None = None,
+) -> bool:
+    """If release is on the pet sprite, recycle files then drop DeskTidy pins.
+
+    Public/fence icon drags are custom (non-OLE). The pet's Qt AcceptDrops only
+    sees Explorer OLE — without this bridge, dropping a desktop float on the pet
+    just relocates the icon with no crumple animation.
+
+    Files are sent to the Recycle Bin *before* floats/pins are removed, so a
+    failed delete cannot leave a hidden desktop file that later triggers
+    Explorer「替换或跳过文件」when the same name is moved back.
+    """
+    from src.app_logging import get_logger
+    from src.ui.pet_widget import deliver_paths_to_pet_trash
+
+    clean = [Path(p) for p in paths if p]
+    if not clean:
+        return False
+    recycled = deliver_paths_to_pet_trash(clean, global_pos=drop_pos)
+    if not recycled:
+        return False
+
+    get_logger().info(
+        "drag: pet trash recycled=%s drop=(%s,%s)",
+        len(recycled),
+        drop_pos.x(),
+        drop_pos.y(),
+    )
+    _finalize_recycled_drag_paths(
+        desk,
+        settings,
+        recycled,
+        public_peers=public_peers,
+        fence_id=fence_id,
+        virtual_items=virtual_items,
+    )
+    return True
+
+
+def _try_deliver_drag_to_recycle_bin(
+    desk,
+    settings: dict | None,
+    paths: list[Path],
+    drop_pos: QPoint,
+    *,
+    public_peers: list[QWidget] | None = None,
+    fence_id: str = "",
+    virtual_items: list[QWidget] | None = None,
+    exclude: Path | None = None,
+) -> bool:
+    """If release is on the hosted Recycle Bin icon, recycle then drop pins.
+
+    Custom (non-OLE) public/fence drags never reach Shell's Recycle Bin drop
+    target — mirror the pet-trash bridge with ``delete_to_trash`` + unpin.
+    """
+    from src.app_logging import get_logger
+
+    clean = [Path(p) for p in paths if p and not _is_recycle_bin_path(Path(p))]
+    if not clean:
+        return False
+    try:
+        if not recycle_bin_icon_at(drop_pos, exclude=exclude):
+            return False
+    except Exception:
+        return False
+
+    recycled = _recycle_drag_paths_now(clean)
+    if not recycled:
+        return False
+
+    get_logger().info(
+        "drag: recycle-bin icon recycled=%s drop=(%s,%s)",
+        len(recycled),
+        drop_pos.x(),
+        drop_pos.y(),
+    )
+    _finalize_recycled_drag_paths(
+        desk,
+        settings,
+        recycled,
+        public_peers=public_peers,
+        fence_id=fence_id,
+        virtual_items=virtual_items,
+    )
     return True
 
 

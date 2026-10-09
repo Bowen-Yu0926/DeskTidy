@@ -155,9 +155,18 @@ def test_drag_avoids_explorer_ole_deadlock() -> None:
     assert drag.index("_try_deliver_drag_to_pet_trash") < drag.index(
         "public drag: sync pin fence"
     )
+    # Hosted Recycle Bin icon: same custom-drag bridge (OLE never reaches Shell).
+    assert "_try_deliver_drag_to_recycle_bin" in drag
+    assert drag.index("_try_deliver_drag_to_recycle_bin") < drag.index(
+        "public drag: into folder"
+    )
     custom_v = inspect.getsource(fii._run_custom_desktop_resident_virtual_drag)
     assert "_try_deliver_drag_to_pet_trash" in custom_v
     assert custom_v.index("_try_deliver_drag_to_pet_trash") < custom_v.index(
+        "folder_drop_target_at"
+    )
+    assert "_try_deliver_drag_to_recycle_bin" in custom_v
+    assert custom_v.index("_try_deliver_drag_to_recycle_bin") < custom_v.index(
         "folder_drop_target_at"
     )
     # Cross-fence / unpin must drop conceal (same-fence reorder keeps it).
@@ -185,10 +194,23 @@ def test_drag_avoids_explorer_ole_deadlock() -> None:
     assert "deliver_paths_to_pet_trash" in inspect.getsource(fii._try_deliver_drag_to_pet_trash)
     pet_bridge = inspect.getsource(fii._try_deliver_drag_to_pet_trash)
     # Recycle before removing floats — otherwise desktop file can linger hidden.
+    assert "deliver_paths_to_pet_trash" in pet_bridge
+    assert "_finalize_recycled_drag_paths" in pet_bridge
     assert pet_bridge.index("deliver_paths_to_pet_trash") < pet_bridge.index(
-        "remove_public_paths"
+        "_finalize_recycled_drag_paths"
     )
     assert "if not recycled" in pet_bridge or "if not recycled:" in pet_bridge
+    finalize = inspect.getsource(fii._finalize_recycled_drag_paths)
+    assert "remove_public_paths" in finalize
+    bin_bridge = inspect.getsource(fii._try_deliver_drag_to_recycle_bin)
+    assert "recycle_bin_icon_at" in bin_bridge
+    assert "delete_to_trash" in bin_bridge or "_recycle_drag_paths_now" in bin_bridge
+    assert "_finalize_recycled_drag_paths" in bin_bridge
+    assert "deliver_paths_to_pet_trash" not in bin_bridge
+    assert "645FF040" in inspect.getsource(fii)
+    assert "_is_recycle_bin_path" in inspect.getsource(fii.recycle_bin_icon_at)
+    folder_guard = inspect.getsource(fii.folder_drop_target_at)
+    assert "recycle_bin_icon_at" in folder_guard
     # Consumed sources must leave the conceal list — finally reveal used to
     # show() trashed icons again (「删了又在桌面冒出来」).
     assert "_drop_concealed_for_paths" in custom_v
@@ -843,6 +865,84 @@ def test_document_moves_into_folder_icon_stays_virtual() -> None:
         assert not (stand_in / "协议.docx").exists()
 
     shutil.rmtree(root, ignore_errors=True)
+
+
+def test_recycle_bin_icon_drag_bridge() -> None:
+    """Dropping a float on the hosted Recycle Bin must delete + unpin (not relocate)."""
+    import tempfile
+    from types import SimpleNamespace
+    from unittest import mock
+
+    from PyQt6.QtCore import QPoint
+    from PyQt6.QtWidgets import QApplication, QWidget
+
+    from src.ui import fence_icon_item as fii
+
+    app = QApplication.instance() or QApplication([])
+    root = Path(tempfile.mkdtemp(prefix="desktidy_rb_bridge_"))
+    victim = root / "toss.txt"
+    victim.write_text("x", encoding="utf-8")
+    bin_lnk = root / "recycle.lnk"
+    bin_lnk.write_bytes(b"")
+    calls: list = []
+
+    class FakeIcon(QWidget):
+        def __init__(self, path: Path, x: int, y: int) -> None:
+            super().__init__()
+            self.file_path = path
+            self.setGeometry(x, y, 64, 64)
+            self.show()
+
+    bin_icon = FakeIcon(bin_lnk, 200, 200)
+    src_icon = FakeIcon(victim, 10, 10)
+    desk = SimpleNamespace(
+        public_icons=[bin_icon, src_icon],
+        fences=[],
+        _remove_public_icon_widget=lambda p: calls.append(("rem", str(p))),
+    )
+    prev = getattr(app, "_desktidy_app", None)
+    app._desktidy_app = desk
+    settings = {"public_items": [{"path": str(victim)}], "fences": []}
+    try:
+        with (
+            mock.patch.object(
+                fii, "_is_recycle_bin_path", side_effect=lambda p: Path(p) == bin_lnk
+            ),
+            mock.patch(
+                "src.win_shell.delete_to_trash",
+                side_effect=lambda p: calls.append(("del", str(p))),
+            ),
+            mock.patch(
+                "src.public_desktop.remove_public_paths",
+                side_effect=lambda s, ps: calls.append(("rmpub", len(list(ps)))),
+            ),
+            mock.patch("src.settings.save_settings", lambda s: None),
+        ):
+            drop = bin_icon.mapToGlobal(QPoint(32, 32))
+            assert fii.recycle_bin_icon_at(drop, exclude=victim)
+            assert fii._try_deliver_drag_to_recycle_bin(
+                desk,
+                settings,
+                [victim],
+                drop,
+                public_peers=[src_icon],
+                exclude=victim,
+            )
+            assert any(c[0] == "del" for c in calls)
+            assert any(c[0] == "rmpub" for c in calls)
+            assert not fii._try_deliver_drag_to_recycle_bin(
+                desk,
+                settings,
+                [victim],
+                QPoint(0, 0),
+                public_peers=[src_icon],
+                exclude=victim,
+            )
+    finally:
+        app._desktidy_app = prev
+        import shutil
+
+        shutil.rmtree(root, ignore_errors=True)
 
 
 def test_empty_namespace_lnk_not_cwd() -> None:
@@ -2744,6 +2844,7 @@ def main() -> int:
     run("文档与快捷方式均可移入文件夹", test_document_moves_into_folder_icon_stays_virtual)
     run("选中文件夹图标Ctrl+V粘贴进文件夹", test_paste_into_selected_folder)
     run("进文件夹同资源管理器规则(Ctrl/跨盘复制)", test_explorer_like_folder_drop_modifiers)
+    run("拖到托管回收站图标应删除卸钉", test_recycle_bin_icon_drag_bridge)
     run("空目标命名空间快捷方式不映射到cwd", test_empty_namespace_lnk_not_cwd)
     run("跨盘桌面替身才映射到真实路径", test_cross_drive_desktop_twin_remap)
     run("drop 钉选延后到 OLE 外", test_drop_apply_is_deferred)
