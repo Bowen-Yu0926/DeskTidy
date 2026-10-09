@@ -503,11 +503,20 @@ class DesktopPetWidget(QWidget):
         """
         return self._size_scale()
 
+    def _chrome_stable_sprite_w(self) -> int:
+        """Idle sprite width for page-chip packing (ignore wait/sleep/fall widen).
+
+        Pose-dependent ``_sprite_w`` used to inflate ``row_budget`` and reflow
+        the head cloud whenever the pet sat / slept — chips jumped and the
+        cluster looked like it changed width mid-animation.
+        """
+        return max(80, int(round(_SPRITE_W * self._size_scale())))
+
     def _sprite_h(self) -> int:
         return max(96, int(round(_SPRITE_H * self._size_scale())))
 
     def _sprite_w(self) -> int:
-        base = max(80, int(round(_SPRITE_W * self._size_scale())))
+        base = self._chrome_stable_sprite_w()
         # Fall/dizzy sheets are wider than idle (splayed limbs). Widen the dest
         # so height-matched content is not width-clamped / mask-clipped.
         if self._state in (_STATE_FALL, _STATE_DIZZY):
@@ -565,7 +574,9 @@ class DesktopPetWidget(QWidget):
         rows: list[list[tuple[int, int]]] = []
         cur: list[tuple[int, int]] = []
         cur_w = 0
-        row_budget = max(self._sprite_w() + int(round(72 * s)), int(round(220 * s)))
+        # Pack against idle width only — pose widen must not reflow the cloud.
+        stable_w = self._chrome_stable_sprite_w()
+        row_budget = max(stable_w + int(round(72 * s)), int(round(220 * s)))
         for chip in chips:
             w = chip[1]
             need = w if not cur else cur_w + gap + w
@@ -578,6 +589,8 @@ class DesktopPetWidget(QWidget):
         if cur:
             rows.append(cur)
 
+        # Center on the current body pin column (pose width + pads track via
+        # spr_pad_l). Row packing stays on stable_w so widen does not reflow.
         body_cx = self._body_width() / 2.0
         rel: list[tuple[int, float, float, int]] = []
         y = float(pad + 4)

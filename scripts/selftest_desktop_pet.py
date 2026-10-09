@@ -929,12 +929,51 @@ def main() -> None:
     ]
     for i, (a, b) in enumerate(zip(dx0, dx1)):
         assert abs(a - b) <= 2, (i, a, b, "page chip slid vs body on trash pads")
+    # Wait/sleep widen _sprite_w for the pose — page chips must NOT reflow
+    # (row wrap / cloud width) or they jump while the body pin stays fixed.
+    from src.ui.pet_widget import _STATE_WAIT, _STATE_SLEEP
+
+    pet_wait = DesktopPetWidget(
+        {
+            "desktop_pet": {
+                "enabled": True,
+                "show_page_bubbles": True,
+                "character": "hoodie",
+            },
+            "desktop_pages": [
+                {"id": 0, "name": "工作"},
+                {"id": 1, "name": "文档"},
+                {"id": 2, "name": "AIproject"},
+                {"id": 3, "name": "openCode"},
+                {"id": 4, "name": "微控"},
+                {"id": 5, "name": "纪要"},
+            ],
+        }
+    )
+    pet_wait._reload_chrome_from_settings()
+    pet_wait._state = _STATE_IDLE
+    pet_wait._apply_size()
+    assert len(pet_wait._chrome_items) >= 6
+    pin0 = pet_wait._body_pin_local()
+    idle_rects = [pet_wait._page_bubble_rect(i) for i in range(len(pet_wait._chrome_items))]
+    idle_rel = [
+        (r.x() - pin0.x(), r.y() - pin0.y(), r.width(), r.height()) for r in idle_rects
+    ]
+    for state in (_STATE_WAIT, _STATE_SLEEP):
+        pet_wait._state = state
+        pet_wait._apply_size()
+        pin = pet_wait._body_pin_local()
+        for i, (ox, oy, w, h) in enumerate(idle_rel):
+            r = pet_wait._page_bubble_rect(i)
+            assert r.width() == w and r.height() == h, (state, i, r.size(), w, h)
+            assert abs((r.x() - pin.x()) - ox) <= 2, (state, i, r.x() - pin.x(), ox)
+            assert abs((r.y() - pin.y()) - oy) <= 2, (state, i, r.y() - pin.y(), oy)
+    layout_pack = inspect.getsource(DesktopPetWidget._layout_page_bubbles)
+    assert "_chrome_stable_sprite_w" in layout_pack or "_chrome_layout_sprite_w" in layout_pack
     aids = [a[0] for a in pet_w._action_defs()]
     assert aids == ["wait", "sleep", "hide"]
     assert any(g == "游" for _a, g, _t in pet_w._action_defs())
     # Resting: only the active rest action is 「起」— never two identical wake buttons.
-    from src.ui.pet_widget import _STATE_WAIT, _STATE_SLEEP
-
     pet_rest = DesktopPetWidget({"desktop_pet": {"enabled": True, "character": "hoodie"}})
     pet_rest._state = _STATE_WAIT
     wait_glyphs = [g for _a, g, _t in pet_rest._action_defs()]
