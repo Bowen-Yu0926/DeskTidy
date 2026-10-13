@@ -968,6 +968,24 @@ def main() -> None:
             assert r.width() == w and r.height() == h, (state, i, r.size(), w, h)
             assert abs((r.x() - pin.x()) - ox) <= 2, (state, i, r.x() - pin.x(), ox)
             assert abs((r.y() - pin.y()) - oy) <= 2, (state, i, r.y() - pin.y(), oy)
+    # Head-cloud chips must not overlap — include paint pointer (bottom +5).
+    from src.ui.pet_widget import _PAGE_BUBBLE_POINTER
+
+    pet_wait._state = _STATE_IDLE
+    pet_wait._apply_size()
+    cloud = [pet_wait._page_bubble_rect(i) for i in range(len(pet_wait._chrome_items))]
+    assert len(cloud) >= 6
+    for i in range(len(cloud)):
+        a = cloud[i].adjusted(0, 0, 0, int(_PAGE_BUBBLE_POINTER))
+        for j in range(i + 1, len(cloud)):
+            b = cloud[j].adjusted(0, 0, 0, int(_PAGE_BUBBLE_POINTER))
+            assert not a.intersects(b), (
+                pet_wait._chrome_items[i].get("label"),
+                pet_wait._chrome_items[j].get("label"),
+                a,
+                b,
+                a.intersected(b),
+            )
     layout_pack = inspect.getsource(DesktopPetWidget._layout_page_bubbles)
     assert "_chrome_stable_sprite_w" in layout_pack or "_chrome_layout_sprite_w" in layout_pack
     aids = [a[0] for a in pet_w._action_defs()]

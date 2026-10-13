@@ -523,7 +523,8 @@ class DeskTidyApp:
         if callable(mark):
             mark("fences_shown")
         self.refresh_public_desktop(relayout=True, immediate=True)
-        if self.settings.get("show_page_indicator") is not True:
+        # Heal missing key only — never overwrite an explicit user False.
+        if "show_page_indicator" not in self.settings:
             self.settings["show_page_indicator"] = True
             try:
                 save_settings(self.settings)

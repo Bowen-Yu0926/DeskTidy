@@ -75,8 +75,13 @@ _PAGE_BUBBLE_ROW_GAP = 5
 _PAGE_BUBBLE_PAD = 4
 _PAGE_BUBBLE_MIN_W = 44
 _PAGE_BUBBLE_MAX_ROW = 4
+# Painted triangle hangs below the chip rect (see _paint_page_bubbles).
+_PAGE_BUBBLE_POINTER = 5
+# Arc drop per step from row center (scaled by bubble_scale in layout).
+_PAGE_BUBBLE_ARC = 2.0
 # Per-chip vertical scatter so the head cloud is not a flat strip.
-_PAGE_BUBBLE_STAGGER = (-5, 3, -2, 4, -4, 2, -3, 5)
+# Keep amplitude modest — row stride must clear stagger + pointer or chips overlap.
+_PAGE_BUBBLE_STAGGER = (-2, 1, -1, 2, -2, 1, -1, 2)
 # Hold sprites include pinch fingers above the hood — borrow the page-chip band.
 _HOLD_DRAG_HEADROOM_FRAC = 0.38
 _DRAG_THRESHOLD = 6
@@ -564,8 +569,17 @@ class DesktopPetWidget(QWidget):
         row_gap = int(round(_PAGE_BUBBLE_ROW_GAP * s))
         pad = int(round(_PAGE_BUBBLE_PAD * s))
         bh = int(round(_PAGE_BUBBLE_H * s))
+        pointer = int(round(_PAGE_BUBBLE_POINTER * s))
         overlap = int(round(_PAGE_CLOUD_OVERLAP * s))
         stagger = tuple(int(round(v * s)) for v in _PAGE_BUBBLE_STAGGER)
+        arc_unit = _PAGE_BUBBLE_ARC * s
+        # Clear the worst-case stagger/arc between rows plus the painted pointer.
+        stagger_hi = max(stagger) if stagger else 0
+        stagger_lo = min(stagger) if stagger else 0
+        max_arc = ((_PAGE_BUBBLE_MAX_ROW - 1) / 2.0) * arc_unit
+        row_stride = bh + pointer + row_gap + int(
+            math.ceil(stagger_hi - stagger_lo + max_arc)
+        )
 
         chips: list[tuple[int, int]] = []
         for i, item in enumerate(self._chrome_items):
@@ -599,11 +613,11 @@ class DesktopPetWidget(QWidget):
             x = body_cx - row_w / 2.0
             mid = (len(row) - 1) / 2.0
             for j, (idx, w) in enumerate(row):
-                arc = abs(j - mid) * 3.5
+                arc = abs(j - mid) * arc_unit
                 st = stagger[(idx + row_i) % len(stagger)]
                 rel.append((idx, x, y + st - arc, w))
                 x += w + gap
-            y += bh + row_gap + 3
+            y += row_stride
 
         min_x = min(r[1] for r in rel)
         max_x = max(r[1] + r[3] for r in rel)
@@ -617,7 +631,7 @@ class DesktopPetWidget(QWidget):
             top = max(2, int(round(ry)))
             rect = QRect(int(round(rx)) + left_pad + spr_pad_l, top, w, bh)
             ordered[idx] = rect
-            max_y = max(max_y, rect.bottom())
+            max_y = max(max_y, rect.bottom() + pointer)
         rects = [r for r in ordered if r is not None]
         # Hang the cloud toward the hair (no speech gutter — bubbles retired).
         band_h = max(0, max_y + 2 - overlap)
@@ -2028,14 +2042,16 @@ class DesktopPetWidget(QWidget):
                 painter.setBrush(QColor(255, 255, 255, 230))
             painter.drawRoundedRect(r, 14, 14)
             mid_x = r.center().x()
+            tip = max(3, int(round(_PAGE_BUBBLE_POINTER * s)))
+            half = max(3, int(round(5 * s)))
             painter.setPen(Qt.PenStyle.NoPen)
             painter.setBrush(soft if current else QColor(255, 255, 255, 230 if not hovered else 250))
             painter.drawPolygon(
                 QPolygon(
                     [
-                        QPoint(mid_x, r.bottom() + 5),
-                        QPoint(mid_x - 5, r.bottom() - 1),
-                        QPoint(mid_x + 5, r.bottom() - 1),
+                        QPoint(mid_x, r.bottom() + tip),
+                        QPoint(mid_x - half, r.bottom() - 1),
+                        QPoint(mid_x + half, r.bottom() - 1),
                     ]
                 )
             )

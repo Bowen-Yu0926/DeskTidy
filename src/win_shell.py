@@ -2634,7 +2634,23 @@ def get_lnk_namespace_clsid(path: Path) -> str | None:
     return result
 
 
+def _live_settings_bridge() -> dict | None:
+    try:
+        from PyQt6.QtWidgets import QApplication
+
+        app = QApplication.instance()
+        bridge = getattr(app, "_desktidy_settings", None) if app is not None else None
+        return bridge if isinstance(bridge, dict) else None
+    except Exception:
+        return None
+
+
 def _hosted_namespace_store() -> dict:
+    bridge = _live_settings_bridge()
+    if bridge is not None:
+        hosted = bridge.get("hosted_namespace_icons")
+        if isinstance(hosted, dict):
+            return hosted
     from src.settings import load_settings
 
     settings = load_settings()
@@ -2643,21 +2659,21 @@ def _hosted_namespace_store() -> dict:
 
 
 def _save_hosted_namespace_store(hosted: dict) -> None:
-    """Persist hosted map and sync live in-memory app settings if present."""
-    from src.settings import load_settings, save_settings
+    """Persist hosted map without stomping newer in-memory settings.
 
-    settings = load_settings()
-    settings["hosted_namespace_icons"] = hosted
-    save_settings(settings)
-    try:
-        from PyQt6.QtWidgets import QApplication
+    Prefer the live app settings bridge. When no app is running, flush any
+    pending full save then write a partial patch for this key only.
+    """
+    from src.settings import flush_settings, save_settings
 
-        app = QApplication.instance()
-        bridge = getattr(app, "_desktidy_settings", None) if app is not None else None
-        if isinstance(bridge, dict):
-            bridge["hosted_namespace_icons"] = dict(hosted)
-    except Exception:
-        pass
+    hosted = dict(hosted)
+    bridge = _live_settings_bridge()
+    if bridge is not None:
+        bridge["hosted_namespace_icons"] = hosted
+        save_settings(bridge)
+        return
+    flush_settings()
+    save_settings({"hosted_namespace_icons": hosted}, immediate=True)
 
 
 def host_namespace_icon_in_fence(clsid: str, display_name: str, lnk_path: Path) -> None:

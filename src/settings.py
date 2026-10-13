@@ -97,6 +97,7 @@ def resolve_fence_storage_path(fence_name: str) -> Path:
 
 
 _ORIGINS_FILE = APP_DIR / "storage_origins.json"
+_ORIGINS_LOCK = threading.RLock()
 
 
 def _storage_rel_key(path: Path) -> str | None:
@@ -109,20 +110,37 @@ def _storage_rel_key(path: Path) -> str | None:
 
 def load_storage_origins() -> dict[str, str]:
     ensure_app_dir()
-    if not _ORIGINS_FILE.exists():
-        return {}
-    try:
-        with open(_ORIGINS_FILE, encoding="utf-8") as f:
-            data = json.load(f)
-        return data if isinstance(data, dict) else {}
-    except (OSError, json.JSONDecodeError):
-        return {}
+    with _ORIGINS_LOCK:
+        if not _ORIGINS_FILE.exists():
+            return {}
+        try:
+            with open(_ORIGINS_FILE, encoding="utf-8") as f:
+                data = json.load(f)
+            return data if isinstance(data, dict) else {}
+        except (OSError, json.JSONDecodeError):
+            return {}
 
 
 def save_storage_origins(origins: dict[str, str]) -> None:
+    import os
+    import tempfile
+
     ensure_app_dir()
-    with open(_ORIGINS_FILE, "w", encoding="utf-8") as f:
-        json.dump(origins, f, ensure_ascii=False, indent=2)
+    snapshot = dict(origins) if isinstance(origins, dict) else {}
+    with _ORIGINS_LOCK:
+        fd, tmp_name = tempfile.mkstemp(
+            prefix="origins_", suffix=".tmp", dir=str(_ORIGINS_FILE.parent)
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(snapshot, f, ensure_ascii=False, indent=2)
+            os.replace(tmp_name, _ORIGINS_FILE)
+        except Exception:
+            try:
+                os.unlink(tmp_name)
+            except OSError:
+                pass
+            raise
 
 
 def record_storage_origin(dest: Path, origin_dir: Path) -> None:
@@ -134,9 +152,10 @@ def record_storage_origin(dest: Path, origin_dir: Path) -> None:
         origin = str(origin_dir.resolve())
     except OSError:
         origin = str(origin_dir)
-    origins = load_storage_origins()
-    origins[key] = origin
-    save_storage_origins(origins)
+    with _ORIGINS_LOCK:
+        origins = load_storage_origins()
+        origins[key] = origin
+        save_storage_origins(origins)
 
 
 def remap_storage_origin(old: Path, new: Path) -> None:
@@ -145,11 +164,12 @@ def remap_storage_origin(old: Path, new: Path) -> None:
     new_key = _storage_rel_key(new)
     if not old_key or not new_key or old_key == new_key:
         return
-    origins = load_storage_origins()
-    origin = origins.pop(old_key, None)
-    if origin:
-        origins[new_key] = origin
-        save_storage_origins(origins)
+    with _ORIGINS_LOCK:
+        origins = load_storage_origins()
+        origin = origins.pop(old_key, None)
+        if origin:
+            origins[new_key] = origin
+            save_storage_origins(origins)
 
 
 def get_storage_origin(path: Path) -> Path | None:
@@ -174,16 +194,18 @@ def pop_storage_origin(path: Path) -> Path | None:
     key = _storage_rel_key(path)
     if not key:
         return None
-    origins = load_storage_origins()
-    origin = origins.pop(key, None)
-    if origin is not None:
+    with _ORIGINS_LOCK:
+        origins = load_storage_origins()
+        origin = origins.pop(key, None)
+        if origin is None:
+            return None
         save_storage_origins(origins)
-        try:
-            p = Path(origin)
-            if p.is_dir():
-                return p
-        except OSError:
-            pass
+    try:
+        p = Path(origin)
+        if p.is_dir():
+            return p
+    except OSError:
+        pass
     return None
 
 
@@ -192,12 +214,21 @@ def clear_storage_origins() -> None:
 
 
 def _merge_defaults(settings: dict, defaults: dict) -> dict:
+    """Merge user settings onto defaults.
+
+    When a default value is a dict, a non-dict user value is ignored so nested
+    ``.get(...).get(...)`` call sites do not crash on corrupt profiles.
+    """
     merged = deepcopy(defaults)
     for key, value in settings.items():
-        if key in merged and isinstance(merged[key], dict) and isinstance(value, dict):
-            merged[key] = _merge_defaults(value, merged[key])
-        else:
+        if key not in merged:
             merged[key] = value
+            continue
+        if isinstance(merged[key], dict):
+            if isinstance(value, dict):
+                merged[key] = _merge_defaults(value, merged[key])
+            continue
+        merged[key] = value
     return merged
 
 
@@ -258,7 +289,11 @@ def load_settings() -> dict:
     try:
         with open(SETTINGS_FILE, encoding="utf-8") as f:
             user_settings = json.load(f)
-    except json.JSONDecodeError:
+    except (OSError, json.JSONDecodeError):
+        user_settings = None
+
+    # Valid JSON that is not an object ( [], null, "x") cannot be merged.
+    if not isinstance(user_settings, dict):
         backup = SETTINGS_FILE.with_suffix(".json.bak")
         try:
             shutil.copy(SETTINGS_FILE, backup)
@@ -1025,22 +1060,30 @@ def migrate_legacy_autostart() -> None:
                 link.unlink()
         except OSError:
             pass
-    # If the user had legacy auto-start, or current settings want it, ensure new link.
-    want_app = had_legacy_app or is_auto_start_enabled()
-    # Also respect settings.json if loadable without circular import weight.
+    # Prefer settings.json when present. Legacy shortcuts alone must not
+    # re-enable auto-start after the user turned it off.
+    settings_auto: bool | None = None
     try:
         if SETTINGS_FILE.is_file():
             data = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
-            if isinstance(data, dict) and bool(data.get("auto_start", False)):
-                want_app = True
+            if isinstance(data, dict) and "auto_start" in data:
+                settings_auto = bool(data.get("auto_start"))
     except (OSError, json.JSONDecodeError, TypeError):
         pass
+    if settings_auto is True:
+        want_app = True
+    elif settings_auto is False:
+        want_app = False
+    else:
+        want_app = had_legacy_app or is_auto_start_enabled()
     if want_app:
         set_auto_start(True)
     else:
         # Still purge legacy Run keys if any linger.
         _remove_registry_autostart()
         remove_desktop_guard_autostart()
+        if is_auto_start_enabled():
+            set_auto_start(False)
 
 
 def is_auto_start_enabled() -> bool:
