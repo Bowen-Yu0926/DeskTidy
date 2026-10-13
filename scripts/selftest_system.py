@@ -567,11 +567,19 @@ def test_fence_layout() -> None:
             "ref_h": 720,
         }
         orig_primary = fl.primary_desktop_rect
+        # BUG-05: the clamp path resolves via _target_screen_rect (real
+        # screens), so patching primary_desktop_rect alone left a 1536-wide
+        # real monitor deciding the outcome. Fake a 1920-wide screen there too.
+        orig_tsr = fl._target_screen_rect
+
+        def _fake_tsr(x, y, w, h):
+            return QRect(0, 0, 1920, 1032)
 
         def _fake_monitor():
             return QRect(0, 0, 1920, 1032)
 
         fl.primary_desktop_rect = _fake_monitor  # type: ignore[assignment]
+        fl._target_screen_rect = _fake_tsr  # type: ignore[assignment]
         try:
             a = fl.geometry_from_entry(left)
             b = fl.geometry_from_entry(right)
@@ -585,6 +593,7 @@ def test_fence_layout() -> None:
             )
         finally:
             fl.primary_desktop_rect = orig_primary  # type: ignore[assignment]
+            fl._target_screen_rect = orig_tsr  # type: ignore[assignment]
 
     run("笔记本→显示器等比例且并排", _scale_laptop_to_monitor_side_by_side)
 
@@ -682,8 +691,13 @@ def test_fence_layout() -> None:
 
         orig_fp = fl.current_display_fingerprint
         orig_primary = fl.primary_desktop_rect
+        orig_tsr2 = fl._target_screen_rect
         fl.current_display_fingerprint = lambda: single_fp  # type: ignore[assignment]
         fl.primary_desktop_rect = lambda: QRect(0, 0, 1920, 1032)  # type: ignore[assignment]
+        # BUG-05: clamp inside get_fence_geometry consults real screens; pin
+        # it to the same fake 1920 monitor or the 1536-wide physical primary
+        # shrinks the scaled tile and the >= 1500 assertion fails.
+        fl._target_screen_rect = lambda x, y, w, h: QRect(0, 0, 1920, 1032)  # type: ignore[assignment]
         try:
             g1 = fl.get_fence_geometry(settings, settings["fences"][0], 0)
             g2 = fl.get_fence_geometry(settings, settings["fences"][1], 0)
@@ -693,6 +707,7 @@ def test_fence_layout() -> None:
         finally:
             fl.current_display_fingerprint = orig_fp  # type: ignore[assignment]
             fl.primary_desktop_rect = orig_primary  # type: ignore[assignment]
+            fl._target_screen_rect = orig_tsr2  # type: ignore[assignment]
 
         # Startup heal: cramped single vs multi donor clears the leftover.
         settings2 = {
@@ -872,10 +887,14 @@ def test_fence_layout() -> None:
     run("拒绝 160px 压扁布局并从 donor 恢复", _reject_crushed)
 
     def _span_clamp():
+        from src import fence_layout as fl
         from src.fence_layout import _clamp_geometry, primary_desktop_rect
 
         primary = primary_desktop_rect()
-        # Simulate dual-monitor full-bleed rect
+        # BUG-05: keep this check on real screens (it asserts clamping to the
+        # actual primary), but bypass the fake 1920 patch used elsewhere —
+        # patching _target_screen_rect to 1920 here would contradict the
+        # "clamp to real primary" premise of this very test.
         geom = _clamp_geometry(-1920, 100, 3840, 320, False)
         assert geom["width"] <= primary.width()
         assert geom["x"] >= primary.x()

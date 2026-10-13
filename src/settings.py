@@ -7,6 +7,7 @@ import json
 import shutil
 import sys
 import threading
+import time
 from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
@@ -299,7 +300,22 @@ def load_settings() -> dict:
             shutil.copy(SETTINGS_FILE, backup)
         except OSError:
             pass
-        shutil.copy(DEFAULT_SETTINGS, SETTINGS_FILE)
+        try:
+            shutil.copy(DEFAULT_SETTINGS, SETTINGS_FILE)
+        except OSError as exc:
+            # F6: the self-heal reset must not become a startup crash — the
+            # file may be transiently locked (sync client / antivirus).
+            # Fall back to in-memory defaults and log.
+            try:
+                from src.app_logging import get_logger
+
+                get_logger().warning(
+                    "settings reset copy failed (%s); using in-memory defaults",
+                    exc,
+                )
+            except Exception:
+                pass
+            return deepcopy(defaults)
         return deepcopy(defaults)
 
     merged = _merge_defaults(user_settings, defaults)
@@ -751,16 +767,56 @@ def _save_settings_now(settings: dict) -> None:
 
 
 def _flush_pending_settings() -> None:
+    """Debounced-flush worker. Never drops pending settings on a transient
+    write failure (F5): keep the payload and retry with backoff, up to a
+    bounded number of attempts, then log — the timer thread used to let the
+    exception die on stderr with the data already detached.
+    """
     global _PENDING_SAVE_TIMER, _PENDING_SETTINGS
-    with _SAVE_LOCK:
-        settings = _PENDING_SETTINGS
-        _PENDING_SETTINGS = None
-        timer = _PENDING_SAVE_TIMER
-        _PENDING_SAVE_TIMER = None
-        if timer is not None:
-            timer.cancel()
-        if settings is not None:
-            _save_settings_now(settings)
+    max_attempts = 3
+    for attempt in range(1, max_attempts + 1):
+        with _SAVE_LOCK:
+            settings = _PENDING_SETTINGS
+            _PENDING_SETTINGS = None
+            timer = _PENDING_SAVE_TIMER
+            _PENDING_SAVE_TIMER = None
+            if timer is not None:
+                timer.cancel()
+            if settings is None:
+                return
+            try:
+                _save_settings_now(settings)
+                return
+            except Exception as exc:
+                # Restore the payload (merge over anything queued meanwhile)
+                # so a later flush/atexit retry can still write it.
+                if _PENDING_SETTINGS is None:
+                    _PENDING_SETTINGS = settings
+                else:
+                    _PENDING_SETTINGS = {**settings, **_PENDING_SETTINGS}
+                try:
+                    from src.app_logging import get_logger
+
+                    get_logger().warning(
+                        "settings flush attempt %s/%s failed: %s",
+                        attempt,
+                        max_attempts,
+                        exc,
+                    )
+                except Exception:
+                    pass
+        if attempt < max_attempts:
+            time.sleep(0.5 * attempt)
+    # Final failure: leave _PENDING_SETTINGS in place for atexit flush; log.
+    try:
+        from src.app_logging import get_logger
+
+        get_logger().error(
+            "settings flush failed after %s attempts; pending settings kept in memory",
+            max_attempts,
+        )
+    except Exception:
+        pass
 
 
 def flush_settings() -> None:

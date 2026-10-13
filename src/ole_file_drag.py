@@ -133,6 +133,11 @@ def _shell_data_object(abs_paths: list[str]):
     for parent_t, pidls in by_parent.items():
         if len(pidls) != len(parsed):
             continue
+        # F12: a drive-root item has an empty parent PIDL; SHCreateDataObject
+        # with an empty parent can fail on some shell stacks. Skip that branch
+        # and let the ShellItemArray path (absolute PIDLs) handle it.
+        if not parent_t:
+            continue
         try:
             return shell.SHCreateDataObject(
                 list(parent_t),
@@ -265,6 +270,11 @@ def _escape_watchdog(deadline: float, stop: threading.Event) -> None:
     for _ in range(8):
         if stop.is_set():
             return
+        # F9: only inject while the drag gesture is still physically held —
+        # a watchdog that raced a just-finished drag must not fire ESC into
+        # whatever the user's foreground app is showing.
+        if not (user32.GetAsyncKeyState(0x01) & 0x8000):  # VK_LBUTTON
+            return
         if user32.GetCursorPos(ctypes.byref(pt)):
             user32.SetCursorPos(int(pt.x) + 2, int(pt.y) + 1)
             user32.SetCursorPos(int(pt.x), int(pt.y))
@@ -295,6 +305,14 @@ def do_file_ole_drag(
     try:
         hr = int(ctypes.windll.ole32.OleInitialize(None) or 0)
         ole_owned = hr == 0  # S_OK — we own uninit; S_FALSE means host owns it
+        if hr < 0:
+            # F8: failure (e.g. RPC_E_CHANGED_MODE when the host thread is
+            # already MTA) — try the pythoncom fallback instead of silently
+            # running COM calls on an uninitialized apartment.
+            try:
+                pythoncom.CoInitialize()
+            except Exception:
+                pass
     except Exception:
         try:
             pythoncom.CoInitialize()
@@ -364,6 +382,20 @@ def do_file_ole_drag(
         _ = _alive
     finally:
         stop.set()
+        # F7: release the COM data/source objects BEFORE OleUninitialize so
+        # their Release() runs inside the still-initialized apartment.
+        try:
+            del _alive
+        except UnboundLocalError:
+            pass
+        # Also drop the pywin32 wrapper itself before OleUninitialize (F7).
+        data = None
+        try:
+            import gc
+
+            gc.collect()
+        except Exception:
+            pass
         if ole_owned:
             try:
                 ctypes.windll.ole32.OleUninitialize()

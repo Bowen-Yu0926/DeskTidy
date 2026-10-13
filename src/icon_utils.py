@@ -22,6 +22,8 @@ _MAX_FILE_PIXMAP_CACHE = 96
 _MAX_SHELL_RAW_CACHE = 48
 _SHELL_INDEX_CACHE: dict[str, tuple[int, float]] = {}
 _SHELL_INDEX_LOCK = threading.Lock()
+_PREFETCH_LOCK = threading.Lock()
+_PREFETCH_INFLIGHT = False
 _MAX_SHELL_INDEX_CACHE = 512
 # Failed / blank resolutions are not permanent: a brand-new user profile has a
 # cold shell icon cache, and SHGetFileInfo can report no icon for a while.
@@ -531,8 +533,16 @@ def _sys_icon_index_cached(lookup: str) -> int:
 
 def prefetch_shell_icon_lookups(paths: list[Path | str]) -> None:
     """Warm shell icon indices off the UI thread (best-effort, non-blocking)."""
+    global _PREFETCH_INFLIGHT
     if sys.platform != "win32" or not paths:
         return
+    # F10: one prefetch worker at a time — rapid page switches must not spawn
+    # a thread per refresh; a later call while one is running is dropped (the
+    # next refresh will re-warm whatever is still missing).
+    with _PREFETCH_LOCK:
+        if _PREFETCH_INFLIGHT:
+            return
+        _PREFETCH_INFLIGHT = True
     todo: list[str] = []
     for raw in paths:
         try:
@@ -544,19 +554,30 @@ def prefetch_shell_icon_lookups(paths: list[Path | str]) -> None:
             if key in _SHELL_INDEX_CACHE:
                 continue
         todo.append(lookup)
-    if not todo:
-        return
 
     def _worker() -> None:
-        for lookup in todo:
-            try:
-                _sys_icon_index_cached(lookup)
-            except Exception:
-                continue
+        global _PREFETCH_INFLIGHT
+        try:
+            for lookup in todo:
+                try:
+                    _sys_icon_index_cached(lookup)
+                except Exception:
+                    continue
+        finally:
+            with _PREFETCH_LOCK:
+                _PREFETCH_INFLIGHT = False
 
-    threading.Thread(
-        target=_worker, name="desktidy-icon-index", daemon=True
-    ).start()
+    if not todo:
+        with _PREFETCH_LOCK:
+            _PREFETCH_INFLIGHT = False
+        return
+    try:
+        threading.Thread(
+            target=_worker, name="desktidy-icon-index", daemon=True
+        ).start()
+    except Exception:
+        with _PREFETCH_LOCK:
+            _PREFETCH_INFLIGHT = False
 
 
 def _shil_candidates(size: int) -> tuple[int, ...]:

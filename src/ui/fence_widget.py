@@ -584,6 +584,7 @@ class FenceWidget(QWidget):
         self._zoom_wheel_remain = 0
         self._last_icon_size = 0
         self._last_max_cols = 0
+        self._last_label_width = 0
         self._force_refresh_pending = False
         self._refresh_debounce = QTimer(self)
         self._refresh_debounce.setSingleShot(True)
@@ -695,6 +696,7 @@ class FenceWidget(QWidget):
         self._show_zoom_hint()
         prev_cols = self._last_max_cols
         self._last_icon_size = 0
+        self._last_label_width = 0
         _icon_size, max_cols, _label_width = self._icon_layout_metrics()
         if max_cols != prev_cols:
             self._last_max_cols = 0
@@ -1881,7 +1883,15 @@ class FenceWidget(QWidget):
 
         icon_size, max_cols, label_width = self._icon_layout_metrics()
         if not fast:
-            if icon_size == self._last_icon_size and max_cols == self._last_max_cols:
+            # F-t12-01 (t16): label_width participates in the cache check —
+            # a narrower fence shrinks label_width before max_cols changes,
+            # and skipping the dispatch kept cell min-width stuck at 210px
+            # (clipped, no horizontal scrollbar to recover).
+            if (
+                icon_size == self._last_icon_size
+                and max_cols == self._last_max_cols
+                and label_width == self._last_label_width
+            ):
                 return
         elif icon_size == self._last_icon_size:
             return
@@ -2015,6 +2025,7 @@ class FenceWidget(QWidget):
 
         self._last_icon_size = icon_size
         self._last_max_cols = max_cols
+        self._last_label_width = label_width
         if use_icons and not force:
             new_entries = [
                 entry
@@ -2857,6 +2868,7 @@ class FenceWidget(QWidget):
                         for x in (self.config.get("virtual_items") or [])
                     }
                     if not any(_vk(p) in already for p in paths):
+                        self._warn_virtual_drop_failed(paths, reason="none-added")
                         return False
                 self.config["sort_by"] = "manual"
                 self.sort_by = "manual"
@@ -2873,6 +2885,7 @@ class FenceWidget(QWidget):
                 pass
             return True
         except RuntimeError:
+            self._warn_virtual_drop_failed(paths, reason="runtime-error")
             return False
         except Exception:
             try:
@@ -2881,7 +2894,26 @@ class FenceWidget(QWidget):
                 get_logger().exception("virtual drop apply failed")
             except Exception:
                 pass
+            self._warn_virtual_drop_failed(paths, reason="exception")
             return False
+
+    def _warn_virtual_drop_failed(self, paths: list[Path], *, reason: str) -> None:
+        """G2 (UX-F-06, 产品判定)：虚拟分区放置失败不得静默——toast 给出
+        失败原因概要。避免「图标拖进分区后消失/无任何反馈」。"""
+        try:
+            from src.ui.toast import show_toast
+
+            names = "、".join(p.name for p in paths[:5])
+            if len(paths) > 5:
+                names += " 等"
+            detail = f"{len(paths)} 项未能放入分区「{self.config.get('name') or '分区'}」"
+            if names:
+                detail = f"{detail}：{names}"
+            if reason == "none-added":
+                detail = f"{detail}（目标可能已包含同名项）"
+            show_toast("放置失败", detail, msec=4500, level="warn")
+        except Exception:
+            pass
 
     def _sync_all_fence_configs_from_settings(self) -> None:
         """Rebind live FenceWidget configs to the settings-owned fence dicts."""
@@ -4008,6 +4040,7 @@ class FenceWidget(QWidget):
         if was_resizing and not self._collapsed:
             self._last_max_cols = 0
             self._last_icon_size = 0
+            self._last_label_width = 0
             self.refresh()
         if moved:
             self.geometry_changed.emit()
@@ -4132,6 +4165,7 @@ class FenceWidget(QWidget):
         zoom_changed = abs(prev_zoom - self._icon_zoom) >= 1e-3
         if zoom_changed:
             self._last_icon_size = 0
+            self._last_label_width = 0
         self.set_position_locked(bool(config.get("position_locked", False)), emit=False)
         if not self._style.get("collapsible", True) and self._collapsed:
             self.set_collapsed(False, emit=False)

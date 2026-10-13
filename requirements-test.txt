@@ -1,0 +1,5 @@
+# Test-only dependencies (v4.0.28, BUG-02): required by scripts/selftest_*
+# but not by the shipped app. Deliberately separate from requirements.txt.
+numpy
+Pillow
+psutil

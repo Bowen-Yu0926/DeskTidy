@@ -179,6 +179,16 @@ def run_desknote_process(argv: list[str] | None = None) -> int:
     if acquire is AcquireResult.FAILED:
         logger.error("deskNote mutex failed; continuing without exclusivity")
 
+    if not elev_save_target:
+        # Normal startup (F3): drop a plaintext pending payload orphaned by a
+        # crashed handoff — it is only valid for the relaunch that created it.
+        try:
+            from src.notepad import purge_orphan_elevated_pending
+
+            purge_orphan_elevated_pending()
+        except Exception:
+            logger.exception("elevated pending orphan purge failed")
+
     try:
         return _run_ui(
             paths,

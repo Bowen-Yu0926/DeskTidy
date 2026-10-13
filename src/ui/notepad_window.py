@@ -2282,9 +2282,23 @@ class NotepadWindow(QMainWindow):
             except Exception:
                 pass
             try:
-                from src.instance_lock import try_acquire_notepad_instance
+                from src.instance_lock import AcquireResult, try_acquire_notepad_instance
 
-                try_acquire_notepad_instance()
+                # F4: a third instance may have grabbed the mutex during the
+                # release window. Continuing without it would dual-open and
+                # stomp sessions — treat BUSY/FAILED as "another instance
+                # owns it now" and exit this one instead of racing it.
+                reacquire = try_acquire_notepad_instance()
+                if reacquire is not AcquireResult.OWNED:
+                    from src.app_logging import get_logger
+
+                    get_logger().warning(
+                        "elevated save aborted: notepad mutex reacquire=%s; exiting",
+                        reacquire.value,
+                    )
+                    page._elevating = True  # skip autosave-on-close
+                    QApplication.quit()
+                    return False
             except Exception:
                 pass
             page._elevating = False

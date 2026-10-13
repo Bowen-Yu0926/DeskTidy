@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
@@ -532,15 +533,28 @@ def save_notepad_session(
     )
 
 
+_ELEVATED_PENDING_MAX_AGE_S = 3600  # F3: orphan pending older than 1h is dropped.
+
+
+def _pending_age_s(data: dict) -> float | None:
+    """Age of a pending payload in seconds, or None when it carries no stamp."""
+    stamp = data.get("written_at")
+    try:
+        return max(0.0, time.time() - float(stamp))
+    except (TypeError, ValueError):
+        return None
+
+
 def write_elevated_pending(target: Path | str, text: str) -> bool:
     """Persist a pending elevated save (Notepad++ relaunch handoff).
 
     The non-elevated instance writes the payload here (user-writable APP_DIR);
     the UAC-elevated relaunch reads it, performs its own ``write_text``, then
-    removes the file.
+    removes the file. F3: the payload carries a timestamp so orphaned
+    plaintext (crash between write and consume) is purged on later launches.
     """
     ensure_app_dir()
-    payload = {"target": str(target), "text": text}
+    payload = {"target": str(target), "text": text, "written_at": time.time()}
     try:
         elevated_pending_path().write_text(
             json.dumps(payload, ensure_ascii=False, indent=2),
@@ -566,23 +580,84 @@ def read_elevated_pending() -> dict | None:
     return {"target": target, "text": text}
 
 
+def purge_orphan_elevated_pending() -> None:
+    """Drop a plaintext pending payload left behind by a crashed handoff (F3).
+
+    Called at DeskNote startup: a pending file is only valid while the
+    relaunch that created it is still pending; anything older than
+    ``_ELEVATED_PENDING_MAX_AGE_S`` is plaintext of a save that never
+    completed and must not linger on disk.
+    """
+    try:
+        data = json.loads(elevated_pending_path().read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            elevated_pending_path().unlink(missing_ok=True)
+            return
+        age = _pending_age_s(data)
+        if age is None or age > _ELEVATED_PENDING_MAX_AGE_S:
+            elevated_pending_path().unlink(missing_ok=True)
+    except FileNotFoundError:
+        pass
+    except (OSError, json.JSONDecodeError):
+        try:
+            elevated_pending_path().unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def _decode_with_original_encoding(raw: bytes) -> str | None:
+    """Decode file bytes, preferring the original (non-UTF-8) encoding (F3).
+
+    Tries UTF-8 with BOM first, then ANSI (GBK on zh-CN systems), then UTF-8.
+    Returns None when the bytes are undecodable in any supported encoding —
+    the caller must then refuse to write instead of silently transcoding.
+    """
+    for enc in ("utf-8-sig", "mbcs", "utf-8"):
+        try:
+            return raw.decode(enc)
+        except (UnicodeDecodeError, LookupError):
+            continue
+    return None
+
+
 def consume_elevated_pending(target: Path | str) -> bool:
     """Write the pending payload to *target* and clear the handoff file.
 
     Called from the elevated relaunch. Returns False when the payload does not
-    match *target* or the write fails.
+    match *target* or the write fails. F3: the write preserves the target's
+    original encoding — a GBK/ANSI file is written back as GBK, never silently
+    transcoded to UTF-8; when the original encoding cannot be determined the
+    save is refused rather than rewritten.
     """
     data = read_elevated_pending()
     if data is None:
         return False
     try:
-        if Path(data["target"]).resolve() != Path(target).resolve():
+        target_path = Path(target).resolve()
+        if Path(data["target"]).resolve() != target_path:
             return False
     except OSError:
         return False
+    # Determine the original encoding from the current file bytes (R1: single
+    # exact pass — BOM → utf-8-sig, strict-UTF-8 → utf-8, else ANSI/mbcs).
+    enc = "utf-8"
     try:
-        Path(target).write_text(data["text"], encoding="utf-8")
+        raw = target_path.read_bytes()
+        if _decode_with_original_encoding(raw) is None:
+            return False
+        if raw.startswith(b"\xef\xbb\xbf"):
+            enc = "utf-8-sig"
+        else:
+            try:
+                raw.decode("utf-8")
+                enc = "utf-8"
+            except UnicodeDecodeError:
+                enc = "mbcs"
     except OSError:
+        enc = "utf-8"  # missing target: create as UTF-8 (new-file default)
+    try:
+        target_path.write_text(data["text"], encoding=enc)
+    except (OSError, UnicodeEncodeError):
         return False
     try:
         elevated_pending_path().unlink(missing_ok=True)

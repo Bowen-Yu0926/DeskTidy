@@ -4772,6 +4772,28 @@ def _hide_fence_item_for_path(fence, path: Path) -> None:
             return
 
 
+def _show_fence_item_for_path(fence, path: Path) -> None:
+    """G4/G8 配套：删除失败后恢复隐藏的图标项，避免「消失但未删除」。"""
+    getter = getattr(fence, "_icon_item_widgets", None) if fence is not None else None
+    if not callable(getter):
+        return
+    key = str(path).casefold()
+    for item in getter():
+        fp = getattr(item, "file_path", None)
+        if fp is None:
+            continue
+        try:
+            same = str(fp).casefold() == key
+        except OSError:
+            same = Path(fp) == Path(path)
+        if same:
+            try:
+                item.show()
+            except RuntimeError:
+                pass
+            return
+
+
 def _drop_fence_item_after_trash(fence, path: Path, *, portal: bool) -> None:
     """Unpin / drop one cell after Recycle Bin — no full fence or desktop refresh."""
     _drop_fence_items_after_trash(fence, [Path(path)], portal=portal)
@@ -4861,16 +4883,40 @@ def delete_selected_fence_items(anchor: QWidget) -> None:
         cfg = getattr(fence, "config", None)
         portal = isinstance(cfg, dict) and is_portal_fence(cfg)
 
+    # G8 (UX-F-18, 产品判定)：显式删除（菜单/Del 键）必须确认；拖放回收
+    # 路径不经本函数，一律不加确认框。全部失败可取消则不做任何删除。
+    from src.ui.dialogs import ask_confirm_delete
+
+    if not ask_confirm_delete(anchor, len(paths)):
+        return
+
     recycled: list[Path] = []
+    failed: list[Path] = []
     for path in paths:
         _suppress_desktop_trash(path)
         _hide_fence_item_for_path(fence, path)
         try:
             delete_to_trash(path)
-        except Exception:
+        except Exception as exc:
             _clear_desktop_trash_suppress(path)
+            _show_fence_item_for_path(fence, path)
+            failed.append((Path(path), exc))
             continue
         recycled.append(Path(path))
+
+    # G4 (UX-F-10, 产品判定)：批量删除部分失败必须可见——toast 汇总失败
+    # 数量与名称，禁止静默 except: continue。
+    if failed:
+        from src.ui.toast import show_toast
+
+        names = "、".join(p.name for p, _ in failed[:5])
+        if len(failed) > 5:
+            names += " 等"
+        first = failed[0][1]
+        detail = f"{len(failed)} 项未能放入回收站：{names}"
+        if first:
+            detail = f"{detail}（{first}）"
+        show_toast("部分删除失败", detail, msec=4500, level="warn")
 
     if recycled:
         _drop_fence_items_after_trash(fence, recycled, portal=portal)
@@ -4894,7 +4940,13 @@ def delete_selected_public_items(anchor: QWidget) -> None:
         if path is None:
             return
         items = [anchor]
+    # G8 (UX-F-18)：公共浮动图标的显式删除同样需要确认（拖放回收不经此处）。
+    from src.ui.dialogs import ask_confirm_delete
+
+    if not ask_confirm_delete(anchor, len(items)):
+        return
     recycled: list[Path] = []
+    failed: list[tuple[Path, Exception]] = []
     for item in items:
         raw = getattr(item, "file_path", None)
         if raw is None:
@@ -4907,14 +4959,28 @@ def delete_selected_public_items(anchor: QWidget) -> None:
             pass
         try:
             delete_to_trash(path)
-        except Exception:
+        except Exception as exc:
             _clear_desktop_trash_suppress(path)
             try:
                 item.show()
             except RuntimeError:
                 pass
+            failed.append((path, exc))
             continue
         recycled.append(path)
+
+    # G4 (UX-F-10)：公共图标批量删除部分失败 → toast 汇总，禁止静默。
+    if failed:
+        from src.ui.toast import show_toast
+
+        names = "、".join(p.name for p, _ in failed[:5])
+        if len(failed) > 5:
+            names += " 等"
+        first = failed[0][1]
+        detail = f"{len(failed)} 项未能放入回收站：{names}"
+        if first:
+            detail = f"{detail}（{first}）"
+        show_toast("部分删除失败", detail, msec=4500, level="warn")
 
     if not recycled:
         return

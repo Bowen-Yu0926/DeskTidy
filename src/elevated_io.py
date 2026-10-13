@@ -71,6 +71,12 @@ def relaunch_desknote_elevated(target: Path | str) -> bool:
 
     logger = get_logger()
     exe, script, cwd = _desknote_launch_parts()
+    # F11: normalize a relative path against *this* process's CWD — the
+    # elevated child resolves against exe.parent and would never match.
+    try:
+        target = str(Path(target).resolve())
+    except OSError:
+        target = str(target)
     params = (
         f'"{script}" {_ELEVATED_SAVE_ARG} "{target}"'
         if script

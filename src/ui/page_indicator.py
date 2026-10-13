@@ -809,8 +809,9 @@ class PageIndicatorWidget(QWidget):
         self._pet_row = None
         from src.desktop_pet import desktop_pet_hosts_float_bar
 
-        # Full float bar moved onto the pet — keep this edge HWND empty/absent.
-        show_pages_here = not desktop_pet_hosts_float_bar(self.settings)
+        # G11 (Q2 判定)：页按钮始终建在边缘栏——分页不得单点依赖宠物气泡；
+        # 宠物页芯片与边缘栏并存（重复展示已获产品判定允许）。
+        show_pages_here = True
         if show_pages_here:
             for page in self.pages:
                 btn = self._make_page_button(page)

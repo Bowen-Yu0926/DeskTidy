@@ -58,3 +58,6 @@ scripts/_tmp*
 scripts/_selftest*
 **/DeskTidy_test*
 **/_selftest*
+
+# AgentTeams runtime state (never commit)
+.agent-teams/

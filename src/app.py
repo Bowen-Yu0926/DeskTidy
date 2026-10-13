@@ -6766,9 +6766,9 @@ class DeskTidyApp:
             return
         from src.desktop_pet import desktop_pet_hosts_float_bar
 
-        # Float bar lives on the pet — do not open a second edge HWND.
-        if desktop_pet_hosts_float_bar(self.settings):
-            return
+        # G11 (Q2 判定：宠物与边缘栏并存，分页不得单点依赖宠物)：宠物托管
+        # 浮标栏时仍创建边缘栏（仅承载页按钮，见 PageIndicatorWidget 内部
+        # gate），页切换不再依赖宠物气泡这一单点。folders/tools 仍让给宠物。
         pages = self._get_pages()
         if len(pages) <= 1:
             return

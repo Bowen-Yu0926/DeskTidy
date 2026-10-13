@@ -60,6 +60,11 @@ def parse_version(raw: str) -> tuple[int, ...]:
     text = str(raw or "").strip().lstrip("vV").split("-", 1)[0].split("+", 1)[0]
     parts: list[int] = []
     for piece in text.split("."):
+        # Empty segment (trailing dot / "4..28") is malformed, not a 0 field —
+        # treating it as 0 made "4.0.28." parse longer than "4.0.28" and report
+        # a bogus upgrade (BUG-04).
+        if not piece:
+            continue
         digits = "".join(ch for ch in piece if ch.isdigit())
         parts.append(int(digits) if digits else 0)
     if not parts:
@@ -124,7 +129,7 @@ def _read_cache(now: float) -> UpdateCheckResult | None:
             return None
         if float(data.get("checked_at") or 0) + _CACHE_TTL_SECONDS < now:
             return None
-        return UpdateCheckResult(
+        result = UpdateCheckResult(
             status=str(data.get("status") or STATUS_ERROR),
             current=str(data.get("current") or ""),
             latest=str(data.get("latest") or ""),
@@ -132,6 +137,13 @@ def _read_cache(now: float) -> UpdateCheckResult | None:
             notes=str(data.get("notes") or ""),
             error=str(data.get("error") or ""),
         )
+        # Cache was written under a previous run's version (F1): after an
+        # in-TTL upgrade the stale "update-available" must not survive.
+        from src._version import __version__
+
+        if result.current != __version__:
+            return None
+        return result
     except Exception:
         return None
 

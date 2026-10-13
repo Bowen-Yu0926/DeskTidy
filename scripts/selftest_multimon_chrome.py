@@ -112,6 +112,10 @@ def test_page_indicator_orphan_saved_pos() -> None:
     settings = {
         "theme": "mist",
         "page_folders": [],
+        # BUG-06: without this the default desktop pet hosts the float bar and
+        # the page indicator renders no buttons (0-wide widget) — the orphan
+        # salvage under test never gets a visible widget to place.
+        "desktop_pet": {"enabled": False},
         # Far off any monitor — must fall back to work-screen default.
         "page_indicator_pos": {"x": -80000, "y": -80000},
     }
@@ -125,11 +129,46 @@ def test_page_indicator_orphan_saved_pos() -> None:
     assert int(saved["x"]) > -10000
 
 
+def _page_buttons_built(settings: dict) -> int:
+    """G11 probe: count page buttons the edge bar builds under *settings*."""
+    from PyQt6.QtWidgets import QApplication
+
+    from src.ui.page_indicator import PageIndicatorWidget
+
+    app = QApplication.instance() or QApplication([])
+    w = PageIndicatorWidget(
+        [{"id": 0, "name": "一"}, {"id": 1, "name": "二"}],
+        current_page=0,
+        settings=settings,
+    )
+    w.show()
+    app.processEvents()
+    n = len(w._buttons)
+    w.close()
+    w.deleteLater()
+    return n
+
+
+def test_page_indicator_built_with_pet_on_and_off() -> None:
+    """G11 (Q2 判定): page buttons must exist with the pet ON and OFF —
+    paging must not single-point depend on the pet's bubbles."""
+    base = {"theme": "mist", "page_folders": [], "show_page_indicator": True}
+
+    off = dict(base, desktop_pet={"enabled": False})
+    assert _page_buttons_built(off) == 2, "pet off: page buttons must be built"
+
+    on = dict(base, desktop_pet={"enabled": True, "visible": True, "show_page_bubbles": True})
+    assert _page_buttons_built(on) == 2, (
+        "pet on: edge bar still hosts page buttons (Q2: pet + edge bar coexist)"
+    )
+
+
 def main() -> int:
     print("DeskTidy multi-monitor chrome")
     run("work_screen + orphan snap", test_work_screen_helpers)
     run("chrome placement uses work_screen", test_chrome_uses_work_screen)
     run("page bar salvages orphan saved pos", test_page_indicator_orphan_saved_pos)
+    run("page buttons built with pet on and off (G11)", test_page_indicator_built_with_pet_on_and_off)
     print()
     print(f"通过 {_pass}  失败 {_fail}")
     return 0 if _fail == 0 else 1
