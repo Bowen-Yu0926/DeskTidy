@@ -4016,6 +4016,7 @@ def _recycle_drag_paths_now(paths: list[Path]) -> list[Path]:
         suppress_desktop_item = None  # type: ignore[assignment]
 
     done: list[Path] = []
+    failed: list[tuple[Path, Exception]] = []
     for raw in paths:
         try:
             path = Path(raw)
@@ -4033,13 +4034,19 @@ def _recycle_drag_paths_now(paths: list[Path]) -> list[Path]:
             done.append(path)
             if clear_organize_suppress is not None:
                 clear_organize_suppress(path)
-        except Exception:
+        except Exception as exc:
             if clear_organize_suppress is not None:
                 try:
                     clear_organize_suppress(raw)
                 except Exception:
                     pass
+            failed.append((path, exc))
             continue
+    # G4: drag-to-bin must not silent-skip failures (same as Del/menu delete).
+    if failed:
+        from src.ui.toast import warn_partial_trash_failures
+
+        warn_partial_trash_failures(failed)
     return done
 
 
@@ -4891,7 +4898,7 @@ def delete_selected_fence_items(anchor: QWidget) -> None:
         return
 
     recycled: list[Path] = []
-    failed: list[Path] = []
+    failed: list[tuple[Path, Exception]] = []
     for path in paths:
         _suppress_desktop_trash(path)
         _hide_fence_item_for_path(fence, path)
@@ -4907,16 +4914,9 @@ def delete_selected_fence_items(anchor: QWidget) -> None:
     # G4 (UX-F-10, 产品判定)：批量删除部分失败必须可见——toast 汇总失败
     # 数量与名称，禁止静默 except: continue。
     if failed:
-        from src.ui.toast import show_toast
+        from src.ui.toast import warn_partial_trash_failures
 
-        names = "、".join(p.name for p, _ in failed[:5])
-        if len(failed) > 5:
-            names += " 等"
-        first = failed[0][1]
-        detail = f"{len(failed)} 项未能放入回收站：{names}"
-        if first:
-            detail = f"{detail}（{first}）"
-        show_toast("部分删除失败", detail, msec=4500, level="warn")
+        warn_partial_trash_failures(failed)
 
     if recycled:
         _drop_fence_items_after_trash(fence, recycled, portal=portal)
@@ -4971,16 +4971,9 @@ def delete_selected_public_items(anchor: QWidget) -> None:
 
     # G4 (UX-F-10)：公共图标批量删除部分失败 → toast 汇总，禁止静默。
     if failed:
-        from src.ui.toast import show_toast
+        from src.ui.toast import warn_partial_trash_failures
 
-        names = "、".join(p.name for p, _ in failed[:5])
-        if len(failed) > 5:
-            names += " 等"
-        first = failed[0][1]
-        detail = f"{len(failed)} 项未能放入回收站：{names}"
-        if first:
-            detail = f"{detail}（{first}）"
-        show_toast("部分删除失败", detail, msec=4500, level="warn")
+        warn_partial_trash_failures(failed)
 
     if not recycled:
         return

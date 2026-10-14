@@ -2300,7 +2300,19 @@ class NotepadWindow(QMainWindow):
                     QApplication.quit()
                     return False
             except Exception:
-                pass
+                # F4 follow-up: swallowing reacquire errors left this instance
+                # running without the mutex — dual-open / session stomp risk.
+                try:
+                    from src.app_logging import get_logger
+
+                    get_logger().exception(
+                        "elevated save aborted: notepad mutex reacquire raised; exiting"
+                    )
+                except Exception:
+                    pass
+                page._elevating = True
+                QApplication.quit()
+                return False
             page._elevating = False
             QMessageBox.warning(
                 self,

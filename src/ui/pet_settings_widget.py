@@ -266,7 +266,8 @@ class PetSettingsWidget(QWidget):
         )
         self.page_bubbles_cb.setChecked(bool(cfg.get("show_page_bubbles", True)))
         self.page_bubbles_cb.setToolTip(
-            "是：浮标栏跟在宠物头上；否：恢复屏幕右侧浮标栏"
+            "默认开启：宠物显示时页签在宠物头上，右侧分页栏隐藏；"
+            "关闭宠物后页签回到屏幕右侧。取消勾选则宠物上不显示页签。"
         )
         self.page_bubbles_cb.stateChanged.connect(self._on_page_bubbles_changed)
         panel_layout.addWidget(self.page_bubbles_cb)

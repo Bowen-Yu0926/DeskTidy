@@ -106,7 +106,7 @@ def test_page_indicator_orphan_saved_pos() -> None:
     from PyQt6.QtWidgets import QApplication
 
     from src.ui.page_indicator import PageIndicatorWidget
-    from src.ui.screen_snap import rect_visible_on_any_screen
+    from src.ui.screen_snap import rect_visible_on_any_screen, work_screen
 
     app = QApplication.instance() or QApplication([])
     settings = {
@@ -127,6 +127,31 @@ def test_page_indicator_orphan_saved_pos() -> None:
     saved = settings.get("page_indicator_pos")
     assert isinstance(saved, dict)
     assert int(saved["x"]) > -10000
+    assert w._is_docked_to_right_edge(w.geometry())
+
+    # Mid-desktop saved pos must re-dock to the right edge (not float over the pet).
+    screen = work_screen()
+    assert screen is not None
+    area = screen.availableGeometry()
+    mid = {
+        "x": area.x() + area.width() // 2,
+        "y": area.y() + area.height() // 2,
+    }
+    settings2 = {
+        "theme": "mist",
+        "page_folders": [],
+        "desktop_pet": {"enabled": False},
+        "page_indicator_pos": mid,
+    }
+    w2 = PageIndicatorWidget(
+        [{"id": 0, "name": "一"}, {"id": 1, "name": "二"}],
+        current_page=0,
+        settings=settings2,
+    )
+    w2.show()
+    app.processEvents()
+    assert w2._is_docked_to_right_edge(w2.geometry()), w2.geometry()
+    assert abs(w2.x() - (area.x() + area.width() - w2.width() - w2._EDGE_MARGIN)) <= w2._SNAP_THRESHOLD
 
 
 def _page_buttons_built(settings: dict) -> int:
@@ -150,16 +175,33 @@ def _page_buttons_built(settings: dict) -> int:
 
 
 def test_page_indicator_built_with_pet_on_and_off() -> None:
-    """G11 (Q2 判定): page buttons must exist with the pet ON and OFF —
-    paging must not single-point depend on the pet's bubbles."""
+    """Pet on-screen hides the edge page bar; hide/disable pet restores it."""
+    from src.desktop_pet import edge_page_indicator_allowed
+
     base = {"theme": "mist", "page_folders": [], "show_page_indicator": True}
 
     off = dict(base, desktop_pet={"enabled": False})
+    assert edge_page_indicator_allowed(off) is True
     assert _page_buttons_built(off) == 2, "pet off: page buttons must be built"
 
-    on = dict(base, desktop_pet={"enabled": True, "visible": True, "show_page_bubbles": True})
-    assert _page_buttons_built(on) == 2, (
-        "pet on: edge bar still hosts page buttons (Q2: pet + edge bar coexist)"
+    hidden = dict(
+        base,
+        desktop_pet={
+            "enabled": True,
+            "visible": False,
+            "show_page_bubbles": False,
+        },
+    )
+    assert edge_page_indicator_allowed(hidden) is True
+    assert _page_buttons_built(hidden) == 2, "pet hidden: edge bar returns"
+
+    # Pet visible → edge page bar off; pages live on the pet bubbles instead.
+    on_pet = dict(
+        base, desktop_pet={"enabled": True, "visible": True, "show_page_bubbles": True}
+    )
+    assert edge_page_indicator_allowed(on_pet) is False
+    assert _page_buttons_built(on_pet) == 0, (
+        "pet visible + bubbles: edge PageIndicator builds no page rows"
     )
 
 

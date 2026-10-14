@@ -248,6 +248,8 @@ def desktop_pet_settings(settings: dict[str, Any] | None) -> dict[str, Any]:
     raw.setdefault("visible", True)
     raw.setdefault("follow_cursor", False)
     raw.setdefault("auto_wander", True)
+    # Default ON: page chips ride on the pet while it is visible; the edge bar
+    # stays off (see edge_page_indicator_allowed). Hide the pet → edge tabs return.
     raw.setdefault("show_page_bubbles", True)
     raw.setdefault("character", DEFAULT_CHARACTER)
     raw.setdefault("size_scale", DEFAULT_SIZE_SCALE)
@@ -393,6 +395,20 @@ def desktop_pet_hosts_float_bar(settings: dict[str, Any] | None) -> bool:
 def desktop_pet_shows_page_bubbles(settings: dict[str, Any] | None) -> bool:
     """Compat alias — pet hosts the full float bar (pages + tools + folders)."""
     return desktop_pet_hosts_float_bar(settings)
+
+
+def edge_page_indicator_allowed(settings: dict[str, Any] | None) -> bool:
+    """Whether the right-edge page bar may be shown.
+
+    Product rule: pet on-screen ⇒ pages on the pet (bubbles), no edge tabs.
+    Hide/disable the pet ⇒ edge tabs return, docked to the right.
+    """
+    settings = settings if isinstance(settings, dict) else {}
+    if not settings.get("show_page_indicator", True):
+        return False
+    if desktop_pet_visible(settings):
+        return False
+    return True
 
 
 def float_bar_tool_flags(settings: dict[str, Any] | None) -> dict[str, bool]:

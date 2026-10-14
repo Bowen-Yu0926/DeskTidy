@@ -38,6 +38,37 @@ from src.win_shell import (
 )
 
 
+def _separate_page_bubble_rects(
+    rects: list[QRect],
+    *,
+    pointer: int,
+    min_gap: int,
+) -> list[QRect]:
+    """Push chips down until body+pointer bands no longer intersect.
+
+    Row-pack formulas (arc/stagger/DPI rounding) have repeatedly let chips
+    stack visually; this pass is the hard guarantee the selftest asserts.
+    """
+    if len(rects) <= 1:
+        return list(rects)
+    out = [QRect(r) for r in rects]
+    # Stable order: top-to-bottom, then left-to-right.
+    order = sorted(range(len(out)), key=lambda i: (out[i].y(), out[i].x(), i))
+    tip = max(0, int(pointer))
+    gap = max(0, int(min_gap))
+    for oi, i in enumerate(order):
+        for j in order[:oi]:
+            a = out[j].adjusted(0, 0, 0, tip)
+            b = out[i].adjusted(0, 0, 0, tip)
+            if not a.intersects(b):
+                continue
+            # Move the lower chip just below the upper chip's pointer band.
+            new_top = a.bottom() + 1 + gap
+            if out[i].y() < new_top:
+                out[i] = QRect(out[i].x(), new_top, out[i].width(), out[i].height())
+    return out
+
+
 def _restack_fences_after_pet_raise() -> None:
     """Keep fences clickable while the pet stays above fence icons."""
     app = QApplication.instance()
@@ -70,18 +101,15 @@ _ACTION_BTN = 30
 _ACTION_GAP = 4
 _ACTION_PAD = 6
 _PAGE_BUBBLE_H = 26
-_PAGE_BUBBLE_GAP = 5
-_PAGE_BUBBLE_ROW_GAP = 5
+_PAGE_BUBBLE_GAP = 6
+_PAGE_BUBBLE_ROW_GAP = 8
 _PAGE_BUBBLE_PAD = 4
 _PAGE_BUBBLE_MIN_W = 44
-_PAGE_BUBBLE_MAX_ROW = 4
+_PAGE_BUBBLE_MAX_ROW = 3
 # Painted triangle hangs below the chip rect (see _paint_page_bubbles).
 _PAGE_BUBBLE_POINTER = 5
-# Arc drop per step from row center (scaled by bubble_scale in layout).
-_PAGE_BUBBLE_ARC = 2.0
-# Per-chip vertical scatter so the head cloud is not a flat strip.
-# Keep amplitude modest — row stride must clear stagger + pointer or chips overlap.
-_PAGE_BUBBLE_STAGGER = (-2, 1, -1, 2, -2, 1, -1, 2)
+# Extra air between inflated chip hit-boxes after row packing (collision pass).
+_PAGE_BUBBLE_CLEAR = 4
 # Hold sprites include pinch fingers above the hood — borrow the page-chip band.
 _HOLD_DRAG_HEADROOM_FRAC = 0.38
 _DRAG_THRESHOLD = 6
@@ -476,10 +504,13 @@ class DesktopPetWidget(QWidget):
             )
         region = region.united(QRegion(self._menu_button_rect()))
         if self._show_page_bubbles():
+            tip = max(3, int(round(_PAGE_BUBBLE_POINTER * self._bubble_scale())))
             for i in range(len(self._chrome_items)):
                 r = self._page_bubble_rect(i)
                 if not r.isNull():
-                    region = region.united(QRegion(r))
+                    # Include the painted speech-tail so the shaped HWND
+                    # does not clip the pointer into neighboring chips.
+                    region = region.united(QRegion(r.adjusted(0, 0, 0, tip)))
         if self._menu_open:
             panel = self._action_panel_rect()
             if not panel.isNull():
@@ -556,10 +587,10 @@ class DesktopPetWidget(QWidget):
     def _layout_page_bubbles(self) -> tuple[list[QRect], int, int, int]:
         """Head-cloud chrome: (rects, left_pad, band_h, total_w).
 
-        Chips sit in staggered arc rows above the pet — not a right-side column.
-        ``left_pad`` shifts the body so the cloud can overhang both sides.
-        All bubble metrics scale with ``_bubble_scale`` so chips shrink on
-        small sprites and never visually block the pet.
+        Chips pack in centered rows above the pet (no arc/stagger — those
+        repeatedly stacked pills). ``_separate_page_bubble_rects`` is a hard
+        no-overlap pass including painted pointer tails. ``left_pad`` lets the
+        cloud overhang both sides; metrics scale with ``_bubble_scale``.
         """
         if not self._show_page_bubbles():
             return [], 0, 0, self._layout_body_width()
@@ -570,16 +601,10 @@ class DesktopPetWidget(QWidget):
         pad = int(round(_PAGE_BUBBLE_PAD * s))
         bh = int(round(_PAGE_BUBBLE_H * s))
         pointer = int(round(_PAGE_BUBBLE_POINTER * s))
+        clear = int(round(_PAGE_BUBBLE_CLEAR * s))
         overlap = int(round(_PAGE_CLOUD_OVERLAP * s))
-        stagger = tuple(int(round(v * s)) for v in _PAGE_BUBBLE_STAGGER)
-        arc_unit = _PAGE_BUBBLE_ARC * s
-        # Clear the worst-case stagger/arc between rows plus the painted pointer.
-        stagger_hi = max(stagger) if stagger else 0
-        stagger_lo = min(stagger) if stagger else 0
-        max_arc = ((_PAGE_BUBBLE_MAX_ROW - 1) / 2.0) * arc_unit
-        row_stride = bh + pointer + row_gap + int(
-            math.ceil(stagger_hi - stagger_lo + max_arc)
-        )
+        # Body + pointer + air — flat rows, no arc/stagger drift.
+        row_stride = bh + pointer + row_gap
 
         chips: list[tuple[int, int]] = []
         for i, item in enumerate(self._chrome_items):
@@ -608,14 +633,11 @@ class DesktopPetWidget(QWidget):
         body_cx = self._body_width() / 2.0
         rel: list[tuple[int, float, float, int]] = []
         y = float(pad + 4)
-        for row_i, row in enumerate(rows):
+        for row in rows:
             row_w = sum(c[1] for c in row) + gap * max(0, len(row) - 1)
             x = body_cx - row_w / 2.0
-            mid = (len(row) - 1) / 2.0
-            for j, (idx, w) in enumerate(row):
-                arc = abs(j - mid) * arc_unit
-                st = stagger[(idx + row_i) % len(stagger)]
-                rel.append((idx, x, y + st - arc, w))
+            for idx, w in row:
+                rel.append((idx, x, y, w))
                 x += w + gap
             y += row_stride
 
@@ -625,14 +647,22 @@ class DesktopPetWidget(QWidget):
         # Trash/wait sprite pads shift the body column — chips must follow or they
         # jump left on screen when pin keeps the boy fixed (_enter → trash).
         spr_pad_l, _spr_pad_r = self._sprite_dest_horizontal_pad()
-        max_y = 0
         ordered: list[QRect | None] = [None] * len(chips)
         for idx, rx, ry, w in rel:
             top = max(2, int(round(ry)))
-            rect = QRect(int(round(rx)) + left_pad + spr_pad_l, top, w, bh)
-            ordered[idx] = rect
-            max_y = max(max_y, rect.bottom() + pointer)
+            ordered[idx] = QRect(int(round(rx)) + left_pad + spr_pad_l, top, w, bh)
+        packed = [r for r in ordered if r is not None]
+        rects = _separate_page_bubble_rects(
+            packed, pointer=pointer, min_gap=clear
+        )
+        # Re-bind by index after separation (order of packed == chrome order).
+        for i, r in enumerate(rects):
+            if i < len(ordered):
+                ordered[i] = r
         rects = [r for r in ordered if r is not None]
+        max_y = 0
+        for r in rects:
+            max_y = max(max_y, r.bottom() + pointer)
         # Hang the cloud toward the hair (no speech gutter — bubbles retired).
         band_h = max(0, max_y + 2 - overlap)
         total_w = max(
@@ -1020,6 +1050,7 @@ class DesktopPetWidget(QWidget):
                 pass
 
     def hide_pet(self) -> None:
+        """Hide the entire pet window (sprite + ⋯ menu), not just page chips."""
         cfg = self._cfg()
         cfg["visible"] = False
         try:
@@ -1028,8 +1059,9 @@ class DesktopPetWidget(QWidget):
             pass
         self._tick.stop()
         self._ai.stop()
+        self._menu_open = False
         self.hide()
-        # Pages return to the right-edge bar while the pet is hidden.
+        # Edge page bar stays independent; rebuild so it docks on the right.
         self._refresh_edge_page_bar()
 
     def show_pet(self) -> None:
@@ -1750,6 +1782,7 @@ class DesktopPetWidget(QWidget):
     def _recycle_paths_now(self, paths: list[Path]) -> list[Path]:
         """Send *paths* to the Recycle Bin immediately. Returns successes."""
         done: list[Path] = []
+        failed: list[tuple[Path, Exception]] = []
         try:
             from src.organize_suppress import (
                 clear_organize_suppress,
@@ -1776,13 +1809,19 @@ class DesktopPetWidget(QWidget):
                 # would skip watcher → no public float for ~12s.
                 if clear_organize_suppress is not None:
                     clear_organize_suppress(path)
-            except Exception:
+            except Exception as exc:
                 if clear_organize_suppress is not None:
                     try:
                         clear_organize_suppress(raw)
                     except Exception:
                         pass
+                failed.append((path, exc))
                 continue
+        # G4: pet-trash drag must surface partial failures (same as Del/menu).
+        if failed:
+            from src.ui.toast import warn_partial_trash_failures
+
+            warn_partial_trash_failures(failed)
         return done
 
     def _start_file_trash(self, paths: list[Path]) -> list[Path]:
@@ -2040,7 +2079,10 @@ class DesktopPetWidget(QWidget):
                 painter.setBrush(QColor(255, 255, 255, 250))
             else:
                 painter.setBrush(QColor(255, 255, 255, 230))
-            painter.drawRoundedRect(r, 14, 14)
+            # Radius must shrink with the chip — a fixed 14px on a short
+            # bubble looked like pills were fused together.
+            rad = max(6, min(r.height() // 2, int(round(12 * s))))
+            painter.drawRoundedRect(r, rad, rad)
             mid_x = r.center().x()
             tip = max(3, int(round(_PAGE_BUBBLE_POINTER * s)))
             half = max(3, int(round(5 * s)))

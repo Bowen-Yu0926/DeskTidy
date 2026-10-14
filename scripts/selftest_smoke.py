@@ -350,6 +350,11 @@ def main() -> int:
         app.processEvents()
         assert w._is_virtual_mode()
         ok("FenceWidget construct + virtual mode")
+        # Icon grid packs top-left (Explorer-like), not as a centered block.
+        align = w.items_layout.alignment()
+        assert align & Qt.AlignmentFlag.AlignLeft
+        assert not (align & Qt.AlignmentFlag.AlignHCenter)
+        ok("FenceWidget items left-aligned (not centered)")
 
         tmp = Path(tempfile.gettempdir()) / "_desktidy_icon_item.txt"
         tmp.write_text("1", encoding="utf-8")

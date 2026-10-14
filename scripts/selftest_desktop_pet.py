@@ -677,7 +677,8 @@ def main() -> None:
     assert "_layout_page_bubbles" in src
     # Float-bar chips float above the head (cloud), not a right-side column.
     assert "index * (_PAGE_BUBBLE_H" not in src
-    assert "_PAGE_BUBBLE_STAGGER" in src
+    assert "_separate_page_bubble_rects" in src
+    assert "_PAGE_BUBBLE_CLEAR" in src
     assert "desktop_pet_hosts_float_bar" in inspect.getsource(
         PageIndicatorWidget._rebuild_buttons
     )
@@ -968,26 +969,71 @@ def main() -> None:
             assert r.width() == w and r.height() == h, (state, i, r.size(), w, h)
             assert abs((r.x() - pin.x()) - ox) <= 2, (state, i, r.x() - pin.x(), ox)
             assert abs((r.y() - pin.y()) - oy) <= 2, (state, i, r.y() - pin.y(), oy)
-    # Head-cloud chips must not overlap — include paint pointer (bottom +5).
-    from src.ui.pet_widget import _PAGE_BUBBLE_POINTER
+    # Head-cloud chips must not overlap — include scaled paint pointer.
+    from src.ui.pet_widget import (
+        _PAGE_BUBBLE_POINTER,
+        _separate_page_bubble_rects,
+    )
+    from PyQt6.QtCore import QRect
+
+    # Unit: collision separator must push stacked chips apart (safety net).
+    stacked = [
+        QRect(10, 10, 80, 26),
+        QRect(20, 18, 90, 26),  # overlaps first + pointer band
+        QRect(40, 30, 70, 26),
+    ]
+    fixed = _separate_page_bubble_rects(stacked, pointer=5, min_gap=4)
+    assert len(fixed) == 3
+    for i in range(len(fixed)):
+        a = fixed[i].adjusted(0, 0, 0, 5)
+        for j in range(i + 1, len(fixed)):
+            b = fixed[j].adjusted(0, 0, 0, 5)
+            assert not a.intersects(b), (i, j, a, b, a.intersected(b))
 
     pet_wait._state = _STATE_IDLE
     pet_wait._apply_size()
-    cloud = [pet_wait._page_bubble_rect(i) for i in range(len(pet_wait._chrome_items))]
-    assert len(cloud) >= 6
-    for i in range(len(cloud)):
-        a = cloud[i].adjusted(0, 0, 0, int(_PAGE_BUBBLE_POINTER))
-        for j in range(i + 1, len(cloud)):
-            b = cloud[j].adjusted(0, 0, 0, int(_PAGE_BUBBLE_POINTER))
-            assert not a.intersects(b), (
-                pet_wait._chrome_items[i].get("label"),
-                pet_wait._chrome_items[j].get("label"),
-                a,
-                b,
-                a.intersected(b),
-            )
+    for scale in (0.75, 1.0, 1.35):
+        pet_cloud = DesktopPetWidget(
+            {
+                "desktop_pet": {
+                    "enabled": True,
+                    "show_page_bubbles": True,
+                    "character": "hoodie",
+                    "size_scale": scale,
+                },
+                "desktop_pages": [
+                    {"id": 0, "name": "工作"},
+                    {"id": 1, "name": "文档"},
+                    {"id": 2, "name": "AIproject"},
+                    {"id": 3, "name": "openCode"},
+                    {"id": 4, "name": "微控"},
+                    {"id": 5, "name": "纪要"},
+                ],
+            }
+        )
+        pet_cloud._reload_chrome_from_settings()
+        pet_cloud._apply_size()
+        tip = max(3, int(round(_PAGE_BUBBLE_POINTER * pet_cloud._bubble_scale())))
+        cloud = [
+            pet_cloud._page_bubble_rect(i)
+            for i in range(len(pet_cloud._chrome_items))
+        ]
+        assert len(cloud) >= 6
+        for i in range(len(cloud)):
+            a = cloud[i].adjusted(0, 0, 0, tip)
+            for j in range(i + 1, len(cloud)):
+                b = cloud[j].adjusted(0, 0, 0, tip)
+                assert not a.intersects(b), (
+                    scale,
+                    pet_cloud._chrome_items[i].get("label"),
+                    pet_cloud._chrome_items[j].get("label"),
+                    a,
+                    b,
+                    a.intersected(b),
+                )
     layout_pack = inspect.getsource(DesktopPetWidget._layout_page_bubbles)
     assert "_chrome_stable_sprite_w" in layout_pack or "_chrome_layout_sprite_w" in layout_pack
+    assert "_separate_page_bubble_rects" in layout_pack
     aids = [a[0] for a in pet_w._action_defs()]
     assert aids == ["wait", "sleep", "hide"]
     assert any(g == "游" for _a, g, _t in pet_w._action_defs())

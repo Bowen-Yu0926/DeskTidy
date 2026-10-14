@@ -875,10 +875,10 @@ class FenceWidget(QWidget):
         self.items_layout.setSpacing(4)
         # Extra right/bottom gutter so the last column is not clipped by the panel edge.
         self.items_layout.setContentsMargins(2, 2, 8, 4)
-        # Horizontally center the icon block; keep top-aligned so a short row
-        # does not float in the middle of a tall fence (large blank above icons).
+        # Pack icons top-left (Explorer-like). Centering the whole block left a
+        # large empty gutter when the fence was wider than the icon grid.
         self.items_layout.setAlignment(
-            Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop
         )
         self.items_widget.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
@@ -2071,7 +2071,7 @@ class FenceWidget(QWidget):
                 item.set_icon_size(icon_size, label_width)
 
             self.items_layout.addWidget(
-                item, row, col, Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignHCenter
+                item, row, col, Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft
             )
             col += 1
             count += 1
@@ -2174,7 +2174,7 @@ class FenceWidget(QWidget):
                     w,
                     row,
                     col,
-                    Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignHCenter,
+                    Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft,
                 )
                 col += 1
                 if col >= max_cols:
@@ -2193,7 +2193,7 @@ class FenceWidget(QWidget):
         keys: list[str] = []
         for w in keep:
             self.items_layout.addWidget(
-                w, row, col, Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignHCenter
+                w, row, col, Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft
             )
             fp = getattr(w, "file_path", None)
             if fp is not None:
@@ -2279,7 +2279,7 @@ class FenceWidget(QWidget):
                 missing = True
                 continue
             self.items_layout.addWidget(
-                w, row, col, Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignHCenter
+                w, row, col, Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft
             )
             keys.append(key)
             col += 1

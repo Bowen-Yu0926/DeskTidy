@@ -945,6 +945,70 @@ def test_recycle_bin_icon_drag_bridge() -> None:
         shutil.rmtree(root, ignore_errors=True)
 
 
+def test_recycle_drag_partial_failure_toasts() -> None:
+    """G4: drag-to-bin partial failures must toast (not silent except:continue)."""
+    import tempfile
+    from unittest import mock
+
+    from src.ui import fence_icon_item as fii
+
+    root = Path(tempfile.mkdtemp(prefix="desktidy_rb_partial_"))
+    ok_path = root / "ok.txt"
+    bad_path = root / "locked.txt"
+    ok_path.write_text("a", encoding="utf-8")
+    bad_path.write_text("b", encoding="utf-8")
+    toasts: list[tuple] = []
+
+    def _trash(path):
+        if Path(path) == bad_path:
+            raise OSError(32, "in use")
+        return None
+
+    try:
+        with (
+            mock.patch("src.win_shell.delete_to_trash", side_effect=_trash),
+            mock.patch(
+                "src.ui.toast.show_toast",
+                side_effect=lambda *a, **k: toasts.append((a, k)),
+            ),
+        ):
+            done = fii._recycle_drag_paths_now([ok_path, bad_path])
+        assert done == [ok_path]
+        assert len(toasts) == 1
+        title = toasts[0][0][0]
+        body = toasts[0][0][1] if len(toasts[0][0]) > 1 else ""
+        assert title == "部分删除失败"
+        assert "locked.txt" in body
+        assert toasts[0][1].get("level") == "warn"
+    finally:
+        import shutil
+
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def test_elevated_save_mutex_reacquire_always_exits_on_failure() -> None:
+    """F4: mutex reacquire failure/exception must quit — never bare except:pass."""
+    import inspect
+    import re
+
+    from src.ui.notepad_window import NotepadWindow
+
+    src = inspect.getsource(NotepadWindow._relaunch_elevated_save)
+    assert "try_acquire_notepad_instance" in src
+    assert "QApplication.quit()" in src
+    # The exact dual-open regression: swallow reacquire errors then keep running.
+    assert not re.search(
+        r"try_acquire_notepad_instance\(\).*?except Exception:\s*pass\s*"
+        r"page\._elevating = False",
+        src,
+        flags=re.DOTALL,
+    )
+    # Exception path after reacquire must also quit.
+    after = src.split("try_acquire_notepad_instance", 1)[1]
+    except_part = after.split("except Exception", 1)[1]
+    assert "QApplication.quit()" in except_part.split("page._elevating = False")[0]
+
+
 def test_empty_namespace_lnk_not_cwd() -> None:
     """Namespace .lnk with empty Targetpath must not resolve to process cwd."""
     import shutil
@@ -2845,6 +2909,8 @@ def main() -> int:
     run("选中文件夹图标Ctrl+V粘贴进文件夹", test_paste_into_selected_folder)
     run("进文件夹同资源管理器规则(Ctrl/跨盘复制)", test_explorer_like_folder_drop_modifiers)
     run("拖到托管回收站图标应删除卸钉", test_recycle_bin_icon_drag_bridge)
+    run("拖放回收部分失败须 toast", test_recycle_drag_partial_failure_toasts)
+    run("提权重取互斥失败必须退出", test_elevated_save_mutex_reacquire_always_exits_on_failure)
     run("空目标命名空间快捷方式不映射到cwd", test_empty_namespace_lnk_not_cwd)
     run("跨盘桌面替身才映射到真实路径", test_cross_drive_desktop_twin_remap)
     run("drop 钉选延后到 OLE 外", test_drop_apply_is_deferred)

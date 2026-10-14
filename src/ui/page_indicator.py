@@ -809,9 +809,10 @@ class PageIndicatorWidget(QWidget):
         self._pet_row = None
         from src.desktop_pet import desktop_pet_hosts_float_bar
 
-        # G11 (Q2 判定)：页按钮始终建在边缘栏——分页不得单点依赖宠物气泡；
-        # 宠物页芯片与边缘栏并存（重复展示已获产品判定允许）。
-        show_pages_here = True
+        # Mutual exclusive with the pet: when the pet hosts the float bar
+        # (show_page_bubbles), pages live on the pet only — never both.
+        # Default show_page_bubbles=False so the edge bar owns paging.
+        show_pages_here = not desktop_pet_hosts_float_bar(self.settings)
         if show_pages_here:
             for page in self.pages:
                 btn = self._make_page_button(page)
@@ -888,6 +889,7 @@ class PageIndicatorWidget(QWidget):
         return None
 
     def _default_position(self) -> QPoint:
+        """Always dock to the right edge of the work screen (product default)."""
         screen = work_screen()
         if not screen:
             return QPoint(100, 100)
@@ -897,16 +899,32 @@ class PageIndicatorWidget(QWidget):
         y = geo.y() + (geo.height() - self.height()) // 2
         return QPoint(x, y)
 
+    def _is_docked_to_right_edge(self, geo: QRect) -> bool:
+        """True when the bar sits on a monitor's right edge (peek chrome)."""
+        if geo.isNull() or geo.width() <= 0:
+            return False
+        screen = work_screen(geo.center())
+        if screen is None:
+            from PyQt6.QtGui import QGuiApplication
+
+            screen = QGuiApplication.primaryScreen()
+        if screen is None:
+            return False
+        area = screen.availableGeometry()
+        expected_x = area.x() + area.width() - geo.width() - self._EDGE_MARGIN
+        return abs(geo.x() - expected_x) <= self._SNAP_THRESHOLD
+
     def _restore_or_default_position(self) -> None:
         self.adjustSize()
         saved = self.settings.get("page_indicator_pos")
         if isinstance(saved, dict) and "x" in saved and "y" in saved:
             geo = QRect(int(saved["x"]), int(saved["y"]), self.width(), self.height())
-            if rect_visible_on_any_screen(geo):
+            # Mid-desktop floats are invalid for this chrome — only a right-edge
+            # dock (or a dead-screen orphan) is accepted; otherwise re-dock.
+            if rect_visible_on_any_screen(geo) and self._is_docked_to_right_edge(geo):
                 snapped = snap_geometry(geo, self._SNAP_THRESHOLD)
                 self.move(snapped.topLeft())
                 return
-            # Saved coords were on an unplugged / dead screen — fresh default.
         self.move(self._default_position())
         # Keep settings dict in sync; persist on next drag / normal save path
         # (avoid save_settings here — callers may pass a partial test dict).
@@ -940,6 +958,17 @@ class PageIndicatorWidget(QWidget):
 
     def _end_drag(self) -> None:
         if self._dragging:
+            # After a drag, re-dock to the right edge of the screen the bar
+            # landed on — keep Y, force X (page peeks are right-edge chrome).
+            screen = work_screen(self.frameGeometry().center())
+            if screen is not None:
+                area = screen.availableGeometry()
+                x = area.x() + area.width() - self.width() - self._EDGE_MARGIN
+                y = max(
+                    area.y(),
+                    min(self.y(), area.y() + area.height() - self.height()),
+                )
+                self.move(x, y)
             snapped = snap_geometry(self.geometry(), self._SNAP_THRESHOLD)
             self.setGeometry(snapped)
             self._save_position()
@@ -1273,10 +1302,7 @@ class PageIndicatorWidget(QWidget):
         return
 
     def showEvent(self, event) -> None:
-        if not self.settings.get("page_indicator_pos"):
-            self.move(self._default_position())
-        else:
-            snapped = snap_geometry(self.geometry(), self._SNAP_THRESHOLD)
-            self.setGeometry(snapped)
+        # Re-validate right-edge dock every show (salvages mid-desktop floats).
+        self._restore_or_default_position()
         super().showEvent(event)
         configure_desktop_overlay(self)

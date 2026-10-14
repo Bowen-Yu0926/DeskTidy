@@ -6762,13 +6762,12 @@ class DeskTidyApp:
             self.page_indicator.close()
             self.page_indicator.deleteLater()
             self.page_indicator = None
-        if not self.settings.get("show_page_indicator", True):
-            return
-        from src.desktop_pet import desktop_pet_hosts_float_bar
+        from src.desktop_pet import edge_page_indicator_allowed
 
-        # G11 (Q2 判定：宠物与边缘栏并存，分页不得单点依赖宠物)：宠物托管
-        # 浮标栏时仍创建边缘栏（仅承载页按钮，见 PageIndicatorWidget 内部
-        # gate），页切换不再依赖宠物气泡这一单点。folders/tools 仍让给宠物。
+        # Pet visible → no edge page bar (pet + tabs must not show together).
+        # Pet hidden/disabled → edge tabs on the right. Bubbles opt-in → pages on pet.
+        if not edge_page_indicator_allowed(self.settings):
+            return
         pages = self._get_pages()
         if len(pages) <= 1:
             return

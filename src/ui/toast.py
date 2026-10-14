@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+from typing import Sequence
+
 from PyQt6.QtCore import (
     QEasingCurve,
     QPoint,
@@ -61,6 +64,22 @@ def _accent_for_level(level: str, palette: dict[str, str]) -> str:
 
 
 _active_toast: _ToastTip | None = None
+
+
+def warn_partial_trash_failures(
+    failed: Sequence[tuple[Path, BaseException]],
+) -> None:
+    """G4: surface batch Recycle Bin failures (Del key *and* drag-to-bin)."""
+    if not failed:
+        return
+    names = "、".join(p.name for p, _ in failed[:5])
+    if len(failed) > 5:
+        names += " 等"
+    first = failed[0][1]
+    detail = f"{len(failed)} 项未能放入回收站：{names}"
+    if first:
+        detail = f"{detail}（{first}）"
+    show_toast("部分删除失败", detail, msec=4500, level="warn")
 
 
 def show_toast(
