@@ -84,11 +84,17 @@ def test_notepad_phase2_wiring() -> None:
     page = w._current_page()
     assert page is not None
     assert isinstance(page.wysiwyg, MarkdownWysiwygPane)
-    assert page.stack.count() == 2
+    assert page.view_stack.count() == 2
+    assert page.edit_stack.count() == 2
+    assert w._md_view_mode == "preview"
 
+    # Non-md tab stays in edit stack; force md path then focus mode.
+    page.path = Path("phase2.md")  # type: ignore[assignment]
+    w._apply_markdown_layout(page)
+    assert page.view_stack.currentIndex() == 0  # default preview
     w._set_focus_mode(True)
-    assert page.outline.isVisible() is False
-    assert page.preview.isVisible() is False
+    assert page.view_stack.currentIndex() == 1  # focus → edit
+    assert page.outline_pane.isVisible() is False
     w._set_focus_mode(False)
 
     topic_ids = {t[0] for t in DESKNOTE_HELP_TOPICS}

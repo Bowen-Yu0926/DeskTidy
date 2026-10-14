@@ -18,6 +18,7 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QPlainTextEdit,
+    QSizePolicy,
     QSplitter,
     QStackedWidget,
     QTabBar,
@@ -192,10 +193,11 @@ class _NotePage:
     outline: MarkdownOutlineList
     preview: MarkdownPreviewPane
     outline_pane: CollapsibleMdPane
-    preview_pane: CollapsibleMdPane
-    splitter: QSplitter
-    stack: QStackedWidget
+    splitter: QSplitter  # edit mode: outline | source
+    view_stack: QStackedWidget  # 0 = preview, 1 = edit_stack
+    edit_stack: QStackedWidget  # 0 = splitter (source), 1 = wysiwyg
     wysiwyg: MarkdownWysiwygPane
+    mode_btn: QPushButton  # right-edge 编辑↔预览 strip
     path: Path | None = None
     dirty: bool = False
     wrap: bool = True
@@ -224,12 +226,15 @@ class NotepadWindow(QMainWindow):
         self._app_drop_filter = False
 
         npp = notepad_settings(self.settings)
-        self._md_preview_enabled = bool(npp.get("md_preview", True))
-        self._md_outline_enabled = bool(npp.get("md_outline", True))
+        # MD opens in preview; toolbar/menu toggles to edit (no three-pane layout).
+        self._md_view_mode = "preview"  # preview | edit
+        self._md_outline_enabled = bool(npp.get("md_outline", False))
         self._md_sync_scroll = bool(npp.get("md_sync_scroll", True))
         self._md_edit_mode = str(npp.get("md_edit_mode") or "source")  # source|wysiwyg
         if self._md_edit_mode not in ("source", "wysiwyg"):
             self._md_edit_mode = "source"
+        # Legacy key kept for settings merge; view mode supersedes side-by-side preview.
+        self._md_preview_enabled = self._md_view_mode == "preview"
         self._focus_mode = False
         self._typewriter_mode = bool(npp.get("typewriter_mode", False))
         self._library_enabled = bool(npp.get("library_sidebar", True))
@@ -394,43 +399,62 @@ class NotepadWindow(QMainWindow):
             expanded=self._md_outline_enabled,
             handle_on_right=True,
         )
-        preview_pane = CollapsibleMdPane(
-            "预览",
-            preview,
-            expanded=self._md_preview_enabled,
-            handle_on_right=False,
-        )
+        # Edit mode: outline | source (no side-by-side preview).
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.setObjectName("notepadMdSplitter")
         splitter.addWidget(outline_pane)
         splitter.addWidget(editor)
-        splitter.addWidget(preview_pane)
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
-        splitter.setStretchFactor(2, 1)
-        splitter.setSizes([160, 420, 380])
+        splitter.setSizes([160, 800])
+
         wysiwyg = MarkdownWysiwygPane()
-        stack = QStackedWidget()
-        stack.addWidget(splitter)  # 0 = source
-        stack.addWidget(wysiwyg)  # 1 = wysiwyg
+        edit_stack = QStackedWidget()
+        edit_stack.addWidget(splitter)  # 0 = source (+ optional outline)
+        edit_stack.addWidget(wysiwyg)  # 1 = wysiwyg
+
+        view_stack = QStackedWidget()
+        view_stack.addWidget(preview)  # 0 = full-width preview (default for .md)
+        view_stack.addWidget(edit_stack)  # 1 = edit
+
+        mode_btn = QPushButton()
+        mode_btn.setObjectName("notepadMdModeStrip")
+        mode_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        mode_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        mode_btn.setFixedWidth(28)
+        mode_btn.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
+        mode_btn.setStyleSheet(
+            "QPushButton#notepadMdModeStrip {"
+            "  text-align: center; padding: 8px 2px; border: none;"
+            "  background: #F1F5F9; font-weight: 600; color: #374151;"
+            "  border-left: 1px solid #E5E7EB;"
+            "}"
+            "QPushButton#notepadMdModeStrip:hover { background: #EEF2FF; color: #1D4ED8; }"
+            "QPushButton#notepadMdModeStrip:disabled { color: #9CA3AF; }"
+        )
+        mode_btn.setVisible(False)
+
         host = QWidget()
-        host_layout = QVBoxLayout(host)
+        host_layout = QHBoxLayout(host)
         host_layout.setContentsMargins(0, 0, 0, 0)
         host_layout.setSpacing(0)
-        host_layout.addWidget(stack)
+        host_layout.addWidget(view_stack, 1)
+        host_layout.addWidget(mode_btn)
         page = _NotePage(
             editor=editor,
             host=host,
             outline=outline,
             preview=preview,
             outline_pane=outline_pane,
-            preview_pane=preview_pane,
             splitter=splitter,
-            stack=stack,
+            view_stack=view_stack,
+            edit_stack=edit_stack,
             wysiwyg=wysiwyg,
+            mode_btn=mode_btn,
             path=path,
             ephemeral=ephemeral,
         )
+        mode_btn.clicked.connect(lambda _checked=False: self._toggle_md_view_mode())
         outline.line_activated.connect(lambda line, p=page: self._goto_outline_line(p, line))
         editor.verticalScrollBar().valueChanged.connect(
             lambda _v, p=page: self._on_editor_scroll(p)
@@ -445,9 +469,6 @@ class NotepadWindow(QMainWindow):
         editor.viewport().installEventFilter(self)
         outline_pane.expanded_changed.connect(
             lambda on, p=page: self._on_outline_pane_toggled(on, p)
-        )
-        preview_pane.expanded_changed.connect(
-            lambda on, p=page: self._on_preview_pane_toggled(on, p)
         )
         wysiwyg.markdown_changed.connect(
             lambda md, p=page: self._on_wysiwyg_changed(p, md)
@@ -465,51 +486,68 @@ class NotepadWindow(QMainWindow):
         return self._notes_dir()
 
     def _apply_markdown_layout(self, page: _NotePage | None = None) -> None:
+        """MD: full-width preview or edit stack; plain text: source editor only."""
         page = page or self._current_page()
         if page is None:
             return
-        if self._md_edit_mode == "wysiwyg" and self._page_is_markdown(page):
-            return
         is_md = self._page_is_markdown(page)
-        # MD docs: keep collapsible strips visible so user can re-expand by click.
-        # Focus mode / non-md: hide wrappers entirely.
-        show_chrome = is_md and not self._focus_mode
-        page.outline_pane.setVisible(show_chrome)
-        page.preview_pane.setVisible(show_chrome)
-        if show_chrome:
-            page.outline_pane.set_expanded(self._md_outline_enabled, emit=False)
-            page.preview_pane.set_expanded(self._md_preview_enabled, emit=False)
-            self._redistribute_md_splitter(page)
+        if not is_md:
+            page.view_stack.setCurrentIndex(1)
+            page.edit_stack.setCurrentIndex(0)
+            page.outline_pane.setVisible(False)
+            page.splitter.setSizes([0, max(400, page.host.width() or 800)])
+            self._sync_md_view_actions()
+            return
+
+        previewing = self._md_view_mode == "preview" and not self._focus_mode
+        if previewing:
+            page.view_stack.setCurrentIndex(0)
+            page.outline_pane.setVisible(False)
             self._refresh_markdown_panes(page)
+        else:
+            page.view_stack.setCurrentIndex(1)
+            use_wysiwyg = (
+                self._md_edit_mode == "wysiwyg"
+                and page.wysiwyg.available
+                and not self._focus_mode
+            )
+            page.edit_stack.setCurrentIndex(1 if use_wysiwyg else 0)
+            if use_wysiwyg:
+                page.wysiwyg.set_markdown(
+                    page.editor.toPlainText(),
+                    theme=str(self.settings.get("theme") or "sky"),
+                )
+                page.outline_pane.setVisible(False)
+            else:
+                show_outline = not self._focus_mode
+                page.outline_pane.setVisible(show_outline)
+                if show_outline:
+                    page.outline_pane.set_expanded(self._md_outline_enabled, emit=False)
+                    self._redistribute_md_splitter(page)
+                    self._refresh_markdown_panes(page)
+                else:
+                    page.splitter.setSizes([0, max(400, page.host.width() or 800)])
+        self._sync_md_view_actions()
 
     def _redistribute_md_splitter(self, page: _NotePage) -> None:
-        """Give freed width to the editor when outline/preview collapse sideways."""
+        """Edit mode: give freed width to the editor when outline collapses."""
         from src.ui.markdown_pane import _COLLAPSED_STRIP_W
 
         sp = page.splitter
         sizes = sp.sizes()
         total = max(sp.width(), sum(sizes) if sizes else 0, 1)
-        # Refresh saved widths while still expanded (user may have dragged splitter).
         if page.outline_pane.is_expanded() and len(sizes) > 0 and sizes[0] > _COLLAPSED_STRIP_W + 8:
             page.outline_pane._saved_width = sizes[0]
-        if page.preview_pane.is_expanded() and len(sizes) > 2 and sizes[2] > _COLLAPSED_STRIP_W + 8:
-            page.preview_pane._saved_width = sizes[2]
 
         outline_w = (
             page.outline_pane.preferred_expanded_width()
             if page.outline_pane.is_expanded()
             else _COLLAPSED_STRIP_W
         )
-        preview_w = (
-            page.preview_pane.preferred_expanded_width()
-            if page.preview_pane.is_expanded()
-            else _COLLAPSED_STRIP_W
-        )
-        mid = max(240, total - outline_w - preview_w)
+        mid = max(240, total - outline_w)
         sp.setStretchFactor(0, 0)
         sp.setStretchFactor(1, 1)
-        sp.setStretchFactor(2, 1 if page.preview_pane.is_expanded() else 0)
-        sp.setSizes([outline_w, mid, preview_w])
+        sp.setSizes([outline_w, mid])
 
     def _on_outline_pane_toggled(self, expanded: bool, page: _NotePage) -> None:
         if page is not self._current_page():
@@ -524,30 +562,94 @@ class NotepadWindow(QMainWindow):
         if expanded:
             self._refresh_markdown_panes(page)
 
-    def _on_preview_pane_toggled(self, expanded: bool, page: _NotePage) -> None:
-        if page is not self._current_page():
+    def _set_md_view_mode(self, mode: str) -> None:
+        if mode not in ("preview", "edit"):
             return
-        self._md_preview_enabled = bool(expanded)
-        if hasattr(self, "_md_preview_action"):
-            self._md_preview_action.blockSignals(True)
-            self._md_preview_action.setChecked(self._md_preview_enabled)
-            self._md_preview_action.blockSignals(False)
+        page = self._current_page()
+        if self._md_view_mode == mode:
+            self._sync_md_view_actions()
+            if page is not None:
+                self._apply_markdown_layout(page)
+            return
+        if page is not None and self._md_edit_mode == "wysiwyg":
+            self._pull_wysiwyg_into_editor(page)
+        self._md_view_mode = mode
+        self._md_preview_enabled = mode == "preview"
         self._persist_md_settings()
-        self._redistribute_md_splitter(page)
-        if expanded:
-            self._refresh_markdown_panes(page)
+        if page is not None:
+            self._apply_markdown_layout(page)
+            if mode == "edit" and self._md_edit_mode != "wysiwyg":
+                self._focus_page_editor(page)
+        self._sync_md_view_actions()
+
+    def _toggle_md_view_mode(self) -> None:
+        page = self._current_page()
+        if page is None or not self._page_is_markdown(page) or self._focus_mode:
+            return
+        self._set_md_view_mode("edit" if self._md_view_mode == "preview" else "preview")
+
+    def _sync_md_view_actions(self) -> None:
+        page = self._current_page()
+        is_md = self._page_is_markdown(page)
+        previewing = self._md_view_mode == "preview"
+        editing = not previewing
+        show_strip = bool(is_md and not self._focus_mode)
+        label = "编辑" if previewing else "预览"
+        tip = "切换到源码编辑" if previewing else "切换到 Markdown 预览"
+        if page is not None:
+            page.mode_btn.setVisible(show_strip)
+            page.mode_btn.setEnabled(show_strip)
+            page.mode_btn.setText("\n".join(label))
+            page.mode_btn.setToolTip(tip)
+        # Hide strip on other tabs so plain-text pages stay clean.
+        for other in self._pages:
+            if other is page:
+                continue
+            other.mode_btn.setVisible(False)
+        if hasattr(self, "_mode_preview_action"):
+            self._mode_preview_action.blockSignals(True)
+            self._mode_edit_action.blockSignals(True)
+            self._mode_preview_action.setChecked(previewing)
+            self._mode_edit_action.setChecked(editing)
+            self._mode_preview_action.setEnabled(is_md)
+            self._mode_edit_action.setEnabled(is_md)
+            self._mode_preview_action.blockSignals(False)
+            self._mode_edit_action.blockSignals(False)
+        if hasattr(self, "_md_outline_action"):
+            self._md_outline_action.setEnabled(
+                is_md and editing and self._md_edit_mode == "source" and not self._focus_mode
+            )
+        if hasattr(self, "_md_sync_action"):
+            self._md_sync_action.setEnabled(is_md and editing and self._md_edit_mode == "source")
+        if hasattr(self, "_mode_wysiwyg_action"):
+            self._mode_wysiwyg_action.setEnabled(
+                is_md and editing and webengine_available()
+            )
+        if hasattr(self, "_mode_source_action"):
+            self._mode_source_action.setEnabled(is_md and editing)
 
     def _refresh_markdown_panes(self, page: _NotePage | None = None) -> None:
         page = page or self._current_page()
         if page is None or not self._page_is_markdown(page):
             return
+        show_preview = self._md_view_mode == "preview" or page.preview.isVisible()
+        show_outline = (
+            self._md_view_mode == "edit"
+            and self._md_edit_mode == "source"
+            and self._md_outline_enabled
+            and page.outline_pane.isVisible()
+        )
+        # Always refresh preview when in preview mode; outline only in edit+source.
+        if self._md_view_mode == "preview":
+            show_preview = True
+            show_outline = False
         refresh_outline_and_preview(
             page.outline,
             page.preview,
             page.editor.toPlainText(),
             base_dir=self._md_base_dir(page),
-            show_outline=self._md_outline_enabled,
-            show_preview=self._md_preview_enabled,
+            show_outline=show_outline,
+            show_preview=show_preview,
             theme=str(self.settings.get("theme") or "sky"),
         )
 
@@ -930,26 +1032,23 @@ class NotepadWindow(QMainWindow):
             self._mode_wysiwyg_action.setChecked(mode == "wysiwyg")
             self._mode_source_action.blockSignals(False)
             self._mode_wysiwyg_action.blockSignals(False)
+        # Source / WYSIWYG only apply while editing.
+        if self._md_view_mode != "edit":
+            self._md_view_mode = "edit"
+            self._md_preview_enabled = False
         self._persist_md_settings()
         self._apply_edit_mode()
+        self._sync_md_view_actions()
 
     def _apply_edit_mode(self, page: _NotePage | None = None) -> None:
         page = page or self._current_page()
         if page is None:
             return
-        use_wysiwyg = (
-            self._md_edit_mode == "wysiwyg"
-            and self._page_is_markdown(page)
-            and page.wysiwyg.available
-        )
-        page.stack.setCurrentIndex(1 if use_wysiwyg else 0)
-        if use_wysiwyg:
-            page.wysiwyg.set_markdown(
-                page.editor.toPlainText(),
-                theme=str(self.settings.get("theme") or "sky"),
-            )
-        else:
+        # View mode (preview vs edit) owns the layout; this only refreshes edit sub-mode.
+        if self._page_is_markdown(page) and self._md_view_mode == "preview" and not self._focus_mode:
             self._apply_markdown_layout(page)
+            return
+        self._apply_markdown_layout(page)
 
     def _pull_wysiwyg_into_editor(self, page: _NotePage) -> None:
         done = {"ok": False}
@@ -997,18 +1096,17 @@ class NotepadWindow(QMainWindow):
         if page is None:
             return
         if self._focus_mode:
-            # Hide outline/preview chrome; keep editor wide.
-            page.outline_pane.setVisible(False)
-            page.preview_pane.setVisible(False)
+            # Focus = full-width source editor (leave preview view).
             if self._md_edit_mode != "source":
                 self._set_edit_mode("source")
             self.menuBar().setVisible(True)  # need exit toggle
             self._status.setVisible(False)
             self._pos_label.setVisible(False)
+            self._apply_markdown_layout(page)
+            self._focus_page_editor(page)
         else:
             self._status.setVisible(True)
             self._pos_label.setVisible(True)
-            self._apply_edit_mode(page)
             self._apply_markdown_layout(page)
 
     def _set_typewriter_mode(self, enabled: bool) -> None:
@@ -1442,12 +1540,23 @@ class NotepadWindow(QMainWindow):
         fmt_menu.addAction(self._wrap_action)
 
         view_menu = self.menuBar().addMenu("查看(&V)")
-        self._md_preview_action = QAction("Markdown 预览", self)
-        self._md_preview_action.setCheckable(True)
-        self._md_preview_action.setChecked(self._md_preview_enabled)
-        self._md_preview_action.setShortcut(QKeySequence("Ctrl+Shift+V"))
-        self._md_preview_action.toggled.connect(self._set_md_preview)
-        view_menu.addAction(self._md_preview_action)
+        self._mode_preview_action = QAction("预览", self)
+        self._mode_preview_action.setCheckable(True)
+        self._mode_preview_action.setChecked(self._md_view_mode == "preview")
+        self._mode_preview_action.setShortcut(QKeySequence("Ctrl+Shift+V"))
+        self._mode_preview_action.triggered.connect(lambda: self._set_md_view_mode("preview"))
+        view_menu.addAction(self._mode_preview_action)
+        self._mode_edit_action = QAction("编辑", self)
+        self._mode_edit_action.setCheckable(True)
+        self._mode_edit_action.setChecked(self._md_view_mode == "edit")
+        self._mode_edit_action.setShortcut(QKeySequence("Ctrl+E"))
+        self._mode_edit_action.triggered.connect(lambda: self._set_md_view_mode("edit"))
+        view_menu.addAction(self._mode_edit_action)
+        view_group = QActionGroup(self)
+        view_group.setExclusive(True)
+        view_group.addAction(self._mode_preview_action)
+        view_group.addAction(self._mode_edit_action)
+
         self._md_outline_action = QAction("大纲", self)
         self._md_outline_action.setCheckable(True)
         self._md_outline_action.setChecked(self._md_outline_enabled)
@@ -1460,7 +1569,7 @@ class NotepadWindow(QMainWindow):
         self._md_sync_action.toggled.connect(self._set_md_sync_scroll)
         view_menu.addAction(self._md_sync_action)
         view_menu.addSeparator()
-        self._mode_source_action = QAction("源码三栏", self)
+        self._mode_source_action = QAction("源码编辑", self)
         self._mode_source_action.setCheckable(True)
         self._mode_source_action.setChecked(self._md_edit_mode == "source")
         self._mode_source_action.triggered.connect(lambda: self._set_edit_mode("source"))
@@ -1504,20 +1613,22 @@ class NotepadWindow(QMainWindow):
         act_help.triggered.connect(self.show_help)
         help_menu.addAction(act_help)
 
+        self._sync_md_view_actions()
+
     def show_help(self) -> None:
         from src.desknote_help import show_desknote_help
 
         show_desknote_help(self)
 
-    def _set_md_preview(self, enabled: bool) -> None:
-        self._md_preview_enabled = bool(enabled)
-        self._persist_md_settings()
-        self._apply_markdown_layout()
-
     def _set_md_outline(self, enabled: bool) -> None:
         self._md_outline_enabled = bool(enabled)
         self._persist_md_settings()
-        self._apply_markdown_layout()
+        page = self._current_page()
+        if page is not None and self._page_is_markdown(page) and self._md_view_mode == "edit":
+            page.outline_pane.set_expanded(self._md_outline_enabled, emit=False)
+            self._redistribute_md_splitter(page)
+            if self._md_outline_enabled:
+                self._refresh_markdown_panes(page)
 
     def export_html(self) -> None:
         page = self._current_page()
@@ -1626,8 +1737,12 @@ class NotepadWindow(QMainWindow):
         self._focus_session_tab()
         page = self._current_page()
         if page is not None:
-            self._apply_edit_mode(page)
-            self._focus_page_editor(page)
+            if self._page_is_markdown(page):
+                self._md_view_mode = "preview"
+                self._md_preview_enabled = True
+            self._apply_markdown_layout(page)
+            if self._md_view_mode != "preview" or not self._page_is_markdown(page):
+                self._focus_page_editor(page)
 
     def _focus_session_tab(self) -> None:
         """Select the tab recorded as current in the last session."""
@@ -1778,11 +1893,15 @@ class NotepadWindow(QMainWindow):
         idx = self.tabs.addTab(page.host, path.name)
         self._install_tab_side_buttons(page)
         self._refresh_tab_title(idx)
-        self._apply_edit_mode(page)
+        if self._page_is_markdown(page):
+            self._md_view_mode = "preview"
+            self._md_preview_enabled = True
+        self._apply_markdown_layout(page)
         if select:
             self.tabs.setCurrentIndex(idx)
             editor.moveCursor(QTextCursor.MoveOperation.Start)
-            self._focus_page_editor(page)
+            if self._md_view_mode != "preview" or not self._page_is_markdown(page):
+                self._focus_page_editor(page)
         return page
 
     def _install_tab_side_buttons(self, page: _NotePage) -> None:
@@ -1979,8 +2098,7 @@ class NotepadWindow(QMainWindow):
         ):
             if act is not None:
                 act.setEnabled(is_md)
-        if hasattr(self, "_mode_wysiwyg_action"):
-            self._mode_wysiwyg_action.setEnabled(is_md and webengine_available())
+        self._sync_md_view_actions()
         if page is not None and page.path is not None:
             self.library.highlight_path(page.path)
         self._update_window_title()
@@ -2123,7 +2241,10 @@ class NotepadWindow(QMainWindow):
             page.path = path.resolve()
             self._mark_clean(page)
             page.editor.moveCursor(QTextCursor.MoveOperation.Start)
-            self._apply_edit_mode(page)
+            if self._page_is_markdown(page):
+                self._md_view_mode = "preview"
+                self._md_preview_enabled = True
+            self._apply_markdown_layout(page)
             self.library.highlight_path(page.path)
             self._persist_session()
             return
@@ -2227,7 +2348,11 @@ class NotepadWindow(QMainWindow):
         else:
             page.ephemeral = bool(ephemeral)
         self._mark_clean(page)
-        self._apply_edit_mode(page)
+        # Saving as .md should show preview by default (same as open).
+        if self._page_is_markdown(page) and self._md_view_mode != "edit":
+            self._md_view_mode = "preview"
+            self._md_preview_enabled = True
+        self._apply_markdown_layout(page)
         if not page.ephemeral:
             self._refresh_library()
             self.library.highlight_path(page.path)

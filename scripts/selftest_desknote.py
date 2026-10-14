@@ -404,7 +404,9 @@ def main() -> int:
         from src.ui.notepad_window import NotepadWindow
 
         src = inspect.getsource(NotepadWindow)
-        assert "Markdown 预览" in src
+        assert "_md_view_mode" in src
+        assert "_toggle_md_view_mode" in src
+        assert "view_stack" in src
         assert "_refresh_markdown_panes" in src
         assert "md_preview" in src
         assert "show_help" in src
@@ -540,7 +542,8 @@ def main() -> int:
 
         assert "CollapsibleMdPane" in inspect.getsource(NotepadWindow._make_page)
         assert "outline_pane" in inspect.getsource(NotepadWindow._apply_markdown_layout)
-        assert "preview_pane" in inspect.getsource(NotepadWindow._apply_markdown_layout)
+        assert "view_stack" in inspect.getsource(NotepadWindow._apply_markdown_layout)
+        assert "preview_pane" not in inspect.getsource(NotepadWindow._apply_markdown_layout)
         assert "expanded_changed" in inspect.getsource(CollapsibleMdPane)
         pane_src = inspect.getsource(CollapsibleMdPane)
         assert "notepadPaneStrip" in pane_src
@@ -549,7 +552,7 @@ def main() -> int:
         assert "_redistribute_md_splitter" in inspect.getsource(NotepadWindow)
 
         os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-        from PyQt6.QtWidgets import QApplication, QLabel, QSplitter
+        from PyQt6.QtWidgets import QApplication, QLabel
 
         app = QApplication.instance() or QApplication([])
         body = QLabel("body")
@@ -566,37 +569,39 @@ def main() -> int:
         assert pane.is_expanded() and seen[-1] is True
         assert not pane._body_host.isHidden()
 
-        # Splitter must grow the middle when sides collapse.
+        # MD defaults to full-width preview; edit mode uses outline|source splitter.
         win = NotepadWindow({})
         win.show()
         app.processEvents()
         page = win._current_page()
-        # Force markdown layout chrome.
         page.path = Path("dummy.md")  # type: ignore[assignment]
-        win._md_outline_enabled = True
-        win._md_preview_enabled = True
+        win._md_view_mode = "preview"
         win._apply_markdown_layout(page)
+        app.processEvents()
+        assert page.view_stack.currentIndex() == 0, page.view_stack.currentIndex()
+
+        win._md_view_mode = "edit"
+        win._md_edit_mode = "source"
+        win._md_outline_enabled = True
+        win._apply_markdown_layout(page)
+        app.processEvents()
+        assert page.view_stack.currentIndex() == 1
+        assert page.edit_stack.currentIndex() == 0
         sp = page.splitter
         sp.resize(900, 400)
         app.processEvents()
-        sp.setSizes([180, 400, 320])
+        sp.setSizes([180, 720])
         app.processEvents()
         page.outline_pane._saved_width = 180
-        page.preview_pane._saved_width = 320
         page.outline_pane.set_expanded(False, emit=False)
         win._redistribute_md_splitter(page)
         app.processEvents()
         sizes = sp.sizes()
         assert sizes[0] <= 32, sizes
-        assert sizes[1] >= 400, sizes  # middle grew
-        page.preview_pane.set_expanded(False, emit=False)
-        win._redistribute_md_splitter(page)
-        app.processEvents()
-        sizes = sp.sizes()
-        assert sizes[2] <= 32, sizes
-        assert sizes[1] >= 500, sizes
+        assert sizes[1] >= 400, sizes  # editor grew
+        assert len(sizes) == 2, sizes  # no third preview column
         win.close()
-        ok("collapsible outline/preview panes")
+        ok("md preview/edit two-state + outline collapse")
     except Exception as e:
         fail("collapsible panes", e)
 

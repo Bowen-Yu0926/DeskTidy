@@ -4698,7 +4698,7 @@ def test_page_switch_click() -> None:
         dn_merged = build_merged_desknote_help_html()
         assert dn_merged is not None
         assert "DeskNote 使用手册" in dn_merged
-        assert "Markdown 三栏" in dn_merged
+        assert "Markdown 预览与编辑" in dn_merged
         assert "id=\"manual-fences\"" not in dn_merged
         panel_src = inspect.getsource(HelpContentPanel.__init__)
         assert "include_manual" not in panel_src

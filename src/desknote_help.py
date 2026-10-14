@@ -20,7 +20,7 @@ DESKNOTE_HELP_TOPICS: list[tuple[str, str]] = [
     ("tabs_files", "页签与文件"),
     ("library", "笔记库侧栏"),
     ("edit_find", "编辑与查找"),
-    ("markdown", "Markdown 三栏"),
+    ("markdown", "Markdown 预览与编辑"),
     ("edit_modes", "编辑模式"),
     ("headings", "标题与大纲"),
     ("shortcuts", "快捷键"),
@@ -93,7 +93,7 @@ def desknote_help_html(topic_id: str) -> str:
         "overview": f"""
 <h2>DeskNote 总览</h2>
 <p class='purpose'>DeskNote 是与 DeskTidy 同包可选安装的独立记事本：多页签编辑常见文本/代码，
-并对 <code>.md</code> 提供笔记库侧栏、源码三栏预览、所见即所得、专注/打字机模式与智能粘贴。</p>
+并对 <code>.md</code> 提供笔记库侧栏、预览/编辑切换、所见即所得、专注/打字机模式与智能粘贴。</p>
 {_op_table([
     ("怎么打开", "桌面 / 开始菜单的 DeskNote 快捷方式；或在 DeskTidy 扩展里启用快捷方式。"),
     ("默认保存位置", "安装目录下的「笔记」文件夹（可在 DeskTidy → 扩展功能里改）。"),
@@ -149,32 +149,30 @@ def desknote_help_html(topic_id: str) -> str:
 ])}
 """,
         "markdown": f"""
-<h2>Markdown 三栏</h2>
-<p class='purpose'>仅当当前页签文件是 <code>.md</code> / <code>.markdown</code> 时显示。源码模式下中间始终是可编辑源码；左右两栏只读。</p>
+<h2>Markdown 预览与编辑</h2>
+<p class='purpose'>打开 <code>.md</code> / <code>.markdown</code> 时默认全宽预览；点右侧竖条「编辑」进入编辑，再点「预览」返回。不再并排三栏。</p>
 {_op_table([
-    ("左 · 大纲", "根据标题列出目录，点击跳转到源码对应行。"),
-    ("中 · 源码", "源码模式下的编辑区，保存的也是 Markdown 原文。"),
-    ("右 · 预览", "增强预览：代码高亮、公式、Mermaid、脚注、<code>[TOC]</code>；无 WebEngine 时自动降级。"),
-    ("查看 · Markdown 预览", "开关右侧预览（Ctrl+Shift+V）。"),
-    ("查看 · 大纲", "开关左侧大纲（Ctrl+Shift+O）。"),
-    ("查看 · 同步滚动", "源码与预览按比例联动（可关）。"),
+    ("打开 .md", "默认进入全宽预览（代码高亮、公式、Mermaid、脚注、<code>[TOC]</code>；无 WebEngine 时自动降级）。"),
+    ("右侧竖条 · 编辑 / 预览", "在预览与编辑之间切换。"),
+    ("查看 · 预览 / Ctrl+Shift+V", "切到预览。"),
+    ("查看 · 编辑 / Ctrl+E", "切到编辑（源码或所见即所得）。"),
+    ("编辑 · 大纲", "仅编辑-源码模式下可选左侧大纲（Ctrl+Shift+O）。"),
     ("文件 · 导出 HTML / PDF", "导出当前 Markdown；PDF 需增强预览引擎。"),
     ("文件 · 导出 Word", "调用本机 Pandoc 转为 .docx；未安装时会提示安装方式。"),
-    ("粘贴 / 拖入图片", "在 .md 中粘贴截图或拖入图片文件，保存到笔记旁 <code>assets/</code> 并插入相对路径。"),
-    ("拖拽分隔条", "调整三栏宽度。"),
+    ("粘贴 / 拖入图片", "在编辑模式下粘贴截图或拖入图片，保存到笔记旁 <code>assets/</code> 并插入相对路径。"),
 ])}
-<p class='tip'>普通 <code>.txt</code> 等文件不会出现大纲/预览，避免干扰纯文本编辑。</p>
+<p class='tip'>普通 <code>.txt</code> 等文件只有编辑区，不会进入 Markdown 预览。</p>
 """,
         "edit_modes": f"""
 <h2>编辑模式</h2>
-<p class='purpose'>在「查看」菜单切换 Markdown 编辑体验（需已保存为 <code>.md</code>）。</p>
+<p class='purpose'>先进入「编辑」视图，再在「查看」菜单选择源码或所见即所得（需已保存为 <code>.md</code>）。</p>
 {_op_table([
-    ("查看 · 源码三栏", "大纲 + 源码 + 预览（默认）。"),
-    ("查看 · 所见即所得", "Toast UI 可视化编辑；切换回源码或保存前会同步 Markdown 原文。需 WebEngine。"),
-    ("查看 · 专注模式 / F11", "隐藏大纲、预览与状态栏，只留源码区；退出后恢复原布局。"),
+    ("查看 · 源码编辑", "左侧可选大纲 + 源码编辑区。"),
+    ("查看 · 所见即所得", "Toast UI 可视化编辑；切回源码/预览或保存前会同步 Markdown 原文。需 WebEngine。"),
+    ("查看 · 专注模式 / F11", "隐藏侧栏与状态栏，全宽源码编辑；退出后恢复预览或编辑布局。"),
     ("查看 · 打字机模式", "光标所在行尽量垂直居中，便于长文连续输入。"),
 ])}
-<p class='tip'>专注模式会临时切回源码三栏。打字机模式仅作用于源码编辑区。</p>
+<p class='tip'>专注模式强制进入源码编辑。打字机模式仅作用于源码编辑区。</p>
 """,
         "headings": f"""
 <h2>标题与大纲</h2>
@@ -199,8 +197,9 @@ def desknote_help_html(topic_id: str) -> str:
     ("Ctrl+F", "查找"),
     ("Ctrl+H", "替换"),
     ("F3 / Shift+F3", "查找下一个 / 上一个"),
-    ("Ctrl+Shift+V", "开关 Markdown 预览"),
-    ("Ctrl+Shift+O", "开关大纲"),
+    ("Ctrl+Shift+V", "Markdown 预览"),
+    ("Ctrl+E", "Markdown 编辑"),
+    ("Ctrl+Shift+O", "开关大纲（编辑模式下）"),
     ("Ctrl+Shift+E", "开关文件树侧栏"),
     ("Ctrl+Shift+F", "搜索笔记库"),
     ("F11", "专注模式"),
