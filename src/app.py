@@ -6026,10 +6026,10 @@ class DeskTidyApp:
 
                 for widget, x, y, w, h in sync:
                     try:
-                        target = QRect(int(x), int(y), int(w), int(h))
-                        if widget.geometry() == target:
-                            continue
-                        widget.setGeometry(target)
+                        # Always sync Qt cache after physical DeferWindowPos —
+                        # skipping when geometry() already matched left a
+                        # short HWND on HiDPI (logical SetWindowPos bug).
+                        widget.setGeometry(QRect(int(x), int(y), int(w), int(h)))
                     except RuntimeError:
                         continue
                 # Keep Qt isVisible in sync with Win32 after batch hide/show.
@@ -6207,6 +6207,26 @@ class DeskTidyApp:
             self._sink_public_host_below_overlays(
                 first_fence_hwnd, pet_hwnd=pet_hwnd
             )
+            # Foreign app FG: keep fences/pet under SoftMgr — never HWND_TOP.
+            if self._foreign_app_owns_foreground():
+                self._seat_live_overlays_under_apps()
+                return
+            # Own chrome FG (pet chips): seat under other open apps, then raise
+            # pet above sibling fences only (hair clearance).
+            self._seat_live_overlays_under_apps()
+            if pet_hwnd:
+                try:
+                    from src.desktop_shell_host import raise_overlay_in_desktop_band
+
+                    raise_overlay_in_desktop_band(int(pet_hwnd))
+                except Exception:
+                    pass
+            nudge = getattr(pet, "_nudge_clear_of_fence_bottoms", None) if pet else None
+            if callable(nudge):
+                try:
+                    nudge()
+                except Exception:
+                    pass
             return
 
         from src.desktop_shell_host import (
@@ -6242,6 +6262,13 @@ class DeskTidyApp:
         self._sink_public_host_below_overlays(first_fence_hwnd, pet_hwnd=pet_hwnd)
         # Pet is raised above fences; open vault/todo must stay above the pet.
         self._raise_open_tool_panels_above_pet()
+        pet = getattr(self, "pet_widget", None)
+        nudge = getattr(pet, "_nudge_clear_of_fence_bottoms", None) if pet else None
+        if callable(nudge):
+            try:
+                nudge()
+            except Exception:
+                pass
 
     def _raise_open_tool_panels_above_pet(self) -> None:
         """Keep visible vault/todo panels above the desktop pet sprite."""
@@ -6339,6 +6366,39 @@ class DeskTidyApp:
             except RuntimeError:
                 pass
 
+    def _seat_live_overlays_under_apps(self) -> None:
+        """Force live fences/pet into the desktop band (under SoftMgr / WeChat).
+
+        Page-switch ShowWindow / batch reveal can leave the 文档 strip covering
+        normal APPWINDOWs until the next foreign-FG sink. ``force=True`` bypasses
+        the HWND_BOTTOM rate limit so the seat always lands after a page flip.
+        """
+        from src.desktop_shell_host import place_overlay_in_desktop_band
+
+        for fence in list(getattr(self, "fences", None) or ()):
+            try:
+                if bool(getattr(fence, "_desktidy_soft_parked", False)):
+                    continue
+                hwnd = self._fence_hwnd(fence)
+                if hwnd:
+                    place_overlay_in_desktop_band(int(hwnd), force=True)
+            except RuntimeError:
+                continue
+        pet = getattr(self, "pet_widget", None)
+        if pet is None:
+            return
+        try:
+            if not pet.isVisible():
+                return
+            hwnd = int(pet.winId()) if pet.winId() else 0
+        except (RuntimeError, Exception):
+            return
+        if hwnd:
+            try:
+                place_overlay_in_desktop_band(int(hwnd), force=True)
+            except Exception:
+                pass
+
     def _restore_arriving_fences_interactive(self) -> None:
         """After A↔B batch: arriving fences must take clicks immediately.
 
@@ -6363,6 +6423,21 @@ class DeskTidyApp:
                 set_overlay_mouse_passthrough(fence, True)
             except RuntimeError:
                 continue
+
+        # Seat under open apps *before* any HWND_TOP raise — otherwise 切页
+        # leaves 文档 covering SoftMgr / VS Code until the user Alt+Tabs.
+        self._seat_live_overlays_under_apps()
+        if self._foreign_app_owns_foreground():
+            # Opaque so icons still work once the app yields; stay under FG.
+            for fence in list(getattr(self, "fences", None) or ()):
+                try:
+                    if bool(getattr(fence, "_desktidy_soft_parked", False)):
+                        continue
+                    set_overlay_mouse_passthrough(fence, False)
+                except RuntimeError:
+                    continue
+            self._sink_overlays_for_foreign_app()
+            return
 
         self.ensure_live_fences_interactive()
 
@@ -7271,8 +7346,36 @@ class DeskTidyApp:
                 except RuntimeError:
                     native = None
                 try:
+                    # Skip only when Qt *and* HWND already match. HiDPI
+                    # SetWindowPos used to shrink the HWND while Qt still
+                    # reported the full logical size — early-return left a
+                    # ~80%-width 文档 strip until restart.
                     if page_switch and native is not None and fence.geometry() == target:
-                        return
+                        hwnd = self._fence_hwnd(fence)
+                        if hwnd:
+                            try:
+                                import win32gui
+                                from src.desktop_shell_host import (
+                                    qt_logical_to_physical,
+                                )
+
+                                left, top, right, bottom = win32gui.GetWindowRect(
+                                    int(hwnd)
+                                )
+                                px, py, pw, ph = qt_logical_to_physical(
+                                    int(hwnd), x, y, w, h
+                                )
+                                if (
+                                    abs(int(left) - px) <= 2
+                                    and abs(int(top) - py) <= 2
+                                    and abs(int(right - left) - pw) <= 2
+                                    and abs(int(bottom - top) - ph) <= 2
+                                ):
+                                    return
+                            except Exception:
+                                pass
+                        else:
+                            return
                 except RuntimeError:
                     pass
                 # New fences: set Qt size before winId() so the HWND is not born

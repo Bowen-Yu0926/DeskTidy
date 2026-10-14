@@ -37,6 +37,37 @@ GWLP_HWNDPARENT = -8
 GW_OWNER = 4
 
 
+def qt_logical_to_physical(
+    hwnd: int, x: int, y: int, w: int, h: int
+) -> tuple[int, int, int, int]:
+    """Map Qt logical geometry to Win32 physical pixels for ``SetWindowPos``.
+
+    Qt6 is Per-Monitor DPI aware; ``user32.SetWindowPos`` expects physical
+    pixels. Passing logical sizes shrinks overlays by ``1/DPR`` (e.g. docs
+    fence 1536→1229 / ~80% width at 125% scaling).
+    """
+    try:
+        dpi = int(user32.GetDpiForWindow(int(hwnd)) or 0)
+    except Exception:
+        dpi = 0
+    if dpi <= 0:
+        try:
+            dpi = int(user32.GetDpiForSystem() or 96)
+        except Exception:
+            dpi = 96
+    if dpi <= 0:
+        dpi = 96
+    if dpi == 96:
+        return int(x), int(y), max(1, int(w)), max(1, int(h))
+    scale = float(dpi) / 96.0
+    return (
+        int(round(float(x) * scale)),
+        int(round(float(y) * scale)),
+        max(1, int(round(float(w) * scale))),
+        max(1, int(round(float(h) * scale))),
+    )
+
+
 class OverlayWindowBatch:
     """One DWM composition for page-switch show/hide/move of translucent HWNDs.
 
@@ -53,7 +84,7 @@ class OverlayWindowBatch:
     _MOVE = 3
 
     def __init__(self) -> None:
-        # (op, hwnd, x, y, w, h)
+        # (op, hwnd, x, y, w, h) — MOVE coords are physical pixels
         self._items: list[tuple[int, int, int, int, int, int]] = []
 
     def _alive(self, hwnd: int) -> bool:
@@ -75,9 +106,11 @@ class OverlayWindowBatch:
         self._items.append((self._SHOW, int(hwnd), 0, 0, 0, 0))
 
     def set_rect(self, hwnd: int, x: int, y: int, w: int, h: int) -> None:
+        """Queue a move/resize. ``x/y/w/h`` are Qt *logical* pixels."""
         if not self._alive(hwnd) or w <= 0 or h <= 0:
             return
-        self._items.append((self._MOVE, int(hwnd), int(x), int(y), int(w), int(h)))
+        px, py, pw, ph = qt_logical_to_physical(int(hwnd), int(x), int(y), int(w), int(h))
+        self._items.append((self._MOVE, int(hwnd), px, py, pw, ph))
 
     def commit(self) -> None:
         items = self._items
@@ -150,11 +183,14 @@ def prime_hidden_overlay(
             return
     except Exception:
         return
+    # ``x/y/w/h`` are Qt logical — convert once for both off-screen prime and
+    # the final hidden on-screen rect (same HiDPI bug as OverlayWindowBatch).
+    px, py, pw, ph = qt_logical_to_physical(int(hwnd), int(x), int(y), int(w), int(h))
     ox, oy = OFFSCREEN_PARK_POS
     show_flags = SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_SHOWWINDOW
     hide_flags = SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_HIDEWINDOW
     try:
-        user32.SetWindowPos(int(hwnd), 0, int(ox), int(oy), int(w), int(h), show_flags)
+        user32.SetWindowPos(int(hwnd), 0, int(ox), int(oy), int(pw), int(ph), show_flags)
         if callable(on_shown):
             try:
                 on_shown()
@@ -162,12 +198,12 @@ def prime_hidden_overlay(
                 pass
         redraw_overlay_hwnd(int(hwnd))
         user32.SetWindowPos(
-            int(hwnd), 0, int(x), int(y), int(w), int(h), hide_flags
+            int(hwnd), 0, int(px), int(py), int(pw), int(ph), hide_flags
         )
     except Exception:
         try:
             user32.SetWindowPos(
-                int(hwnd), 0, int(x), int(y), int(w), int(h), hide_flags
+                int(hwnd), 0, int(px), int(py), int(pw), int(ph), hide_flags
             )
         except Exception:
             pass

@@ -379,6 +379,25 @@ def _heal_system_fence(
     return changed
 
 
+def _clear_system_docs_profiles(settings: dict) -> None:
+    """Drop saved 文档 layout entries so the next apply re-seeds from fence cfg."""
+    profiles = settings.get("fence_layouts_by_display")
+    if isinstance(profiles, dict):
+        for profile in profiles.values():
+            if not isinstance(profile, dict):
+                continue
+            for page_key in (str(SYSTEM_DOCS_PAGE_ID), SYSTEM_DOCS_PAGE_ID):
+                page_map = profile.get(page_key)
+                if not isinstance(page_map, dict):
+                    continue
+                page_map.pop(SYSTEM_DOCS_FENCE_ID, None)
+    legacy = settings.get("fence_layouts_by_page")
+    if isinstance(legacy, dict):
+        page_map = legacy.get(str(SYSTEM_DOCS_PAGE_ID))
+        if isinstance(page_map, dict):
+            page_map.pop(SYSTEM_DOCS_FENCE_ID, None)
+
+
 def apply_system_fence_geometry_from_display(settings: dict) -> bool:
     """Snap locked system fences to the primary work area (first install / fresh display)."""
     changed = False
@@ -407,11 +426,54 @@ def apply_system_fence_geometry_from_display(settings: dict) -> bool:
         fences, SYSTEM_DOCS_FENCE_ID, frozenset({SYSTEM_DOCS_FENCE_NAME})
     )
     if docs_fence is not None:
+        docs_changed = False
         for key in ("x", "y", "width", "height"):
             if int(docs_fence.get(key, -1)) != int(docs_geom[key]):
                 docs_fence[key] = docs_geom[key]
-                changed = True
+                docs_changed = True
+        # HiDPI page-switch used to persist a short strip; unlock so the user
+        # can drag after we restore full work-area width.
+        if docs_fence.get("position_locked"):
+            docs_fence["position_locked"] = False
+            docs_changed = True
+        if docs_changed:
+            _clear_system_docs_profiles(settings)
+            changed = True
     return changed
+
+
+def _heal_narrow_docs_fence(settings: dict, fences: list) -> bool:
+    """Snap 文档 to full primary work width when it shrank (HiDPI SetWindowPos)."""
+    docs = _find_fence(fences, SYSTEM_DOCS_FENCE_ID, frozenset({SYSTEM_DOCS_FENCE_NAME}))
+    if docs is None:
+        return False
+    try:
+        from src.fence_layout import primary_desktop_rect
+    except Exception:
+        return False
+    area = primary_desktop_rect()
+    aw = max(1, int(area.width()))
+    try:
+        raw_w = int(docs.get("width") or 0)
+        raw_h = int(docs.get("height") or 0)
+    except (TypeError, ValueError):
+        return False
+    # ~80% width is the classic logical-as-physical bug at 125% DPI.
+    needs = raw_w > 0 and raw_w < int(aw * 0.92)
+    min_h = _content_fit_fence_height(int(area.height()))
+    if raw_h > 0 and raw_h < min_h - 8:
+        needs = True
+    if docs.get("position_locked"):
+        # Always clear so a healed system strip stays movable.
+        docs["position_locked"] = False
+        needs = True
+    if not needs:
+        return False
+    geom = _default_fence_geometry(rw=_DOCS_RW, rh=_DOCS_RH, fallback=_DOCS_FALLBACK)
+    for key in ("x", "y", "width", "height"):
+        docs[key] = geom[key]
+    _clear_system_docs_profiles(settings)
+    return True
 
 
 def _clear_system_work_row_profiles(settings: dict) -> None:
@@ -664,6 +726,9 @@ def ensure_system_defaults(settings: dict) -> bool:
         )
 
     if _heal_crowded_work_row_geometries(settings, fences):
+        changed = True
+
+    if _heal_narrow_docs_fence(settings, fences):
         changed = True
 
     return changed

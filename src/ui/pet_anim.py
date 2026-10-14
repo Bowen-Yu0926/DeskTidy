@@ -842,11 +842,54 @@ def _fit_sprite(
             if not shrunk.isNull():
                 fitted = shrunk
                 fitted.setDevicePixelRatio(dpr)
+    # Soft hoodie spikes wash out to a flat cut over white fence/app chrome —
+    # harden crown alpha so tips stay readable on bright backgrounds.
+    if (
+        not fitted.isNull()
+        and char_id == "hoodie"
+        and pose in {_POSE_IDLE, _POSE_STAND, _POSE_PLAY, _POSE_WALK}
+    ):
+        fitted = _harden_crown_alpha(fitted)
     _FIT_CACHE[key] = fitted
     _FIT_CACHE.move_to_end(key)
     while len(_FIT_CACHE) > _FIT_CACHE_MAX:
         _FIT_CACHE.popitem(last=False)
     return fitted
+
+
+def _harden_crown_alpha(pix: QPixmap) -> QPixmap:
+    """Boost near-transparent hair tips in the top band (white-bg washout)."""
+    if pix.isNull():
+        return pix
+    img = pix.toImage()
+    if img.isNull():
+        return pix
+    img = img.convertToFormat(QImage.Format.Format_ARGB32)
+    h = img.height()
+    w = img.width()
+    if h < 8 or w < 8:
+        return pix
+    crown = max(2, int(round(h * 0.16)))
+    for y in range(crown):
+        # Stronger boost at the tip row, tapering toward the brow.
+        t = 1.0 - (y / float(crown))
+        boost = 1.0 + 1.8 * t
+        for x in range(w):
+            c = int(img.pixel(x, y))
+            a = (c >> 24) & 255
+            if a == 0 or a >= 250:
+                continue
+            na = min(255, int(round(a * boost)))
+            if na <= a:
+                continue
+            img.setPixel(x, y, (na << 24) | (c & 0xFFFFFF))
+    out = QPixmap.fromImage(img)
+    if out.isNull():
+        return pix
+    dpr = float(pix.devicePixelRatio() or 1.0)
+    if dpr > 1.01:
+        out.setDevicePixelRatio(dpr)
+    return out
 
 
 def _fitted_foot_offset(

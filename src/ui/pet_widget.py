@@ -44,20 +44,29 @@ def _separate_page_bubble_rects(
     pointer: int,
     min_gap: int,
 ) -> list[QRect]:
-    """Push chips down until body+pointer bands no longer intersect.
+    """Push *stacked* chips down until body+pointer bands no longer intersect.
 
     Row-pack formulas (arc/stagger/DPI rounding) have repeatedly let chips
     stack visually; this pass is the hard guarantee the selftest asserts.
+
+    Same-row chips (near-equal ``y``) are left alone — horizontal packing owns
+    their spacing. Pushing them down used to drop tips into the pet's hair.
     """
     if len(rects) <= 1:
         return list(rects)
     out = [QRect(r) for r in rects]
+    # Use *original* row y so packed neighbors are skipped, while chips that
+    # were stacked and later land on the same y still get pushed apart.
+    orig_y = [int(r.y()) for r in out]
     # Stable order: top-to-bottom, then left-to-right.
     order = sorted(range(len(out)), key=lambda i: (out[i].y(), out[i].x(), i))
     tip = max(0, int(pointer))
     gap = max(0, int(min_gap))
     for oi, i in enumerate(order):
         for j in order[:oi]:
+            # Same packed row — do not shove sideways neighbors into the sprite.
+            if abs(orig_y[i] - orig_y[j]) <= 2:
+                continue
             a = out[j].adjusted(0, 0, 0, tip)
             b = out[i].adjusted(0, 0, 0, tip)
             if not a.intersects(b):
@@ -70,16 +79,28 @@ def _separate_page_bubble_rects(
 
 
 def _restack_fences_after_pet_raise() -> None:
-    """Keep fences clickable while the pet stays above fence icons."""
+    """Keep fences clickable while the pet stays above fence icons.
+
+    ``ensure_live_fences_interactive`` may skip HWND_TOP when a foreign app
+    owns FG (so fences do not jump over WeChat/Cursor). When desktop/own
+    chrome owns FG, finish by raising the pet above sibling fences (hair).
+    Never HWND_TOP the pet while a foreign app is focused — that left the
+    文档 strip covering SoftMgr after 切页.
+    """
     app = QApplication.instance()
     desk = getattr(app, "_desktidy_app", None) if app is not None else None
     ensure = getattr(desk, "ensure_live_fences_interactive", None) if desk else None
     if callable(ensure):
         try:
             ensure()
-            return
         except Exception:
             pass
+    foreign = getattr(desk, "_foreign_app_owns_foreground", None) if desk else None
+    try:
+        if callable(foreign) and bool(foreign()):
+            return
+    except Exception:
+        pass
     raise_pet_above_fences_in_band()
 
 # Layout: bubble above sprite; status strip under sprite; optional action panel.
@@ -96,6 +117,12 @@ _IDLE_BUBBLE_H = 0
 # the hair"), but on small sprites or multi-row chrome that visually blocked
 # the pet. Zero overlap keeps chips above the head without covering it.
 _PAGE_CLOUD_OVERLAP = 0
+# Air between pointer tips and sprite top. Hoodie spikes need more than a
+# ~14–20px kiss — at 125% DPI the white chip/pointer band still ate the
+# crown. Fraction of sprite height tracks size_scale across machines.
+_PAGE_HEAD_CLEARANCE_FRAC = 0.20
+_PAGE_HEAD_CLEARANCE_MIN = 36
+_PAGE_HEAD_CLEARANCE_MAX = 64
 _MENU_BTN = 22
 _ACTION_BTN = 30
 _ACTION_GAP = 4
@@ -475,17 +502,21 @@ class DesktopPetWidget(QWidget):
         「从文件夹拖到桌面」fails under the pet. Outside this region, WindowFromPoint
         reaches DefView (same idea as PublicIconHost click-through).
         """
-        region = QRegion(self._sprite_dest_rect().adjusted(-2, -2, 2, 2))
+        sprite = self._sprite_dest_rect()
+        # Extra top pad: bob/squash can push hoodie spikes above dest.top;
+        # without it the shaped HWND shears the crown into a flat cut.
+        hair_pad = max(10, int(round(sprite.height() * 0.08)))
+        region = QRegion(sprite.adjusted(-2, -hair_pad, 2, 2))
         # Fall / dizzy cels can be wider than the idle dest; keep a small pad so
         # limbs are not clipped by the shaped mask.
         if self._state in (_STATE_FALL, _STATE_DIZZY, _STATE_TRASH, _STATE_WAIT, _STATE_SLEEP):
-            pad = max(8, self._sprite_dest_rect().width() // 8)
+            pad = max(8, sprite.width() // 8)
             if self._state == _STATE_TRASH:
                 # Throw cels + plane need generous mask so shaped HWND doesn't clip paint.
-                pad = max(pad, self._sprite_dest_rect().width() // 2)
+                pad = max(pad, sprite.width() // 2)
                 region = region.united(
                     QRegion(
-                        self._sprite_dest_rect().adjusted(
+                        sprite.adjusted(
                             -pad, -pad, pad, max(24, pad // 4)
                         )
                     )
@@ -493,9 +524,9 @@ class DesktopPetWidget(QWidget):
                 # Skip the generic pad union below — already covered.
                 pad = 0
             elif self._character == "hoodie" and self._state in (_STATE_WAIT, _STATE_SLEEP):
-                pad = max(pad, self._sprite_dest_rect().width() // 4)
+                pad = max(pad, sprite.width() // 4)
             region = region.united(
-                QRegion(self._sprite_dest_rect().adjusted(-pad, -pad // 2, pad, pad // 3))
+                QRegion(sprite.adjusted(-pad, -pad // 2, pad, pad // 3))
             )
         if self._bubble_text:
             ox, oy = self._body_origin()
@@ -505,12 +536,27 @@ class DesktopPetWidget(QWidget):
         region = region.united(QRegion(self._menu_button_rect()))
         if self._show_page_bubbles():
             tip = max(3, int(round(_PAGE_BUBBLE_POINTER * self._bubble_scale())))
+            tip_bottom = 0
             for i in range(len(self._chrome_items)):
                 r = self._page_bubble_rect(i)
                 if not r.isNull():
                     # Include the painted speech-tail so the shaped HWND
                     # does not clip the pointer into neighboring chips.
                     region = region.united(QRegion(r.adjusted(0, 0, 0, tip)))
+                    tip_bottom = max(tip_bottom, r.bottom() + tip)
+            # Bridge chip tails → sprite so the crown is not a mask hole over
+            # white fence/app chrome (soft tips vanished into a flat haircut).
+            if tip_bottom > 0 and tip_bottom < sprite.top():
+                region = region.united(
+                    QRegion(
+                        QRect(
+                            sprite.x() - 2,
+                            tip_bottom,
+                            sprite.width() + 4,
+                            sprite.top() - tip_bottom + hair_pad,
+                        )
+                    )
+                )
         if self._menu_open:
             panel = self._action_panel_rect()
             if not panel.isNull():
@@ -663,8 +709,23 @@ class DesktopPetWidget(QWidget):
         max_y = 0
         for r in rects:
             max_y = max(max_y, r.bottom() + pointer)
-        # Hang the cloud toward the hair (no speech gutter — bubbles retired).
-        band_h = max(0, max_y + 2 - overlap)
+        # Keep pointer tips clear of the hood hair across size_scale / HiDPI.
+        head_clear = int(round(self._sprite_h() * _PAGE_HEAD_CLEARANCE_FRAC))
+        head_clear = max(
+            int(round(_PAGE_HEAD_CLEARANCE_MIN * s)),
+            min(int(round(_PAGE_HEAD_CLEARANCE_MAX * s)), head_clear),
+        )
+        try:
+            from PyQt6.QtGui import QGuiApplication
+
+            screen = QGuiApplication.primaryScreen()
+            dpr = float(screen.devicePixelRatio()) if screen is not None else 1.0
+        except Exception:
+            dpr = 1.0
+        # HiDPI packs more hair detail into the same logical top edge.
+        if dpr > 1.05:
+            head_clear = int(round(head_clear * min(1.4, 0.9 + 0.25 * dpr)))
+        band_h = max(0, max_y + head_clear - overlap)
         total_w = max(
             left_pad + self._layout_body_width(),
             int(math.ceil(max_x)) + left_pad + spr_pad_l + pad,
@@ -1093,6 +1154,7 @@ class DesktopPetWidget(QWidget):
         self.setAcceptDrops(False)
         self._sync_drop_zone()
         _restack_fences_after_pet_raise()
+        self._nudge_clear_of_fence_bottoms()
         if not self._tick.isActive():
             self._tick.start()
         if not self._ai.isActive():
@@ -1160,6 +1222,66 @@ class DesktopPetWidget(QWidget):
         self.move(x, y)
         # Moving leaves PublicIconHost's pet exclusion at the old screen rect.
         self._schedule_public_host_mask_refresh()
+
+    def _nudge_clear_of_fence_bottoms(self) -> None:
+        """Push the sprite below live fence strips so white chrome cannot eat hair.
+
+        Page chips sit in the pet HWND above the sprite. When the crown tucks
+        under a docs/work fence, fence fill shows through soft hair alpha and
+        looks like the strip is covering the head — even with pet z-order on top.
+        """
+        if self._dragging:
+            return
+        app = QApplication.instance()
+        desk = getattr(app, "_desktidy_app", None) if app is not None else None
+        fences = list(getattr(desk, "fences", None) or ()) if desk is not None else ()
+        if not fences:
+            return
+        try:
+            sprite = self._sprite_dest_rect()
+            top_left = self.mapToGlobal(sprite.topLeft())
+        except RuntimeError:
+            return
+        try:
+            chrome_top = int(self.mapToGlobal(QPoint(0, 0)).y())
+        except RuntimeError:
+            chrome_top = int(top_left.y())
+        spr_l = int(top_left.x())
+        spr_t = int(top_left.y())
+        spr_r = spr_l + int(sprite.width())
+        # Clear the chip↔hair band too — white fence/app fill in that gap
+        # washes out soft spikes and reads as「头部显示不全」.
+        margin = max(20, int(round(self._sprite_h() * 0.14 * self._size_scale())))
+        need_y: int | None = None
+        for fw in fences:
+            try:
+                if not fw.isVisible():
+                    continue
+                if bool(getattr(fw, "_desktidy_soft_parked", False)):
+                    continue
+                fg = fw.frameGeometry()
+            except RuntimeError:
+                continue
+            if spr_r < int(fg.left()) + 8 or spr_l > int(fg.right()) - 8:
+                continue
+            fence_bottom = int(fg.y() + fg.height())
+            fence_top = int(fg.y())
+            # Any overlap of the pet chrome (chips + crown) with the strip.
+            pet_bottom = chrome_top + int(self.height())
+            if pet_bottom <= fence_top or chrome_top >= fence_bottom:
+                continue
+            delta = (fence_bottom + margin) - chrome_top
+            if delta <= 0:
+                continue
+            candidate = int(self.y() + delta)
+            need_y = candidate if need_y is None else max(need_y, candidate)
+        if need_y is None or need_y <= self.y():
+            return
+        self._move_clamped(self.x(), need_y)
+        try:
+            self._persist_geometry()
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------ AI states
 
@@ -2342,6 +2464,7 @@ class DesktopPetWidget(QWidget):
                 if self.pos().y() < self._floor_y() - 24:
                     self._start_fall(0.0, 80.0)
                     return
+                self._nudge_clear_of_fence_bottoms()
                 self._schedule_idle()
         finally:
             self._clear_drag_layout()
@@ -2351,6 +2474,7 @@ class DesktopPetWidget(QWidget):
             self._drag_samples = []
             self.setCursor(Qt.CursorShape.OpenHandCursor)
             self._sync_input_mask()
+            _restack_fences_after_pet_raise()
 
     def _drag_velocity(self) -> tuple[float, float]:
         if len(self._drag_samples) < 2:

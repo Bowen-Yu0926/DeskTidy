@@ -881,6 +881,38 @@ def main() -> None:
     assert "_PAGE_CLOUD_OVERLAP" in inspect.getsource(
         DesktopPetWidget._layout_page_bubbles
     )
+    assert "_PAGE_HEAD_CLEARANCE" in inspect.getsource(
+        DesktopPetWidget._layout_page_bubbles
+    )
+    # Pointer tips must clear the sprite top (hair) — not a 2px kiss.
+    pet_gap = DesktopPetWidget(
+        {
+            "desktop_pet": {
+                "enabled": True,
+                "show_page_bubbles": True,
+                "character": "hoodie",
+                "size_scale": 1.0,
+            },
+            "desktop_pages": [
+                {"id": 0, "name": "工作"},
+                {"id": 1, "name": "文档"},
+                {"id": 2, "name": "纪要"},
+            ],
+        }
+    )
+    pet_gap._reload_chrome_from_settings()
+    pet_gap._apply_size()
+    tip_gap = max(
+        3, int(round(_PAGE_BUBBLE_POINTER * pet_gap._bubble_scale()))
+    )
+    tips = [
+        pet_gap._page_bubble_rect(i).bottom() + tip_gap
+        for i in range(len(pet_gap._chrome_items))
+    ]
+    spr_top = pet_gap._sprite_dest_rect().y()
+    # Hoodie crown needs real air under chip pointers (was 12 — tips still
+    # sat in the hair on 125% DPI / white fence fill).
+    assert tips and spr_top - max(tips) >= 36, (tips, spr_top)
     say_src = inspect.getsource(DesktopPetWidget.say)
     assert "Speech bubbles removed" in say_src or "draw nothing" in say_src
     paint_src = inspect.getsource(DesktopPetWidget.paintEvent)

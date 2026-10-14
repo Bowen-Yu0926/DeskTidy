@@ -233,6 +233,11 @@ def test_soft_park_contracts() -> None:
     restore_src = inspect.getsource(DeskTidyApp._restore_arriving_fences_interactive)
     assert "set_overlay_mouse_passthrough" in restore_src
     assert "ensure_live_fences_interactive" in restore_src
+    # 切页 must seat fences under SoftMgr/WeChat before any HWND_TOP raise.
+    assert "_seat_live_overlays_under_apps" in restore_src
+    assert "_foreign_app_owns_foreground" in restore_src
+    seat_src = inspect.getsource(DeskTidyApp._seat_live_overlays_under_apps)
+    assert "force=True" in seat_src
     ensure_live = inspect.getsource(DeskTidyApp.ensure_live_fences_interactive)
     assert "raise_overlay_in_desktop_band" in ensure_live
     assert "pet_widget" in ensure_live
@@ -837,10 +842,20 @@ def test_arriving_fences_mouse_cleared_before_icon_fill() -> None:
     desk.pet_widget = None
     desk._public_icon_host = None
     desk._parked_fences = {}
+    desk._exiting = False
+    desk._overlay_mgmt_suspended = False
     desk._fence_hwnd = lambda _f: 0  # type: ignore[method-assign]
     desk._soft_show_fence_for_page = (  # type: ignore[method-assign]
         lambda f: DeskTidyApp._soft_show_fence_for_page(desk, f)
     )
+    desk._seat_live_overlays_under_apps = lambda: None  # type: ignore[method-assign]
+    desk._foreign_app_owns_foreground = lambda: False  # type: ignore[method-assign]
+    desk._sink_overlays_for_foreign_app = lambda: None  # type: ignore[method-assign]
+    desk._ensure_public_host_mouse_opaque = lambda: None  # type: ignore[method-assign]
+    desk._sink_public_host_below_overlays = (  # type: ignore[method-assign]
+        lambda *a, **k: None
+    )
+    desk._raise_open_tool_panels_above_pet = lambda: None  # type: ignore[method-assign]
 
     arriving = QWidget()
     arriving.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)

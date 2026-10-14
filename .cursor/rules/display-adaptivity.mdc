@@ -1,0 +1,44 @@
+---
+description: 所有 UI/布局必须适配不同分辨率、DPI 与显示器尺寸
+alwaysApply: true
+---
+
+# 多分辨率 / 多尺寸适配（强制）
+
+DeskTidy 跑在笔记本、外接屏、HiDPI（125%/150%/200%）上。**任何新 UI、布局、默认尺寸、间距、热区，都必须按「换一台电脑也能看全、点得到」设计**，禁止只按作者本机 1920×1080@100% 拍脑袋写死像素。
+
+## 必须遵守
+
+1. **禁止裸固定像素当唯一真相**  
+   分区高度、气泡间距、图标格、边距等：用「相对屏幕比例」或「相对内容尺寸」；固定 px 只能作下限/上限。
+
+2. **比例缩放不够时加内容下限**  
+   仅 `rh * work_h` 会在小逻辑高度/高 DPI 下裁切内容（例：分区两行图标）。须按图标格/字号算出 `content_min`，再 `max(比例值, content_min)`，并封顶（如不超过工作区一半）。
+
+3. **按显示器画像存布局**  
+   分区几何走 `fence_layouts_by_display` + fingerprint（分辨率 + 物理 mm + DPR）。换屏/插拔后从 donor 比例重算，不要假定与上一台机器像素相同。
+
+4. **宠物/浮层 chrome 随 `size_scale` 与 DPR 变**  
+   气泡、指针、与精灵头顶的空隙用 `sprite_h` 比例 + min/max，HiDPI 可略加大；禁止气泡尖端贴头发（仅 +2px 不够）。
+
+5. **改默认几何时同步三处**  
+   `config/default_settings.json`、`system_defaults.py` 设计稿常量、以及运行时 `geometry_from_entry` / heal 路径 —— 避免绝对 `height` 与陈旧 `rh` 互相打架。
+
+6. **自测至少覆盖两档**  
+   逻辑工作区 ≈1366 与 ≈1920，或 `size_scale` 0.75 / 1.0 / 1.35；切页、分区、宠物气泡在小屏上不得裁切、叠死、点不中。
+
+## 参考实现
+
+- 分区高度下限：`desktop_icon_metrics.min_fence_height_for_icon_rows` + `system_defaults._content_fit_fence_height` + `fence_layout._scale_from_ratios` 地板  
+- 宠物气泡净空：`pet_widget._PAGE_HEAD_CLEARANCE_*` + `_bubble_scale()`  
+- 显示器画像：`fence_layout.current_display_fingerprint`
+
+## 反例
+
+```python
+# ❌ 只按设计稿比例，小屏第二行被裁
+h = int(round(0.305 * work_h))
+
+# ✅ 比例 + 内容下限（两行图标 + chrome）
+h = max(int(round(rh * work_h)), min_fence_height_for_icon_rows(2))
+```
