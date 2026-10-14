@@ -884,9 +884,29 @@ def test_arriving_fences_mouse_cleared_before_icon_fill() -> None:
         app.processEvents()
 
 
+def test_hotkey_page_nav_dedupes_double_fire() -> None:
+    """RegisterHotKey + LL chord must not flip twice per keypress."""
+    from src.app import DeskTidyApp
+
+    nav = inspect.getsource(DeskTidyApp.next_page)
+    prev = inspect.getsource(DeskTidyApp.prev_page)
+    gate = inspect.getsource(DeskTidyApp._page_nav_hotkey_gate)
+    assert "_page_nav_hotkey_gate" in nav
+    assert "_page_nav_hotkey_gate" in prev
+    assert "0.35" in gate
+    chords = inspect.getsource(DeskTidyApp._register_hotkey_chords)
+    # Failed RegisterHotKey bindings still need the LL fallback.
+    assert "action in failed" not in chords
+    ensure = inspect.getsource(DeskTidyApp._ensure_page_switch_overlays_visible)
+    # Soft-parked live fences must be shown, not skipped.
+    assert "_soft_show_fence_for_page(fence)" in ensure
+    assert "if bool(getattr(fence, \"_desktidy_soft_parked\", False)):\n                    continue" not in ensure
+
+
 def main() -> int:
     print("DeskTidy page-switch / icon-flash contracts")
     run("soft park contracts (no opacity-0)", test_soft_park_contracts)
+    run("快捷键切页防双触发", test_hotkey_page_nav_dedupes_double_fire)
     run("icon click NoFocus preserved", test_icon_click_still_nofocus)
     run("icon selection batch (no paintEvent storm)", test_icon_selection_batch_contracts)
     run("copy/paste/drag not selection storm", test_copy_paste_drag_not_selection_storm)

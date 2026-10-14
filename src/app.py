@@ -5712,11 +5712,14 @@ class DeskTidyApp:
         not delivered in that state). The shared WH_KEYBOARD_LL hook sees all
         input regardless of focus.  Bare F-keys are already polled via
         GetAsyncKeyState (works system-wide), so only modifier combos need this.
+
+        When RegisterHotKey also succeeds, both paths can fire once —
+        ``next_page`` / ``prev_page`` gate (~350ms) so Ctrl+Shift+←/→ does not
+        flip twice and leave partitions/icons soft-parked.
         """
         from src.desktop_ll_keyboard import register_chord_handler
         from src.hotkey_manager import _parse_hotkey as parse_hotkey
 
-        failed = {a for a, _ in self.hotkey_manager.failed_bindings}
         actions = (
             ("organize", self._do_organize),
             ("toggle_fences", self._toggle_fences_visibility),
@@ -5732,7 +5735,7 @@ class DeskTidyApp:
         )
         for action, cb in actions:
             key = str(hotkeys.get(action, "") or "").strip()
-            if not key or action in failed:
+            if not key:
                 continue
             parsed = parse_hotkey(key)
             if parsed is None:
@@ -6655,8 +6658,10 @@ class DeskTidyApp:
 
         for fence in list(self.fences):
             try:
+                # Live list can still carry soft-park if reveal was skipped
+                # (may_show false mid-switch) — never leave them unmapped.
                 if bool(getattr(fence, "_desktidy_soft_parked", False)):
-                    continue
+                    self._soft_show_fence_for_page(fence)
                 hwnd = self._fence_hwnd(fence)
                 if not hwnd:
                     self._reveal_desktop_overlay(fence)
@@ -6680,6 +6685,11 @@ class DeskTidyApp:
                 continue
         for icon in list(self.public_icons):
             try:
+                if bool(getattr(icon, "_desktidy_soft_parked", False)):
+                    try:
+                        icon._desktidy_soft_parked = False  # type: ignore[attr-defined]
+                    except Exception:
+                        pass
                 if not icon.isVisible():
                     icon.show()
             except RuntimeError:
@@ -6699,6 +6709,8 @@ class DeskTidyApp:
                     set_overlay_hwnd_visible(hwnd, True)
                 elif hwnd and not is_attached_to_desktop(hwnd):
                     self._configure_public_float_overlay(force=False)
+                if host is not None and not host.isVisible():
+                    host.show()
             except Exception:
                 pass
         # Raise page chrome only when buried/detached — unconditional HWND_TOP
@@ -6709,7 +6721,24 @@ class DeskTidyApp:
             if self._page_chrome_needs_raise():
                 self._ensure_page_chrome_visible(raise_band=True)
 
+    def _page_nav_hotkey_gate(self) -> bool:
+        """True if this next/prev should run; False if a duplicate hotkey fire.
+
+        ``RegisterHotKey`` and the LL-chord fallback both deliver Ctrl+Shift+←/→
+        once per keypress. Two pages then become next→next (land on start) and
+        soft-park can leave partitions/icons unmapped. Gate only hotkey nav —
+        page-bar clicks call ``switch_page`` directly and stay unrestricted.
+        """
+        now = time.perf_counter()
+        gate_until = float(getattr(self, "_page_nav_hotkey_gate_until", 0.0) or 0.0)
+        if now < gate_until:
+            return False
+        self._page_nav_hotkey_gate_until = now + 0.35
+        return True
+
     def next_page(self) -> None:
+        if not self._page_nav_hotkey_gate():
+            return
         pages = self._get_pages()
         if len(pages) <= 1:
             return
@@ -6723,6 +6752,8 @@ class DeskTidyApp:
         self.switch_page(next_id)
 
     def prev_page(self) -> None:
+        if not self._page_nav_hotkey_gate():
+            return
         pages = self._get_pages()
         if len(pages) <= 1:
             return

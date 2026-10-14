@@ -1036,6 +1036,17 @@ def _scale_from_ratios(entry: dict, collapsed: bool) -> dict:
     y = area.y() + int(round(ry * area.height()))
     w = int(round(rw * area.width()))
     h = int(round(rh * area.height()))
+    # Product-style top strips (rh≳0.22) used to shrink under 2 icon rows on
+    # HiDPI laptops (315/1032 → ~255 while cell height is ~132). Floor those.
+    if not collapsed and rh >= 0.22:
+        try:
+            from src.desktop_icon_metrics import min_fence_height_for_icon_rows
+
+            content_min = int(min_fence_height_for_icon_rows(2))
+        except Exception:
+            content_min = 360
+        cap = max(_MIN_H, int(area.height() * 0.5))
+        h = max(h, min(content_min, cap))
     return _clamp_geometry(x, y, w, h, collapsed)
 
 

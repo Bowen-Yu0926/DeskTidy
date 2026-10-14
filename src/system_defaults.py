@@ -22,18 +22,21 @@ SYSTEM_DOCS_FENCE_NAME = "文档"
 
 # Product default sizes — 常用 ~2/3 + gap + 其他 ~1/3 of the primary work width
 # (docs full-width on page 1). Height ratios still keyed to a 1920×1032 canvas.
+# Height 400 (was 315): must clear ~2 Explorer icon rows on 125% DPI laptops;
+# ratio-only 315→~255 clipped the second row mid-icon.
 _REF_WORK_W = 1920
 _REF_WORK_H = 1032
 _REF_WORK_GAP = 4
 _SOFT_FALLBACK_W = int(round(_REF_WORK_W * 2 / 3))  # 1280
-_SOFT_FALLBACK = {"x": 0, "y": 0, "width": _SOFT_FALLBACK_W, "height": 315}
+_SOFT_FALLBACK_H = 400
+_SOFT_FALLBACK = {"x": 0, "y": 0, "width": _SOFT_FALLBACK_W, "height": _SOFT_FALLBACK_H}
 _SOFT_SIDE_FALLBACK = {
     "x": _SOFT_FALLBACK["x"] + _SOFT_FALLBACK["width"] + _REF_WORK_GAP,
     "y": 0,
     "width": _REF_WORK_W - _SOFT_FALLBACK["width"] - _REF_WORK_GAP,
-    "height": 315,
+    "height": _SOFT_FALLBACK_H,
 }
-_DOCS_FALLBACK = {"x": 0, "y": 0, "width": 1920, "height": 257}
+_DOCS_FALLBACK = {"x": 0, "y": 0, "width": 1920, "height": 360}
 _SOFT_RW = _SOFT_FALLBACK["width"] / _REF_WORK_W
 _SOFT_RH = _SOFT_FALLBACK["height"] / _REF_WORK_H
 _DOCS_RW = _DOCS_FALLBACK["width"] / _REF_WORK_W
@@ -42,6 +45,21 @@ _DOCS_RH = _DOCS_FALLBACK["height"] / _REF_WORK_H
 _LEGACY_SOFT_RW = 1609 / 1920
 _LEGACY_SOFT_W = 1609
 _LEGACY_SIDE_X = 1613
+# Stock / early ratio strip (~0.305 of work height) that clips 2 icon rows on HiDPI.
+_LEGACY_SOFT_RH = 315 / 1032
+
+
+def _content_fit_fence_height(work_area_h: int, *, rows: int = 2) -> int:
+    """Absolute floor so icon rows stay visible after cross-machine ratio scale."""
+    try:
+        from src.desktop_icon_metrics import min_fence_height_for_icon_rows
+
+        needed = int(min_fence_height_for_icon_rows(rows))
+    except Exception:
+        needed = 360
+    ah = max(120, int(work_area_h))
+    # Never consume more than half the work area for the default top strip.
+    return max(280, min(needed, max(280, ah // 2)))
 
 _FENCE_STYLE = {
     "opacity": 0.94,
@@ -65,7 +83,9 @@ def _default_fence_geometry(*, rw: float, rh: float, fallback: dict) -> dict:
             aw = max(1, int(area.width()))
             ah = max(1, int(area.height()))
             w = max(160, min(int(round(rw * aw)), aw))
-            h = max(120, min(int(round(rh * ah)), ah))
+            h_ratio = max(120, int(round(rh * ah)))
+            h = max(h_ratio, _content_fit_fence_height(ah))
+            h = min(h, ah)
             return {
                 "x": int(area.x()),
                 "y": int(area.y()),
@@ -93,7 +113,9 @@ def _default_work_row_geometries() -> tuple[dict, dict]:
             aw = max(1, int(area.width()))
             ah = max(1, int(area.height()))
             gap = max(4, int(round(_REF_WORK_GAP * aw / _REF_WORK_W)))
-            h = max(120, min(int(round(_SOFT_RH * ah)), ah))
+            h_ratio = max(120, int(round(_SOFT_RH * ah)))
+            h = max(h_ratio, _content_fit_fence_height(ah))
+            h = min(h, ah)
             left_w = max(160, min(int(round(_SOFT_RW * aw)), aw - gap - 120))
             right_w = max(120, aw - left_w - gap)
             x0 = int(area.x())
@@ -417,7 +439,7 @@ def _clear_system_work_row_profiles(settings: dict) -> None:
 
 
 def _heal_crowded_work_row_geometries(settings: dict, fences: list) -> bool:
-    """Rewrite 常用/其他 when crowded, legacy 84/16 stock, or overflow on laptop."""
+    """Rewrite 常用/其他 when crowded, short for icons, legacy stock, or overflow."""
     software = _find_fence(fences, SYSTEM_COMMON_FENCE_ID, SYSTEM_COMMON_FENCE_LEGACY_NAMES)
     side = _find_fence(
         fences,
@@ -444,10 +466,14 @@ def _heal_crowded_work_row_geometries(settings: dict, fences: list) -> bool:
     needs = _rects_overlap_heavily(left, right)
     try:
         raw_left_w = int(software.get("width") or 0)
+        raw_left_h = int(software.get("height") or 0)
         raw_side_x = int(side.get("x") or 0)
+        raw_side_h = int(side.get("height") or 0)
         raw_rw = float(software.get("rw") or 0)
+        raw_rh = float(software.get("rh") or 0)
     except (TypeError, ValueError):
-        raw_left_w, raw_side_x, raw_rw = 0, 0, 0.0
+        raw_left_w = raw_left_h = raw_side_x = raw_side_h = 0
+        raw_rw = raw_rh = 0.0
     # Stock defaults (w≈1609, side x≈1613) on a narrower logical work area.
     if raw_left_w > area.width() + 24 or raw_side_x > area.width():
         needs = True
@@ -463,10 +489,26 @@ def _heal_crowded_work_row_geometries(settings: dict, fences: list) -> bool:
         or abs(left_ratio - _LEGACY_SOFT_RW) < 0.04
     ):
         needs = True
+    # Stored absolute/ratio strip too short for 2 icon rows (HiDPI laptop).
+    # Use *raw* height — geometry_from_entry may already floor and hide the bug.
+    min_h = _content_fit_fence_height(int(area.height()))
+    if min(raw_left_h, raw_side_h) < min_h - 8:
+        needs = True
+    if abs(raw_rh - _LEGACY_SOFT_RH) < 0.02 and min(raw_left_h, raw_side_h) < min_h:
+        needs = True
     if not needs:
         return False
 
     left_g, right_g = _default_work_row_geometries()
+    ah = max(1, int(area.height()))
+    aw = max(1, int(area.width()))
+    # Persist ratios against the *current* work area so geometry_from_entry
+    # does not re-crush absolute height via a stale design rh (e.g. 315/1032).
+    left_rh = left_g["height"] / ah
+    right_rh = right_g["height"] / ah
+    left_rw = left_g["width"] / aw
+    right_rw = right_g["width"] / aw
+    right_rx = (right_g["x"] - int(area.x())) / aw
     software.update(
         {
             "x": left_g["x"],
@@ -475,12 +517,12 @@ def _heal_crowded_work_row_geometries(settings: dict, fences: list) -> bool:
             "height": left_g["height"],
             "rx": 0.0,
             "ry": 0.0,
-            "rw": _SOFT_RW,
-            "rh": _SOFT_RH,
-            "ref_x": 0,
-            "ref_y": 0,
-            "ref_w": _REF_WORK_W,
-            "ref_h": _REF_WORK_H,
+            "rw": left_rw,
+            "rh": left_rh,
+            "ref_x": int(area.x()),
+            "ref_y": int(area.y()),
+            "ref_w": aw,
+            "ref_h": ah,
         }
     )
     side.update(
@@ -489,14 +531,14 @@ def _heal_crowded_work_row_geometries(settings: dict, fences: list) -> bool:
             "y": right_g["y"],
             "width": right_g["width"],
             "height": right_g["height"],
-            "rx": (_SOFT_FALLBACK["width"] + _REF_WORK_GAP) / _REF_WORK_W,
+            "rx": right_rx,
             "ry": 0.0,
-            "rw": _SOFT_SIDE_FALLBACK["width"] / _REF_WORK_W,
-            "rh": _SOFT_RH,
-            "ref_x": 0,
-            "ref_y": 0,
-            "ref_w": _REF_WORK_W,
-            "ref_h": _REF_WORK_H,
+            "rw": right_rw,
+            "rh": right_rh,
+            "ref_x": int(area.x()),
+            "ref_y": int(area.y()),
+            "ref_w": aw,
+            "ref_h": ah,
         }
     )
     _clear_system_work_row_profiles(settings)

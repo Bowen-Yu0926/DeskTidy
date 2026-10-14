@@ -115,6 +115,24 @@ def _dpi_scale() -> float:
     return 1.0
 
 
+def min_fence_height_for_icon_rows(rows: int = 2) -> int:
+    """Minimum fence window height so *rows* of icons stay fully visible.
+
+    Pure screen-ratio scaling (e.g. 315/1032 → ~255 on a 125% laptop) shrinks
+    absolute height while Explorer icon pitch stays ~132px — the second row is
+    then clipped mid-glyph. Floor by measured cell height + FenceWidget chrome.
+    """
+    rows = max(1, int(rows))
+    try:
+        cell_h = max(72, int(system_desktop_icon_cell().height))
+    except Exception:
+        cell_h = max(72, int(round(100 * _dpi_scale())))
+    # FenceWidget: HEADER_OVERLAY_HEIGHT=56, FOOTER_OVERLAY_HEIGHT=22, margins.
+    chrome = 56 + 22 + 28
+    spacing = max(4, int(round(4 * _dpi_scale()))) * max(0, rows - 1)
+    return chrome + rows * cell_h + spacing
+
+
 def desktop_icon_footprint_height(
     icon_size: int, caption_lines: int = 2, *, scale: float = 1.0
 ) -> int:
