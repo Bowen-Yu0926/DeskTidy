@@ -1535,3 +1535,461 @@ def _resolve_visible_fence_overlaps(
             items[j] = (right_f, right_g)
     if changed:
         pass
+
+
+# ---------------------------------------------------------------------------
+# Same-page sibling rejection (pure geometry)
+#
+# When the source fence is being resized or moved inside the mouse drag,
+# any sibling on the same page that would end up overlapped by the
+# source's target geometry must make room. Resize mode shrinks the
+# sibling toward its far edge; move mode pushes the sibling along the
+# dominant axis. Locked siblings are skipped, MIN_WIDTH / MIN_HEIGHT are
+# respected, and at most two iterations handle second-order overlaps
+# between siblings. The functions below are pure geometry — they never
+# touch source_widget, never emit signals, and never call refresh /
+# _update_cursor / grabMouse on the siblings.
+# ---------------------------------------------------------------------------
+
+
+def get_page_sibling_widgets(app, source_widget) -> list:
+    """Enumerate non-locked sibling FenceWidgets sharing the current page.
+
+    Uses only public attributes on app (._current_page(), .fences,
+    .config) and fence.is_position_locked(). Locked siblings are
+    excluded so the drag never pushes the user's manual pin.
+    """
+    # The caller may pass either the DeskTidyApp directly, or a FenceWidget
+    # that carries a ``desk_app`` back-reference.  Walk that chain once so
+    # the same helper works from either site.
+    if not hasattr(app, "fences") and not hasattr(app, "_current_page"):
+        app = getattr(app, "desk_app", None)
+    if app is None:
+        return []
+    try:
+        page_id = int(app._current_page())
+    except Exception:
+        return []
+    fences = getattr(app, "fences", None) or []
+    result: list = []
+    for fence in fences:
+        if fence is None or fence is source_widget:
+            continue
+        is_locked = getattr(fence, "is_position_locked", None)
+        try:
+            if callable(is_locked) and is_locked():
+                continue
+        except Exception:
+            continue
+        config = getattr(fence, "config", None)
+        if not isinstance(config, dict):
+            continue
+        try:
+            pages = get_fence_pages(config)
+            if page_id not in [int(p) for p in pages]:
+                continue
+        except Exception:
+            continue
+        result.append(fence)
+    return result
+
+
+def _rects_overlap(a, b) -> bool:
+    """Return True when the intersection of two QRects has positive area."""
+    try:
+        inter = a.intersected(b)
+    except Exception:
+        return False
+    if inter is None:
+        return False
+    try:
+        return inter.width() > 0 and inter.height() > 0
+    except Exception:
+        return False
+
+
+def _sibling_min_height(b, min_h, min_h_collapsed) -> int:
+    """MIN height that applies to sibling b given its collapse state."""
+    try:
+        if getattr(b, "_collapsed", False):
+            return min_h_collapsed
+    except Exception:
+        pass
+    is_col = getattr(b, "is_collapsed", None)
+    if callable(is_col):
+        try:
+            if is_col():
+                return min_h_collapsed
+        except Exception:
+            pass
+    return min_h
+
+
+def _shrink_sibling_from_edge(
+    b, source, resize_mode, min_w, min_h, min_h_collapsed, *, effective_min_h=None
+):
+    """Shrink sibling toward its far edge so it stops overlapping source.
+
+    resize_mode is one of e/w/n/s or a two-letter corner (ne/nw/se/sw).
+    Each axis shrinks only when the sibling is on the side the source is
+    expanding into; otherwise that axis is left alone. Touching
+    MIN_WIDTH / MIN_HEIGHT freezes that axis; when both axes are
+    frozen the sibling returns None so the caller keeps the current
+    overlap rather than pushing the source backwards.
+    """
+    if effective_min_h is None:
+        effective_min_h = _sibling_min_height(b, min_h, min_h_collapsed)
+    bx = int(b.x())
+    by = int(b.y())
+    bw = int(b.width())
+    bh = int(b.height())
+    mode = resize_mode or ""
+
+    new_x = bx
+    new_y = by
+    new_w = bw
+    new_h = bh
+    clamped_w = False
+    clamped_h = False
+
+    if "e" in mode:
+        # source expanding right -> keep sibling's right edge, pull its
+        # left edge inward to just past source.right().
+        new_left = int(source.right()) + 1
+        candidate_w = bx + bw - new_left
+        if candidate_w < new_w:
+            if candidate_w >= min_w:
+                new_x = new_left
+                new_w = candidate_w
+            else:
+                clamped_w = True
+    if "w" in mode:
+        # source expanding left -> keep sibling's left edge, pull its
+        # right edge inward to just before source.left().
+        new_right = int(source.left()) - 1
+        candidate_w = new_right - bx
+        if candidate_w < new_w:
+            if candidate_w >= min_w:
+                new_w = candidate_w
+            else:
+                clamped_w = True
+    if "s" in mode:
+        # source expanding down -> keep sibling's bottom edge, pull its
+        # top edge down to just past source.bottom().
+        new_top = int(source.bottom()) + 1
+        candidate_h = by + bh - new_top
+        if candidate_h < new_h:
+            if candidate_h >= effective_min_h:
+                new_y = new_top
+                new_h = candidate_h
+            else:
+                clamped_h = True
+    if "n" in mode:
+        # source expanding up -> keep sibling's top edge, pull its
+        # bottom edge up to just before source.top().
+        new_bottom = int(source.top()) - 1
+        candidate_h = new_bottom - by
+        if candidate_h < new_h:
+            if candidate_h >= effective_min_h:
+                new_h = candidate_h
+            else:
+                clamped_h = True
+
+    if clamped_w and clamped_h:
+        return None
+    if new_x == bx and new_y == by and new_w == bw and new_h == bh:
+        return None
+    try:
+        from PyQt6.QtCore import QRect
+        return QRect(new_x, new_y, new_w, new_h)
+    except Exception:
+        return None
+
+
+def clamp_source_for_move_siblings(source_widget, siblings, source_geo):
+    """Clamp a move target so it does not overlap same-page siblings.
+
+    Unlike resize rejection (which shrinks siblings), move **never** mutates
+    siblings. Pushing a wide fence with ``setGeometry`` during ``grabMouse``
+    steals the drag — the narrow software panel then feels stuck. When the
+    proposed rect would overlap a sibling, keep the previous coordinate on
+    the colliding axis (try x-only / y-only from the widget's current geo).
+    """
+    if not siblings or source_geo is None:
+        return source_geo
+    try:
+        prev = source_widget.geometry()
+    except Exception:
+        return source_geo
+    try:
+        result = source_geo.__class__(
+            int(source_geo.x()),
+            int(source_geo.y()),
+            int(source_geo.width()),
+            int(source_geo.height()),
+        )
+    except Exception:
+        return source_geo
+
+    for sib in siblings:
+        if sib is None or sib is source_widget:
+            continue
+        is_locked = getattr(sib, "is_position_locked", None)
+        try:
+            if callable(is_locked) and is_locked():
+                continue
+        except Exception:
+            continue
+        try:
+            geo = sib.geometry()
+        except Exception:
+            continue
+        if not _rects_overlap(result, geo):
+            continue
+        w = int(result.width())
+        h = int(result.height())
+        cand_x = result.__class__(int(result.x()), int(prev.y()), w, h)
+        cand_y = result.__class__(int(prev.x()), int(result.y()), w, h)
+        x_free = not _rects_overlap(cand_x, geo)
+        y_free = not _rects_overlap(cand_y, geo)
+        if x_free and not y_free:
+            result = cand_x
+        elif y_free and not x_free:
+            result = cand_y
+        elif x_free and y_free:
+            # Diagonal approach: prefer the axis with larger mouse travel.
+            if abs(int(result.x()) - int(prev.x())) >= abs(
+                int(result.y()) - int(prev.y())
+            ):
+                result = cand_x
+            else:
+                result = cand_y
+        else:
+            result = result.__class__(
+                int(prev.x()), int(prev.y()), w, h
+            )
+        if _rects_overlap(result, geo):
+            result = result.__class__(
+                int(prev.x()), int(prev.y()), w, h
+            )
+    return result
+
+
+def clamp_source_for_min_siblings(
+    source_widget, siblings, source_geo, resize_mode
+) -> None:
+    """Clamp an overlapping resize so the sibling keeps MIN_WIDTH / MIN_HEIGHT.
+
+    Called from the resize branch *before* setGeometry. Only siblings that the
+    **proposed** source rect actually overlaps are considered — a clear gap
+    (e.g. 常用 | gap | 软件) must never yank the source to MIN size on a
+    border click. When overlapping, limit the expanding edge so the sibling
+    can still retain min_w / min_h after ``_shrink_sibling_from_edge``.
+
+    Returns the (possibly) shrunk QRect.
+    """
+    if not siblings or source_geo is None or not resize_mode:
+        return source_geo
+    mode = resize_mode
+    try:
+        x = int(source_geo.x())
+        y = int(source_geo.y())
+        w = int(source_geo.width())
+        h = int(source_geo.height())
+    except Exception:
+        return source_geo
+
+    try:
+        from PyQt6.QtCore import QRect
+    except Exception:
+        return source_geo
+
+    for sib in siblings:
+        if sib is None or sib is source_widget:
+            continue
+        is_locked = getattr(sib, "is_position_locked", None)
+        try:
+            if callable(is_locked) and is_locked():
+                continue
+        except Exception:
+            continue
+        try:
+            geo = sib.geometry()
+        except Exception:
+            continue
+        proposed = QRect(x, y, w, h)
+        # No overlap → no clamp. Side-by-side fences with a gap used to hit the
+        # old "sibling to the left/above" predicates and shrink on border click.
+        if not _rects_overlap(proposed, geo):
+            continue
+        min_w = 160
+        sib_min_h = _sibling_min_height(sib, 180, 44)
+        if "e" in mode:
+            # Expanding right into sibling: leave sibling >= min_w from its right.
+            max_src_right = int(geo.right()) - min_w
+            new_w = max(min_w, max_src_right - x + 1)
+            if new_w < w:
+                w = new_w
+        if "w" in mode:
+            # Expanding left into sibling: leave sibling >= min_w from its left.
+            min_src_left = int(geo.left()) + min_w
+            if min_src_left > x:
+                shrink = min_src_left - x
+                new_w = max(min_w, w - shrink)
+                x = x + (w - new_w)
+                w = new_w
+        if "s" in mode:
+            max_src_bottom = int(geo.bottom()) - sib_min_h
+            new_h = max(sib_min_h, max_src_bottom - y + 1)
+            if new_h < h:
+                h = new_h
+        if "n" in mode:
+            min_src_top = int(geo.top()) + sib_min_h
+            if min_src_top > y:
+                shrink = min_src_top - y
+                new_h = max(sib_min_h, h - shrink)
+                y = y + (h - new_h)
+                h = new_h
+
+    return QRect(x, y, max(1, w), max(1, h))
+
+
+def _push_sibling_away(b, source, min_w, min_h, min_h_collapsed):
+    """Push sibling off source along the dominant axis.
+
+    Main axis = X when |dx| >= |dy|, else Y (dx/dy are source-center
+    minus sibling-center). Only that axis is adjusted -- no diagonal
+    compound. Returns None if the resulting rect would fall outside
+    virtual_desktop_rect().
+    """
+    try:
+        dx = int(source.center().x()) - int(b.center().x())
+        dy = int(source.center().y()) - int(b.center().y())
+    except Exception:
+        return None
+    use_x = abs(dx) >= abs(dy)
+
+    new_x = int(b.x())
+    new_y = int(b.y())
+    new_w = int(b.width())
+    new_h = int(b.height())
+
+    if use_x:
+        if dx >= 0:
+            # source is to the right of sibling -> push sibling LEFT.
+            new_x = int(source.left()) - 1 - new_w
+        else:
+            new_x = int(source.right()) + 1
+    else:
+        if dy >= 0:
+            # source is below sibling -> push sibling UP.
+            new_y = int(source.top()) - 1 - new_h
+        else:
+            new_y = int(source.bottom()) + 1
+
+    try:
+        from PyQt6.QtCore import QRect
+        new_rect = QRect(new_x, new_y, new_w, new_h)
+    except Exception:
+        return None
+
+    try:
+        vd = virtual_desktop_rect()
+        if (
+            new_rect.x() < vd.x()
+            or new_rect.y() < vd.y()
+            or new_rect.right() > vd.right()
+            or new_rect.bottom() > vd.bottom()
+        ):
+            return None
+    except Exception:
+        pass
+    return new_rect
+
+
+def apply_siblings_rejection(
+    source_widget,
+    siblings,
+    source_geo,
+    mode,
+    resize_mode=None,
+    *,
+    min_w=160,
+    min_h=180,
+    min_h_collapsed=44,
+) -> None:
+    """Reject same-page siblings away from source_widget in place.
+
+    * mode is "resize" (shrink sibling toward its far edge) or "move"
+      (push sibling along its dominant axis).
+    * source_geo is the target QRect for source this frame.
+    * resize_mode is only used for mode == "resize".
+
+    Siblings are mutated with sib.setGeometry(QRect); the source widget
+    is never touched. Locked siblings are skipped defensively,
+    collapsed siblings use min_h_collapsed. At most 2 iterations handle
+    second-order overlaps between siblings; the loop breaks early when
+    a full pass makes no change. No signals are emitted and no UI
+    helper (refresh / _update_cursor / grabMouse / ...) is called.
+    """
+    if not siblings or source_geo is None:
+        return
+
+    working = []
+    for sib in siblings:
+        if sib is None or sib is source_widget:
+            continue
+        is_locked = getattr(sib, "is_position_locked", None)
+        try:
+            if callable(is_locked) and is_locked():
+                continue
+        except Exception:
+            continue
+        working.append(sib)
+    if not working:
+        return
+
+    for _ in range(2):
+        touched = False
+        for sib in working:
+            try:
+                geo = sib.geometry()
+            except Exception:
+                continue
+            if not _rects_overlap(geo, source_geo):
+                continue
+            if mode == "resize":
+                # Pre-compute effective min height from the widget (which knows
+                # its _collapsed state), then pass the geometry QRect — Widgets
+                # expose .x() as parent-relative (0 for top-level), so we must
+                # use .geometry() for the real screen coordinates.
+                new_rect = _shrink_sibling_from_edge(
+                    geo,
+                    source_geo,
+                    resize_mode,
+                    min_w,
+                    min_h,
+                    min_h_collapsed,
+                    effective_min_h=_sibling_min_height(sib, min_h, min_h_collapsed),
+                )
+            else:  # "move"
+                new_rect = _push_sibling_away(
+                    geo, source_geo, min_w, min_h, min_h_collapsed
+                )
+            if new_rect is None:
+                continue
+            if (
+                new_rect.x() == geo.x()
+                and new_rect.y() == geo.y()
+                and new_rect.width() == geo.width()
+                and new_rect.height() == geo.height()
+            ):
+                continue
+            try:
+                sib.setGeometry(new_rect)
+                touched = True
+            except Exception:
+                continue
+        if not touched:
+            break
+

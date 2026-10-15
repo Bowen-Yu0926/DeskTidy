@@ -7585,6 +7585,13 @@ class DeskTidyApp:
         if getattr(fence, "_desktidy_signals_wired", False):
             return
         fence._desktidy_signals_wired = True
+        # Back-reference so FenceWidget.mouseMoveEvent can enumerate siblings
+        # on this app's fences (FenceWidget is a top-level widget with no
+        # parent chain to walk).
+        try:
+            fence.desk_app = self
+        except Exception:
+            pass
         fence.geometry_changed.connect(self._save_fence_layout)
         fence.files_changed.connect(
             lambda f=fence: self._on_fence_files_changed(f),

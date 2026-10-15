@@ -1068,6 +1068,105 @@ def test_fence_layout() -> None:
 
     run("新建分区避开当前页已有分区", _place_new_fence_avoids_overlap)
 
+    def _move_clamp_does_not_shove_wide_sibling():
+        """Dragging the narrow software fence must not shove the wide common fence.
+
+        Live ``setGeometry`` on a sibling during grabMouse steals the drag —
+        the software panel then feels stuck. Move mode clamps the source only.
+        """
+        from PyQt6.QtCore import QRect
+
+        from src.fence_layout import (
+            _rects_overlap,
+            clamp_source_for_move_siblings,
+        )
+
+        class _Fake:
+            def __init__(self, x: int, y: int, w: int, h: int) -> None:
+                self._g = QRect(x, y, w, h)
+                self._moves = 0
+
+            def geometry(self) -> QRect:
+                return QRect(self._g)
+
+            def setGeometry(self, r) -> None:  # noqa: N802
+                self._moves += 1
+                self._g = QRect(int(r.x()), int(r.y()), int(r.width()), int(r.height()))
+
+            def is_position_locked(self) -> bool:
+                return False
+
+        common = _Fake(0, 0, 1599, 382)
+        software = _Fake(1629, 0, 290, 382)
+        # Propose sliding left into the wide sibling (user's real layout).
+        proposed = QRect(1500, 0, 290, 382)
+        assert _rects_overlap(proposed, common.geometry())
+        clamped = clamp_source_for_move_siblings(
+            software, [common], proposed
+        )
+        assert common._moves == 0, "move must not shove siblings"
+        assert common.geometry() == QRect(0, 0, 1599, 382)
+        assert not _rects_overlap(clamped, common.geometry())
+        assert clamped.x() >= common.geometry().right() + 1
+        # Vertical move into free space stays free.
+        down = QRect(1629, 400, 290, 382)
+        clamped_down = clamp_source_for_move_siblings(
+            software, [common], down
+        )
+        assert clamped_down == down
+        assert common._moves == 0
+
+        import inspect
+
+        from src.ui import fence_widget as fw
+
+        move_src = inspect.getsource(fw.FenceWidget.mouseMoveEvent)
+        assert "clamp_source_for_move_siblings" in move_src
+        assert 'mode="move"' not in move_src
+
+    run("拖窄分区不挤开宽分区", _move_clamp_does_not_shove_wide_sibling)
+
+    def _resize_clamp_ignores_non_overlapping_sibling():
+        """Clicking the west/north border must not shrink a gapped software fence.
+
+        Bug: clamp_source_for_min_siblings treated any left/above sibling as a
+        crush target and forced MIN_WIDTH / MIN_HEIGHT even with a clear gap —
+        one border click yanked 软件 from 290×382 down to 160×180.
+        """
+        from PyQt6.QtCore import QRect
+
+        from src.fence_layout import clamp_source_for_min_siblings
+
+        class _Fake:
+            def __init__(self, x: int, y: int, w: int, h: int) -> None:
+                self._g = QRect(x, y, w, h)
+
+            def geometry(self) -> QRect:
+                return QRect(self._g)
+
+            def is_position_locked(self) -> bool:
+                return False
+
+        common = _Fake(0, 0, 1599, 382)
+        software = _Fake(1629, 0, 290, 382)
+        src = QRect(1629, 0, 290, 382)
+        for mode in ("w", "n", "s", "e", "nw", "sw", "ne", "se"):
+            clamped = clamp_source_for_min_siblings(
+                software, [common], QRect(src), mode
+            )
+            assert clamped == src, (mode, clamped, src)
+
+        # Real crush case: common expanding east deep into software — clamp.
+        common_w = _Fake(1629, 0, 290, 382)
+        expanding = QRect(0, 0, 1800, 300)
+        clamped_e = clamp_source_for_min_siblings(
+            None, [common_w], expanding, "e"
+        )
+        assert clamped_e.width() < expanding.width()
+        assert clamped_e.width() >= 160
+
+    run("无重叠时缩放夹紧不误缩", _resize_clamp_ignores_non_overlapping_sibling)
+
 
 # ---------------------------------------------------------------------------
 # 5. Fence rules

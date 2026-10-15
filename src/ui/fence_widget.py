@@ -42,6 +42,12 @@ from src.fence_rules import (
     set_virtual_item_order,
     unpin_paths_from_virtual_fence,
 )
+from src.fence_layout import (
+    apply_siblings_rejection,
+    clamp_source_for_min_siblings,
+    clamp_source_for_move_siblings,
+    get_page_sibling_widgets,
+)
 from src.settings import get_desktop_path, save_settings
 from src.ui.fence_icon_item import (
     FenceIconItem,
@@ -3976,7 +3982,31 @@ class FenceWidget(QWidget):
                 y = y + (h - new_h)
                 h = new_h
             snapped = snap_geometry(QRect(x, y, w, h), self.EDGE_SNAP_THRESHOLD)
+            _siblings = []
+            try:
+                _siblings = get_page_sibling_widgets(self, self)
+            except Exception:
+                _siblings = []
+            # Pre-clamp the target rect so no overlapping sibling would be
+            # pushed below its MIN size. Prevents source-widget overlap once a
+            # sibling hits MIN_WIDTH / MIN_HEIGHT and can no longer shrink.
+            try:
+                snapped = clamp_source_for_min_siblings(
+                    self, _siblings, snapped, self._resize_mode
+                )
+            except Exception:
+                pass
             self.setGeometry(snapped)
+            try:
+                apply_siblings_rejection(
+                    source_widget=self,
+                    siblings=_siblings,
+                    source_geo=snapped,
+                    mode="resize",
+                    resize_mode=self._resize_mode,
+                )
+            except Exception:
+                pass
             if not self._collapsed:
                 self._saved_height = snapped.height()
             event.accept()
@@ -3988,6 +4018,16 @@ class FenceWidget(QWidget):
                 QRect(top_left.x(), top_left.y(), geo.width(), geo.height()),
                 self.EDGE_SNAP_THRESHOLD,
             )
+            # Clamp self against siblings — never shove them during move.
+            # Pushing a wide sibling via setGeometry steals grabMouse / z-order
+            # so this panel (e.g. 软件) looks undraggable.
+            try:
+                _siblings = get_page_sibling_widgets(self, self)
+                snapped = clamp_source_for_move_siblings(
+                    self, _siblings, snapped
+                )
+            except Exception:
+                pass
             self.move(snapped.topLeft())
             event.accept()
             return
