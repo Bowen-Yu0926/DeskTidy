@@ -36,6 +36,7 @@ logs/
 _restore/
 _icon_debug/
 _qa_regen/
+_qa_*.py
 _tmp*
 _hold*.png
 _fix_*.py
@@ -59,5 +60,6 @@ scripts/_selftest*
 **/DeskTidy_test*
 **/_selftest*
 
-# AgentTeams runtime state (never commit)
+# Local agent-tooling runtime state (never commit)
 .agent-teams/
+.cortexkit/
