@@ -25,7 +25,13 @@ from src.desktop_pet import (
     random_pet_line,
 )
 from src.settings import save_settings
-from src.ui.pet_anim import PetAnimState, load_pet_poses, paint_pet_sprite, trash_anim_sec
+from src.ui.pet_anim import (
+    PetAnimState,
+    load_pet_poses,
+    paint_pet_sprite,
+    pet_sprite_frame_signature,
+    trash_anim_sec,
+)
 from src.ui.screen_snap import rect_visible_on_any_screen, snap_geometry, work_screen
 from src.ui.styles import get_theme_palette, normalize_theme
 from src.win_shell import (
@@ -291,6 +297,7 @@ class DesktopPetWidget(QWidget):
         self._state_until = 0.0
         self._post_trash_wait = False
         self._trash_erase_prev: QRect | None = None
+        self._last_paint_sig: tuple | None = None
         self._wander_target_x: int | None = None
         self._bubble_text = ""
         self._bubble_until = 0.0
@@ -1009,6 +1016,7 @@ class DesktopPetWidget(QWidget):
             self._vy = 0.0
         self._character = char_id
         self._poses = load_pet_poses(char_id)
+        self._last_paint_sig = None
 
     def _warm_pose_cache(self) -> None:
         """Preload other characters after startup so gallery switches stay instant.
@@ -1291,6 +1299,7 @@ class DesktopPetWidget(QWidget):
         if self.isVisible() and self.width() > 1 and self.height() > 1:
             pin_global = self.mapToGlobal(self._body_pin_local())
         self._state = state
+        self._last_paint_sig = None
         self._state_until = time.monotonic() + max(0.3, duration)
         if state != _STATE_WANDER:
             self._wander_target_x = None
@@ -1651,8 +1660,39 @@ class DesktopPetWidget(QWidget):
             if self._state == _STATE_TRASH:
                 self._maybe_recycle_drop()
 
-        self.update()
+        self._request_repaint_if_changed()
         self._sync_tick_interval()
+
+    def _request_repaint_if_changed(self) -> None:
+        """Repaint only when the sprite frame actually changed.
+
+        Slow/static poses (hold during drag, wait/perch, trash) keep the same
+        cel for several ticks — the old code repainted the whole translucent
+        layered window every 33 ms anyway, forcing a full DWM re-composite of
+        identical pixels (the main source of「拖拽不跟手」jank). Skip those
+        in-between frames; motion/FX/blend/chrome changes still repaint.
+        """
+        anim_state = self._state
+        facing = self._facing
+        if self._state == _STATE_TRASH:
+            facing = 1
+        if self._dragging:
+            anim_state = "hold"
+        elif self._state == _STATE_CLIMB:
+            anim_state = "climb_crawl"
+        sig = pet_sprite_frame_signature(
+            self._poses,
+            state=anim_state,
+            anim=self._anim,
+            facing=facing,
+            character=self._character,
+        )
+        fx_active = bool(self._fx_hearts) or bool(self._fx_food)
+        # Trash's first frame must paint the full plate (see paintEvent).
+        first_trash = self._state == _STATE_TRASH and self._trash_erase_prev is None
+        if fx_active or first_trash or sig is None or sig != self._last_paint_sig:
+            self._last_paint_sig = sig
+            self.update()
 
     def _sync_tick_interval(self) -> None:
         """Slow the render clock when idle and the pointer is away (lighter tray app)."""

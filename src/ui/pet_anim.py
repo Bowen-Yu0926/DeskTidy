@@ -499,6 +499,29 @@ def _cel_crossfade(
     return cel_idx, (cel_idx + 1) % n, t
 
 
+def _cel_indices(
+    frames: list[QPixmap],
+    motion_state: str,
+    fr: int,
+    *,
+    character: str = "",
+) -> tuple[int, int, float] | None:
+    """(from_idx, to_idx, blend_to) for one layer's cels this frame (shared with
+    ``paint_pet_sprite`` and ``pet_sprite_frame_signature`` so the skip check
+    cannot drift from what is actually drawn)."""
+    char = normalize_pet_character(character) if character else ""
+    cels = _pose_cels(frames, motion_state, char)
+    if not cels:
+        return None
+    if motion_state == "trash":
+        idx = _frame_index(frames, fr, motion_state, character=char)
+        return idx, idx, 1.0
+    if motion_state in _CEL_CROSSFADE_STATES:
+        return _cel_crossfade(frames, fr, motion_state, character=char)
+    idx = _frame_index(frames, fr, motion_state, character=char)
+    return idx, idx, 1.0
+
+
 def _hop_envelope(t: float, *, pace: float, power: float = 2.2) -> float:
     """Sharp hop: long ground contact, quick air time."""
     cycle = (t * pace) % (math.pi)
@@ -1081,12 +1104,7 @@ def paint_pet_sprite(
     del now
     char_id = normalize_pet_character(character) if character else ""
     # Normalize legacy dict[str, QPixmap] → frame lists
-    norm: dict[str, list[QPixmap]] = {}
-    for key, val in poses.items():
-        if isinstance(val, list):
-            norm[key] = val
-        else:
-            norm[key] = [val] if val is not None else []
+    norm = _normalize_poses(poses)
 
     target = pose_for_state(state)
     if anim is not None:
@@ -1149,18 +1167,10 @@ def paint_pet_sprite(
             )
             return
         cels = _pose_cels(frames, motion_state, char_id)
-        if not cels:
+        sel = _cel_indices(frames, motion_state, fr, character=char_id)
+        if not cels or sel is None:
             return
-        if motion_state == "trash":
-            idx = _frame_index(frames, fr, motion_state, character=char_id)
-            from_i, to_i, blend_to = idx, idx, 1.0
-        elif motion_state in _CEL_CROSSFADE_STATES:
-            from_i, to_i, blend_to = _cel_crossfade(
-                frames, fr, motion_state, character=char_id
-            )
-        else:
-            idx = _frame_index(frames, fr, motion_state, character=char_id)
-            from_i, to_i, blend_to = idx, idx, 1.0
+        from_i, to_i, blend_to = sel
         _draw_sprite_cels(
             painter,
             cels,
@@ -1217,6 +1227,85 @@ def paint_pet_sprite(
             _paint_zzz(painter, dest, fr, character=char_id)
         if state == "play" and blend > 0.5:
             _paint_play_fx(painter, dest, fr)
+
+
+def _normalize_poses(
+    poses: dict[str, list[QPixmap]] | dict[str, QPixmap],
+) -> dict[str, list[QPixmap]]:
+    """Legacy dict[str, QPixmap] → dict[str, list[QPixmap]] (shared normalization)."""
+    norm: dict[str, list[QPixmap]] = {}
+    for key, val in poses.items():
+        if isinstance(val, list):
+            norm[key] = val
+        else:
+            norm[key] = [val] if val is not None else []
+    return norm
+
+
+def pet_sprite_frame_signature(
+    poses: dict[str, list[QPixmap]] | dict[str, QPixmap],
+    *,
+    state: str,
+    anim: PetAnimState,
+    facing: int,
+    character: str | None,
+) -> tuple | None:
+    """Hashable description of what ``paint_pet_sprite`` draws this frame.
+
+    Equal signatures ⇒ byte-identical sprite output (same cels, same motion
+    transform, same pose blend, same mirror). The widget compares consecutive
+    signatures to skip redundant repaints on slow/static poses — hold, wait,
+    perch, trash run the same cel for several ticks (e.g. hoodie hold: 4 ticks
+    per cel at ~30 Hz), so each of those in-between frames was a full-window
+    repaint of identical pixels.
+
+    Must stay in lock-step with ``paint_pet_sprite`` — both route through
+    ``_normalize_poses`` / ``_cel_indices`` / ``_motion`` so they cannot drift.
+    """
+    char = normalize_pet_character(character) if character else ""
+    norm = _normalize_poses(poses)
+    cur_pose = anim.pose
+    prev_pose = anim.prev_pose
+    fr = anim.frame
+    blend = _ease(anim.blend)
+    # Hold/fall/dizzy/trash never stack two cels (see paint_pet_sprite).
+    if state in {"hold", "fall", "dizzy", "trash"}:
+        blend = 1.0
+        prev_pose = cur_pose
+    bob, squash, tilt, sway, stretch = _motion(state, fr, character=char)
+    motion = (
+        round(bob, 3),
+        round(squash, 4),
+        round(tilt, 3),
+        round(sway, 3),
+        round(stretch, 4),
+    )
+    cur_frames = norm.get(cur_pose) or norm.get(_POSE_IDLE) or []
+    prev_frames = norm.get(prev_pose) or cur_frames
+    if not cur_frames:
+        return None
+    cur_sig = _cel_indices(cur_frames, state, fr, character=char)
+    prev_sig = None
+    if blend < 0.999 and prev_frames:
+        if prev_pose == _POSE_FALL:
+            n = max(1, len(prev_frames))
+            prev_sig = (n - 1, n - 1, 1.0)
+        else:
+            prev_key = (
+                state
+                if prev_pose == _POSE_PLAY and state in {"happy", "play"}
+                else prev_pose
+            )
+            prev_sig = _cel_indices(prev_frames, prev_key, fr, character=char)
+    return (
+        cur_pose,
+        prev_pose,
+        round(blend, 4),
+        cur_sig,
+        prev_sig,
+        motion,
+        facing >= 0,
+    )
 
 
 def _paint_langfrog_fx(
