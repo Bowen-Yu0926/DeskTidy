@@ -676,7 +676,7 @@ class PageIndicatorWidget(QWidget):
 
     def _make_record_button(self) -> QPushButton:
         hotkey = str(
-            (self.settings.get("hotkeys") or {}).get("screen_record") or "F3"
+            (self.settings.get("hotkeys") or {}).get("screen_record") or "Ctrl+Alt+3"
         )
         btn = _PeekChip(
             "录屏", role="record", object_name="pageRecordBtn", settings=self.settings

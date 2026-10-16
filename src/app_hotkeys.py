@@ -86,12 +86,12 @@ class HotkeyMixin:
             ),
             (
                 "screen_record",
-                hotkeys.get("screen_record", "F3"),
+                hotkeys.get("screen_record", "Ctrl+Alt+3"),
                 self.screen_record_manager.toggle_recording,
             ),
             (
                 "file_search",
-                hotkeys.get("file_search", "F4"),
+                hotkeys.get("file_search", "Ctrl+Alt+4"),
                 self._toggle_file_search,
             ),
             (
@@ -219,7 +219,7 @@ class HotkeyMixin:
 
     def _hotkey_show_last_screenshot(self) -> None:
         if not self.screenshot_manager.show_last_screenshot():
-            hotkey = self.settings.get("hotkeys", {}).get("screenshot", "F1")
+            hotkey = self.settings.get("hotkeys", {}).get("screenshot", "Ctrl+Alt+1")
             self.tray.show_message(
                 APP_NAME_ZH,
                 f"暂无截图。请先按 {hotkey} 进行区域截图。",

@@ -1,6 +1,6 @@
 """Desktop screen recording via FFmpeg (ddagrab / gdigrab).
 
-Uses the open-source FFmpeg encoder. Hotkey (default F3) toggles start/stop;
+Uses the open-source FFmpeg encoder. Hotkey (default Ctrl+Alt+3) toggles start/stop;
 MP4 is saved under <install>/录屏 by default.
 
 Single-monitor picks use Desktop Duplication (``ddagrab``) so the hardware
@@ -1396,6 +1396,56 @@ class ScreenRecordManager:
 
         threading.Thread(target=_worker, name="DeskTidyFFmpegWarm", daemon=True).start()
 
+    def _show_ffmpeg_missing(self) -> None:
+        """Existing「需安装 FFmpeg」notice — unchanged wording, shared call site."""
+        msg = (
+            "未找到 FFmpeg。\n"
+            "安装版请确认程序目录下有 assets\\ffmpeg\\ffmpeg.exe。\n"
+            "或执行：winget install Gyan.FFmpeg"
+        )
+        get_logger().warning("screen_record: ffmpeg not found")
+        self._message(msg)
+        if not self._ffmpeg_tip_shown:
+            self._ffmpeg_tip_shown = True
+            try:
+                from src.i18n import show_warning
+
+                QTimer.singleShot(0, lambda: show_warning(None, "录屏不可用", msg))
+            except Exception:
+                pass
+
+    def _ensure_ffmpeg_for_recording(self, capture_screen: str | None) -> None:
+        """Prompt to fetch FFmpeg, then re-enter ``start_recording`` when ready.
+
+        Runs on the UI thread (modal prompt). On decline the existing
+        「需安装 FFmpeg」notice is shown; on accept a background download starts
+        and ``on_ready`` re-triggers the start once it validates.
+        """
+        from src.ffmpeg_fetch import ensure_ffmpeg, fetch_in_flight
+
+        def _ready(_exe) -> None:
+            if self.is_recording or self._starting or self._stopping:
+                return
+            self.start_recording(capture_screen)
+
+        try:
+            exe = ensure_ffmpeg(
+                parent=None, settings=self._get_settings(), on_ready=_ready
+            )
+        except Exception as exc:  # noqa: BLE001 — never break the record entry
+            get_logger().warning("screen_record ensure_ffmpeg failed: %s", exc)
+            return
+        if exe is not None:
+            # Synchronously available (another process installed it after the
+            # find_ffmpeg() check) — proceed now.
+            if not (self.is_recording or self._starting or self._stopping):
+                self.start_recording(capture_screen)
+            return
+        if fetch_in_flight():
+            # Download running — toast already shown; on_ready resumes later.
+            return
+        self._show_ffmpeg_missing()
+
     @property
     def is_recording(self) -> bool:
         if self._proc is not None and self._proc.poll() is None:
@@ -1453,8 +1503,14 @@ class ScreenRecordManager:
             or self._resuming
         ):
             self.stop_recording()
-        else:
-            self.start_recording()
+            return
+        # Runtime on-demand FFmpeg fetch (REQ-P2-1): user-triggered start only.
+        # A decline keeps the existing「需安装 FFmpeg」notice; an accept starts a
+        # background download and on_ready re-enters start_recording when ready.
+        if find_ffmpeg() is None:
+            self._ensure_ffmpeg_for_recording(None)
+            return
+        self.start_recording()
 
     def start_recording(self, capture_screen: str | None = None) -> None:
         """Start FFmpeg capture.
@@ -1610,21 +1666,7 @@ class ScreenRecordManager:
             if reason == "cancelled":
                 return
             if reason == "no_ffmpeg":
-                msg = (
-                    "未找到 FFmpeg。\n"
-                    "安装版请确认程序目录下有 assets\\ffmpeg\\ffmpeg.exe。\n"
-                    "或执行：winget install Gyan.FFmpeg"
-                )
-                get_logger().warning("screen_record: ffmpeg not found")
-                self._message(msg)
-                if not self._ffmpeg_tip_shown:
-                    self._ffmpeg_tip_shown = True
-                    try:
-                        from src.i18n import show_warning
-
-                        QTimer.singleShot(0, lambda: show_warning(None, "录屏不可用", msg))
-                    except Exception:
-                        pass
+                self._show_ffmpeg_missing()
             elif reason == "bad_dir":
                 self._message(f"无法创建录屏目录：{data.get('detail') or ''}")
             else:
@@ -1716,7 +1758,7 @@ class ScreenRecordManager:
                 begin()
         except Exception:
             pass
-        hotkey = self._get_settings().get("hotkeys", {}).get("screen_record", "F3")
+        hotkey = self._get_settings().get("hotkeys", {}).get("screen_record", "Ctrl+Alt+3")
         self._show_recording_chrome(hotkey)
 
     def _show_recording_chrome(self, hotkey: str) -> None:

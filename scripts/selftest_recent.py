@@ -4235,15 +4235,15 @@ def test_page_switch_click() -> None:
                 encoding="utf-8"
             )
         )
-        assert defaults.get("hotkeys", {}).get("screen_record") == "F3"
-        assert defaults.get("hotkeys", {}).get("screenshot") == "F1"
-        assert defaults.get("hotkeys", {}).get("show_screenshot") == "F2"
+        assert defaults.get("hotkeys", {}).get("screen_record") == "Ctrl+Alt+3"
+        assert defaults.get("hotkeys", {}).get("screenshot") == "Ctrl+Alt+1"
+        assert defaults.get("hotkeys", {}).get("show_screenshot") == "Ctrl+Alt+2"
         assert defaults.get("screen_record", {}).get("enabled") is False
         assert "output_dir" in defaults.get("screen_record", {})
         assert "capture_screen" not in defaults.get("screen_record", {})
-        assert defaults.get("meeting_minutes", {}).get("enabled") is True
+        assert defaults.get("meeting_minutes", {}).get("enabled") is False
         assert defaults.get("notepad", {}).get("enabled") is True
-        assert defaults.get("desktop_pet", {}).get("enabled") is True
+        assert defaults.get("desktop_pet", {}).get("enabled") is False
         assert defaults.get("calculator", {}).get("enabled") is False
         assert defaults.get("hotkeys", {}).get("calculator") == "Ctrl+Alt+C"
         assert defaults.get("screenshot", {}).get("max_pins") == 3
@@ -4731,14 +4731,11 @@ def test_page_switch_click() -> None:
         )
         from src.settings import apply_first_run_guide_upgrade, apply_first_run_organize_upgrade
 
-        assert len(GUIDE_STEPS) == 10
+        assert len(GUIDE_STEPS) == 3
         titles = [step[0] for step in GUIDE_STEPS]
-        assert "区域截图" in titles
-        assert "截图贴图" in titles
-        assert "桌面录屏" in titles
-        assert "内置记事本" in titles
-        assert "会议纪要" in titles
-        assert "桌面待办" in titles
+        assert "桌面分区是什么" in titles
+        assert "一键整理" in titles
+        assert "右侧浮标 / 更多功能" in titles
         assert should_auto_show_first_run_guide({"first_run_guide_done": False})
         assert not should_auto_show_first_run_guide({"first_run_guide_done": True})
         upgraded = {"theme": "mist"}
@@ -7954,7 +7951,7 @@ def test_page_folders() -> None:
         assert "notepad" in raw
         assert "folder" in raw["notepad"]
         assert raw["notepad"].get("enabled") is True
-        assert raw.get("meeting_minutes", {}).get("enabled") is True
+        assert raw.get("meeting_minutes", {}).get("enabled") is False
         assert "notepadpp" not in raw
 
         s: dict = {}

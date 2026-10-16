@@ -29,10 +29,10 @@
     "peek_fences": "Ctrl+Space",
     "page_next": "Ctrl+Shift+Right",
     "page_prev": "Ctrl+Shift+Left",
-    "screenshot": "F1",
-    "show_screenshot": "F2",
-    "screen_record": "F3",
-    "file_search": "F4",
+    "screenshot": "Ctrl+Alt+1",
+    "show_screenshot": "Ctrl+Alt+2",
+    "screen_record": "Ctrl+Alt+3",
+    "file_search": "Ctrl+Alt+4",
     "calculator": "Ctrl+Alt+C"
   },
   "screenshot": {
@@ -56,7 +56,7 @@
     "threads": 2
   },
   "meeting_minutes": {
-    "enabled": true,
+    "enabled": false,
     "folder": ""
   },
   "notepad": {
@@ -76,7 +76,7 @@
     "clipboard_clear_seconds": 30
   },
   "desktop_pet": {
-    "enabled": true,
+    "enabled": false,
     "visible": false,
     "follow_cursor": false,
     "auto_wander": true,

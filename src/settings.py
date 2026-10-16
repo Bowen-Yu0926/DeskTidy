@@ -250,7 +250,7 @@ def apply_first_run_organize_upgrade(user_settings: dict, merged: dict) -> bool:
 
 
 def apply_file_search_hotkey_upgrade(user_settings: dict, merged: dict) -> bool:
-    """Move the old default Ctrl+Alt+F → F4; keep any custom binding."""
+    """Move the old default Ctrl+Alt+F → Ctrl+Alt+4; keep any custom binding."""
     hotkeys = merged.get("hotkeys")
     if not isinstance(hotkeys, dict):
         return False
@@ -260,7 +260,7 @@ def apply_file_search_hotkey_upgrade(user_settings: dict, merged: dict) -> bool:
         return False
     # Only rewrite the previous product default — never clobber a custom chord.
     if current.casefold() in {"ctrl+alt+f", "ctrl + alt + f"}:
-        hotkeys["file_search"] = "F4"
+        hotkeys["file_search"] = "Ctrl+Alt+4"
         return True
     return False
 

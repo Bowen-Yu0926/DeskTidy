@@ -66,6 +66,9 @@ def _locate_ffmpeg() -> Path | None:
             local / "Programs" / "桌面整理（私人版）" / "assets" / "ffmpeg" / "ffmpeg.exe"
         )
 
+    # Runtime on-demand fetch location (see src.ffmpeg_fetch).
+    candidates.append(Path.home() / ".desktidy" / "ffmpeg" / "ffmpeg.exe")
+
     for candidate in candidates:
         if candidate.is_file():
             return candidate

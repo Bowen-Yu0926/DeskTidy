@@ -4,18 +4,18 @@
 
 公开仓库与安装包：[github.com/Bowen-Yu0926/DeskTidy](https://github.com/Bowen-Yu0926/DeskTidy) · [v4.0.29 安装包](https://github.com/Bowen-Yu0926/DeskTidy-Releases/releases/download/v4.0.29/DeskTidy_Setup_4.0.29.exe)
 
-**账号管理：** 侧栏启用后，桌面出现独立「账」浮标（不在分页栏）。单击打开清单，维护名称 / 账号 / 密码 / 网址，双击复制；手机号或邮箱登录后云端同步。默认关闭。
+**账号管理：** 侧栏启用后，桌面出现独立「账」浮标（不在分页栏）。单击打开清单，维护名称 / 账号 / 密码 / 网址，双击复制；手机号或邮箱登录后云端同步。默认关闭。本地零知识加密：主密码派生密钥仅存内存；云端只保存密文，服务器无法解密；未登录也可本地使用。
 
 ## 功能一览
 
 | 模块 | 功能 |
 |------|------|
-| 整理 | 一键/定时/实时监控自动分类，三种整理模式 |
+| 整理 | 一键/定时/实时监控自动分类，虚拟整理（只钉选、不移动文件） |
 | 分区 | 可拖拽缩放折叠，Folder Portal 镜像，拖放归类 |
 | 分页 | 多桌面页面，底部指示器，快捷键切换 |
 | 快照 | 保存/恢复桌面图标位置 |
 | 截图 | 区域截图，复制/保存/贴图 |
-| 录屏 | F3 开始/结束桌面录屏（需 FFmpeg） |
+| 录屏 | Ctrl+Alt+3 开始/结束桌面录屏（需 FFmpeg） |
 | 账号 | 云端账号保险库：桌面浮标入口，双击复制，后台定时同步 |
 | 快捷 | 全局热键，Peek 置顶，双击隐藏 |
 
@@ -63,10 +63,10 @@ scripts\build_installer.bat
 | `Ctrl+Shift+H` | 显示/隐藏桌面图标 |
 | `Ctrl+Space` | 临时查看分区（Peek） |
 | `Ctrl+Shift+←/→` | 切换分页（上一页 / 下一页） |
-| `F1` | 区域截图 |
-| `F2` | 显示截图贴图 |
-| `F3` | 录屏开始/结束 |
-| `F4` | 文件搜索 |
+| `Ctrl+Alt+1` | 区域截图 |
+| `Ctrl+Alt+2` | 显示截图贴图 |
+| `Ctrl+Alt+3` | 录屏开始/结束 |
+| `Ctrl+Alt+4` | 文件搜索 |
 | `Ctrl+Alt+C` | 计算器 |
 
 ## 录屏（FFmpeg）
@@ -82,12 +82,14 @@ python scripts/prepare_ffmpeg_recording.py
 默认安装 BtbN **gpl-shared**（`h264_mf` + `ddagrab` + `gdigrab` + `libx264`），安装目录约 **70–90 MB**，低于完整 static 版（~210 MB）。打包前会自动校验 `h264_mf` 可用，避免退化成高 CPU 的纯软件编码。
 
 1. 安装 FFmpeg 并加入 PATH，例如：`winget install Gyan.FFmpeg`
-2. 按 **F3** 开始录屏，再按 **F3** 结束
+2. 按 **Ctrl+Alt+3** 开始录屏，再按 **Ctrl+Alt+3** 结束
 3. 文件默认保存到 `%USERPROFILE%\\Videos\\DeskTidy\\`
 
-安装版会在程序目录附带 FFmpeg（`assets\\ffmpeg\\`，含 `ffmpeg.exe` 与同目录 DLL），无需单独安装。
+安装版默认在程序目录内置 FFmpeg（`assets\ffmpeg\`，含 `ffmpeg.exe` 与同目录 DLL），无需单独安装。若使用**未内置 FFmpeg** 的构建（绿色版无内置，或用 `DESKTIDY_NO_BUNDLE_FFMPEG=1` 打包的安装版），首次录屏时会**提示自动下载**（约 80 MB，来源 BtbN gpl-shared），也可自行安装并加入 PATH：`winget install Gyan.FFmpeg`。
 
 也可在托盘菜单「录屏（开始/结束）」或设置里修改快捷键。
+
+**维护者：** 设置环境变量 `DESKTIDY_NO_BUNDLE_FFMPEG=1`（或 `true`）后再构建，可产出**不含 FFmpeg** 的更小安装包（配合运行时按需下载）。构建日志会打印「已跳过内嵌 FFmpeg（运行时按需下载）」；默认（不设置）仍会内置 FFmpeg，发布流程不变。
 
 ## Tab 说明
 

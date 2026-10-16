@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -12,7 +13,22 @@ if str(ROOT) not in sys.path:
 from src.ffmpeg_bundle import format_validation_report, validate_recording_ffmpeg
 
 
+def _no_bundle() -> bool:
+    return os.environ.get("DESKTIDY_NO_BUNDLE_FFMPEG", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+
+
 def main() -> int:
+    if _no_bundle():
+        print(
+            "DESKTIDY_NO_BUNDLE_FFMPEG is set — skipping FFmpeg bundle validation "
+            "(runtime on-demand download)."
+        )
+        return 0
     exe = ROOT / "assets" / "ffmpeg" / "ffmpeg.exe"
     report = validate_recording_ffmpeg(exe, bundle_dir=exe.parent)
     print(format_validation_report(report, exe=exe))

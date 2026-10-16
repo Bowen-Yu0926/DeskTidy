@@ -47,6 +47,10 @@ if not exist "%DIST_EXE%" (
     exit /b 1
 )
 
+rem Opt-out: DESKTIDY_NO_BUNDLE_FFMPEG=1/true produces a smaller package without
+rem bundled FFmpeg (runtime downloads it on first recording). Default keeps bundling.
+if /I "%DESKTIDY_NO_BUNDLE_FFMPEG%"=="1" goto :skip_ffmpeg_bundle
+if /I "%DESKTIDY_NO_BUNDLE_FFMPEG%"=="true" goto :skip_ffmpeg_bundle
 if exist assets\ffmpeg\ffmpeg.exe (
     if not exist dist\DeskTidy\assets\ffmpeg mkdir dist\DeskTidy\assets\ffmpeg
     xcopy /Y /Q assets\ffmpeg\* dist\DeskTidy\assets\ffmpeg\ >nul
@@ -56,6 +60,10 @@ if exist assets\ffmpeg\ffmpeg.exe (
 ) else (
     echo WARNING: assets\ffmpeg\ffmpeg.exe missing - run scripts\prepare_ffmpeg_recording.py
 )
+goto :after_ffmpeg_bundle
+:skip_ffmpeg_bundle
+echo 已跳过内嵌 FFmpeg（运行时按需下载）
+:after_ffmpeg_bundle
 if exist assets\fd\fd.exe (
     if not exist dist\DeskTidy\assets\fd mkdir dist\DeskTidy\assets\fd
     copy /Y assets\fd\fd.exe dist\DeskTidy\assets\fd\fd.exe >nul

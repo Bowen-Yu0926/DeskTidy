@@ -129,6 +129,34 @@ class TrayManager:
             )
         menu.addAction(self._record_action)
 
+        # 扩展功能 submenu — tools otherwise only reachable from the desktop
+        # buoy (待办/记事本/纪要/计算器/账号/文件搜索). Each item triggers the
+        # app-instance method through a QueuedConnection so the menu fully closes
+        # before the tool opens; a missing method falls back to a disabled entry.
+        ext_menu = menu.addMenu("扩展功能")
+        ext_menu.setStyleSheet(_tray_menu_stylesheet(theme))
+        desk_app = getattr(QApplication.instance(), "_desktidy_app", None)
+        self._ext_actions: list[QAction] = []
+        for label, method_name in (
+            ("桌面待办", "_on_todo_requested"),
+            ("内置记事本", "_on_note_requested"),
+            ("会议纪要", "_on_meeting_minutes_requested"),
+            ("计算器", "_on_calculator_requested"),
+            ("账号管理", "_on_vault_requested"),
+            ("文件搜索", "_toggle_file_search"),
+        ):
+            action = QAction(label, ext_menu)
+            if desk_app is not None and hasattr(desk_app, method_name):
+                method = getattr(desk_app, method_name)
+                action.triggered.connect(
+                    lambda *_a, m=method: m(),
+                    Qt.ConnectionType.QueuedConnection,
+                )
+            else:
+                action.setEnabled(False)
+            ext_menu.addAction(action)
+            self._ext_actions.append(action)
+
         menu.addSeparator()
 
         # Help submenu sits with the “background utility” actions (below tools).

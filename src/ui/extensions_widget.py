@@ -297,7 +297,7 @@ class ExtensionsWidget(QWidget):
         rec_key_row = QHBoxLayout()
         rec_key_row.addWidget(QLabel("录屏快捷键"))
         self.hotkey_inputs["screen_record"] = HotkeyEdit(
-            str(hotkeys.get("screen_record") or "F3")
+            str(hotkeys.get("screen_record") or "Ctrl+Alt+3")
         )
         self.hotkey_inputs["screen_record"].hotkey_changed.connect(
             lambda key: self._on_hotkey_changed("screen_record", key)
@@ -382,7 +382,7 @@ class ExtensionsWidget(QWidget):
         fs_key_row = QHBoxLayout()
         fs_key_row.addWidget(QLabel("搜索快捷键"))
         self.hotkey_inputs["file_search"] = HotkeyEdit(
-            str(hotkeys.get("file_search") or "F4")
+            str(hotkeys.get("file_search") or "Ctrl+Alt+4")
         )
         self.hotkey_inputs["file_search"].hotkey_changed.connect(
             lambda key: self._on_hotkey_changed("file_search", key)

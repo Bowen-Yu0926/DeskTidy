@@ -42,10 +42,10 @@ _HOTKEY_DEFAULTS = {
     "peek_fences": "Ctrl+Space",
     "page_next": "Ctrl+Shift+Right",
     "page_prev": "Ctrl+Shift+Left",
-    "screenshot": "F1",
-    "show_screenshot": "F2",
-    "screen_record": "F3",
-    "file_search": "F4",
+    "screenshot": "Ctrl+Alt+1",
+    "show_screenshot": "Ctrl+Alt+2",
+    "screen_record": "Ctrl+Alt+3",
+    "file_search": "Ctrl+Alt+4",
     "calculator": "Ctrl+Alt+C",
 }
 
@@ -96,6 +96,14 @@ def _topic_body(topic_id: str, settings: dict | None = None) -> str:
 <p class='purpose'>在桌面上用<strong>分区</strong>分类显示文件。文件仍留在系统桌面文件夹，
 分区只做「虚拟钉选」——归类、查找，不改变真实路径。删除分区不会删文件。</p>
 
+<h3>核心概念（一句话）</h3>
+<ul>
+<li><strong>桌面分区</strong>：把图标分类「钉选」出来显示；文件仍留在系统桌面，删除分区不会删文件。——何时用：想给杂乱的桌面分类收纳、又不改变文件真实位置。</li>
+<li><strong>分页</strong>：DeskTidy 自己的多个「桌面页」；切换只改变 DeskTidy 的显示，不动 Windows 虚拟桌面。——何时用：工作 / 娱乐等不同场景各用一套布局。</li>
+<li><strong>公共区域</strong>：所有分页共享的一层「浮标」图标；回收站 / 此电脑等系统图标始终每页可见。——何时用：想让某些图标跨分页常驻。</li>
+<li><strong>布局快照</strong>：保存 / 恢复分区位置与样式的备份。——何时用：想备份或一键还原整套布局。</li>
+</ul>
+
 <h3>怎么查说明</h3>
 <p>左侧按<strong>功能</strong>分章：每个功能把用途、桌面操作、浮标/托盘入口、快捷键和相关设置写在同一页，
 避免同一件事散落在多处。</p>
@@ -109,6 +117,21 @@ def _topic_body(topic_id: str, settings: dict | None = None) -> str:
     ("账号管理", "云端账号保险库：桌面浮标打开面板，双击复制字段，后台定时同步。"),
     ("设置与备份", "主题、开机启动、导入导出、数据目录。"),
 ])}
+
+<h3>功能入口速查表</h3>
+<table class='op-table' cellspacing='0' cellpadding='6'>
+<tr><th align='left'>功能</th><th align='left'>在哪打开</th></tr>
+<tr><td>一键整理</td><td>托盘「一键整理」/ 主窗口「整理」/ 热键 <code>Ctrl+Shift+O</code></td></tr>
+<tr><td>桌面分区（含分页）</td><td>主窗口「桌面分区」/ 桌面浮标 / 托盘「显示/隐藏分区」/ 热键 <code>Ctrl+Shift+F</code></td></tr>
+<tr><td>布局快照</td><td>主窗口「布局快照」</td></tr>
+<tr><td>扩展功能（纪要 / 壁纸 / 录屏目录 / 分页文件夹）</td><td>主窗口「扩展功能」</td></tr>
+<tr><td>账号管理</td><td>主窗口「账号管理」/ 桌面「账」浮标</td></tr>
+<tr><td>桌面宠物</td><td>主窗口「桌面宠物」</td></tr>
+<tr><td>区域截图</td><td>托盘「区域截图」/ 热键 <code>Ctrl+Alt+1</code></td></tr>
+<tr><td>桌面录屏</td><td>托盘「录屏」/ 浮标「录屏」/ 热键 <code>Ctrl+Alt+3</code></td></tr>
+<tr><td>文件搜索</td><td>热键 <code>Ctrl+Alt+4</code></td></tr>
+<tr><td>设置 / 帮助</td><td>主窗口「设置」「帮助」；帮助也可从托盘「帮助 ▸ 使用说明」</td></tr>
+</table>
 
 <p class='tip'>第一次安装后，桌面会依次出现小提示卡片。之后可在帮助页点「入门指引」再看一遍。
 侧栏「帮助」、托盘「使用说明」打开的是 <strong>DeskTidy</strong> 介绍与手册；
@@ -210,9 +233,9 @@ DeskNote 请在 DeskNote 窗口按 F1 打开<strong>另一份</strong>帮助。<
 托盘始终有截图入口。贴图上限等在「扩展功能 · 区域截图」配置。</p>
 
 {_op_table([
-    ("快捷键 · 区域截图（默认 F1）", "冻结画面后框选；可复制、保存或贴图。"),
-    ("快捷键 · 显示贴图（默认 F2）", "把最近一张截图贴到桌面；可叠多张。"),
-    ("托盘 · 区域截图", "等同 F1。"),
+    ("快捷键 · 区域截图（默认 Ctrl+Alt+1）", "冻结画面后框选；可复制、保存或贴图。"),
+    ("快捷键 · 显示贴图（默认 Ctrl+Alt+2）", "把最近一张截图贴到桌面；可叠多张。"),
+    ("托盘 · 区域截图", "等同 Ctrl+Alt+1。"),
     ("贴图 · 右键", "另存为图片或复制到剪贴板。"),
     ("扩展功能 · 自动贴图 / 同时张数", "截图后是否自动贴图；最多同时 5 张。"),
 ])}
@@ -225,7 +248,7 @@ DeskNote 请在 DeskNote 窗口按 F1 打开<strong>另一份</strong>帮助。<
 默认保存在安装目录下的「录屏」文件夹，可在扩展功能中改路径。</p>
 
 {_op_table([
-    ("快捷键 · 录屏（默认 F3）", "选屏后开始；再次操作结束。"),
+    ("快捷键 · 录屏（默认 Ctrl+Alt+3）", "选屏后开始；再次操作结束。"),
     ("浮标「录屏」· 单击", "开始 / 结束（需在扩展功能勾选分页栏显示）。"),
     ("浮标「录屏」· 右键", "打开录屏保存目录。"),
     ("托盘 · 录屏", "后台开始 / 结束。"),
@@ -240,7 +263,7 @@ DeskNote 请在 DeskNote 窗口按 F1 打开<strong>另一份</strong>帮助。<
 <p class='purpose'>按文件名快速定位。使用开源工具 <code>fd</code>（安装版已内置）。</p>
 
 {_op_table([
-    ("快捷键 · 文件搜索（默认 F4）", "打开搜索框。"),
+    ("快捷键 · 文件搜索（默认 Ctrl+Alt+4）", "打开搜索框。"),
     ("本地搜索", "默认搜桌面、文档、下载及当前已打开的资源管理器文件夹。"),
     ("全局搜索", "本地结果不足时可扫本地磁盘（较慢）。"),
     ("扩展功能", "配置快捷键与搜索范围相关选项。"),
@@ -307,6 +330,14 @@ DeskNote 请在 DeskNote 窗口按 F1 打开<strong>另一份</strong>帮助。<
     ("新建 / 编辑 / 删除 / 置顶 / 拖拽排序", "改完后立即刷新列表；搜索时不可排序。"),
     ("导入 / 导出", "设置页可将清单导出为 JSON，或从 JSON 导入到云端。"),
 ])}
+
+<h3>安全与隐私</h3>
+<ul>
+<li>主密码经 <strong>KDF</strong>（<code>PBKDF2-HMAC-SHA256</code>，已安装 <code>argon2-cffi</code> 时自动改用 <code>Argon2id</code>）派生 32 字节密钥；<strong>密钥只保存在内存</strong>，不写入磁盘、也不会上传服务器。</li>
+<li>服务器（byethost）只保存<strong>密文与 KDF 参数</strong>：凭据字段用 <code>AES-256-GCM</code>（<code>enc_ver=1</code>）在客户端加密，服务端无法解密（<strong>零知识</strong>）。</li>
+<li>未启用云端或离线时，账号保险库<strong>仍可在本地使用</strong>；云端同步是<strong>可选项</strong>（<code>account_vault.enabled</code> 默认关闭）。</li>
+<li>复制密码后，剪贴板会按 <code>clipboard_clear_seconds</code>（默认 <strong>30 秒</strong>）自动清空，降低密码泄漏风险。</li>
+</ul>
 <p class='tip'>服务器不可达时会提示并自动关闭账号管理，避免卡住 DeskTidy。
 登录态保存在本地配置目录；凭据以客户端密文形式同步，服务端不可解密。
 本地会话文件含主密码校验材料，请勿外泄；请使用足够强的主密码，忘记将无法恢复。</p>

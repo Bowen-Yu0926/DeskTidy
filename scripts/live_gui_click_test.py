@@ -314,7 +314,7 @@ def test_hotkeys() -> None:
     click_xy(120, sh - 140)
     time.sleep(0.35)
 
-    press("f1")
+    pyautogui.hotkey("ctrl", "alt", "1")
     time.sleep(1.0)
     shot("hotkey_f1_screenshot")
     big = [w for w in enum_app_windows() if (w[2][2] - w[2][0]) >= sw - 40]
@@ -327,22 +327,22 @@ def test_hotkeys() -> None:
             overlay_ok = fw >= sw - 40 and fh >= sh - 80
         except Exception:
             overlay_ok = False
-    log("热键F1截图", overlay_ok, f"全屏窗={len(big)}")
+    log("热键Ctrl+Alt+1截图", overlay_ok, f"全屏窗={len(big)}")
     press("esc")
     time.sleep(0.5)
     press("esc")
     time.sleep(0.25)
 
-    # F2 show last screenshot (may warn if none) — dismiss
-    press("f2")
+    # show last screenshot (Ctrl+Alt+2; may warn if none) — dismiss
+    pyautogui.hotkey("ctrl", "alt", "2")
     time.sleep(0.8)
     shot("hotkey_f2")
     press("esc")
     press("enter")  # dismiss message box if any
     time.sleep(0.3)
-    log("热键F2贴图", True, "已触发并关闭")
+    log("热键Ctrl+Alt+2贴图", True, "已触发并关闭")
 
-    press("f4")
+    pyautogui.hotkey("ctrl", "alt", "4")
     time.sleep(1.0)
     shot("hotkey_f4_search")
     searchish = [
@@ -358,7 +358,7 @@ def test_hotkeys() -> None:
         for w in enum_app_windows()
         if 300 <= (w[2][2] - w[2][0]) <= 900 and 80 <= (w[2][3] - w[2][1]) <= 700
     ]
-    log("热键F4搜索", len(searchish) >= 1 or len(mid) >= 1, f"候选={len(searchish)+len(mid)}")
+    log("热键Ctrl+Alt+4搜索", len(searchish) >= 1 or len(mid) >= 1, f"候选={len(searchish)+len(mid)}")
     press("esc")
     time.sleep(0.35)
 

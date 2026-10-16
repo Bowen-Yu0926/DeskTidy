@@ -82,6 +82,11 @@ if exist "dist\DeskTidy_Setup_*.exe" (
     echo   No old installers found.
 )
 
+rem Opt-out: DESKTIDY_NO_BUNDLE_FFMPEG=1/true skips the FFmpeg gate + validation
+rem (smaller installer; runtime downloads FFmpeg on first recording). Default unchanged.
+if /I "%DESKTIDY_NO_BUNDLE_FFMPEG%"=="1" goto :skip_ffmpeg_bundle
+if /I "%DESKTIDY_NO_BUNDLE_FFMPEG%"=="true" goto :skip_ffmpeg_bundle
+
 if not exist "assets\ffmpeg\ffmpeg.exe" (
     echo.
     echo ERROR: assets\ffmpeg\ffmpeg.exe is required for screen recording.
@@ -95,6 +100,10 @@ if errorlevel 1 (
     echo FFmpeg validation failed.
     exit /b 1
 )
+goto :after_ffmpeg_bundle
+:skip_ffmpeg_bundle
+echo 已跳过内嵌 FFmpeg（运行时按需下载）
+:after_ffmpeg_bundle
 
 if not exist "assets\fd\fd.exe" (
     echo.

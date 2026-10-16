@@ -38,7 +38,7 @@ def test_defaults_and_hotkey() -> None:
     assert "file_search" in HOTKEY_IDS
     assert "file_search" in _POLLABLE_ACTIONS
     assert HOTKEY_LABELS["file_search"] == "文件搜索"
-    assert data["hotkeys"].get("file_search") == "F4"
+    assert data["hotkeys"].get("file_search") == "Ctrl+Alt+4"
     assert MIN_QUERY_CHARS >= 2
     roots = resolve_search_roots({"file_search": data["file_search"]})
     assert roots
