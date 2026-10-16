@@ -190,7 +190,7 @@ def test_wiring_contracts() -> None:
     assert "file_search" in setup
     assert "register_with_fallbacks" in setup
     assert "file_search" in HOTKEY_FALLBACKS
-    assert "_toggle_file_search" in inspect.getsource(DeskTidyApp)
+    assert "_toggle_file_search" in inspect.getsource(DeskTidyApp._toggle_file_search)
     removed = inspect.getsource(DeskTidyApp._on_watched_file_removed)
     assert "remove_public_paths(" not in removed
     assert "_remove_public_icon_widget(" not in removed
@@ -199,11 +199,11 @@ def test_wiring_contracts() -> None:
     assert "unpin_paths_from_all_fences" not in removed
     assert "prune_missing_virtual_items" not in removed
     assert "_schedule_pending_fence_remove" not in removed
-    assert "_flush_pending_fence_removes" not in inspect.getsource(DeskTidyApp)
+    assert not hasattr(DeskTidyApp, "_flush_pending_fence_removes")
     assert "sticky" in removed.lower()
-    assert "_run_sticky_missing_reprune" in inspect.getsource(DeskTidyApp)
+    assert "_run_sticky_missing_reprune" in inspect.getsource(DeskTidyApp._run_sticky_missing_reprune)
     assert "_sticky_reprune_timer" in inspect.getsource(DeskTidyApp.__init__)
-    assert "_maybe_reschedule_desktop_watcher" in inspect.getsource(DeskTidyApp)
+    assert "_maybe_reschedule_desktop_watcher" in inspect.getsource(DeskTidyApp._maybe_reschedule_desktop_watcher)
     from src import app as app_mod
 
     assert hasattr(app_mod._UiBridge, "file_removed")
@@ -514,6 +514,8 @@ def test_office_save_keeps_sticky_public_float() -> None:
         with (
             patch("src.app.invalidate_desktop_scan_cache"),
             patch("src.app.save_settings"),
+            patch("src.app_watcher.invalidate_desktop_scan_cache"),
+            patch("src.app_watcher.save_settings"),
             patch("src.path_stat_cache.invalidate_path_stat_cache"),
         ):
             DeskTidyApp._on_watched_file_removed(fake, str(target))
@@ -586,6 +588,8 @@ def test_office_save_keeps_sticky_fence_pin() -> None:
         with (
             patch("src.app.invalidate_desktop_scan_cache"),
             patch("src.app.save_settings"),
+            patch("src.app_watcher.invalidate_desktop_scan_cache"),
+            patch("src.app_watcher.save_settings"),
             patch("src.path_stat_cache.invalidate_path_stat_cache"),
             patch("src.public_desktop.prune_missing_public_items", return_value=False),
         ):

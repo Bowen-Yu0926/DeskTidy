@@ -4,10 +4,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QGuiApplication
 from PyQt6.QtWidgets import (
     QCheckBox,
+    QComboBox,
     QDialog,
     QFrame,
     QHBoxLayout,
@@ -23,17 +24,22 @@ from PyQt6.QtWidgets import (
 
 from src.account_vault import (
     DEFAULT_API_BASE,
+    DEFAULT_CLIPBOARD_CLEAR_SECONDS,
     DEFAULT_REFRESH_INTERVAL_HOURS,
     MAX_REFRESH_INTERVAL_HOURS,
     MIN_REFRESH_INTERVAL_HOURS,
     account_vault_api_base,
+    account_vault_clipboard_clear_seconds,
     account_vault_refresh_interval_hours,
     account_vault_settings,
     clear_session,
+    current_key,
+    is_unlocked,
     load_session,
     mask_login,
     read_credentials_import_file,
     reorder_credential_ids,
+    should_clear_clipboard,
     write_credentials_export_file,
 )
 from src.account_vault_api import VaultApiClient, VaultApiError
@@ -43,6 +49,7 @@ from src.ui.account_vault_widget import (
     AccountVaultAuthDialog,
     CredentialEditDialog,
     VaultCredentialRow,
+    ensure_vault_unlocked,
 )
 from src.ui.toast import show_toast
 
@@ -120,6 +127,22 @@ class AccountVaultSettingsWidget(QWidget):
         refresh_row.addWidget(self.refresh_spin)
         refresh_row.addStretch(1)
         panel_layout.addLayout(refresh_row)
+
+        clip_row = QHBoxLayout()
+        clip_row.addWidget(QLabel("复制密码后自动清空剪贴板"))
+        self.clipboard_combo = QComboBox()
+        self.clipboard_combo.addItem("不自动", 0)
+        self.clipboard_combo.addItem("15 秒", 15)
+        self.clipboard_combo.addItem("30 秒", 30)
+        self.clipboard_combo.addItem("60 秒", 60)
+        self.clipboard_combo.setToolTip(
+            "复制密码后延时清空系统剪贴板，防止密码残留；仅密码字段生效。"
+        )
+        self._set_clipboard_combo(account_vault_clipboard_clear_seconds(self.settings))
+        self.clipboard_combo.currentIndexChanged.connect(self._on_clipboard_clear_changed)
+        clip_row.addWidget(self.clipboard_combo)
+        clip_row.addStretch(1)
+        panel_layout.addLayout(clip_row)
 
         api_row = QHBoxLayout()
         api_row.addWidget(QLabel("API 根地址"))
@@ -214,9 +237,10 @@ class AccountVaultSettingsWidget(QWidget):
         self.refresh_spin.blockSignals(True)
         self.refresh_spin.setValue(account_vault_refresh_interval_hours(self.settings))
         self.refresh_spin.blockSignals(False)
+        self._set_clipboard_combo(account_vault_clipboard_clear_seconds(self.settings))
         self.api_edit.setText(str(cfg.get("api_base") or DEFAULT_API_BASE))
         self._refresh_session_label()
-        self._reload_credentials()
+        self._run_list()
 
     def _on_busy_changed(self, busy: bool, hint: str) -> None:
         for btn in self._busy_buttons:
@@ -291,12 +315,18 @@ class AccountVaultSettingsWidget(QWidget):
             self.status_lbl.setText("登录后可在此新增、编辑、复制账号信息。")
             self._rebuild_rows()
             return
+        if not is_unlocked():
+            self._items = []
+            self.status_lbl.setText("已锁定 — 点击「刷新」解锁")
+            self._rebuild_rows()
+            return
         client = self._client()
         if client is None:
             return
+        key = current_key()
 
         def work() -> list[dict[str, Any]]:
-            return client.list_credentials()
+            return client.list_credentials(key=key)
 
         # If a sync is already running, queue this list so cold-start / re-entry
         # cannot drop the refresh the user just triggered.
@@ -320,10 +350,11 @@ class AccountVaultSettingsWidget(QWidget):
             return
         if self._guard_busy():
             return
+        key = current_key()
 
         def work() -> list[dict[str, Any]]:
-            mutate(client)
-            return client.list_credentials()
+            mutate(client, key)
+            return client.list_credentials(key=key)
 
         def ok(items: object) -> None:
             if toast:
@@ -341,7 +372,21 @@ class AccountVaultSettingsWidget(QWidget):
         )
 
     def _reload_credentials(self) -> None:
+        # Refresh button path: unlock first if needed.
+        if load_session() and not is_unlocked():
+            if not self._ensure_unlocked():
+                self._items = []
+                self.status_lbl.setText("已锁定 — 点击「刷新」解锁")
+                self._rebuild_rows()
+                return
         self._run_list()
+
+    def _ensure_unlocked(self) -> bool:
+        if not load_session():
+            return False
+        if is_unlocked():
+            return True
+        return ensure_vault_unlocked(self, self.settings)
 
     def _rebuild_rows(self) -> None:
         while self._list_layout.count():
@@ -381,7 +426,7 @@ class AccountVaultSettingsWidget(QWidget):
             return
         ids = list(new_ids)
         self._run_mutate_then_list(
-            lambda c: c.reorder_credentials(ids),
+            lambda c, k: c.reorder_credentials(ids),
             busy_text="正在保存顺序…",
             toast="顺序已保存",
         )
@@ -438,6 +483,19 @@ class AccountVaultSettingsWidget(QWidget):
     def _on_refresh_interval_changed(self, hours: int) -> None:
         cfg = account_vault_settings(self.settings)
         cfg["refresh_interval_hours"] = int(hours)
+        save_settings(self.settings)
+        self.vault_settings_changed.emit()
+
+    def _set_clipboard_combo(self, secs: int) -> None:
+        idx = self.clipboard_combo.findData(int(secs))
+        self.clipboard_combo.blockSignals(True)
+        self.clipboard_combo.setCurrentIndex(idx if idx >= 0 else 2)
+        self.clipboard_combo.blockSignals(False)
+
+    def _on_clipboard_clear_changed(self, _idx: int) -> None:
+        secs = int(self.clipboard_combo.currentData() or 0)
+        cfg = account_vault_settings(self.settings)
+        cfg["clipboard_clear_seconds"] = secs
         save_settings(self.settings)
         self.vault_settings_changed.emit()
 
@@ -498,9 +556,28 @@ class AccountVaultSettingsWidget(QWidget):
             return
         QGuiApplication.clipboard().setText(value)
         show_toast(tip if tip.startswith("已") else f"已{tip}", level="success")
+        self._schedule_clipboard_clear(tip, value)
+
+    def _schedule_clipboard_clear(self, tip: str, value: str) -> None:
+        # Only passwords are auto-cleared; account / url / note are left alone.
+        if not tip.endswith("密码"):
+            return
+        secs = account_vault_clipboard_clear_seconds(self.settings)
+        if secs <= 0:
+            return
+
+        def _clear_if_unchanged() -> None:
+            clip = QGuiApplication.clipboard()
+            if should_clear_clipboard(clip.text(), value, secs):
+                clip.clear()
+                show_toast("剪贴板已清空", "已自动清除复制到剪贴板的密码", level="info")
+
+        QTimer.singleShot(secs * 1000, _clear_if_unchanged)
 
     def _on_add(self) -> None:
         if not self._ensure_login():
+            return
+        if not self._ensure_unlocked():
             return
         if self._guard_busy():
             return
@@ -509,7 +586,7 @@ class AccountVaultSettingsWidget(QWidget):
             return
         payload = dlg.payload()
         self._run_mutate_then_list(
-            lambda c: c.create_credential(payload),
+            lambda c, k: c.create_credential(payload, key=k),
             busy_text="正在保存…",
             toast="已保存",
         )
@@ -518,6 +595,8 @@ class AccountVaultSettingsWidget(QWidget):
         from PyQt6.QtWidgets import QFileDialog
 
         if not self._ensure_login():
+            return
+        if not self._ensure_unlocked():
             return
         if not self._items:
             QMessageBox.information(self, "账号管理", "当前没有可导出的账号")
@@ -540,6 +619,8 @@ class AccountVaultSettingsWidget(QWidget):
         from PyQt6.QtWidgets import QFileDialog
 
         if not self._ensure_login():
+            return
+        if not self._ensure_unlocked():
             return
         if self._guard_busy():
             return
@@ -569,17 +650,18 @@ class AccountVaultSettingsWidget(QWidget):
         if client is None:
             return
         batch = list(payloads)
+        key = current_key()
 
         def work() -> tuple[list[dict[str, Any]], int, list[str]]:
             ok = 0
             errors: list[str] = []
             for payload in batch:
                 try:
-                    client.create_credential(payload)
+                    client.create_credential(payload, key=key)
                     ok += 1
                 except VaultApiError as exc:
                     errors.append(f"{payload.get('title')}: {exc.message}")
-            items = client.list_credentials()
+            items = client.list_credentials(key=key)
             return items, ok, errors
 
         def on_ok(result: object) -> None:
@@ -610,7 +692,7 @@ class AccountVaultSettingsWidget(QWidget):
         cred_id = item.get("id")
         payload = dlg.payload()
         self._run_mutate_then_list(
-            lambda c: c.update_credential(cred_id, payload),
+            lambda c, k: c.update_credential(cred_id, payload, key=k),
             busy_text="正在更新…",
             toast="已更新",
         )
@@ -626,7 +708,7 @@ class AccountVaultSettingsWidget(QWidget):
             return
         cred_id = item.get("id")
         self._run_mutate_then_list(
-            lambda c: c.delete_credential(cred_id),
+            lambda c, k: c.delete_credential(cred_id),
             busy_text="正在删除…",
             toast="已删除",
         )
@@ -637,7 +719,7 @@ class AccountVaultSettingsWidget(QWidget):
         pinned = not bool(item.get("pinned"))
         cred_id = item.get("id")
         self._run_mutate_then_list(
-            lambda c: c.update_credential(cred_id, {"pinned": bool(pinned)}),
+            lambda c, k: c.update_credential(cred_id, {"pinned": bool(pinned)}),
             busy_text="正在取消置顶…" if not pinned else "正在置顶…",
             toast="已置顶" if pinned else "已取消置顶",
         )

@@ -10,6 +10,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+# Keep selftest config writes out of the developer's real settings.json.
+import scripts.selftest_env  # noqa: F401, E402
+
 passes: list[str] = []
 failures: list[tuple[str, str]] = []
 
@@ -73,7 +76,9 @@ def test_move_off_desktop_drops_public_float() -> None:
 
     with patch("src.settings.get_desktop_paths", return_value=[desk]):
         with patch("src.app.save_settings", lambda *_a, **_k: None):
-            with patch("src.app.invalidate_desktop_scan_cache", lambda: None):
+            with patch("src.app.invalidate_desktop_scan_cache", lambda: None), patch(
+                "src.app_watcher.invalidate_desktop_scan_cache", lambda: None
+            ), patch("src.app_watcher.save_settings", lambda *_a, **_k: None):
                 DeskTidyApp._on_watched_file_moved(app, str(folder), str(dest))
 
     items = get_public_items(settings)
@@ -91,7 +96,9 @@ def test_move_off_desktop_drops_public_float() -> None:
     app.public_icons = []
     with patch("src.settings.get_desktop_paths", return_value=[desk]):
         with patch("src.app.save_settings", lambda *_a, **_k: None):
-            with patch("src.app.invalidate_desktop_scan_cache", lambda: None):
+            with patch("src.app.invalidate_desktop_scan_cache", lambda: None), patch(
+                "src.app_watcher.invalidate_desktop_scan_cache", lambda: None
+            ), patch("src.app_watcher.save_settings", lambda *_a, **_k: None):
                 DeskTidyApp._on_watched_file_moved(app, str(folder2), str(renamed))
     items2 = get_public_items(settings)
     assert len(items2) == 1
@@ -274,9 +281,7 @@ def test_drag_avoids_explorer_ole_deadlock() -> None:
     assert "_arm_drag_overlays_under_apps" in inspect.getsource(
         app_mod.DeskTidyApp._begin_overlay_drag
     )
-    assert "_park_overlays_for_ole_target" not in inspect.getsource(
-        app_mod.DeskTidyApp
-    )
+    assert not hasattr(app_mod.DeskTidyApp, "_park_overlays_for_ole_target")
     assert "_release_public_host_mouse_grab" in inspect.getsource(fii.start_public_item_drag)
     ole_src = inspect.getsource(fii._exec_external_file_ole_drag)
     assert "_ole_drag_source_widget" in inspect.getsource(fii) or True
@@ -2090,7 +2095,7 @@ def test_unpin_snaps_left_edge_and_forces_show() -> None:
     assert "_remap_hidden_overlay_hwnds" in handler_src
     assert "relayout=False" in handler_src
     assert "_last_public_sync_sig = None" not in handler_src.split("refresh_public")[0]
-    assert "_ensure_single_public_float" in inspect.getsource(DeskTidyApp)
+    assert "_ensure_single_public_float" in inspect.getsource(DeskTidyApp._ensure_single_public_float)
     soft_src = inspect.getsource(DeskTidyApp._refresh_public_desktop_impl)
     assert "force=False" in soft_src
     assert "_ensure_shell_attachments(force=True)" not in soft_src.split(

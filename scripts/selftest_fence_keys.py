@@ -12,6 +12,9 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+# Keep selftest config writes out of the developer's real settings.json.
+import scripts.selftest_env  # noqa: F401, E402
+
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 passes: list[str] = []
@@ -76,6 +79,7 @@ def test_clipboard_roundtrip() -> None:
     ok = clipboard_set_files([a, b], cut=False)
     if ok:
         import ctypes
+        import time
         from ctypes import wintypes
 
         from src.shell_clipboard import (
@@ -85,17 +89,26 @@ def test_clipboard_roundtrip() -> None:
             clipboard_preferred_effect,
         )
 
-        got = clipboard_get_files()
-        assert {str(p).casefold() for p in got} == {
+        expected = {
             str(a).casefold(),
             str(b).casefold(),
         }
-        assert clipboard_preferred_effect() == DROPEFFECT_COPY
+        got: list = []
+        effect = DROPEFFECT_COPY
+        for _attempt in range(8):
+            got = clipboard_get_files()
+            effect = clipboard_preferred_effect()
+            if {str(p).casefold() for p in got} == expected and effect == DROPEFFECT_COPY:
+                break
+            # Clipboard-owner race (WeChat/Office/clipboard managers) can empty
+            # the clipboard right after we write it — rewrite and retry.
+            clipboard_set_files([a, b], cut=False)
+            time.sleep(0.05)
+        assert {str(p).casefold() for p in got} == expected
+        assert effect == DROPEFFECT_COPY
 
         # WeChat / QQ need FileNameW (+ Shell IDList) beyond bare CF_HDROP.
         # Qt setUrls also adds UniformResourceLocator — WeChat turns that into a.txt.
-        import time
-
         user32 = ctypes.WinDLL("user32", use_last_error=True)
         user32.OpenClipboard.argtypes = [wintypes.HWND]
         user32.OpenClipboard.restype = wintypes.BOOL

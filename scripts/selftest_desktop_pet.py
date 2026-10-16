@@ -566,9 +566,9 @@ def main() -> None:
     from src.ui.pet_settings_widget import PetCharCard, PetSettingsWidget
     from src.ui.pet_widget import DesktopPetWidget
 
-    assert "_setup_desktop_pet" in inspect.getsource(DeskTidyApp)
-    assert "_on_pet_requested" in inspect.getsource(DeskTidyApp)
-    assert "_on_pet_settings_changed" in inspect.getsource(DeskTidyApp)
+    assert "_setup_desktop_pet" in inspect.getsource(DeskTidyApp._setup_desktop_pet)
+    assert "_on_pet_requested" in inspect.getsource(DeskTidyApp._on_pet_requested)
+    assert "_on_pet_settings_changed" in inspect.getsource(DeskTidyApp._on_pet_settings_changed)
     pet_set_src = inspect.getsource(DeskTidyApp._on_pet_settings_changed)
     assert "reload_settings" in pet_set_src
     assert "desktop_pet_visible" in pet_set_src

@@ -293,6 +293,219 @@ def _ask_yes_no_safe(parent, title: str, text: str) -> bool:
     return False
 
 
+def _ask_update_action(parent, latest: str, current: str) -> str:
+    """Three-way「发现新版本」prompt; returns ``open`` / ``install`` / ``cancel``."""
+    from PyQt6.QtCore import Qt
+    from PyQt6.QtWidgets import QMessageBox
+
+    box = QMessageBox(parent)
+    box.setIcon(QMessageBox.Icon.Information)
+    box.setWindowTitle("发现新版本")
+    box.setText(f"新版本 {latest} 已发布（当前 {current}）。")
+    box.setInformativeText(
+        "可打开下载页手动下载，或由 DeskTidy 下载安装包、校验 sha256 后静默安装。"
+    )
+    open_btn = box.addButton("打开下载页", QMessageBox.ButtonRole.ActionRole)
+    install_btn = box.addButton("下载并安装", QMessageBox.ButtonRole.AcceptRole)
+    box.addButton("取消", QMessageBox.ButtonRole.RejectRole)
+    box.setDefaultButton(install_btn)
+    box.setWindowModality(Qt.WindowModality.ApplicationModal)
+    box.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
+    box.raise_()
+    box.activateWindow()
+    box.exec()
+    clicked = box.clickedButton()
+    if clicked is install_btn:
+        return "install"
+    if clicked is open_btn:
+        return "open"
+    return "cancel"
+
+
+def _ask_update_action_safe(parent, latest: str, current: str) -> str:
+    """``_ask_update_action`` that survives a destroyed parent widget."""
+    for target in (parent, None):
+        try:
+            return _ask_update_action(target, latest, current)
+        except Exception:
+            continue
+    return "cancel"
+
+
+_install_inflight = False
+
+
+def _installer_download_dir() -> Path:
+    from src.settings import APP_DIR, ensure_app_dir
+
+    ensure_app_dir()
+    target = APP_DIR / "updates"
+    target.mkdir(parents=True, exist_ok=True)
+    return target
+
+
+def _report_toast(title: str, body: str, *, level: str = "info", msec: int = 4000) -> None:
+    from src.qt_main_thread import call_on_main_thread
+    from src.ui.toast import show_toast
+
+    try:
+        call_on_main_thread(lambda: show_toast(title, body, msec=msec, level=level))
+    except Exception:
+        pass
+
+
+def download_and_install(parent=None, *, current: str = "") -> bool:
+    """Download the latest installer in a worker thread, verify it, then prompt.
+
+    Returns False when another download/install is already in flight. Never
+    touches the network on the GUI thread.
+    """
+    global _install_inflight
+    if _install_inflight:
+        return False
+    from src.qt_main_thread import ensure_main_thread_bridge
+
+    ensure_main_thread_bridge()
+    _install_inflight = True
+
+    def worker() -> None:
+        global _install_inflight
+        try:
+            _do_download_and_install(parent, current)
+        finally:
+            _install_inflight = False
+
+    try:
+        threading.Thread(
+            target=worker, name="desktidy-update-install", daemon=True
+        ).start()
+    except Exception:
+        _install_inflight = False
+        return False
+    return True
+
+
+def _do_download_and_install(parent, current: str) -> None:
+    from src import update_installer
+
+    try:
+        release = fetch_latest_release(timeout=15.0)
+    except UpdateCheckError as exc:
+        _report_toast("下载失败", f"获取更新信息失败：{exc}", level="warn")
+        return
+
+    asset = update_installer.select_installer_asset(release)
+    if asset is None:
+        _report_toast("下载失败", "该版本未提供 Windows 安装包。", level="warn")
+        return
+
+    checksum = update_installer.find_checksum(release, asset["name"])
+
+    try:
+        dest = _installer_download_dir()
+    except Exception as exc:
+        _report_toast("下载失败", f"无法准备下载目录：{exc}", level="warn")
+        return
+    try:
+        update_installer.cleanup_old_installers(dest)
+    except Exception:
+        pass
+
+    _report_toast("正在下载", f"正在下载 {asset['name']} …", msec=4000)
+    last_milestone = -1
+
+    def progress(done: int, total: int) -> None:
+        nonlocal last_milestone
+        if total and total > 0:
+            pct = int(done * 100 / total)
+            milestone = pct - (pct % 10)
+            if milestone != last_milestone:
+                last_milestone = milestone
+                _report_toast("正在下载", f"已下载 {pct}%", msec=2000)
+
+    try:
+        path = update_installer.download_asset(
+            asset["url"], dest, progress=progress, timeout=120.0
+        )
+    except update_installer.UpdateInstallError as exc:
+        _report_toast("下载失败", f"下载安装包失败：{exc}", level="warn", msec=5000)
+        return
+
+    if not checksum:
+        # No published checksum — refuse auto-install rather than run unverified code.
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        _report_toast(
+            "无法校验",
+            "该版本未提供 sha256 校验值，已取消自动安装。请打开下载页手动安装。",
+            level="warn",
+            msec=6000,
+        )
+        return
+
+    try:
+        ok = update_installer.verify_sha256(path, checksum)
+    except Exception:
+        ok = False
+    if not ok:
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        _report_toast(
+            "校验失败",
+            "安装包 sha256 校验未通过，已拒绝安装并删除文件。",
+            level="warn",
+            msec=6000,
+        )
+        return
+
+    from src.qt_main_thread import call_on_main_thread
+
+    try:
+        call_on_main_thread(lambda: _prompt_install(parent, path))
+    except Exception:
+        pass
+
+
+def _prompt_install(parent, path: Path) -> None:
+    from src import update_installer
+    from src.ui.toast import show_toast
+
+    if not Path(path).exists():
+        show_toast("安装失败", "安装包已丢失，请重新下载。", msec=4500, level="warn")
+        return
+    if _ask_yes_no_safe(
+        parent,
+        "下载完成",
+        "安装包已下载并通过校验。\n\n"
+        "点击「是」将关闭 DeskTidy 并开始静默安装。是否立即安装？",
+    ):
+        try:
+            update_installer.launch_installer(path, silent=True, wait=False)
+        except update_installer.UpdateInstallError as exc:
+            show_toast("安装失败", f"启动安装程序失败：{exc}", msec=5000, level="warn")
+            return
+        _quit_app_for_install()
+
+
+def _quit_app_for_install() -> None:
+    from PyQt6.QtWidgets import QApplication
+
+    app = QApplication.instance()
+    desk = getattr(app, "_desktidy_app", None) if app else None
+    if desk is not None and hasattr(desk, "quit"):
+        try:
+            desk.quit(silent=True)
+            return
+        except Exception:
+            pass
+    if app is not None:
+        app.quit()
+
+
 def _finish_interactive(
     parent,
     result: UpdateCheckResult,
@@ -318,12 +531,10 @@ def _finish_interactive(
                 level="success",
             )
         return
-    if _ask_yes_no_safe(
-        parent,
-        "发现新版本",
-        f"新版本 {result.latest} 已发布（当前 {result.current}）。\n\n"
-        "是否打开下载页？",
-    ):
+    action = _ask_update_action_safe(parent, result.latest, result.current)
+    if action == "install":
+        download_and_install(parent, current=result.current)
+    elif action == "open":
         open_download_page(result.html_url)
     if settings is not None:
         # Prompt once per tag — startup check must not nag after a manual check.
@@ -368,13 +579,10 @@ def notify_update_on_startup(parent=None, *, settings: dict | None = None) -> bo
         tag = f"v{result.latest}"
         if settings is not None and str(settings.get("update_notified_tag") or "") == tag:
             return
-        opened = _ask_yes_no_safe(
-            parent,
-            "发现新版本",
-            f"新版本 {result.latest} 已发布（当前 {result.current}）。\n\n"
-            "是否打开下载页？",
-        )
-        if opened:
+        action = _ask_update_action_safe(parent, result.latest, result.current)
+        if action == "install":
+            download_and_install(parent, current=result.current)
+        elif action == "open":
             open_download_page(result.html_url)
         if settings is not None:
             # Prompt once per tag — declined or opened, do not nag next launch.

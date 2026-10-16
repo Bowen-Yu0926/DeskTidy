@@ -21,6 +21,62 @@ function vault_ensure_users_display_name(mysqli $db): void
     );
 }
 
+function vault_ensure_users_kdf_columns(mysqli $db): void
+{
+    static $done = false;
+    if ($done) {
+        return;
+    }
+    $done = true;
+
+    // Client-side zero-knowledge E2E: server only stores the KDF parameters,
+    // never the master password. Columns are added idempotently.
+    $res = $db->query("SHOW COLUMNS FROM vault_users LIKE 'kdf_salt'");
+    if (!($res && $res->num_rows > 0)) {
+        @$db->query(
+            "ALTER TABLE vault_users ADD COLUMN kdf_salt VARCHAR(64) NOT NULL DEFAULT '' AFTER password_hash"
+        );
+    }
+    $res = $db->query("SHOW COLUMNS FROM vault_users LIKE 'kdf_iterations'");
+    if (!($res && $res->num_rows > 0)) {
+        @$db->query(
+            "ALTER TABLE vault_users ADD COLUMN kdf_iterations INT NOT NULL DEFAULT 0 AFTER kdf_salt"
+        );
+    }
+    $res = $db->query("SHOW COLUMNS FROM vault_users LIKE 'kdf_algo'");
+    if (!($res && $res->num_rows > 0)) {
+        @$db->query(
+            "ALTER TABLE vault_users ADD COLUMN kdf_algo VARCHAR(16) NOT NULL DEFAULT 'pbkdf2' AFTER kdf_iterations"
+        );
+    }
+    $res = $db->query("SHOW COLUMNS FROM vault_users LIKE 'key_check'");
+    if (!($res && $res->num_rows > 0)) {
+        @$db->query(
+            "ALTER TABLE vault_users ADD COLUMN key_check VARCHAR(255) NOT NULL DEFAULT '' AFTER kdf_algo"
+        );
+    }
+}
+
+function vault_user_kdf_fields(mysqli $db, int $userId): array
+{
+    vault_ensure_users_kdf_columns($db);
+    $stmt = $db->prepare(
+        'SELECT kdf_salt, kdf_iterations, kdf_algo, key_check FROM vault_users WHERE id = ? LIMIT 1'
+    );
+    $stmt->bind_param('i', $userId);
+    $stmt->execute();
+    $row = $stmt->get_result()->fetch_assoc();
+    if (!$row) {
+        return ['kdf_salt' => '', 'kdf_iterations' => 0, 'kdf_algo' => 'pbkdf2', 'key_check' => ''];
+    }
+    return [
+        'kdf_salt' => (string)($row['kdf_salt'] ?? ''),
+        'kdf_iterations' => (int)($row['kdf_iterations'] ?? 0),
+        'kdf_algo' => (string)($row['kdf_algo'] ?? 'pbkdf2'),
+        'key_check' => (string)($row['key_check'] ?? ''),
+    ];
+}
+
 function vault_normalize_login(string $login): array
 {
     $login = trim($login);
@@ -102,13 +158,23 @@ function vault_require_user(): array
     ];
 }
 
-function vault_auth_payload(int $userId, string $login, string $token, string $displayName): array
+function vault_auth_payload(
+    int $userId,
+    string $login,
+    string $token,
+    string $displayName,
+    array $kdf = []
+): array
 {
     return [
         'user_id' => $userId,
         'login' => $login,
         'display_name' => $displayName,
         'token' => $token,
+        'kdf_salt' => (string)($kdf['kdf_salt'] ?? ''),
+        'kdf_iterations' => (int)($kdf['kdf_iterations'] ?? 0),
+        'kdf_algo' => (string)($kdf['kdf_algo'] ?? 'pbkdf2'),
+        'key_check' => (string)($kdf['key_check'] ?? ''),
     ];
 }
 
@@ -136,7 +202,8 @@ function vault_handle_register(): void
     }
     $userId = (int)$db->insert_id;
     $token = vault_issue_token($db, $userId);
-    vault_json_ok(vault_auth_payload($userId, $login, $token, $display), 201);
+    $kdf = vault_user_kdf_fields($db, $userId);
+    vault_json_ok(vault_auth_payload($userId, $login, $token, $display, $kdf), 201);
 }
 
 function vault_handle_login(): void
@@ -158,7 +225,8 @@ function vault_handle_login(): void
     $userId = (int)$row['id'];
     $display = trim((string)($row['display_name'] ?? ''));
     $token = vault_issue_token($db, $userId);
-    vault_json_ok(vault_auth_payload($userId, $login, $token, $display));
+    $kdf = vault_user_kdf_fields($db, $userId);
+    vault_json_ok(vault_auth_payload($userId, $login, $token, $display, $kdf));
 }
 
 function vault_handle_logout(): void
@@ -170,4 +238,44 @@ function vault_handle_logout(): void
     $stmt->bind_param('i', $tid);
     $stmt->execute();
     vault_json_ok(['logged_out' => true]);
+}
+
+/**
+ * Client zero-knowledge E2E: store only the master-password KDF parameters.
+ * Body: { kdf_salt, kdf_iterations, kdf_algo?, key_check }. Never receives the
+ * password. kdf_algo is optional and defaults to 'pbkdf2' (legacy clients).
+ * Not locally run (no PHP/MySQL here) — kept in sync with the client contract.
+ */
+function vault_handle_set_master(): void
+{
+    $user = vault_require_user();
+    $body = vault_read_json_body();
+    $db = vault_db();
+    vault_ensure_users_kdf_columns($db);
+
+    $salt = (string)($body['kdf_salt'] ?? '');
+    $iterations = (int)($body['kdf_iterations'] ?? 0);
+    $algo = (string)($body['kdf_algo'] ?? 'pbkdf2');
+    if ($algo !== 'argon2id' && $algo !== 'pbkdf2') {
+        $algo = 'pbkdf2';
+    }
+    $check = (string)($body['key_check'] ?? '');
+    if (strlen($salt) > 64) {
+        $salt = substr($salt, 0, 64);
+    }
+    if (strlen($check) > 255) {
+        $check = substr($check, 0, 255);
+    }
+    if ($iterations < 1) {
+        $iterations = 0;
+    }
+
+    $stmt = $db->prepare(
+        'UPDATE vault_users SET kdf_salt = ?, kdf_iterations = ?, kdf_algo = ?, key_check = ? WHERE id = ?'
+    );
+    $stmt->bind_param('sissi', $salt, $iterations, $algo, $check, (int)$user['id']);
+    if (!$stmt->execute()) {
+        vault_json_err('server', '保存失败', 500);
+    }
+    vault_json_ok(['saved' => true]);
 }

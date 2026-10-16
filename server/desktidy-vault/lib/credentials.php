@@ -49,6 +49,15 @@ function vault_ensure_credentials_columns(mysqli $db): void
         // Stable initial order for existing rows.
         @$db->query('UPDATE vault_credentials SET sort_order = id WHERE sort_order = 0');
     }
+
+    // enc_ver marks client-side E2E ciphertext (1) vs legacy server-side (0).
+    $res = $db->query("SHOW COLUMNS FROM vault_credentials LIKE 'enc_ver'");
+    if (!($res && $res->num_rows > 0)) {
+        @$db->query(
+            'ALTER TABLE vault_credentials
+             ADD COLUMN enc_ver TINYINT NOT NULL DEFAULT 0 AFTER note_enc'
+        );
+    }
 }
 
 /** @deprecated use vault_ensure_credentials_columns */
@@ -59,21 +68,36 @@ function vault_ensure_credentials_pinned_column(mysqli $db): void
 
 function vault_cred_select_sql(): string
 {
-    return 'SELECT id, title, username_enc, password_enc, url_enc, note_enc, pinned, sort_order, created_at, updated_at
+    return 'SELECT id, title, username_enc, password_enc, url_enc, note_enc, enc_ver, pinned, sort_order, created_at, updated_at
             FROM vault_credentials';
 }
 
 function vault_cred_row_to_public(array $row): array
 {
+    $encVer = (int)($row['enc_ver'] ?? 0);
+    if ($encVer === 1) {
+        // Client-side E2E: ciphertext is passed through untouched (server
+        // cannot decrypt). Values are "v1:..." tokens.
+        $username = (string)$row['username_enc'];
+        $password = (string)$row['password_enc'];
+        $url = (string)$row['url_enc'];
+        $note = (string)$row['note_enc'];
+    } else {
+        $username = vault_decrypt((string)$row['username_enc']);
+        $password = vault_decrypt((string)$row['password_enc']);
+        $url = vault_decrypt((string)$row['url_enc']);
+        $note = vault_decrypt((string)$row['note_enc']);
+    }
     return [
         'id' => (int)$row['id'],
         'title' => (string)$row['title'],
-        'username' => vault_decrypt((string)$row['username_enc']),
-        'password' => vault_decrypt((string)$row['password_enc']),
-        'url' => vault_decrypt((string)$row['url_enc']),
-        'note' => vault_decrypt((string)$row['note_enc']),
+        'username' => $username,
+        'password' => $password,
+        'url' => $url,
+        'note' => $note,
         'pinned' => !empty($row['pinned']),
         'sort_order' => (int)($row['sort_order'] ?? 0),
+        'enc_ver' => $encVer,
         'created_at' => (string)$row['created_at'],
         'updated_at' => (string)$row['updated_at'],
     ];
@@ -133,6 +157,10 @@ function vault_parse_credential_body(array $body, bool $requireTitle): array
     if (array_key_exists('pinned', $body)) {
         $pinned = vault_boolish($body['pinned']) ? 1 : 0;
     }
+    $encVer = (int)($body['enc_ver'] ?? 0);
+    if ($encVer !== 1) {
+        $encVer = 0;
+    }
     return [
         'title' => $title,
         'username' => trim((string)($body['username'] ?? '')),
@@ -140,6 +168,7 @@ function vault_parse_credential_body(array $body, bool $requireTitle): array
         'url' => trim((string)($body['url'] ?? '')),
         'note' => trim((string)($body['note'] ?? '')),
         'pinned' => $pinned,
+        'enc_ver' => $encVer,
     ];
 }
 
@@ -150,25 +179,34 @@ function vault_handle_credentials_create(): void
     $db = vault_db();
     vault_ensure_credentials_columns($db);
     $uid = (int)$user['id'];
-    $uEnc = vault_encrypt($fields['username']);
-    $pEnc = vault_encrypt($fields['password']);
-    $urlEnc = vault_encrypt($fields['url']);
-    $nEnc = vault_encrypt($fields['note']);
+    if ($fields['enc_ver'] === 1) {
+        // Client-side E2E: ciphertext is stored verbatim (server cannot read).
+        $uEnc = $fields['username'];
+        $pEnc = $fields['password'];
+        $urlEnc = $fields['url'];
+        $nEnc = $fields['note'];
+    } else {
+        $uEnc = vault_encrypt($fields['username']);
+        $pEnc = vault_encrypt($fields['password']);
+        $urlEnc = vault_encrypt($fields['url']);
+        $nEnc = vault_encrypt($fields['note']);
+    }
     $pinned = $fields['pinned'] === null ? 0 : (int)$fields['pinned'];
     $sort = vault_next_sort_order($db, $uid);
     $stmt = $db->prepare(
         'INSERT INTO vault_credentials
-         (user_id, title, username_enc, password_enc, url_enc, note_enc, pinned, sort_order)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+         (user_id, title, username_enc, password_enc, url_enc, note_enc, enc_ver, pinned, sort_order)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
     );
     $stmt->bind_param(
-        'isssssii',
+        'isssssiii',
         $uid,
         $fields['title'],
         $uEnc,
         $pEnc,
         $urlEnc,
         $nEnc,
+        $fields['enc_ver'],
         $pinned,
         $sort
     );
@@ -207,25 +245,34 @@ function vault_handle_credentials_update(int $id): void
     }
 
     $fields = vault_parse_credential_body($body, true);
-    $uEnc = vault_encrypt($fields['username']);
-    $pEnc = vault_encrypt($fields['password']);
-    $urlEnc = vault_encrypt($fields['url']);
-    $nEnc = vault_encrypt($fields['note']);
+    if ($fields['enc_ver'] === 1) {
+        // Client-side E2E: ciphertext is stored verbatim (server cannot read).
+        $uEnc = $fields['username'];
+        $pEnc = $fields['password'];
+        $urlEnc = $fields['url'];
+        $nEnc = $fields['note'];
+    } else {
+        $uEnc = vault_encrypt($fields['username']);
+        $pEnc = vault_encrypt($fields['password']);
+        $urlEnc = vault_encrypt($fields['url']);
+        $nEnc = vault_encrypt($fields['note']);
+    }
     $pinned = $fields['pinned'] === null
         ? (int)!empty($existing['pinned'])
         : (int)$fields['pinned'];
     $stmt = $db->prepare(
         'UPDATE vault_credentials
-         SET title = ?, username_enc = ?, password_enc = ?, url_enc = ?, note_enc = ?, pinned = ?
+         SET title = ?, username_enc = ?, password_enc = ?, url_enc = ?, note_enc = ?, enc_ver = ?, pinned = ?
          WHERE id = ? AND user_id = ?'
     );
     $stmt->bind_param(
-        'sssssiii',
+        'sssssiiii',
         $fields['title'],
         $uEnc,
         $pEnc,
         $urlEnc,
         $nEnc,
+        $fields['enc_ver'],
         $pinned,
         $id,
         $uid

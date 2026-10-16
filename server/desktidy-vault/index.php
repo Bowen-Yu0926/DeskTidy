@@ -55,6 +55,9 @@ try {
     if ($path === 'auth/logout' && $method === 'POST') {
         vault_handle_logout();
     }
+    if ($path === 'auth/master' && ($method === 'PUT' || $method === 'POST')) {
+        vault_handle_set_master();
+    }
 
     if ($path === 'credentials' && $method === 'GET') {
         vault_handle_credentials_list();

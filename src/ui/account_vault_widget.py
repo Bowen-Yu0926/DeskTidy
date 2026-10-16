@@ -7,6 +7,8 @@ from typing import Any
 from PyQt6.QtCore import QByteArray, QEvent, QMimeData, QPoint, QRect, QSize, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QDrag, QGuiApplication, QMouseEvent
 from PyQt6.QtWidgets import (
+    QCheckBox,
+    QComboBox,
     QDialog,
     QDialogButtonBox,
     QFormLayout,
@@ -24,17 +26,29 @@ from PyQt6.QtWidgets import (
 
 from src.account_vault import (
     account_vault_api_base,
+    account_vault_clipboard_clear_seconds,
     account_vault_refresh_interval_ms,
     clear_session,
+    generate_password,
+    password_strength,
+    should_clear_clipboard,
+    current_key,
+    has_master_password,
+    is_unlocked,
+    kdf_params,
     load_session,
+    lock,
     mask_login,
     normalize_display_name,
     normalize_login,
     reorder_credential_ids,
     save_session,
     session_display_name,
+    session_kdf_algo,
+    set_master_password,
+    unlock,
 )
-from src.account_vault_api import VaultApiClient, VaultApiError
+from src.account_vault_api import VaultApiClient, VaultApiError, migrate_legacy_to_e2e
 from src.settings import save_settings
 from src.ui.account_vault_async import VaultAsyncRunner
 from src.ui.screen_snap import rect_visible_on_any_screen, snap_geometry, work_screen
@@ -208,6 +222,10 @@ class AccountVaultAuthDialog(QDialog):
                 token=token,
                 user_id=data.get("user_id"),
                 display_name=str(data.get("display_name") or nick),
+                kdf_salt=str(data.get("kdf_salt") or ""),
+                kdf_iterations=int(data.get("kdf_iterations") or 0),
+                key_check=str(data.get("key_check") or ""),
+                kdf_algo=str(data.get("kdf_algo") or ""),
             )
             self.session = load_session()
             self.accept()
@@ -235,19 +253,86 @@ class CredentialEditDialog(QDialog):
     def __init__(self, item: dict[str, Any] | None = None, parent: QWidget | None = None):
         super().__init__(parent)
         self.setWindowTitle("编辑账号" if item else "新建账号")
-        self.resize(400, 280)
+        self.resize(440, 320)
         item = item or {}
         form = QFormLayout(self)
         self.title_edit = QLineEdit(str(item.get("title") or ""))
         self.user_edit = QLineEdit(str(item.get("username") or ""))
         self.pass_edit = QLineEdit(str(item.get("password") or ""))
         self.pass_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        self.pass_edit.textChanged.connect(self._update_strength)
         self.url_edit = QLineEdit(str(item.get("url") or ""))
         self.note_edit = QLineEdit(str(item.get("note") or ""))
         form.addRow("名称*", self.title_edit)
         form.addRow("网址", self.url_edit)
         form.addRow("账号", self.user_edit)
-        form.addRow("密码", self.pass_edit)
+
+        # --- password row: field + generator toggle ---
+        pass_row = QHBoxLayout()
+        pass_row.setContentsMargins(0, 0, 0, 0)
+        pass_row.addWidget(self.pass_edit, stretch=1)
+        self.gen_btn = QPushButton("生成")
+        self.gen_btn.setObjectName("vaultTextBtn")
+        self.gen_btn.setToolTip("按规则生成随机密码并填入")
+        self.gen_btn.clicked.connect(self._toggle_generator)
+        pass_row.addWidget(self.gen_btn)
+        form.addRow("密码", pass_row)
+
+        # --- live strength hint ---
+        self.pass_strength_lbl = QLabel("")
+        self.pass_strength_lbl.setObjectName("vaultRowHint")
+        form.addRow("", self.pass_strength_lbl)
+
+        # --- inline generator options (hidden until「生成」clicked) ---
+        self._gen_box = QWidget()
+        gen_lay = QVBoxLayout(self._gen_box)
+        gen_lay.setContentsMargins(0, 4, 0, 4)
+        gen_lay.setSpacing(4)
+
+        len_row = QHBoxLayout()
+        len_row.addWidget(QLabel("长度"))
+        self.gen_len_combo = QComboBox()
+        for n in (8, 12, 16, 24, 32):
+            self.gen_len_combo.addItem(str(n), n)
+        self.gen_len_combo.setCurrentIndex(2)  # 16
+        len_row.addWidget(self.gen_len_combo)
+        len_row.addStretch(1)
+        gen_lay.addLayout(len_row)
+
+        cls_row = QHBoxLayout()
+        self.gen_upper_cb = QCheckBox("大写")
+        self.gen_lower_cb = QCheckBox("小写")
+        self.gen_digits_cb = QCheckBox("数字")
+        self.gen_symbols_cb = QCheckBox("符号")
+        for cb in (
+            self.gen_upper_cb,
+            self.gen_lower_cb,
+            self.gen_digits_cb,
+            self.gen_symbols_cb,
+        ):
+            cb.setChecked(True)
+            cls_row.addWidget(cb)
+        cls_row.addStretch(1)
+        gen_lay.addLayout(cls_row)
+
+        amb_row = QHBoxLayout()
+        self.gen_ambig_cb = QCheckBox("避免易混字符（0O1lI|）")
+        self.gen_ambig_cb.setChecked(True)
+        amb_row.addWidget(self.gen_ambig_cb)
+        amb_row.addStretch(1)
+        gen_lay.addLayout(amb_row)
+
+        act_row = QHBoxLayout()
+        self.gen_do_btn = QPushButton("生成并填入")
+        self.gen_do_btn.setObjectName("vaultPrimaryTextBtn")
+        self.gen_do_btn.clicked.connect(self._generate_password)
+        act_row.addWidget(self.gen_do_btn)
+        act_row.addStretch(1)
+        gen_lay.addLayout(act_row)
+
+        self._gen_box.hide()
+        form.addRow("", self._gen_box)
+
         form.addRow("备注", self.note_edit)
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel
@@ -255,6 +340,35 @@ class CredentialEditDialog(QDialog):
         buttons.accepted.connect(self._accept)
         buttons.rejected.connect(self.reject)
         form.addRow(buttons)
+        self._update_strength()
+
+    def _toggle_generator(self) -> None:
+        self._gen_box.setVisible(not self._gen_box.isVisible())
+
+    def _generate_password(self) -> None:
+        try:
+            pwd = generate_password(
+                int(self.gen_len_combo.currentData()),
+                upper=self.gen_upper_cb.isChecked(),
+                lower=self.gen_lower_cb.isChecked(),
+                digits=self.gen_digits_cb.isChecked(),
+                symbols=self.gen_symbols_cb.isChecked(),
+                avoid_ambiguous=self.gen_ambig_cb.isChecked(),
+            )
+        except ValueError as exc:
+            QMessageBox.warning(self, "账号管理", str(exc))
+            return
+        self.pass_edit.setText(pwd)
+
+    def _update_strength(self) -> None:
+        text = self.pass_edit.text()
+        if not text:
+            self.pass_strength_lbl.setText("")
+            return
+        score, label = password_strength(text)
+        colors = {0: "#EF4444", 1: "#F59E0B", 2: "#EAB308", 3: "#10B981", 4: "#059669"}
+        self.pass_strength_lbl.setText(f"强度：{label}")
+        self.pass_strength_lbl.setStyleSheet(f"color: {colors.get(score, '#6B7280')};")
 
     def _accept(self) -> None:
         if not self.title_edit.text().strip():
@@ -274,6 +388,141 @@ class CredentialEditDialog(QDialog):
 
 # Back-compat
 _EditDialog = CredentialEditDialog
+
+
+class SetMasterPasswordDialog(QDialog):
+    """First-run dialog: set the local master password (never uploaded)."""
+
+    def __init__(self, parent: QWidget | None = None):
+        super().__init__(parent)
+        self.setWindowTitle("设置主密码")
+        self.setModal(True)
+        self.resize(420, 300)
+        lay = QVBoxLayout(self)
+        warn = QLabel(
+            "主密码用于在本机加密账号数据，仅保存在本机，绝不上传服务器。\n\n"
+            "⚠ 忘记主密码将无法恢复云端数据，请务必牢记并妥善保管。"
+        )
+        warn.setWordWrap(True)
+        warn.setObjectName("vaultWarnLabel")
+        lay.addWidget(warn)
+        form = QFormLayout()
+        self.pw_edit = QLineEdit()
+        self.pw_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        self.pw_edit.setPlaceholderText("至少 6 位")
+        self.confirm_edit = QLineEdit()
+        self.confirm_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        self.confirm_edit.setPlaceholderText("再输入一次")
+        form.addRow("主密码", self.pw_edit)
+        form.addRow("确认主密码", self.confirm_edit)
+        lay.addLayout(form)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("确定")
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("取消")
+        buttons.accepted.connect(self._accept)
+        buttons.rejected.connect(self.reject)
+        lay.addWidget(buttons)
+
+    def _accept(self) -> None:
+        pw = self.pw_edit.text()
+        if len(pw) < 6:
+            QMessageBox.warning(self, "账号管理", "主密码至少 6 位")
+            return
+        if pw != self.confirm_edit.text():
+            QMessageBox.warning(self, "账号管理", "两次输入不一致")
+            return
+        self.accept()
+
+    def password(self) -> str:
+        return self.pw_edit.text()
+
+
+class UnlockVaultDialog(QDialog):
+    """Unlock dialog shown when logged in but the vault is locked."""
+
+    def __init__(self, parent: QWidget | None = None):
+        super().__init__(parent)
+        self.setWindowTitle("解锁账号保险库")
+        self.setModal(True)
+        self.resize(380, 200)
+        lay = QVBoxLayout(self)
+        tip = QLabel("账号数据已加密，请输入主密码解锁。")
+        tip.setWordWrap(True)
+        tip.setObjectName("appSubtitle")
+        lay.addWidget(tip)
+        form = QFormLayout()
+        self.pw_edit = QLineEdit()
+        self.pw_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        form.addRow("主密码", self.pw_edit)
+        lay.addLayout(form)
+        self._error = QLabel("")
+        self._error.setObjectName("vaultErrorLabel")
+        lay.addWidget(self._error)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("解锁")
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("取消")
+        buttons.accepted.connect(self._accept)
+        buttons.rejected.connect(self.reject)
+        lay.addWidget(buttons)
+
+    def _accept(self) -> None:
+        pw = self.pw_edit.text()
+        if not unlock(pw):
+            self._error.setText("主密码错误，请重试")
+            self.pw_edit.clear()
+            self.pw_edit.setFocus()
+            return
+        self.accept()
+
+
+def sync_master_kdf(settings: dict, parent: QWidget) -> None:
+    """Upload KDF params to the server in the background (never the password)."""
+    session = load_session()
+    if not session:
+        return
+    salt, iterations, check = kdf_params()
+    if not salt or not check:
+        return
+    base = account_vault_api_base(settings)
+    token = str(session.get("token") or "")
+    runner = VaultAsyncRunner(parent)
+
+    def work() -> None:
+        VaultApiClient(base, token).set_master_sync(
+            salt, iterations, check, kdf_algo=session_kdf_algo()
+        )
+
+    runner.run(
+        work,
+        on_ok=lambda _r: None,
+        on_err=lambda _e: None,
+        busy_text="正在同步加密设置…",
+    )
+
+
+def ensure_vault_unlocked(parent: QWidget, settings: dict) -> bool:
+    """Ensure vault is unlocked (setup master password or unlock). True if ready."""
+    if is_unlocked():
+        return True
+    if not load_session():
+        return False
+    if not has_master_password():
+        dlg = SetMasterPasswordDialog(parent)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return False
+        try:
+            set_master_password(dlg.password())
+        except ValueError as exc:
+            QMessageBox.warning(parent, "账号管理", str(exc))
+            return False
+        sync_master_kdf(settings, parent)
+        return True
+    dlg = UnlockVaultDialog(parent)
+    return dlg.exec() == QDialog.DialogCode.Accepted
 
 
 class _CopyFieldLabel(QLabel):
@@ -746,6 +995,7 @@ class AccountVaultWidget(QWidget):
         self.settings = settings
         self._items: list[dict[str, Any]] = []
         self._rows: list[_VaultRow] = []
+        self._migration_checked = False
         self._drag_origin = None
         self._drag_start = None
         self._anchor: QWidget | None = None
@@ -995,8 +1245,10 @@ class AccountVaultWidget(QWidget):
         """
         self._apply_theme()
         self._sync_session_label()
-        if not self._items and not load_session():
+        if not load_session():
             self._status.setText("未登录")
+        elif not is_unlocked():
+            self._status.setText("已锁定 — 点击「刷新」解锁")
         elif not self._items:
             self._status.setText("正在后台同步…" if self._async.busy else "暂无账号")
         # Always re-dock beside the buoy; previous drag is discarded on close.
@@ -1072,6 +1324,11 @@ class AccountVaultWidget(QWidget):
         self._items = [x for x in items if isinstance(x, dict)]
         self._status.setText(f"共 {len(self._items)} 条 · {ok_suffix}")
         self._rebuild_rows()
+        if not self._migration_checked and is_unlocked():
+            self._migration_checked = True
+            legacy = [x for x in self._items if int(x.get("enc_ver") or 0) != 1]
+            if legacy:
+                self._offer_migration(len(legacy))
 
     def _handle_api_error(self, exc: BaseException, *, silent: bool = False) -> None:
         if isinstance(exc, VaultApiError):
@@ -1100,6 +1357,39 @@ class AccountVaultWidget(QWidget):
         if not silent:
             QMessageBox.warning(self, "账号管理", msg)
 
+    def _offer_migration(self, count: int) -> None:
+        """Prompt to migrate legacy enc_ver=0 rows to client-side E2E."""
+        if (
+            QMessageBox.question(
+                self,
+                "账号管理",
+                f"检测到 {count} 条旧格式账号。建议迁移为端到端加密"
+                "（本机加密，服务器无法读取）。是否立即迁移？",
+            )
+            != QMessageBox.StandardButton.Yes
+        ):
+            return
+        client = self._client()
+        if client is None:
+            return
+        key = current_key()
+        if key is None:
+            return
+
+        def work() -> int:
+            return migrate_legacy_to_e2e(client, key)
+
+        def ok(done: object) -> None:
+            show_toast(f"已迁移 {int(done)} 条", level="success")
+            self.reload(silent=True)
+
+        self._async.run(
+            work,
+            on_ok=ok,
+            on_err=self._handle_api_error,
+            busy_text="正在迁移账号数据…",
+        )
+
     def _run_mutate_then_list(
         self,
         mutate: Any,
@@ -1112,10 +1402,11 @@ class AccountVaultWidget(QWidget):
             return
         if self._guard_busy():
             return
+        key = current_key()
 
         def work() -> list[dict[str, Any]]:
-            mutate(client)
-            return client.list_credentials()
+            mutate(client, key)
+            return client.list_credentials(key=key)
 
         def ok(items: object) -> None:
             if toast:
@@ -1138,8 +1429,16 @@ class AccountVaultWidget(QWidget):
                 self._rebuild_rows()
                 self._sync_session_label()
                 return
+            if not ensure_vault_unlocked(self, self.settings):
+                self._status.setText("已锁定")
+                self._sync_session_label()
+                return
         elif not load_session():
             self._sync_session_label()
+            return
+        elif not is_unlocked():
+            self._sync_session_label()
+            self._status.setText("已锁定")
             return
         self._sync_session_label()
         client = self._client()
@@ -1147,9 +1446,10 @@ class AccountVaultWidget(QWidget):
             return
         if silent and self._async.busy:
             return
+        key = current_key()
 
         def work() -> list[dict[str, Any]]:
-            return client.list_credentials()
+            return client.list_credentials(key=key)
 
         def on_err(exc: BaseException) -> None:
             self._handle_api_error(exc, silent=silent)
@@ -1201,7 +1501,7 @@ class AccountVaultWidget(QWidget):
             return
         ids = list(new_ids)
         self._run_mutate_then_list(
-            lambda c: c.reorder_credentials(ids),
+            lambda c, k: c.reorder_credentials(ids),
             busy_text="正在保存顺序…",
             toast="顺序已保存",
         )
@@ -1212,6 +1512,23 @@ class AccountVaultWidget(QWidget):
             return
         QGuiApplication.clipboard().setText(value)
         show_toast(tip if tip.startswith("已") else f"已{tip}", level="success")
+        self._schedule_clipboard_clear(tip, value)
+
+    def _schedule_clipboard_clear(self, tip: str, value: str) -> None:
+        # Only passwords are auto-cleared; account / url / note are left alone.
+        if not tip.endswith("密码"):
+            return
+        secs = account_vault_clipboard_clear_seconds(self.settings)
+        if secs <= 0:
+            return
+
+        def _clear_if_unchanged() -> None:
+            clip = QGuiApplication.clipboard()
+            if should_clear_clipboard(clip.text(), value, secs):
+                clip.clear()
+                show_toast("剪贴板已清空", "已自动清除复制到剪贴板的密码", level="info")
+
+        QTimer.singleShot(secs * 1000, _clear_if_unchanged)
 
     def _on_add(self) -> None:
         if not self.ensure_logged_in():
@@ -1223,7 +1540,7 @@ class AccountVaultWidget(QWidget):
             return
         payload = dlg.payload()
         self._run_mutate_then_list(
-            lambda c: c.create_credential(payload),
+            lambda c, k: c.create_credential(payload, key=k),
             busy_text="正在保存…",
             toast="已保存",
         )
@@ -1237,7 +1554,7 @@ class AccountVaultWidget(QWidget):
         cred_id = item.get("id")
         payload = dlg.payload()
         self._run_mutate_then_list(
-            lambda c: c.update_credential(cred_id, payload),
+            lambda c, k: c.update_credential(cred_id, payload, key=k),
             busy_text="正在更新…",
             toast="已更新",
         )
@@ -1253,7 +1570,7 @@ class AccountVaultWidget(QWidget):
             return
         cred_id = item.get("id")
         self._run_mutate_then_list(
-            lambda c: c.delete_credential(cred_id),
+            lambda c, k: c.delete_credential(cred_id),
             busy_text="正在删除…",
             toast="已删除",
         )
@@ -1264,7 +1581,7 @@ class AccountVaultWidget(QWidget):
         pinned = not bool(item.get("pinned"))
         cred_id = item.get("id")
         self._run_mutate_then_list(
-            lambda c: c.update_credential(cred_id, {"pinned": bool(pinned)}),
+            lambda c, k: c.update_credential(cred_id, {"pinned": bool(pinned)}),
             busy_text="正在取消置顶…" if not pinned else "正在置顶…",
             toast="已置顶" if pinned else "已取消置顶",
         )
@@ -1285,6 +1602,7 @@ class AccountVaultWidget(QWidget):
 
             def ok(_: object) -> None:
                 clear_session()
+                self._migration_checked = False
                 self._user_lbl.setText("")
                 self._items = []
                 self._rebuild_rows()

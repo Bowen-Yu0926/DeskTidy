@@ -4,9 +4,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (
     QCheckBox,
+    QComboBox,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -328,6 +329,37 @@ class ExtensionsWidget(QWidget):
         open_rec_btn.clicked.connect(self._open_screen_record_dir)
         rec_dir_row.addWidget(open_rec_btn)
         rec_layout.addLayout(rec_dir_row)
+
+        rec_quality_row = QHBoxLayout()
+        rec_quality_row.addWidget(QLabel("画质"))
+        self.screen_record_quality_combo = QComboBox()
+        self.screen_record_quality_combo.addItem("高（更清晰，文件较大）", "high")
+        self.screen_record_quality_combo.addItem("中（默认）", "medium")
+        self.screen_record_quality_combo.addItem("低（省空间）", "low")
+        quality = str(rec_cfg.get("quality_preset") or "medium").strip().lower()
+        q_idx = self.screen_record_quality_combo.findData(quality)
+        self.screen_record_quality_combo.setCurrentIndex(max(0, q_idx))
+        self.screen_record_quality_combo.currentIndexChanged.connect(
+            self._on_screen_record_quality_changed
+        )
+        rec_quality_row.addWidget(self.screen_record_quality_combo, stretch=1)
+        rec_layout.addLayout(rec_quality_row)
+
+        rec_mic_row = QHBoxLayout()
+        rec_mic_row.addWidget(QLabel("麦克风"))
+        self.screen_record_mic_combo = QComboBox()
+        self._populate_mic_combo(str(rec_cfg.get("audio_device") or ""))
+        self.screen_record_mic_combo.currentIndexChanged.connect(
+            self._on_screen_record_mic_changed
+        )
+        rec_mic_row.addWidget(self.screen_record_mic_combo, stretch=1)
+        refresh_mic_btn = QPushButton("刷新")
+        refresh_mic_btn.setObjectName("secondaryBtn")
+        refresh_mic_btn.setToolTip("重新枚举 DirectShow 麦克风设备")
+        refresh_mic_btn.clicked.connect(self._refresh_mic_devices)
+        rec_mic_row.addWidget(refresh_mic_btn)
+        rec_layout.addLayout(rec_mic_row)
+        QTimer.singleShot(0, self._refresh_mic_devices)
         layout.addWidget(record_panel)
 
         from src.fd_search import file_search_settings
@@ -544,6 +576,63 @@ class ExtensionsWidget(QWidget):
         rec["enabled"] = self.screen_record_enabled_cb.isChecked()
         save_settings(self.settings)
         self.extensions_changed.emit()
+
+    def _on_screen_record_quality_changed(self, _idx: int) -> None:
+        rec = self.settings.setdefault("screen_record", {})
+        if not isinstance(rec, dict):
+            rec = {}
+            self.settings["screen_record"] = rec
+        rec["quality_preset"] = (
+            self.screen_record_quality_combo.currentData() or "medium"
+        )
+        save_settings(self.settings)
+        self.extensions_changed.emit()
+
+    def _on_screen_record_mic_changed(self, _idx: int) -> None:
+        rec = self.settings.setdefault("screen_record", {})
+        if not isinstance(rec, dict):
+            rec = {}
+            self.settings["screen_record"] = rec
+        rec["audio_device"] = self.screen_record_mic_combo.currentData() or ""
+        save_settings(self.settings)
+        self.extensions_changed.emit()
+
+    def _populate_mic_combo(self, selected: str) -> None:
+        combo = self.screen_record_mic_combo
+        combo.blockSignals(True)
+        combo.clear()
+        combo.addItem("不录制音频", "")
+        if selected:
+            combo.addItem(selected, selected)
+        combo.setCurrentIndex(combo.findData(selected) if selected else 0)
+        combo.blockSignals(False)
+
+    def _apply_mic_devices(self, devices: list, selected: str) -> None:
+        combo = self.screen_record_mic_combo
+        combo.blockSignals(True)
+        combo.clear()
+        combo.addItem("不录制音频", "")
+        for dev in devices:
+            combo.addItem(dev, dev)
+        idx = combo.findData(selected)
+        combo.setCurrentIndex(idx if idx >= 0 else 0)
+        combo.blockSignals(False)
+
+    def _refresh_mic_devices(self) -> None:
+        import threading
+
+        from src.screen_record_manager import list_audio_devices
+
+        selected = self.screen_record_mic_combo.currentData() or ""
+
+        def _worker() -> None:
+            try:
+                devices = list_audio_devices()
+            except Exception:
+                devices = []
+            QTimer.singleShot(0, lambda: self._apply_mic_devices(devices, selected))
+
+        threading.Thread(target=_worker, daemon=True).start()
 
     def _on_minutes_enabled_changed(self, _state: int) -> None:
         cfg = self.settings.setdefault("meeting_minutes", {})

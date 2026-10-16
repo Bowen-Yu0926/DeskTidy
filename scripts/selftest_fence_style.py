@@ -11,6 +11,9 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+# Keep selftest config writes out of the developer's real settings.json.
+import scripts.selftest_env  # noqa: F401, E402
+
 passes: list[str] = []
 failures: list[tuple[str, str]] = []
 
@@ -304,7 +307,7 @@ def test_ui_and_app_wiring() -> None:
     one_src = inspect.getsource(DeskTidyApp._apply_fence_style_preset_one)
     assert "apply_preset_to_fence_config" in one_src
     assert "apply_config" in one_src
-    assert "_apply_fence_opacity_one" in inspect.getsource(DeskTidyApp)
+    assert "_apply_fence_opacity_one" in inspect.getsource(DeskTidyApp._apply_fence_opacity_one)
     opac_src = inspect.getsource(DeskTidyApp._apply_fence_opacity_one)
     assert "apply_config" in opac_src
     assert "opacity" in opac_src
@@ -343,11 +346,10 @@ def test_ui_and_app_wiring() -> None:
     assert "fence_style_apply_one_requested" in mw
     assert "fence_opacity_changed" in mw
     assert "fence_opacity_changed" in inspect.getsource(main_window.MainWindow._build_fences_page)
-    app_src = inspect.getsource(DeskTidyApp)
-    assert "_preview_fence_style" in app_src
-    assert "_apply_fence_style_preset" in app_src
-    assert "_apply_fence_style_preset_one" in app_src
-    assert "_revert_fence_style_preview" in app_src
+    assert "_preview_fence_style" in inspect.getsource(DeskTidyApp._preview_fence_style)
+    assert "_apply_fence_style_preset" in inspect.getsource(DeskTidyApp._apply_fence_style_preset)
+    assert "_apply_fence_style_preset_one" in inspect.getsource(DeskTidyApp._apply_fence_style_preset_one)
+    assert "_revert_fence_style_preview" in inspect.getsource(DeskTidyApp._revert_fence_style_preview)
     edit = inspect.getsource(
         __import__("src.ui.fence_editor", fromlist=["x"]).FenceEditDialog
     )

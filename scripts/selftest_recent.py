@@ -11,7 +11,7 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
-import scripts.selftest_env  # noqa: F401, E402 — DESKTIDY_SELFTEST=1
+import scripts.selftest_env  # noqa: F401, E402 — DESKTIDY_SELFTEST=1 + config isolation
 
 passes: list[str] = []
 failures: list[tuple[str, str]] = []
@@ -1726,7 +1726,9 @@ def test_desktop_context_contract() -> None:
                 assert not fence.is_position_locked()
                 before = fence.pos()
                 vp = fence.scroll.viewport()
-                pos = QPoint(50, 80)
+                # Empty body area, clear of the top-left icon cell (50,80 now
+                # lands on the first icon since the caption shelf grew taller).
+                pos = QPoint(200, 150)
                 press = QMouseEvent(
                     QEvent.Type.MouseButtonPress,
                     QPointF(pos),
@@ -2010,8 +2012,14 @@ def test_fence_grid_fit() -> None:
         assert FenceIconItem.DEFAULT_ICON_SIZE == FenceWidget.ICON_BASE_SIZE
         assert FenceWidget.FOOTER_OVERLAY_HEIGHT >= 18
         align_src = inspect.getsource(FenceWidget._build_ui)
-        assert "AlignHCenter" in align_src
         assert "AlignTop" in align_src
+        # Icon captions are H-centered by the shared caption fitter (moved out
+        # of the fence body build into fence_icon_item).
+        from src.ui.fence_icon_item import fit_desktop_caption_label
+
+        caption_src = inspect.getsource(fit_desktop_caption_label)
+        assert "AlignHCenter" in caption_src
+        assert "AlignTop" in caption_src
         # Full AlignCenter on the grid vertically floats a short icon row.
         assert "setAlignment(Qt.AlignmentFlag.AlignCenter)" not in align_src.split(
             "items_layout"
@@ -3469,6 +3477,12 @@ def test_page_switch_click() -> None:
         fake._ensure_page_switch_overlays_visible = (  # type: ignore[method-assign]
             lambda: calls.append("ensure")
         )
+        # _finish_page_switch_overlays_if_pending now also restores arriving
+        # fences + refreshes grids after the batch commits — outside this test's
+        # gating focus, so stub them out (they need a fully-built app).
+        fake._restore_arriving_fences_interactive = lambda: None  # type: ignore[method-assign]
+        fake._refresh_fences_after_page_switch = lambda: None  # type: ignore[method-assign]
+        fake._page_switch_quiet_until = 0.0
         try:
             DeskTidyApp._finish_page_switch_overlays_if_pending(fake)
             assert calls == [], "must wait while public refresh is in flight"
@@ -5800,7 +5814,7 @@ def test_system_defaults_locked() -> None:
         assert soft["organize_kinds"] == ["icon"]
         assert soft["pages"] == [0]
         assert soft["x"] == 0 and soft["y"] == 0
-        assert soft["width"] == 1280 and soft["height"] == 315
+        assert soft["width"] == 1280 and soft["height"] == 400
         assert side["name"] == SYSTEM_SOFTWARE_SIDE_FENCE_NAME
         assert side["pages"] == [0]
         assert side["x"] == _SOFT_SIDE_FALLBACK["x"]
@@ -5814,7 +5828,7 @@ def test_system_defaults_locked() -> None:
         assert docs["organize_kinds"] == ["file"]
         assert docs["pages"] == [1]
         assert docs["x"] == 0 and docs["y"] == 0
-        assert docs["width"] == 1920 and docs["height"] == 257
+        assert docs["width"] == 1920 and docs["height"] == 360
         from src.app import DeskTidyApp
         from src import organizer as org_mod
         from src.organizer import restore_native_system_namespace_icons
@@ -5848,10 +5862,10 @@ def test_system_defaults_locked() -> None:
         _heal_top_edge_strips(heal_settings)
         assert heal_settings["fences"][0]["y"] == 0
         # Fallback px match the shipped JSON; live create scales to primary screen.
-        assert _SOFT_FALLBACK["width"] == 1280 and _SOFT_FALLBACK["height"] == 315
+        assert _SOFT_FALLBACK["width"] == 1280 and _SOFT_FALLBACK["height"] == 400
         assert _SOFT_SIDE_FALLBACK["width"] == 636
         assert abs(_SOFT_FALLBACK["width"] / 1920 - 2 / 3) < 0.01
-        assert _DOCS_FALLBACK["width"] == 1920 and _DOCS_FALLBACK["height"] == 257
+        assert _DOCS_FALLBACK["width"] == 1920 and _DOCS_FALLBACK["height"] == 360
         soft_live = default_software_fence()
         side_live = default_software_side_fence()
         docs_live = default_docs_fence()
@@ -6140,6 +6154,8 @@ def test_fence_visibility_toggle_surgical() -> None:
         desk._fence_hwnd = lambda w: int(w.winId()) if w is not None else 0
 
         with mock.patch("src.app.save_settings"), mock.patch(
+            "src.app_fence_layout.save_settings"
+        ), mock.patch(
             "src.desktop_shell_host.attach_overlay_to_desktop"
         ), mock.patch(
             "src.desktop_shell_host.is_attached_to_desktop", return_value=False
@@ -6338,12 +6354,18 @@ def test_loose_desktop_floats() -> None:
         assert "auto_organize_on_startup" in startup_org
         assert "_do_organize" in startup_org
         init_src = inspect.getsource(DeskTidyApp.__init__)
-        # migrate of page floats is gated on the same auto-pin switch.
-        assert "migrate_page_local_floats_to_organize_fences(self.settings)" in init_src
-        gate = 'if bool(self.settings.get("auto_organize_watch", False)):'
-        assert gate in init_src
-        assert init_src.index(gate) < init_src.index(
-            "migrate_page_local_floats_to_organize_fences(self.settings)"
+        # migrate of page floats is gated on the same auto-pin switch. The
+        # block now lives in app_defaults.apply_missing_defaults (batch 1),
+        # still invoked from __init__ before monitors start.
+        from src.app_defaults import apply_missing_defaults
+
+        defaults_src = inspect.getsource(apply_missing_defaults)
+        assert "apply_missing_defaults(self.settings)" in init_src
+        assert "migrate_page_local_floats_to_organize_fences(settings)" in defaults_src
+        gate = 'if bool(settings.get("auto_organize_watch", False)):'
+        assert gate in defaults_src
+        assert defaults_src.index(gate) < defaults_src.index(
+            "migrate_page_local_floats_to_organize_fences(settings)"
         )
         # Watcher always starts (floats for Save As / drops).
         start_src = inspect.getsource(DeskTidyApp._startup_deferred_monitors)
@@ -7682,7 +7704,7 @@ def test_page_folders() -> None:
         assert "DeskNote" in inspect.getsource(ExtensionsWidget) or "DeskNote" in ext
         assert "desktop_pet_hosts_float_bar" in rebuild
         assert "calculator_requested" in pi
-        assert "_on_calculator_requested" in inspect.getsource(DeskTidyApp)
+        assert "_on_calculator_requested" in inspect.getsource(DeskTidyApp._on_calculator_requested)
         assert "_add_page_folder" in ext
         assert "page_folders_table" in ext or "_page_folders_host" in ext
         assert "_make_page_folder_row" in ext
@@ -7807,7 +7829,7 @@ def test_page_folders() -> None:
         assert "elev_save_ok" in run_ui
         assert "consume_elevated_pending" not in run_ui
         assert run_ui.index("show_notepad(settings") < run_ui.index("open_paths([elev_save_target])")
-        assert "open_paths_in_notepad" in inspect.getsource(DeskTidyApp)
+        assert "open_paths_in_notepad" in inspect.getsource(DeskTidyApp.open_paths_in_notepad)
         fence_extra_src = inspect.getsource(
             __import__("src.ui.fence_icon_item", fromlist=["build_file_icon_shell_extras"]).build_file_icon_shell_extras
         )

@@ -12,7 +12,7 @@ from src.ui.screen_snap import work_screen
 
 _BORDER_PX = 4
 _CHROME_MARGIN = 16
-_CHROME_W = 248
+_CHROME_W = 300
 _CHROME_H = 52
 _BORDER_COLOR = QColor(239, 68, 68, 230)
 
@@ -43,12 +43,19 @@ class _BorderStrip(QWidget):
 
 
 class _RecChrome(QWidget):
-    def __init__(self, on_stop: Callable[[], None], parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        on_stop: Callable[[], None],
+        on_pause: Callable[[], None] | None = None,
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__(parent)
         self._on_stop = on_stop
+        self._on_pause = on_pause
         self._pulse_on = True
         self._elapsed_s = 0
         self._stopping = False
+        self._paused = False
 
         self.setWindowFlags(_tool_flags())
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
@@ -100,6 +107,17 @@ class _RecChrome(QWidget):
                 color: #FECACA;
                 border-color: #7F1D1D;
             }
+            QPushButton#recPauseBtn {
+                background: #3F3F46;
+                color: #FECACA;
+                border: 1px solid #71717A;
+                border-radius: 8px;
+                padding: 6px 12px;
+                font-size: 12px;
+                font-weight: 700;
+            }
+            QPushButton#recPauseBtn:hover { background: #52525B; }
+            QPushButton#recPauseBtn:pressed { background: #27272A; }
             """
         )
 
@@ -122,6 +140,12 @@ class _RecChrome(QWidget):
         self.timer_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         row.addWidget(self.timer_lbl, 0, Qt.AlignmentFlag.AlignVCenter)
         row.addStretch(1)
+
+        self.pause_btn = QPushButton("暂停")
+        self.pause_btn.setObjectName("recPauseBtn")
+        self.pause_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.pause_btn.clicked.connect(self._handle_pause)
+        row.addWidget(self.pause_btn, 0, Qt.AlignmentFlag.AlignVCenter)
 
         self.stop_btn = QPushButton("结束录制")
         self.stop_btn.setObjectName("recStopBtn")
@@ -156,6 +180,7 @@ class _RecChrome(QWidget):
         self._pulse_on = True
         self.timer_lbl.setText("00:00")
         self._apply_pulse_style(True)
+        self.set_paused(False)
         self.stop_btn.setEnabled(True)
         self.stop_btn.setText("结束录制")
         self._pulse_timer.start()
@@ -195,6 +220,16 @@ class _RecChrome(QWidget):
         if callable(cb):
             QTimer.singleShot(0, cb)
 
+    def _handle_pause(self) -> None:
+        cb = self._on_pause
+        if callable(cb):
+            QTimer.singleShot(0, cb)
+
+    def set_paused(self, paused: bool) -> None:
+        """Update the pause button label to reflect the session state."""
+        self._paused = bool(paused)
+        self.pause_btn.setText("继续" if self._paused else "暂停")
+
 
 class RecordingIndicator:
     """Owns border strips on the capture target + chrome panel."""
@@ -202,13 +237,15 @@ class RecordingIndicator:
     def __init__(
         self,
         on_stop: Callable[[], None],
+        on_pause: Callable[[], None] | None = None,
         *,
         capture_region: dict | None = None,
     ) -> None:
         self._on_stop = on_stop
+        self._on_pause = on_pause
         self._capture_region = capture_region if isinstance(capture_region, dict) else None
         self._strips: list[_BorderStrip] = []
-        self._chrome = _RecChrome(on_stop)
+        self._chrome = _RecChrome(on_stop, on_pause)
         self._build_strips()
         self._place_chrome()
 
@@ -342,12 +379,13 @@ _active_indicator: RecordingIndicator | None = None
 
 def show_recording_indicator(
     on_stop: Callable[[], None],
+    on_pause: Callable[[], None] | None = None,
     *,
     capture_region: dict | None = None,
 ) -> RecordingIndicator:
     global _active_indicator
     hide_recording_indicator()
-    tip = RecordingIndicator(on_stop, capture_region=capture_region)
+    tip = RecordingIndicator(on_stop, on_pause, capture_region=capture_region)
     _active_indicator = tip
     tip.show()
     return tip
@@ -363,6 +401,16 @@ def hide_recording_indicator() -> None:
         tip.close()
     except Exception:
         pass
+
+
+def set_recording_paused(paused: bool) -> None:
+    """Sync the active indicator's pause button label (pause ↔ continue)."""
+    tip = _active_indicator
+    if tip is not None:
+        try:
+            tip._chrome.set_paused(bool(paused))
+        except Exception:
+            pass
 
 
 def is_recording_indicator_visible() -> bool:

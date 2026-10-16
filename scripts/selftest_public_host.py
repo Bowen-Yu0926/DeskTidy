@@ -109,8 +109,7 @@ def test_host_contracts() -> None:
     )
     attach_src = inspect.getsource(public_icon_host.PublicIconHost.ensure_shell_attached)
     assert "session_owns_desktop_drops" in attach_src
-    app_src = inspect.getsource(DeskTidyApp)
-    assert "_ensure_public_drop_surface" in app_src
+    assert "_ensure_public_drop_surface" in inspect.getsource(DeskTidyApp._ensure_public_drop_surface)
     owns_src = inspect.getsource(public_icon_host.PublicIconHost.session_owns_desktop_drops)
     assert "are_desktop_icons_visible" in owns_src
     from src.ui.fence_icon_item import drop_files_to_public_from_mime

@@ -51,10 +51,10 @@ HOTKEY_LABELS = {
 
 # Used only when the configured binding cannot be parsed / registered at all.
 HOTKEY_FALLBACKS: dict[str, list[str]] = {
-    "screenshot": ["Ctrl+Shift+S", "Ctrl+Alt+S"],
-    "show_screenshot": ["Ctrl+Shift+P", "Ctrl+Alt+P"],
-    "screen_record": ["Ctrl+Shift+R"],
-    "file_search": ["Ctrl+Alt+F", "Ctrl+Alt+Space"],
+    "screenshot": ["F1", "Ctrl+Shift+S", "Ctrl+Alt+S"],
+    "show_screenshot": ["F2", "Ctrl+Shift+P", "Ctrl+Alt+P"],
+    "screen_record": ["F3", "Ctrl+Shift+R"],
+    "file_search": ["F4", "Ctrl+Alt+F", "Ctrl+Alt+Space"],
     "calculator": ["Ctrl+Alt+C"],
 }
 # Poll intervals (ms): keep idle cost low for 24/7 tray operation.

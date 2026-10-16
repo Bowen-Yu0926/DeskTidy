@@ -8,6 +8,7 @@ from PyQt6.QtCore import QPoint, QRect, Qt, QTimer
 from PyQt6.QtGui import QGuiApplication
 from PyQt6.QtWidgets import (
     QApplication,
+    QCheckBox,
     QHBoxLayout,
     QLabel,
     QPushButton,
@@ -199,6 +200,8 @@ class DesktopGuideTip(QWidget):
             f" font-size: 13px; }}"
             f"QLabel#guideProgress {{ color: {p.get('text_muted', '#6B7280')};"
             f" font-size: 12px; }}"
+            f"QCheckBox#guideOpt {{ color: {p.get('text', '#1F2937')};"
+            f" font-size: 13px; spacing: 6px; }}"
             f"QPushButton#guideSkipBtn, QPushButton#guideBackBtn {{"
             f" background: transparent; color: {p.get('text_muted', '#6B7280')};"
             f" border: none; padding: 6px 10px; font-size: 13px; }}"
@@ -232,6 +235,18 @@ class DesktopGuideTip(QWidget):
         self._body.setObjectName("guideBody")
         self._body.setWordWrap(True)
         layout.addWidget(self._body)
+
+        self._opt_autostart = QCheckBox("开机自动启动")
+        self._opt_autostart.setObjectName("guideOpt")
+        self._opt_autostart.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._opt_autostart.hide()
+        layout.addWidget(self._opt_autostart)
+
+        self._opt_pet = QCheckBox("显示桌面宠物")
+        self._opt_pet.setObjectName("guideOpt")
+        self._opt_pet.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._opt_pet.hide()
+        layout.addWidget(self._opt_pet)
 
         self._progress = QLabel()
         self._progress.setObjectName("guideProgress")
@@ -269,6 +284,8 @@ class DesktopGuideTip(QWidget):
         self._body.setText(body)
         self._progress.setText(f"{self._index + 1} / {len(GUIDE_STEPS)}")
         last = self._index >= len(GUIDE_STEPS) - 1
+        self._opt_autostart.setVisible(last)
+        self._opt_pet.setVisible(last)
         self._next.setText("开始使用" if last else "下一步")
         self._back.setEnabled(self._index > 0)
         self.adjustSize()
@@ -315,8 +332,46 @@ class DesktopGuideTip(QWidget):
         self._index -= 1
         self._render()
 
+    def _apply_opt_ins(self) -> None:
+        """Write guide opt-ins（开机自动启动 / 显示桌面宠物）before marking done."""
+        if not isinstance(self._settings, dict):
+            return
+        changed = False
+        if self._opt_autostart.isChecked():
+            self._settings["auto_start"] = True
+            changed = True
+            try:
+                from src.settings import set_auto_start
+
+                set_auto_start(True)
+            except Exception:
+                pass
+        if self._opt_pet.isChecked():
+            pet = self._settings.get("desktop_pet")
+            if not isinstance(pet, dict):
+                pet = {}
+                self._settings["desktop_pet"] = pet
+            if not bool(pet.get("visible")):
+                pet["visible"] = True
+                changed = True
+            # Best-effort: show the pet this session once overlays settle.
+            desk = self._desk
+            if desk is not None:
+                refresh = getattr(desk, "_setup_desktop_pet", None)
+                if callable(refresh):
+                    try:
+                        QTimer.singleShot(600, refresh)
+                    except Exception:
+                        pass
+        if changed:
+            try:
+                save_settings(self._settings, immediate=True)
+            except OSError:
+                pass
+
     def _finish(self) -> None:
         global _active_tip
+        self._apply_opt_ins()
         cb = self._on_finished
         restore = self._restore_window
         _active_tip = None

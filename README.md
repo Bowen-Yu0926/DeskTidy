@@ -1,6 +1,6 @@
 # DeskTidy - 桌面整理助手
 
-一款功能完整的 Windows 桌面整理工具：自动分类、分区管理、分页桌面、Dock 栏、区域截图、云端账号管理。
+一款功能完整的 Windows 桌面整理工具：自动分类、分区管理、分页桌面、区域截图、云端账号管理。
 
 公开仓库与安装包：[github.com/Bowen-Yu0926/DeskTidy](https://github.com/Bowen-Yu0926/DeskTidy) · [v4.0.29 安装包](https://github.com/Bowen-Yu0926/DeskTidy-Releases/releases/download/v4.0.29/DeskTidy_Setup_4.0.29.exe)
 
@@ -14,7 +14,6 @@
 | 分区 | 可拖拽缩放折叠，Folder Portal 镜像，拖放归类 |
 | 分页 | 多桌面页面，底部指示器，快捷键切换 |
 | 快照 | 保存/恢复桌面图标位置 |
-| Dock | 快捷启动栏，底部/左/右 |
 | 截图 | 区域截图，复制/保存/贴图 |
 | 录屏 | F3 开始/结束桌面录屏（需 FFmpeg） |
 | 账号 | 云端账号保险库：桌面浮标入口，双击复制，后台定时同步 |
@@ -60,12 +59,15 @@ scripts\build_installer.bat
 | 快捷键 | 功能 |
 |--------|------|
 | `Ctrl+Shift+O` | 一键整理 |
-| `Ctrl+Shift+F` | 切换分区 |
-| `Ctrl+Shift+H` | 切换图标 |
-| `Ctrl+Space` | Peek 置顶 |
-| `Ctrl+Shift+←/→` | 切换分页 |
+| `Ctrl+Shift+F` | 显示/隐藏分区 |
+| `Ctrl+Shift+H` | 显示/隐藏桌面图标 |
+| `Ctrl+Space` | 临时查看分区（Peek） |
+| `Ctrl+Shift+←/→` | 切换分页（上一页 / 下一页） |
+| `F1` | 区域截图 |
+| `F2` | 显示截图贴图 |
 | `F3` | 录屏开始/结束 |
-| `Ctrl+Shift+S` | 区域截图 |
+| `F4` | 文件搜索 |
+| `Ctrl+Alt+C` | 计算器 |
 
 ## 录屏（FFmpeg）
 
@@ -94,7 +96,7 @@ python scripts/prepare_ffmpeg_recording.py
 - **桌面分页** — 多页面管理
 - **布局快照** — 图标位置备份
 - **账号管理** — 云端账号保险库（浮标入口、登录、增删改查）
-- **扩展功能** — Dock、区域截图、录屏、待办等
+- **扩展功能** — 区域截图、录屏、待办等
 - **设置** — 模式、热键、定时、导入导出
 
 配置目录：`%USERPROFILE%\.desktidy\`

@@ -562,9 +562,51 @@ def _match_ddagrab_output_idx(region: dict | None) -> int | None:
     return None
 
 
-def build_encoder_args(codec: str) -> list[str]:
+# ---- Quality presets -------------------------------------------------------
+
+_QUALITY_PRESETS = ("low", "medium", "high")
+_DEFAULT_QUALITY = "medium"
+
+
+def normalize_quality_preset(raw: object) -> str:
+    """Coerce any stored value to a valid quality preset (back-compat)."""
+    text = str(raw or "").strip().lower()
+    return text if text in _QUALITY_PRESETS else _DEFAULT_QUALITY
+
+
+def quality_preset_params(preset: object) -> dict:
+    """Encoder-agnostic parameters for a quality preset (pure function).
+
+    ``crf`` maps to libx264 ``-crf``; ``mf_quality`` maps to the Media
+    Foundation ``-quality`` scale (0–100, higher = better).
+    """
+    return {
+        "low": {"crf": "28", "mf_quality": "55"},
+        "medium": {"crf": "23", "mf_quality": "70"},
+        "high": {"crf": "18", "mf_quality": "85"},
+    }[normalize_quality_preset(preset)]
+
+
+def build_audio_input_args(audio_device: object) -> list[str]:
+    """dshow audio input args, or ``[]`` when no device is selected (pure)."""
+    device = str(audio_device or "").strip()
+    if not device:
+        return []
+    return ["-f", "dshow", "-i", f"audio={device}"]
+
+
+def build_audio_encoder_args(audio_device: object) -> list[str]:
+    """Audio encoder args when a microphone is enabled (pure)."""
+    device = str(audio_device or "").strip()
+    if not device:
+        return []
+    return ["-c:a", "aac"]
+
+
+def build_encoder_args(codec: str, *, quality_preset: object = None) -> list[str]:
     """Video encoder args. ``h264_mf`` is the Windows market default when available."""
     name = (codec or "libx264").strip().lower()
+    params = quality_preset_params(quality_preset)
     if name == "h264_mf":
         return [
             "-c:v",
@@ -572,7 +614,7 @@ def build_encoder_args(codec: str) -> list[str]:
             "-rate_control",
             "quality",
             "-quality",
-            "70",
+            params["mf_quality"],
             "-pix_fmt",
             "nv12",
         ]
@@ -585,7 +627,7 @@ def build_encoder_args(codec: str) -> list[str]:
         "-tune",
         "zerolatency",
         "-crf",
-        "28",
+        params["crf"],
         "-pix_fmt",
         "yuv420p",
     ]
@@ -642,13 +684,18 @@ def build_record_command(
     fps: int,
     region: dict | None,
     codec: str | None = None,
+    quality_preset: object = None,
+    audio_device: object = None,
 ) -> list[str]:
-    """Build the FFmpeg argv for one recording session.
+    """Build the FFmpeg argv for one recording session/segment.
 
     Market path on modern Windows:
     - Single monitor → Desktop Duplication (``ddagrab``) + Media Foundation H.264
     - All / partial region → ``gdigrab`` fallback
     Software ``libx264`` is only the fallback when ``h264_mf`` probe fails.
+
+    ``quality_preset`` (low/medium/high) tunes the encoder; ``audio_device``
+    (dshow device name) adds a microphone stream when non-empty.
     """
     fps = max(15, min(60, int(fps)))
     if codec is None:
@@ -657,7 +704,9 @@ def build_record_command(
             codec = probe_preferred_encoder(exe_path)
         else:
             codec = _preferred_encoder or "h264_mf"
-    enc = build_encoder_args(codec)
+    enc = build_encoder_args(codec, quality_preset=quality_preset)
+    audio_in = build_audio_input_args(audio_device)
+    audio_enc = build_audio_encoder_args(audio_device)
     exe = str(ffmpeg)
     out = str(output)
     dda_idx = _match_ddagrab_output_idx(region)
@@ -667,6 +716,7 @@ def build_record_command(
             "-y",
             "-loglevel",
             "error",
+            *audio_in,
             "-f",
             "lavfi",
             "-i",
@@ -674,6 +724,7 @@ def build_record_command(
             "-vf",
             "hwdownload,format=bgra",
             *enc,
+            *audio_enc,
             out,
         ]
     # Virtual desktop / non-monitor crop: classic gdigrab.
@@ -682,6 +733,7 @@ def build_record_command(
         "-y",
         "-loglevel",
         "error",
+        *audio_in,
         "-probesize",
         "32",
         "-analyzeduration",
@@ -696,8 +748,183 @@ def build_record_command(
         "-i",
         "desktop",
         *enc,
+        *audio_enc,
         out,
     ]
+
+
+def list_audio_devices(ffmpeg: str | Path | None = None) -> list[str]:
+    """Enumerate DirectShow *audio* input devices via FFmpeg.
+
+    Parses ``ffmpeg -list_devices true -f dshow -i dummy`` (device names are
+    printed UTF-8 on stderr). Returns ``[]`` when ffmpeg is missing, dshow is
+    unavailable, or the probe fails — never raises.
+    """
+    exe = str(ffmpeg) if ffmpeg is not None else ""
+    if not exe:
+        found = find_ffmpeg()
+        if found is None:
+            return []
+        exe = str(found)
+    if not exe or not Path(exe).is_file():
+        return []
+    cmd = [exe, "-hide_banner", "-list_devices", "true", "-f", "dshow", "-i", "dummy"]
+    try:
+        completed = subprocess.run(
+            cmd,
+            capture_output=True,
+            creationflags=_creation_flags(),
+            timeout=8,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    raw = completed.stderr or completed.stdout or b""
+    text = raw.decode("utf-8", errors="replace")
+    devices: list[str] = []
+    for line in text.splitlines():
+        if "(audio)" not in line:
+            continue
+        start = line.find('"')
+        end = line.find('"', start + 1) if start >= 0 else -1
+        if start < 0 or end < 0:
+            continue
+        name = line[start + 1 : end].strip()
+        if name:
+            devices.append(name)
+    return devices
+
+
+def build_concat_list_content(segments: list[Path]) -> str:
+    """Write the concat-demuxer playlist text for *segments* (pure function)."""
+    lines: list[str] = []
+    for seg in segments:
+        path = str(Path(seg).resolve()).replace("\\", "/").replace("'", "'\\''")
+        lines.append(f"file '{path}'")
+    return "\n".join(lines) + "\n"
+
+
+def build_concat_command(
+    ffmpeg: str | Path,
+    list_path: Path,
+    output: Path,
+    *,
+    has_audio: bool = False,
+) -> list[str]:
+    """FFmpeg argv to merge segments via the concat demuxer (pure function).
+
+    No audio → ``-c copy`` (lossless remux). With audio the copy path can desync
+    on MP4, so it is re-encoded to a guaranteed-valid single file.
+    """
+    cmd = [
+        str(ffmpeg),
+        "-y",
+        "-loglevel",
+        "error",
+        "-f",
+        "concat",
+        "-safe",
+        "0",
+        "-i",
+        str(list_path),
+    ]
+    if not has_audio:
+        cmd += ["-c", "copy"]
+    else:
+        cmd += [
+            "-c:v",
+            "libx264",
+            "-preset",
+            "ultrafast",
+            "-crf",
+            "23",
+            "-pix_fmt",
+            "yuv420p",
+            "-c:a",
+            "aac",
+        ]
+    cmd.append(str(output))
+    return cmd
+
+
+def _merge_segments(
+    segments: list[Path],
+    final: Path,
+    *,
+    has_audio: bool,
+    ffmpeg: str | Path | None,
+) -> tuple[Path | None, bool, str]:
+    """Merge completed segments into *final*; return (path, ok, detail).
+
+    Single segment → rename to *final*. Multiple → concat demuxer, then clean up
+    the parts + playlist. On failure the first segment path is returned so the
+    caller can still offer keep/delete, with ``ok=False``.
+    """
+    parts = [Path(s) for s in segments if isinstance(s, Path) and s.is_file()]
+    if not parts:
+        return None, False, "no segments"
+
+    if len(parts) == 1:
+        seg = parts[0]
+        if seg.resolve() != final.resolve():
+            try:
+                if final.exists():
+                    final.unlink(missing_ok=True)
+                seg.rename(final)
+                seg_log = seg.with_suffix(".ffmpeg.log")
+                if seg_log.is_file():
+                    try:
+                        seg_log.replace(final.with_suffix(".ffmpeg.log"))
+                    except OSError:
+                        pass
+            except OSError as exc:
+                return seg, False, f"rename failed: {exc}"
+        return final, True, ""
+
+    exe = str(ffmpeg) if ffmpeg is not None else ""
+    if not exe or not Path(exe).is_file():
+        found = find_ffmpeg()
+        if found is None:
+            return parts[0], False, "ffmpeg missing for concat"
+        exe = str(found)
+
+    list_path = final.with_suffix(".concat.txt")
+    try:
+        list_path.write_text(build_concat_list_content(parts), encoding="utf-8")
+    except OSError as exc:
+        return parts[0], False, f"playlist write failed: {exc}"
+
+    cmd = build_concat_command(exe, list_path, final, has_audio=has_audio)
+    try:
+        completed = subprocess.run(
+            cmd,
+            capture_output=True,
+            creationflags=_creation_flags(),
+            timeout=900,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return parts[0], False, f"concat failed: {exc}"
+
+    if completed.returncode == 0 and final.is_file() and final.stat().st_size > 0:
+        for seg in parts:
+            try:
+                seg.unlink(missing_ok=True)
+            except OSError:
+                pass
+            try:
+                seg.with_suffix(".ffmpeg.log").unlink(missing_ok=True)
+            except OSError:
+                pass
+        try:
+            list_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return final, True, ""
+    detail = (completed.stderr or completed.stdout or b"").decode(
+        "utf-8", errors="replace"
+    )[-300:]
+    return parts[0], False, f"concat returned {completed.returncode}: {detail}"
 
 
 class _StopBridge(QObject):
@@ -708,6 +935,18 @@ class _StopBridge(QObject):
 
 class _StartBridge(QObject):
     """Marshal async start results onto the Qt UI thread."""
+
+    done = pyqtSignal(object)
+
+
+class _PauseBridge(QObject):
+    """Marshal async pause results onto the Qt UI thread."""
+
+    done = pyqtSignal(object)
+
+
+class _ResumeBridge(QObject):
+    """Marshal async resume results onto the Qt UI thread."""
 
     done = pyqtSignal(object)
 
@@ -1021,8 +1260,13 @@ def _reveal_recording(path: Path) -> None:
         pass
 
 
-def _finalize_stop(proc, path: Path | None) -> tuple[Path | None, str]:
-    """Blocking finalize — must not run on the Qt UI thread."""
+def _finalize_segment(proc, path: Path | None) -> Path | None:
+    """Blocking finalize of one recording segment — must not run on the UI thread.
+
+    Sends ``q`` through stdin (or kills the PID), waits for the container flush,
+    and returns the saved file once its size stabilizes. Does *not* touch the
+    persisted orphan state — that belongs to the session lifecycle.
+    """
     pid = int(getattr(proc, "pid", 0) or 0)
     has_stdin = getattr(proc, "stdin", None) is not None
     try:
@@ -1053,8 +1297,13 @@ def _finalize_stop(proc, path: Path | None) -> tuple[Path | None, str]:
             _terminate_pid(pid)
             time.sleep(0.1)
 
+    return _wait_for_saved_file(path, timeout_s=3.0)
+
+
+def _finalize_stop(proc, path: Path | None) -> tuple[Path | None, str]:
+    """Finalize a whole session's last segment and clear persisted orphan state."""
+    saved = _finalize_segment(proc, path)
     _clear_state()
-    saved = _wait_for_saved_file(path, timeout_s=3.0)
     return saved, ""
 
 
@@ -1096,8 +1345,21 @@ class ScreenRecordManager:
         self._stop_bridge.done.connect(self._on_stop_finished)
         self._start_bridge = _StartBridge()
         self._start_bridge.done.connect(self._on_start_finished)
+        self._pause_bridge = _PauseBridge()
+        self._pause_bridge.done.connect(self._on_pause_finished)
+        self._resume_bridge = _ResumeBridge()
+        self._resume_bridge.done.connect(self._on_resume_finished)
         self._last_capture: str = "primary"
         self._ffmpeg_warm_started = False
+        # Segmented recording state (pause/resume).
+        self._segments: list[Path] = []
+        self._current_segment: Path | None = None
+        self._final_path: Path | None = None
+        self._paused = False
+        self._pausing = False
+        self._resuming = False
+        self._quality_preset: str = "medium"
+        self._audio_device: str = ""
         self._adopt_orphan_if_any()
         # Page-in ffmpeg.exe immediately (cold boot + Defender first-scan of the
         # bundled binary otherwise blocks the first record click for ~1–2 min).
@@ -1141,6 +1403,10 @@ class ScreenRecordManager:
         self._adopt_orphan_if_any()
         return self._proc is not None and self._proc.poll() is None
 
+    @property
+    def is_paused(self) -> bool:
+        return bool(self._paused)
+
     def _adopt_orphan_if_any(self) -> None:
         if self._proc is not None and self._proc.poll() is None:
             return
@@ -1179,7 +1445,13 @@ class ScreenRecordManager:
         if self._starting:
             self._cancel_start.set()
             return
-        if self.is_recording or self._stopping:
+        if (
+            self.is_recording
+            or self._stopping
+            or self._paused
+            or self._pausing
+            or self._resuming
+        ):
             self.stop_recording()
         else:
             self.start_recording()
@@ -1191,7 +1463,14 @@ class ScreenRecordManager:
         (settings no longer own this choice). Pass an explicit value to skip
         the picker (tests / automation).
         """
-        if self.is_recording or self._stopping or self._starting:
+        if (
+            self.is_recording
+            or self._stopping
+            or self._starting
+            or self._paused
+            or self._pausing
+            or self._resuming
+        ):
             return
         if capture_screen is None:
             try:
@@ -1212,6 +1491,10 @@ class ScreenRecordManager:
         cfg = self._get_settings().get("screen_record", {})
         raw_dir = str(cfg.get("output_dir") or "").strip()
         fps = max(15, min(60, int(cfg.get("fps", 30) or 30)))
+        quality_preset = normalize_quality_preset(cfg.get("quality_preset"))
+        audio_device = str(cfg.get("audio_device") or "").strip()
+        self._quality_preset = quality_preset
+        self._audio_device = audio_device
         # Resolve "current" on the UI thread so cursor position is accurate.
         region = resolve_capture_region(capture)
 
@@ -1239,15 +1522,22 @@ class ScreenRecordManager:
                     self._start_bridge.done.emit({"ok": False, "reason": "cancelled"})
                     return
                 stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                output = out_dir / f"DeskTidy_{stamp}.mp4"
+                final = out_dir / f"DeskTidy_{stamp}.mp4"
+                segment = out_dir / f"DeskTidy_{stamp}.part001.mp4"
                 codec = preferred_encoder()
                 if codec == "libx264":
                     codec = probe_preferred_encoder(ffmpeg)
                 cmd = build_record_command(
-                    ffmpeg, output, fps=fps, region=region, codec=codec
+                    ffmpeg,
+                    segment,
+                    fps=fps,
+                    region=region,
+                    codec=codec,
+                    quality_preset=quality_preset,
+                    audio_device=audio_device,
                 )
                 # Keep stderr on disk for early-exit diagnosis (DEVNULL hid causes).
-                err_log = output.with_suffix(".ffmpeg.log")
+                err_log = segment.with_suffix(".ffmpeg.log")
                 try:
                     err_fh: object = open(err_log, "wb")
                 except OSError:
@@ -1276,7 +1566,7 @@ class ScreenRecordManager:
                         except OSError:
                             pass
                     try:
-                        output.unlink(missing_ok=True)
+                        segment.unlink(missing_ok=True)
                     except OSError:
                         pass
                     try:
@@ -1288,7 +1578,7 @@ class ScreenRecordManager:
                 create_ms = _process_create_time_ms(int(proc.pid))
                 _write_state(
                     int(proc.pid),
-                    output,
+                    segment,
                     exe=str(ffmpeg),
                     create_time_ms=create_ms,
                 )
@@ -1296,7 +1586,8 @@ class ScreenRecordManager:
                     {
                         "ok": True,
                         "proc": proc,
-                        "path": output,
+                        "path": segment,
+                        "final_path": final,
                         "exe": str(ffmpeg),
                         "region": region,
                         "err_log": str(err_log),
@@ -1341,7 +1632,11 @@ class ScreenRecordManager:
             return
 
         self._proc = data.get("proc")
-        self._output_path = data.get("path")
+        self._output_path = data.get("final_path") or data.get("path")
+        self._final_path = self._output_path
+        self._current_segment = data.get("path")
+        self._segments = []
+        self._paused = False
         self._ffmpeg_exe = str(data.get("exe") or "")
         self._capture_region = data.get("region")
         self._err_log_path = Path(str(data["err_log"])) if data.get("err_log") else None
@@ -1392,8 +1687,10 @@ class ScreenRecordManager:
             return
         self._hide_recording_chrome()
         self._proc = None
-        path = self._output_path
+        path = self._current_segment
+        self._current_segment = None
         self._output_path = None
+        self._final_path = None
         self._capture_region = None
         _clear_state()
         detail = self._close_err_log(keep_file=True)
@@ -1431,7 +1728,9 @@ class ScreenRecordManager:
 
             region = self._capture_region
             show_recording_indicator(
-                self.stop_recording, capture_region=region
+                self.stop_recording,
+                self._toggle_pause,
+                capture_region=region,
             )
             path = self._output_path
             if region is None:
@@ -1494,33 +1793,71 @@ class ScreenRecordManager:
         if self._starting:
             self._cancel_start.set()
             return
+        if self._pausing or self._resuming:
+            # A pause/resume finalize is in flight — ignore until it settles.
+            return
         self._stopping = True
         self._hide_recording_chrome()
         proc = self._proc
-        path = self._output_path
+        current_seg = self._current_segment
         self._proc = None
-        self._output_path = None
+        self._current_segment = None
         self._capture_region = None
+        segments = list(self._segments)
+        final = self._final_path
+        has_audio = bool(self._audio_device)
+        ffmpeg_exe = self._ffmpeg_exe
         # Close stderr sink before waiting so ffmpeg can flush the log.
         self._close_err_log(keep_file=True)
         if proc is None:
             _clear_state()
-            self._stopping = False
-            return
 
         def _worker() -> None:
             try:
-                saved, _detail = _finalize_stop(proc, path)
+                if proc is not None:
+                    saved = _finalize_stop(proc, current_seg)[0]
+                    if saved is not None:
+                        segments.append(saved)
+                merged, ok, detail = _merge_segments(
+                    segments, final, has_audio=has_audio, ffmpeg=ffmpeg_exe
+                )
+                payload: dict = {
+                    "path": merged,
+                    "segments": segments,
+                    "concat_ok": ok,
+                    "concat_detail": detail,
+                }
             except Exception as exc:
                 get_logger().error("screen_record stop worker failed: %s", exc)
-                saved = None
+                payload = {
+                    "path": segments[0] if segments else None,
+                    "segments": segments,
+                    "concat_ok": False,
+                    "concat_detail": str(exc),
+                }
             # Queued connection — safe from a background thread.
-            self._stop_bridge.done.emit(saved)
+            self._stop_bridge.done.emit(payload)
 
         threading.Thread(target=_worker, name="DeskTidyRecordStop", daemon=True).start()
 
-    def _on_stop_finished(self, saved: Path | None) -> None:
+    def _on_stop_finished(self, payload: object) -> None:
         try:
+            data = payload if isinstance(payload, dict) else {"path": payload}
+            saved = data.get("path")
+            segments = data.get("segments") or []
+            concat_ok = bool(data.get("concat_ok", True))
+            if isinstance(saved, str):
+                saved = Path(saved)
+            if not concat_ok and len(segments) > 1:
+                folder = Path(segments[0]).parent if segments else None
+                get_logger().warning(
+                    "screen_record concat failed: %s", data.get("concat_detail")
+                )
+                self._message(
+                    f"录屏已停止，但合并分段失败（已保留 {len(segments)} 个分段文件）。\n"
+                    f"位置：{folder}"
+                )
+                return
             if saved is None or not saved.is_file():
                 get_logger().warning("screen_record save failed path=%s", saved)
                 self._message("录屏未能保存。（文件为空或未生成，可再试一次）")
@@ -1586,6 +1923,163 @@ class ScreenRecordManager:
                 self._message("已取消保存，录屏文件已删除。")
         finally:
             self._stopping = False
+            self._paused = False
+            self._segments = []
+            self._current_segment = None
+            self._final_path = None
+
+    def _toggle_pause(self) -> None:
+        """Indicator button callback: pause when active, resume when paused."""
+        if self._paused:
+            self.resume_recording()
+        else:
+            self.pause_recording()
+
+    def pause_recording(self) -> None:
+        """End the current segment; the session stays open for ``resume``."""
+        if self._pausing or self._paused:
+            return
+        if self._starting:
+            self._cancel_start.set()
+            return
+        if self._stopping or self._resuming:
+            return
+        if not self.is_recording:
+            return
+        self._pausing = True
+        proc = self._proc
+        segment = self._current_segment
+        self._proc = None
+        self._current_segment = None
+        self._close_err_log(keep_file=True)
+
+        def _worker() -> None:
+            try:
+                saved = _finalize_segment(proc, segment)
+            except Exception as exc:
+                get_logger().error("screen_record pause worker failed: %s", exc)
+                saved = segment if isinstance(segment, Path) else None
+            self._pause_bridge.done.emit({"segment": saved})
+
+        threading.Thread(target=_worker, name="DeskTidyRecordPause", daemon=True).start()
+
+    def _on_pause_finished(self, payload: object) -> None:
+        self._pausing = False
+        data = payload if isinstance(payload, dict) else {}
+        seg = data.get("segment")
+        if isinstance(seg, str):
+            seg = Path(seg)
+        if isinstance(seg, Path) and seg.is_file() and seg not in self._segments:
+            self._segments.append(seg)
+        self._paused = True
+        self._sync_indicator_pause()
+
+    def resume_recording(self) -> None:
+        """Open a new segment and continue the session."""
+        if self._resuming or not self._paused:
+            return
+        if self._stopping or self._pausing:
+            return
+        self._resuming = True
+        self._paused = False
+        final = self._final_path
+        region = self._capture_region
+        fps = max(
+            15,
+            min(
+                60,
+                int(self._get_settings().get("screen_record", {}).get("fps", 30) or 30),
+            ),
+        )
+        quality_preset = self._quality_preset
+        audio_device = self._audio_device
+        if final is None:
+            self._resuming = False
+            self._paused = True
+            return
+        seg_index = len(self._segments) + 1
+        new_seg = final.parent / f"{final.stem}.part{seg_index:03d}.mp4"
+
+        def _worker() -> None:
+            try:
+                ffmpeg = find_ffmpeg()
+                if ffmpeg is None:
+                    self._resume_bridge.done.emit({"ok": False, "reason": "no_ffmpeg"})
+                    return
+                codec = preferred_encoder()
+                if codec == "libx264":
+                    codec = probe_preferred_encoder(ffmpeg)
+                cmd = build_record_command(
+                    ffmpeg,
+                    new_seg,
+                    fps=fps,
+                    region=region,
+                    codec=codec,
+                    quality_preset=quality_preset,
+                    audio_device=audio_device,
+                )
+                err_log = new_seg.with_suffix(".ffmpeg.log")
+                try:
+                    err_fh: object = open(err_log, "wb")
+                except OSError:
+                    err_fh = subprocess.DEVNULL
+                proc = subprocess.Popen(
+                    cmd,
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.DEVNULL,
+                    stderr=err_fh,
+                    creationflags=_creation_flags(),
+                )
+                _write_state(
+                    int(proc.pid),
+                    new_seg,
+                    exe=str(ffmpeg),
+                    create_time_ms=_process_create_time_ms(int(proc.pid)),
+                )
+                self._resume_bridge.done.emit(
+                    {
+                        "ok": True,
+                        "proc": proc,
+                        "segment": new_seg,
+                        "err_log": str(err_log),
+                        "err_fh": err_fh if err_fh is not subprocess.DEVNULL else None,
+                    }
+                )
+            except Exception as exc:
+                get_logger().error("screen_record resume failed: %s", exc)
+                self._resume_bridge.done.emit(
+                    {"ok": False, "reason": "start_failed", "detail": str(exc)}
+                )
+
+        threading.Thread(target=_worker, name="DeskTidyRecordResume", daemon=True).start()
+
+    def _on_resume_finished(self, payload: object) -> None:
+        self._resuming = False
+        data = payload if isinstance(payload, dict) else {}
+        if not data.get("ok"):
+            self._paused = True
+            reason = str(data.get("reason") or "")
+            if reason == "no_ffmpeg":
+                self._message("继续录屏失败：未找到 FFmpeg。")
+            else:
+                self._message(f"继续录屏失败：{data.get('detail') or '未知错误'}")
+            self._sync_indicator_pause()
+            return
+        self._proc = data.get("proc")
+        self._current_segment = data.get("segment")
+        self._err_log_path = Path(str(data["err_log"])) if data.get("err_log") else None
+        self._err_log_fh = data.get("err_fh")
+        self._paused = False
+        self._sync_indicator_pause()
+        QTimer.singleShot(450, self._check_started)
+
+    def _sync_indicator_pause(self) -> None:
+        try:
+            from src.ui.recording_indicator import set_recording_paused
+
+            set_recording_paused(self._paused)
+        except Exception:
+            pass
 
     def shutdown(self) -> None:
         self._cancel_start.set()
@@ -1600,13 +2094,15 @@ class ScreenRecordManager:
                 except Exception:
                     pass
             _clear_state()
-        if self.is_recording or self._stopping:
+        if self.is_recording or self._stopping or self._paused:
             # Best-effort sync stop on app exit (UI is going away anyway).
             self._hide_recording_chrome()
             proc = self._proc
-            path = self._output_path
+            path = self._current_segment
             self._proc = None
+            self._current_segment = None
             self._output_path = None
+            self._final_path = None
             self._capture_region = None
             if proc is not None:
                 try:
@@ -1614,6 +2110,7 @@ class ScreenRecordManager:
                 except Exception:
                     pass
             self._stopping = False
+            self._paused = False
         _clear_state()
 
     def _message(self, text: str) -> None:

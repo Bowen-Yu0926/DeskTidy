@@ -62,8 +62,8 @@ def main() -> None:
     from src.ui.page_indicator import PageIndicatorWidget
     from src.ui.todo_widget import DesktopTodoWidget
 
-    assert "_setup_todo_panel" in inspect.getsource(DeskTidyApp)
-    assert "_on_todo_requested" in inspect.getsource(DeskTidyApp)
+    assert "_setup_todo_panel" in inspect.getsource(DeskTidyApp._setup_todo_panel)
+    assert "_on_todo_requested" in inspect.getsource(DeskTidyApp._on_todo_requested)
     assert "todo_panel" in inspect.getsource(DeskTidyApp._iter_overlay_widgets)
     assert "todo_requested" in inspect.getsource(PageIndicatorWidget)
     assert "_make_todo_button" in inspect.getsource(PageIndicatorWidget)

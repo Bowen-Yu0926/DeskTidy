@@ -1,6 +1,6 @@
 {
   "language": "zh",
-  "auto_start": true,
+  "auto_start": false,
   "auto_organize_on_startup": false,
   "auto_organize_watch": false,
   "auto_snapshot_on_change": false,
@@ -42,7 +42,9 @@
   "screen_record": {
     "enabled": false,
     "output_dir": "",
-    "fps": 30
+    "fps": 30,
+    "quality_preset": "medium",
+    "audio_device": ""
   },
   "file_search": {
     "roots": ["desktop", "documents", "downloads"],
@@ -70,11 +72,12 @@
   "account_vault": {
     "enabled": false,
     "api_base": "https://bowen-yu0926.byethost10.com/desktidy-vault/",
-    "refresh_interval_hours": 2
+    "refresh_interval_hours": 2,
+    "clipboard_clear_seconds": 30
   },
   "desktop_pet": {
     "enabled": true,
-    "visible": true,
+    "visible": false,
     "follow_cursor": false,
     "auto_wander": true,
     "show_page_bubbles": true,

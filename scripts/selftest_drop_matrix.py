@@ -17,6 +17,9 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+# Keep selftest config writes out of the developer's real settings.json.
+import scripts.selftest_env  # noqa: F401, E402
+
 passes: list[str] = []
 failures: list[tuple[str, str]] = []
 

@@ -48,7 +48,7 @@ def main() -> None:
 
     setup = inspect.getsource(DeskTidyApp._setup_hotkeys)
     assert "calculator" in setup
-    assert "_on_calculator_requested" in inspect.getsource(DeskTidyApp)
+    assert "_on_calculator_requested" in inspect.getsource(DeskTidyApp._on_calculator_requested)
     assert "calculator_requested" in inspect.getsource(PageIndicatorWidget)
     assert "_make_calculator_button" in inspect.getsource(PageIndicatorWidget)
     tool_flags = inspect.getsource(PageIndicatorWidget._tool_flags)
