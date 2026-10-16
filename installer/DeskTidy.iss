@@ -64,8 +64,9 @@ Name: "startup"; Description: "开机自动启动 {#MyAppName}"; GroupDescriptio
 
 [Files]
 ; Onedir payload (DeskTidy.exe + deskNote.exe + Qt runtime).
-; Excludes: runtime logs must not ship inside the setup.
-Source: "{#SourceDir}\dist\DeskTidy\*"; DestDir: "{app}"; Excludes: "logs\*"; Flags: ignoreversion recursesubdirs createallsubdirs
+; Excludes: runtime logs and per-user data folders (笔记/录屏/纪要/邮件)
+; must not ship inside the setup — they are recreated beside the exe at runtime.
+Source: "{#SourceDir}\dist\DeskTidy\*"; DestDir: "{app}"; Excludes: "logs\*,笔记\*,录屏\*,纪要\*,邮件\*"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#SourceDir}\assets\fd\fd.exe"; DestDir: "{app}\assets\fd"; Flags: ignoreversion nocompression
 Source: "{#SourceDir}\config\default_settings.json"; DestDir: "{app}\config"; Flags: ignoreversion onlyifdoesntexist
 
