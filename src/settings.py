@@ -1032,6 +1032,24 @@ def ensure_desktop_guard_autostart() -> None:
     remove_desktop_guard_autostart()
 
 
+def _create_registry_autostart() -> None:
+    """Write the HKCU Run value ``APP_NAME`` so DeskTidy starts at login."""
+    import winreg
+
+    target, args, _workdir = _desktidy_shortcut_target_and_args()
+    command = f'"{target}"' + (f" {args}" if args else "")
+    key = winreg.CreateKeyEx(
+        winreg.HKEY_CURRENT_USER,
+        r"Software\Microsoft\Windows\CurrentVersion\Run",
+        0,
+        winreg.KEY_SET_VALUE,
+    )
+    try:
+        winreg.SetValueEx(key, APP_NAME, 0, winreg.REG_SZ, command)
+    finally:
+        winreg.CloseKey(key)
+
+
 def _remove_registry_autostart() -> None:
     import winreg
 
@@ -1096,11 +1114,11 @@ def remove_all_autostart() -> None:
 
 
 def migrate_legacy_autostart() -> None:
-    """Drop old Chinese / Desktidy Startup shortcuts; keep one DeskTidy.lnk.
+    """Drop old Chinese / Desktidy Startup shortcuts; keep one HKCU Run entry.
 
     Older installs used「桌面整理（私人版）」.lnk or Desktidy.lnk plus a separate
     desktop-guard shortcut. Remove those so login does not start two copies, and
-    recreate the single APP_NAME shortcut when auto_start is enabled.
+    recreate the single APP_NAME Run-key autostart when auto_start is enabled.
     """
     startup = _startup_dir()
     legacy_links = []
@@ -1143,18 +1161,46 @@ def migrate_legacy_autostart() -> None:
 
 
 def is_auto_start_enabled() -> bool:
-    return _startup_link_path().exists()
+    """True when the HKCU Run value ``APP_NAME`` is present."""
+    import winreg
+
+    try:
+        key = winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            r"Software\Microsoft\Windows\CurrentVersion\Run",
+            0,
+            winreg.KEY_QUERY_VALUE,
+        )
+    except OSError:
+        return False
+    try:
+        winreg.QueryValueEx(key, APP_NAME)
+        return True
+    except OSError:
+        return False
+    finally:
+        winreg.CloseKey(key)
 
 
 def set_auto_start(enabled: bool) -> None:
-    """Enable/disable the single Startup shortcut ``DeskTidy.lnk``."""
+    """Enable/disable autostart via the HKCU Run key (single ``DeskTidy`` entry)."""
     link_path = _startup_link_path()
-    _remove_registry_autostart()
     remove_desktop_guard_autostart()
 
     if not enabled:
+        _remove_registry_autostart()
+        _remove_startup_approved()
         if link_path.exists():
-            link_path.unlink()
+            try:
+                link_path.unlink()
+            except OSError:
+                pass
         return
 
-    _create_startup_shortcut(link_path, arguments="")
+    _create_registry_autostart()
+    # Remove any legacy Startup shortcut so login does not start two copies.
+    if link_path.exists():
+        try:
+            link_path.unlink()
+        except OSError:
+            pass
