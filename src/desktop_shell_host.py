@@ -483,26 +483,19 @@ def place_overlay_in_desktop_band(hwnd: int, *, force: bool = False) -> None:
 
 
 def raise_overlay_in_desktop_band(hwnd: int) -> None:
-    """Raise an overlay to the top of the desktop-owned z-order (still under apps).
+    """Place an overlay just above DefView (visible on wallpaper, under apps).
 
-    Page chrome uses this after hotkey page flips: HWND_BOTTOM (band sink) can
-    bury the right-edge bar under DefView/wallpaper so buttons vanish until a
-    mouse-driven reattach.
+    Page chrome / page-switch / Win+D use this after HWND_BOTTOM seat: sink
+    alone can bury overlays under DefView/wallpaper so fences vanish on show-desktop.
 
-    ``SWP_NOREDRAW`` avoids the brief opaque popup flash (users describe it as a
-    VPN-like window opening and closing) when only Z-order needs fixing.
+    The insert-after window stays *above* the overlay. Passing DefView itself
+    therefore hides the fence under the desktop. Pass the window currently
+    above DefView (``GW_HWNDPREV``) so the overlay lands between apps and the
+    desktop. If DefView is already topmost (Win+D), insert-after 0 puts the
+    overlay at the top of the non-topmost band.
 
-    Never discard client bits on Z-order-only raise — that wiped mint fence
-    panels to solid black after boot live-fence restack (same rule as
-    OverlayWindowBatch SHOW).
-
-    ``SWP_NOOWNERZORDER`` is required: these overlays are Progman-owned top-level
-    TOOLWINDOWs. HWND_TOP without it lifts the whole owner group above normal
-    apps — fences then cover VS Code / WeChat a few seconds later (keepalive /
-    chrome raise).
-
-    Refuse when the HWND is not DefView/Progman-owned: bare HWND_TOP then paints
-    above normal apps (organize / Explorer→desktop refresh).
+    ``SWP_NOREDRAW`` avoids the brief opaque popup flash when only Z-order
+    needs fixing. Refuse when not DefView/Progman-owned.
     """
     if not hwnd:
         return
@@ -512,11 +505,26 @@ def raise_overlay_in_desktop_band(hwnd: int) -> None:
     except Exception:
         return
     try:
-        if not is_attached_to_desktop(int(hwnd)):
+        host, defview = _find_defview_host()
+        if not is_attached_to_desktop(int(hwnd), host=host, defview=defview):
             return
     except Exception:
         return
-    HWND_TOP = 0
+    GW_HWNDPREV = 3
+    above = 0
+    anchor = int(defview or host or 0)
+    if anchor:
+        try:
+            above = int(user32.GetWindow(anchor, GW_HWNDPREV) or 0)
+        except Exception:
+            above = 0
+        if above == int(hwnd):
+            try:
+                above = int(user32.GetWindow(int(hwnd), GW_HWNDPREV) or 0)
+            except Exception:
+                above = 0
+    # 0 == top of the non-topmost band (Win+D when nothing sits above DefView).
+    insert_after = above if above and above != int(hwnd) else 0
     flags = (
         SWP_NOMOVE
         | SWP_NOSIZE
@@ -525,7 +533,7 @@ def raise_overlay_in_desktop_band(hwnd: int) -> None:
         | SWP_NOOWNERZORDER
     )
     try:
-        user32.SetWindowPos(int(hwnd), HWND_TOP, 0, 0, 0, 0, flags)
+        user32.SetWindowPos(int(hwnd), insert_after, 0, 0, 0, 0, flags)
         try:
             if not user32.IsWindowVisible(int(hwnd)):
                 user32.ShowWindow(int(hwnd), SW_SHOWNOACTIVATE)

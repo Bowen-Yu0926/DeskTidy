@@ -2488,12 +2488,11 @@ class DeskTidyApp(FenceLayoutMixin, WatcherMixin, DesktopViewMixin, FenceLifecyc
                     attach_overlay_to_desktop(hwnd, show=True)
                     continue
                 if is_attached_to_desktop(hwnd):
-                    # Healthy Progman-owned overlays usually sit under APPWINDOWs.
-                    # After Explorer-desktop HWND_TOP (ensure_live_fences), they can
-                    # float above Mail/Outlook — HWND_BOTTOM+NOOWNERZORDER parks
-                    # them just above Progman again (under apps, not wallpaper).
-                    if foreign_fg:
-                        place_overlay_in_desktop_band(hwnd, force=False)
+                    # Attached overlays can still sit above DeskTidy settings /
+                    # Mail after an in-band raise. Sink on foreign FG *and*
+                    # while settings/notepad own FG (raise the app window after).
+                    if foreign_fg or app_ui_fg:
+                        place_overlay_in_desktop_band(hwnd, force=app_ui_fg)
                     continue
             except Exception:
                 pass

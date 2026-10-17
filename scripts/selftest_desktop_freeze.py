@@ -52,6 +52,7 @@ def test_source_contracts() -> None:
     # Single owner for Win+D / reveal band repair.
     restore = inspect.getsource(DeskTidyApp._restore_desktop_band_overlays)
     assert "_raise_live_overlays_above_defview" in restore
+    assert "if desk_ui:" not in restore
     show = inspect.getsource(DeskTidyApp._on_show_desktop_relayed)
     assert "_schedule_desktop_band_restore" in show
     assert "_reveal_desktop_for_page_nav" not in show

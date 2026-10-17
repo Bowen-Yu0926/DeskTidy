@@ -49,7 +49,8 @@ def test_raise_owner_contracts() -> None:
 
     raise_src = inspect.getsource(raise_overlay_in_desktop_band)
     assert "is_attached_to_desktop" in raise_src
-    assert "HWND_TOP" in raise_src
+    assert "HWND_TOP" not in raise_src
+    assert "_find_defview_host" in raise_src
     assert "SWP_NOOWNERZORDER" in raise_src
     assert raise_src.index("is_attached_to_desktop") < raise_src.index("SetWindowPos")
 
@@ -215,15 +216,18 @@ def test_raise_attached_hwnd_uses_noownerzorder() -> None:
 
     with (
         mock.patch.object(host, "is_attached_to_desktop", return_value=True),
+        mock.patch.object(
+            host, "_find_defview_host", return_value=(111, 222)
+        ),
         mock.patch.object(host.user32, "IsWindow", return_value=True),
         mock.patch.object(host.user32, "IsWindowVisible", return_value=True),
+        mock.patch.object(host.user32, "GetWindow", return_value=333),
         mock.patch.object(host.user32, "SetWindowPos", _swp),
     ):
         host.raise_overlay_in_desktop_band(888002)
 
-    assert calls == [(888002, 0)], calls  # HWND_TOP == 0
-    # Flag check via source (SetWindowPos spy does not capture flags easily
-    # across cdecl); contract already asserts SWP_NOOWNERZORDER in source.
+    # Window above DefView stays above the fence (333), fence stays above desktop.
+    assert calls == [(888002, 333)], calls
 
 
 def test_page_chrome_raises_cleared_on_foreign_fg() -> None:

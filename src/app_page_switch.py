@@ -576,14 +576,15 @@ class PageSwitchMixin:
         # leaves 文档 covering SoftMgr / VS Code until the user Alt+Tabs.
         self._seat_live_overlays_under_apps()
         if self._foreign_app_owns_foreground():
-            # Sink may HWND_BOTTOM again; band-raise last so icons stay above DefView.
+            # Sink may HWND_BOTTOM again; DefView-relative raise last so icons
+            # stay above wallpaper without climbing over SoftMgr / settings.
             self._sink_overlays_for_foreign_app()
             self._raise_live_overlays_above_defview()
             return
 
         self.ensure_live_fences_interactive()
-        # Explorer FG already band-raised inside ensure_live. Own-chrome FG
-        # (pet / settings) skips that raise — lift once so icons stay above DefView.
+        # Explorer FG already raised inside ensure_live. Own-chrome FG
+        # (pet chips) skips that raise — lift once above DefView only.
         try:
             from src.win_shell import is_explorer_desktop_foreground
 
@@ -1016,8 +1017,9 @@ class PageSwitchMixin:
             self.ensure_live_fences_interactive()
         except Exception:
             logger.exception("desktop-band restore ensure_live failed")
-        # ensure_live only HWND_TOP on Explorer FG. Win+D often lands on the
-        # taskbar — seat once, then always band-raise above DefView.
+        # Win+D often lands on the taskbar and may leave settings still "open"
+        # (minimized). Always seat then raise above DefView — skipping the raise
+        # left fences under the wallpaper after show-desktop.
         try:
             from src.win_shell import is_explorer_desktop_foreground
 

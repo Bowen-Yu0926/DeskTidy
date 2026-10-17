@@ -216,6 +216,9 @@ def test_soft_park_contracts() -> None:
     assert "SWP_NOOWNERZORDER" in raise_src
     # Z-order raise must keep layered client bits (boot black fences).
     assert "SWP_NOCOPYBITS" not in raise_src
+    # DefView-relative insert — HWND_TOP covered DeskTidy settings / SoftMgr.
+    assert "HWND_TOP" not in raise_src
+    assert "_find_defview_host" in raise_src
     place_src = inspect.getsource(
         __import__("src.desktop_shell_host", fromlist=["x"]).place_overlay_in_desktop_band
     )
@@ -1011,6 +1014,8 @@ def test_fullscreen_foreground_reveal() -> None:
     assert "_raise_live_overlays_above_defview" in restore_src
     assert "_seat_live_overlays_under_apps" in restore_src
     assert "ensure_live_fences_interactive" in restore_src
+    # Win+D must still raise after seat (settings may stay "open" while minimized).
+    assert "if desk_ui:" not in restore_src
     schedule_src = inspect.getsource(DeskTidyApp._schedule_desktop_band_restore)
     assert "_band_restore_timer" in schedule_src
     assert "_band_restore_settle_left" in schedule_src

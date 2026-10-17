@@ -3138,7 +3138,8 @@ def test_page_switch_click() -> None:
                 "src.desktop_shell_host", fromlist=["raise_overlay_in_desktop_band"]
             ).raise_overlay_in_desktop_band
         )
-        assert "HWND_TOP" in raise_fn
+        assert "HWND_TOP" not in raise_fn
+        assert "_find_defview_host" in raise_fn
         assert "SWP_NOOWNERZORDER" in raise_fn
         assert "is_attached_to_desktop" in raise_fn
         assert "SWP_NOCOPYBITS" not in raise_fn
