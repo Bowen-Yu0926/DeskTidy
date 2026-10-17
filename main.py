@@ -138,6 +138,13 @@ def _run_notepad_entry(logger) -> int:
 def _entry() -> int:
     _reexec_with_pythonw_if_needed()
     _sanitize_qt_platform()
+
+    # Elevated hotkey helper is a headless sidecar: no Qt, no logging, no mutex.
+    if "--hotkey-helper" in sys.argv:
+        from src.hotkey_helper import run_hotkey_helper
+
+        return int(run_hotkey_helper(sys.argv) or 0)
+
     from src.app_logging import (
         get_logger,
         install_exception_hooks,

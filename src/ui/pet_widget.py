@@ -87,20 +87,53 @@ def _separate_page_bubble_rects(
 def _restack_fences_after_pet_raise() -> None:
     """Keep fences clickable while the pet stays above fence icons.
 
-    ``ensure_live_fences_interactive`` may skip HWND_TOP when a foreign app
-    owns FG (so fences do not jump over WeChat/Cursor). When desktop/own
-    chrome owns FG, finish by raising the pet above sibling fences (hair).
-    Never HWND_TOP the pet while a foreign app is focused — that left the
+    Deliberately does **not** call ``ensure_live_fences_interactive``: that
+    seats every overlay with ``HWND_BOTTOM`` + ``SWP_NOREDRAW`` raise whenever
+    a foreign app owns FG. A simple pet click then froze the desktop band until
+    the user switched displays. Only clear stuck click-through and (when safe)
+    raise the pet above sibling fences in-band.
+
+    Never raise the pet while a foreign app is focused — that left the
     文档 strip covering SoftMgr after 切页.
     """
     app = QApplication.instance()
     desk = getattr(app, "_desktidy_app", None) if app is not None else None
-    ensure = getattr(desk, "ensure_live_fences_interactive", None) if desk else None
-    if callable(ensure):
-        try:
-            ensure()
-        except Exception:
-            pass
+    try:
+        opaque = getattr(desk, "_ensure_public_host_mouse_opaque", None)
+        if callable(opaque):
+            opaque()
+    except Exception:
+        pass
+    try:
+        from src.win_shell import set_overlay_mouse_passthrough
+
+        for fence in list(getattr(desk, "fences", None) or ()):
+            try:
+                if bool(getattr(fence, "_desktidy_soft_parked", False)):
+                    continue
+                set_overlay_mouse_passthrough(fence, False)
+            except Exception:
+                continue
+    except Exception:
+        pass
+    foreign = getattr(desk, "_foreign_app_owns_foreground", None) if desk else None
+    try:
+        if callable(foreign) and bool(foreign()):
+            return
+    except Exception:
+        pass
+    raise_pet_above_fences_in_band()
+
+
+def _raise_pet_if_safe() -> None:
+    """Lift the pet in-band without touching fence z-order or click-through.
+
+    Drag start/end used the full restack and froze the desktop. Wallpaper
+    clearance is ``configure_desktop_overlay(..., raise_band=True)``; this only
+    keeps the sprite above sibling fences when a foreign app is not focused.
+    """
+    app = QApplication.instance()
+    desk = getattr(app, "_desktidy_app", None) if app is not None else None
     foreign = getattr(desk, "_foreign_app_owns_foreground", None) if desk else None
     try:
         if callable(foreign) and bool(foreign()):
@@ -2380,9 +2413,14 @@ class DesktopPetWidget(QWidget):
 
     def mouseMoveEvent(self, event) -> None:  # noqa: N802
         local = event.position().toPoint()
-        if self._update_drag(event.globalPosition().toPoint()):
-            event.accept()
-            return
+        # Without grabMouse, release outside the shaped mask never arrives and
+        # mouse-tracking keeps treating hover as drag (stuck hold / no select).
+        if self._drag_offset is not None:
+            if not (event.buttons() & Qt.MouseButton.LeftButton):
+                self._end_drag()
+            elif self._update_drag(event.globalPosition().toPoint()):
+                event.accept()
+                return
         if self._menu_button_rect().contains(local):
             self.setCursor(Qt.CursorShape.PointingHandCursor)
             if self._menu_hover is not None or self._chrome_hover is not None:
@@ -2438,6 +2476,11 @@ class DesktopPetWidget(QWidget):
             self._menu_hover = None
             self._chrome_hover = None
             self.update()
+        # Lost capture / no grab: button may already be up while drag state lingers.
+        if self._drag_offset is not None and not (
+            QApplication.mouseButtons() & Qt.MouseButton.LeftButton
+        ):
+            self._end_drag()
         super().leaveEvent(event)
 
     def enterEvent(self, event) -> None:  # noqa: N802
@@ -2452,6 +2495,11 @@ class DesktopPetWidget(QWidget):
         self._drag_samples = [(time.monotonic(), global_pos)]
         self._vx = 0.0
         self._vy = 0.0
+        # Capture until release so fast drags outside the shaped mask still end.
+        try:
+            self.grabMouse()
+        except RuntimeError:
+            pass
 
     def _update_drag(self, global_pos: QPoint) -> bool:
         if self._drag_offset is None or self._press_global is None:
@@ -2472,7 +2520,7 @@ class DesktopPetWidget(QWidget):
             # Drag can follow a page-switch sink; raise so wallpaper patterns
             # never cover the sprite mid-gesture.
             configure_desktop_overlay(self, peek=False, raise_band=True)
-            _restack_fences_after_pet_raise()
+            _raise_pet_if_safe()
             self._sync_input_mask()
             self.update()
         now = time.monotonic()
@@ -2482,7 +2530,16 @@ class DesktopPetWidget(QWidget):
         self._move_clamped(top_left.x(), top_left.y())
         return True
 
+    def _cancel_drag_if_active(self) -> None:
+        """Drop stuck hold/press without throw — used by stuck-grab heal."""
+        if self._drag_offset is None and not self._dragging:
+            return
+        self._end_drag()
+
     def _end_drag(self) -> None:
+        # Simple click (never crossed drag threshold) must not restack the
+        # desktop band — that path froze the screen after 「摸宠物」.
+        did_drag = bool(self._dragging)
         try:
             if self._dragging:
                 vx, vy = self._drag_velocity()
@@ -2514,7 +2571,13 @@ class DesktopPetWidget(QWidget):
             self._drag_samples = []
             self.setCursor(Qt.CursorShape.OpenHandCursor)
             self._sync_input_mask()
-            _restack_fences_after_pet_raise()
+            try:
+                if QWidget.mouseGrabber() is self:
+                    self.releaseMouse()
+            except RuntimeError:
+                pass
+            if did_drag:
+                _raise_pet_if_safe()
 
     def _drag_velocity(self) -> tuple[float, float]:
         if len(self._drag_samples) < 2:

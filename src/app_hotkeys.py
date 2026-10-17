@@ -146,6 +146,9 @@ class HotkeyMixin:
                 "以下快捷键未能注册，可能被其他软件占用或格式无效：\n" + "、".join(parts),
             )
 
+        # Elevated helper: start once, keep its mapping in sync on refresh.
+        self._sync_hotkey_relay()
+
     def _sync_hotkey_input(self, action: str, key: str) -> None:
         edits = getattr(self.window, "hotkey_inputs", {})
         edit = edits.get(action)
@@ -172,20 +175,7 @@ class HotkeyMixin:
         from src.desktop_ll_keyboard import register_chord_handler
         from src.hotkey_manager import _parse_hotkey as parse_hotkey
 
-        actions = (
-            ("organize", self._do_organize),
-            ("toggle_fences", self._toggle_fences_visibility),
-            ("toggle_icons", self._toggle_icons_and_fences),
-            ("peek_fences", self._toggle_peek),
-            ("page_next", self.next_page),
-            ("page_prev", self.prev_page),
-            ("screenshot", self.screenshot_manager.start_capture),
-            ("show_screenshot", self._hotkey_show_last_screenshot),
-            ("screen_record", self.screen_record_manager.toggle_recording),
-            ("file_search", self._toggle_file_search),
-            ("calculator", self._on_calculator_requested),
-        )
-        for action, cb in actions:
+        for action, cb in self._hotkey_actions():
             key = str(hotkeys.get(action, "") or "").strip()
             if not key:
                 continue
@@ -200,6 +190,94 @@ class HotkeyMixin:
                 QTimer.singleShot(0, cb)
 
             register_chord_handler(modifiers, vk, _deferred)
+
+        # Win+D is a system chord — never RegisterHotKey it. The elevated helper
+        # only relays when FG is elevated; normal Win+D never reached our rearm
+        # and left fences/icons buried under WorkerW until a second toggle.
+        # Passthrough (return False) so the shell still gets the key.
+        from src.desktop_ll_keyboard import MOD_WIN, VK_D
+
+        def _win_d() -> bool:
+            QTimer.singleShot(0, self._on_show_desktop_relayed)
+            return False
+
+        register_chord_handler(MOD_WIN, VK_D, _win_d)
+
+    def _hotkey_actions(self) -> list[tuple[str, object]]:
+        """``(action, callback)`` pairs for every hotkey action."""
+        return [
+            ("organize", self._do_organize),
+            ("toggle_fences", self._toggle_fences_visibility),
+            ("toggle_icons", self._toggle_icons_and_fences),
+            ("peek_fences", self._toggle_peek),
+            ("page_next", self.next_page),
+            ("page_prev", self.prev_page),
+            ("screenshot", self.screenshot_manager.start_capture),
+            ("show_screenshot", self._hotkey_show_last_screenshot),
+            ("screen_record", self.screen_record_manager.toggle_recording),
+            ("file_search", self._toggle_file_search),
+            ("calculator", self._on_calculator_requested),
+        ]
+
+    def _hotkey_key_map(self) -> dict[str, str]:
+        """``{action: hotkey_string}``, mirroring ``_setup_hotkeys`` defaults."""
+        hotkeys = self.settings.get("hotkeys", {})
+        return {
+            "organize": hotkeys.get("organize", ""),
+            "toggle_fences": hotkeys.get("toggle_fences", ""),
+            "toggle_icons": hotkeys.get("toggle_icons", ""),
+            "peek_fences": hotkeys.get("peek_fences", ""),
+            "page_next": hotkeys.get("page_next", ""),
+            "page_prev": hotkeys.get("page_prev", ""),
+            "screenshot": hotkeys.get("screenshot", ""),
+            "show_screenshot": hotkeys.get("show_screenshot", ""),
+            "screen_record": hotkeys.get("screen_record", "Ctrl+Alt+3"),
+            "file_search": hotkeys.get("file_search", "Ctrl+Alt+4"),
+            "calculator": hotkeys.get("calculator", "Ctrl+Alt+C"),
+        }
+
+    def _on_relay_action(self, action: str) -> None:
+        """Dispatch a relayed hotkey action from the elevated helper."""
+        if action == "show_desktop":
+            self._on_show_desktop_relayed()
+            return
+        callback = dict(self._hotkey_actions()).get(action)
+        if callback is not None:
+            callback()
+
+    def _on_show_desktop_relayed(self) -> None:
+        """Win+D: optionally minimize elevated covers; always restore the desktop band.
+
+        Show-desktop is a shell action (FG often stays on the desktop surface, so
+        the FG monitor stays silent). The LL Win+D chord is the reliable signal;
+        band visibility is restored through one owner —
+        ``_schedule_desktop_band_restore``.
+        """
+        try:
+            from src.win_shell import minimize_fullscreen_cover
+
+            minimize_fullscreen_cover()
+        except Exception:
+            pass
+        self._schedule_desktop_band_restore(delay_ms=300, settle_attempts=12)
+
+    def _sync_hotkey_relay(self) -> None:
+        """Start the elevated helper once, then keep its mapping in sync."""
+        mapping = self._hotkey_key_map()
+        relay = getattr(self, "_hotkey_relay", None)
+        if relay is not None:
+            relay.update_mapping(mapping)
+            return
+        try:
+            from src.hotkey_relay import HotkeyRelay
+
+            relay = HotkeyRelay()
+            if relay.start(mapping, self._on_relay_action):
+                self._hotkey_relay = relay
+        except Exception:
+            from src.app_logging import get_logger
+
+            get_logger().exception("startup: hotkey relay/helper failed")
 
     def _notify_user(self, text: str) -> None:
         tray = getattr(self, "tray", None)

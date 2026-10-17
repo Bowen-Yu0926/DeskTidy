@@ -137,6 +137,27 @@ def set_overlay_mouse_passthrough(widget, passthrough: bool) -> None:
     except Exception:
         return
 
+
+def overlay_mouse_passthrough(widget) -> bool:
+    """True when the overlay HWND still carries ``WS_EX_TRANSPARENT``.
+
+    Native-only probe (no Qt attribute), so a health guard can tell a genuine
+    stuck click-through bit from a widget that merely has the Qt attribute.
+    """
+    try:
+        hwnd = int(widget.winId()) if widget.winId() else 0
+    except Exception:
+        return False
+    if not hwnd:
+        return False
+    try:
+        import win32gui
+
+        ex = int(win32gui.GetWindowLong(hwnd, GWL_EXSTYLE))
+    except Exception:
+        return False
+    return bool(ex & WS_EX_TRANSPARENT)
+
 SHCNE_RENAMEITEM = 0x00000001
 SHCNE_ASSOCCHANGED = 0x08000000
 SHCNE_UPDATEDIR = 0x00001000
@@ -498,6 +519,205 @@ def is_explorer_desktop_foreground() -> bool:
     except OSError:
         pass
     return False
+
+
+class _MONITORINFO(ctypes.Structure):
+    _fields_ = [
+        ("cbSize", wintypes.DWORD),
+        ("rcMonitor", wintypes.RECT),
+        ("rcWork", wintypes.RECT),
+        ("dwFlags", wintypes.DWORD),
+    ]
+
+
+_MONITOR_DEFAULTTONEAREST = 2
+_SW_MINIMIZE = 6
+_WM_SYSCOMMAND = 0x0112
+_SC_MINIMIZE = 0xF020
+
+
+def foreground_fullscreen_hwnd() -> int:
+    """Return the FG HWND when it is a *fullscreen* foreign app window, else 0.
+
+    A fullscreen window covers its monitor's full ``rcMonitor``; a normally
+    maximized window is bounded by the work area (taskbar excluded) and returns
+    0. Excludes our own overlays, the Explorer desktop, taskbar and shell menus.
+    """
+    try:
+        hwnd = int(user32.GetForegroundWindow() or 0)
+    except Exception:
+        return 0
+    if not hwnd or hwnd == user32.GetDesktopWindow():
+        return 0
+    if _is_own_tool_window(hwnd):
+        return 0
+    try:
+        if hwnd_is_desktop_shell_menu(hwnd) or _hwnd_is_shell_taskbar(hwnd):
+            return 0
+        if is_explorer_desktop_foreground():
+            return 0
+        if win32gui.GetClassName(hwnd) in _SHELL_MENU_FG_CLASSES:
+            return 0
+    except Exception:
+        pass
+    try:
+        style = int(user32.GetWindowLongW(hwnd, -16))  # GWL_STYLE
+        if style & 0x40000000:  # WS_CHILD
+            return 0
+    except Exception:
+        return 0
+    try:
+        left, top, right, bottom = win32gui.GetWindowRect(hwnd)
+    except OSError:
+        return 0
+    if right <= left or bottom <= top:
+        return 0
+    try:
+        monitor = user32.MonitorFromWindow(hwnd, _MONITOR_DEFAULTTONEAREST)
+        info = _MONITORINFO()
+        info.cbSize = ctypes.sizeof(_MONITORINFO)
+        if not user32.GetMonitorInfoW(monitor, ctypes.byref(info)):
+            return 0
+    except Exception:
+        return 0
+    rc = info.rcMonitor
+    tol = 2
+    if (
+        left <= rc.left + tol
+        and top <= rc.top + tol
+        and right >= rc.right - tol
+        and bottom >= rc.bottom - tol
+    ):
+        return hwnd
+    return 0
+
+
+def _window_pid(hwnd: int) -> int:
+    pid = wintypes.DWORD(0)
+    try:
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+    except Exception:
+        return 0
+    return int(pid.value)
+
+
+def _monitor_rc(hwnd: int):
+    """``rcMonitor`` of the monitor ``hwnd`` is on (physical px), or None."""
+    try:
+        monitor = user32.MonitorFromWindow(hwnd, _MONITOR_DEFAULTTONEAREST)
+        info = _MONITORINFO()
+        info.cbSize = ctypes.sizeof(_MONITORINFO)
+        if not user32.GetMonitorInfoW(monitor, ctypes.byref(info)):
+            return None
+    except Exception:
+        return None
+    return info.rcMonitor
+
+
+def _covers_rect(left, top, right, bottom, rc, tol: int = 2) -> bool:
+    return (
+        right > left
+        and bottom > top
+        and left <= rc.left + tol
+        and top <= rc.top + tol
+        and right >= rc.right - tol
+        and bottom >= rc.bottom - tol
+    )
+
+
+# Never treat these as a covering app: shell surfaces and the IME/UWP input host.
+_FULLSCREEN_SKIP_CLASSES = frozenset(
+    {
+        "Progman",
+        "WorkerW",
+        "SHELLDLL_DefView",
+        "SysListView32",
+        "Shell_TrayWnd",
+        "Shell_SecondaryTrayWnd",
+        "Windows.UI.Core.CoreWindow",
+        "ApplicationManager_DesktopShellWindow",
+    }
+)
+
+
+def desktop_cover_fullscreen_hwnd() -> int:
+    """Topmost visible fullscreen app window covering the active monitor, else 0.
+
+    Complements :func:`foreground_fullscreen_hwnd` for the case where a
+    borderless fullscreen app is painted on top while some *other* window holds
+    the nominal foreground (so ``GetForegroundWindow`` misses it). Enumerates in
+    z-order (top-first) and returns the first covering, non-shell, non-tool
+    window on the foreground window's monitor.
+    """
+    try:
+        fg = int(user32.GetForegroundWindow() or 0)
+    except Exception:
+        fg = 0
+    rc = _monitor_rc(fg) if fg else None
+    if rc is None:
+        rc = _monitor_rc(user32.GetDesktopWindow())
+    if rc is None:
+        return 0
+    own = os.getpid()
+    found = [0]
+
+    def _cb(hwnd, _lparam):
+        try:
+            if not user32.IsWindowVisible(hwnd) or user32.IsIconic(hwnd):
+                return True
+            if _window_pid(hwnd) == own or _is_own_tool_window(hwnd):
+                return True
+            cls = win32gui.GetClassName(hwnd)
+            if cls in _FULLSCREEN_SKIP_CLASSES:
+                return True
+            if int(user32.GetWindowLongW(hwnd, GWL_EXSTYLE)) & WS_EX_TOOLWINDOW:
+                return True
+            left, top, right, bottom = win32gui.GetWindowRect(hwnd)
+        except Exception:
+            return True
+        if _covers_rect(left, top, right, bottom, rc):
+            found[0] = int(hwnd)
+            return False
+        return True
+
+    try:
+        win32gui.EnumWindows(_cb, None)
+    except Exception:
+        return found[0]
+    return found[0]
+
+
+def minimize_fullscreen_cover() -> bool:
+    """Minimize the fullscreen app covering the desktop (reveal the desktop).
+
+    Hotkey page switch runs while a fullscreen app covers the desktop — the
+    desktop layer (fences) then stays buried under it and the page flip looks
+    like nothing but the partitions rising. Minimizing reveals the desktop so the
+    switch is visible. Returns True when a fullscreen window was minimized.
+
+    Prefers the foreground fullscreen window; falls back to the topmost
+    fullscreen cover (a borderless game painted on top can leave another window
+    holding the nominal foreground).
+
+    Uses ``WM_SYSCOMMAND``/``SC_MINIMIZE`` rather than ``ShowWindow``: borderless
+    fullscreen games (Unity ``WS_POPUP`` windows, e.g. Hearthstone) re-assert
+    themselves against ``ShowWindow(SW_MINIMIZE)`` but honour the minimize
+    system command.
+    """
+    hwnd = foreground_fullscreen_hwnd() or desktop_cover_fullscreen_hwnd()
+    if not hwnd:
+        return False
+    try:
+        if user32.IsIconic(hwnd):
+            return False
+        user32.PostMessageW(hwnd, _WM_SYSCOMMAND, _SC_MINIMIZE, 0)
+        return True
+    except Exception:
+        try:
+            user32.ShowWindow(hwnd, _SW_MINIMIZE)
+            return True
+        except Exception:
+            return False
 
 
 # Foreground-only: slightly broader (Win11 modern menu hosts).

@@ -771,6 +771,27 @@ def main() -> None:
     assert "_recycle_paths_now" in mod_src
     assert "raise_pet_above_fences_in_band" in mod_src
     assert "_restack_fences_after_pet_raise" in mod_src
+    # Pet click/drag must not HWND_BOTTOM-seat the whole band (froze desktop).
+    restack_src = inspect.getsource(pet_mod._restack_fences_after_pet_raise)
+    restack_body = restack_src.split('"""', 2)[-1]
+    assert "ensure_live_fences_interactive" not in restack_body
+    assert "_ensure_public_host_mouse_opaque" in restack_body
+    end_drag_src = inspect.getsource(DesktopPetWidget._end_drag)
+    assert "did_drag" in end_drag_src
+    assert "if did_drag:" in end_drag_src
+    assert "_raise_pet_if_safe" in end_drag_src
+    assert "releaseMouse" in end_drag_src
+    begin_drag_src = inspect.getsource(DesktopPetWidget._begin_drag)
+    assert "grabMouse" in begin_drag_src
+    move_src = inspect.getsource(DesktopPetWidget.mouseMoveEvent)
+    assert "LeftButton" in move_src
+    assert "_end_drag" in move_src
+    assert callable(DesktopPetWidget._cancel_drag_if_active)
+    release_grabs = inspect.getsource(DeskTidyApp._release_stuck_grabs)
+    assert "_cancel_drag_if_active" in release_grabs
+    drag_src = inspect.getsource(DesktopPetWidget._update_drag)
+    assert "_restack_fences_after_pet_raise" not in drag_src
+    assert "_raise_pet_if_safe" in drag_src
     recycle_src = inspect.getsource(DesktopPetWidget._recycle_paths_now)
     assert "clear_organize_suppress" in recycle_src
     start_trash = inspect.getsource(DesktopPetWidget._start_file_trash)

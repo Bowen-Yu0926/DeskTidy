@@ -326,29 +326,13 @@ class PageSwitchMixin:
             # Still sink the public plate under live fences/pet — skip_raise only
             # means "do not HWND_TOP the band over foreign apps", not "leave the
             # full-desktop host above sibling overlays so it steals their clicks".
+            # Do not HWND_BOTTOM-seat or band-raise here. Pet clicks, public
+            # refresh, and keepalive all call this; that z-order storm froze the
+            # desktop until a display change. Page-switch restore and fullscreen
+            # reveal own the seat + in-band raise.
             self._sink_public_host_below_overlays(
                 first_fence_hwnd, pet_hwnd=pet_hwnd
             )
-            # Foreign app FG: keep fences/pet under SoftMgr — never HWND_TOP.
-            if self._foreign_app_owns_foreground():
-                self._seat_live_overlays_under_apps()
-                return
-            # Own chrome FG (pet chips): seat under other open apps, then raise
-            # pet above sibling fences only (hair clearance).
-            self._seat_live_overlays_under_apps()
-            if pet_hwnd:
-                try:
-                    from src.desktop_shell_host import raise_overlay_in_desktop_band
-
-                    raise_overlay_in_desktop_band(int(pet_hwnd))
-                except Exception:
-                    pass
-            nudge = getattr(pet, "_nudge_clear_of_fence_bottoms", None) if pet else None
-            if callable(nudge):
-                try:
-                    nudge()
-                except Exception:
-                    pass
             return
 
         from src.desktop_shell_host import (
@@ -521,6 +505,48 @@ class PageSwitchMixin:
             except Exception:
                 pass
 
+    def _raise_live_overlays_above_defview(self) -> None:
+        """After HWND_BOTTOM seat, lift live fences/pet above DefView in-band.
+
+        Hotkey切页 usually runs under foreign FG (Cursor / VS Code). Seat alone
+        can bury fences under wallpaper so icons vanish; ``raise_overlay_in_desktop_band``
+        (NOOWNERZORDER) restores visible pixels while SoftMgr/WeChat stay above.
+        """
+        from src.desktop_shell_host import raise_overlay_in_desktop_band
+        from src.win_shell import set_overlay_mouse_passthrough
+
+        first_fence_hwnd = 0
+        for fence in list(getattr(self, "fences", None) or ()):
+            try:
+                if bool(getattr(fence, "_desktidy_soft_parked", False)):
+                    continue
+                set_overlay_mouse_passthrough(fence, False)
+                hwnd = self._fence_hwnd(fence)
+                if not hwnd:
+                    continue
+                raise_overlay_in_desktop_band(int(hwnd))
+                if not first_fence_hwnd:
+                    first_fence_hwnd = int(hwnd)
+            except RuntimeError:
+                continue
+        pet_hwnd = 0
+        pet = getattr(self, "pet_widget", None)
+        if pet is not None:
+            try:
+                if pet.isVisible():
+                    pet_hwnd = int(pet.winId()) if pet.winId() else 0
+                    if pet_hwnd:
+                        raise_overlay_in_desktop_band(int(pet_hwnd))
+            except (RuntimeError, Exception):
+                pet_hwnd = 0
+        self._sink_public_host_below_overlays(first_fence_hwnd, pet_hwnd=pet_hwnd)
+        nudge = getattr(pet, "_nudge_clear_of_fence_bottoms", None) if pet else None
+        if callable(nudge):
+            try:
+                nudge()
+            except Exception:
+                pass
+
     def _restore_arriving_fences_interactive(self) -> None:
         """After A↔B batch: arriving fences must take clicks immediately.
 
@@ -546,22 +572,26 @@ class PageSwitchMixin:
             except RuntimeError:
                 continue
 
-        # Seat under open apps *before* any HWND_TOP raise — otherwise 切页
+        # Seat under open apps *before* any in-band raise — otherwise 切页
         # leaves 文档 covering SoftMgr / VS Code until the user Alt+Tabs.
         self._seat_live_overlays_under_apps()
         if self._foreign_app_owns_foreground():
-            # Opaque so icons still work once the app yields; stay under FG.
-            for fence in list(getattr(self, "fences", None) or ()):
-                try:
-                    if bool(getattr(fence, "_desktidy_soft_parked", False)):
-                        continue
-                    set_overlay_mouse_passthrough(fence, False)
-                except RuntimeError:
-                    continue
+            # Sink may HWND_BOTTOM again; band-raise last so icons stay above DefView.
             self._sink_overlays_for_foreign_app()
+            self._raise_live_overlays_above_defview()
             return
 
         self.ensure_live_fences_interactive()
+        # Explorer FG already band-raised inside ensure_live. Own-chrome FG
+        # (pet / settings) skips that raise — lift once so icons stay above DefView.
+        try:
+            from src.win_shell import is_explorer_desktop_foreground
+
+            if is_explorer_desktop_foreground():
+                return
+        except Exception:
+            pass
+        self._raise_live_overlays_above_defview()
 
     def _yield_page_switch_ui(self) -> None:
         """Pump the event loop so fence clicks work while icon grids fill."""
@@ -631,8 +661,17 @@ class PageSwitchMixin:
                         fence._refresh_impl()
                         fence.flush_icon_grid_paint()
                         did_heavy = True
-                    # Warmed parked grids already painted off-screen — ensure/finish
-                    # runs update() + processEvents for post-batch client paint.
+                    else:
+                        # Warmed grids: still flush client paint after batch SHOW.
+                        # Hotkey切页 often leaves the cursor off the fence so expose
+                        # paint never runs and icons stay blank until a hover.
+                        try:
+                            fence.flush_icon_grid_paint()
+                        except Exception:
+                            try:
+                                fence.update()
+                            except RuntimeError:
+                                pass
                     if did_heavy:
                         self._yield_page_switch_ui()
                 except RuntimeError:
@@ -933,6 +972,486 @@ class PageSwitchMixin:
         self._page_nav_hotkey_gate_until = now + 0.35
         return True
 
+    def _restore_desktop_band_overlays(self, *, attempt: int = 0) -> None:
+        """Invariant: live DefView-band overlays are mapped, opaque, above DefView.
+
+        Sole owner of post-Win+D / post-reveal / desktop-FG band repair. Callers
+        schedule via ``_schedule_desktop_band_restore`` — they must not reimplement
+        remap / seat / raise. Explorer may re-bury overlays a few seconds after
+        show-desktop; settle ticks re-run this same function.
+        """
+        if getattr(self, "_exiting", False) or getattr(self, "_icons_hidden", False):
+            return
+        from src.app_logging import get_logger
+
+        logger = get_logger()
+        t0 = time.perf_counter()
+        for name in (
+            "_release_stuck_grabs",
+            "_ensure_public_host_mouse_opaque",
+            "_refresh_public_host_click_mask",
+            "_remap_hidden_overlay_hwnds",
+        ):
+            fn = getattr(self, name, None)
+            if not callable(fn):
+                continue
+            try:
+                fn()
+            except Exception:
+                pass
+        try:
+            ensure_vis = getattr(self, "_ensure_desktop_overlays_visible", None)
+            if callable(ensure_vis):
+                ensure_vis(force=True)
+        except Exception:
+            logger.exception("desktop-band restore ensure visible failed")
+        try:
+            needs = getattr(self, "_overlays_need_shell_repair_light", None)
+            attach = getattr(self, "_ensure_shell_attachments", None)
+            if callable(needs) and callable(attach) and needs():
+                attach(force=True)
+        except Exception:
+            logger.exception("desktop-band restore attach failed")
+        try:
+            self.ensure_live_fences_interactive()
+        except Exception:
+            logger.exception("desktop-band restore ensure_live failed")
+        # ensure_live only HWND_TOP on Explorer FG. Win+D often lands on the
+        # taskbar — seat once, then always band-raise above DefView.
+        try:
+            from src.win_shell import is_explorer_desktop_foreground
+
+            explorer_fg = bool(is_explorer_desktop_foreground())
+        except Exception:
+            explorer_fg = False
+        if not explorer_fg and attempt == 0:
+            try:
+                self._seat_live_overlays_under_apps()
+            except Exception:
+                pass
+        try:
+            self._raise_live_overlays_above_defview()
+        except Exception:
+            logger.exception("desktop-band restore raise failed")
+        total = (time.perf_counter() - t0) * 1000.0
+        if attempt == 0:
+            logger.info("desktop-band restore attempt=0 total=%.0fms", total)
+        elif attempt % 5 == 0:
+            logger.info("desktop-band restore settling attempt=%s", attempt)
+
+    def _schedule_desktop_band_restore(
+        self, *, delay_ms: int = 300, settle_attempts: int = 12
+    ) -> None:
+        """Coalesce Win+D / reveal / FG recover into one settle chain."""
+        left = max(int(getattr(self, "_band_restore_settle_left", 0)), int(settle_attempts))
+        self._band_restore_settle_left = left
+        timer = getattr(self, "_band_restore_timer", None)
+        if timer is None:
+            # Late init if called before DeskTidyApp finished constructing.
+            self._band_restore_timer = QTimer()
+            self._band_restore_timer.setSingleShot(True)
+            self._band_restore_timer.timeout.connect(self._run_desktop_band_restore_tick)
+            timer = self._band_restore_timer
+        if timer.isActive():
+            return
+        self._band_restore_attempt = 0
+        timer.start(max(0, int(delay_ms)))
+
+    def _run_desktop_band_restore_tick(self) -> None:
+        attempt = int(getattr(self, "_band_restore_attempt", 0))
+        self._restore_desktop_band_overlays(attempt=attempt)
+        left = int(getattr(self, "_band_restore_settle_left", 0))
+        if left <= 0:
+            self._band_restore_attempt = 0
+            return
+        self._band_restore_settle_left = left - 1
+        self._band_restore_attempt = attempt + 1
+        timer = getattr(self, "_band_restore_timer", None)
+        if timer is not None:
+            timer.start(500)
+
+    def _reveal_desktop_for_page_nav(self) -> None:
+        """Hotkey切页 under a fullscreen cover: minimize it, then restore the band.
+
+        Minimizing reveals the desktop so the page flip is visible. Band repair
+        is owned by ``_schedule_desktop_band_restore`` (not duplicated here).
+        """
+        minimized = False
+        try:
+            import ctypes
+
+            import win32gui
+
+            from src.app_logging import get_logger
+            from src.win_shell import (
+                desktop_cover_fullscreen_hwnd,
+                foreground_fullscreen_hwnd,
+                minimize_fullscreen_cover,
+            )
+
+            fg = int(ctypes.windll.user32.GetForegroundWindow() or 0)
+            try:
+                cls = win32gui.GetClassName(fg) if fg else ""
+                rect = win32gui.GetWindowRect(fg) if fg else None
+            except OSError:
+                cls, rect = "", None
+            cover = desktop_cover_fullscreen_hwnd()
+            ok = minimize_fullscreen_cover()
+            minimized = bool(ok)
+            get_logger().info(
+                "page-nav reveal fg=%s cls=%s rect=%s fg_fs=%s cover=%s minimized=%s",
+                hex(fg),
+                cls,
+                rect,
+                foreground_fullscreen_hwnd(),
+                cover,
+                ok,
+            )
+        except Exception as exc:
+            from src.app_logging import get_logger
+
+            get_logger().error("page-nav reveal failed: %s", exc)
+        if minimized:
+            self._schedule_desktop_band_restore(delay_ms=350, settle_attempts=12)
+
+    def _rearm_fences_after_reveal(self, attempt: int = 0) -> None:
+        """Back-compat alias — prefer ``_schedule_desktop_band_restore``."""
+        if attempt == 0:
+            self._schedule_desktop_band_restore(delay_ms=0, settle_attempts=12)
+            return
+        self._restore_desktop_band_overlays(attempt=attempt)
+
+    def _click_trace_enabled(self) -> bool:
+        """Opt-in LL/input diagnostics — never default-on (hook-path I/O freezes input)."""
+        import os
+
+        return os.environ.get("DESKTIDY_CLICK_TRACE", "").strip().lower() in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        )
+
+    def _install_click_logger(self) -> None:
+        """Opt-in: log every global LL mouse button event with its target window.
+
+        Enable with ``DESKTIDY_CLICK_TRACE=1``. Default off — ``WindowFromPoint`` +
+        sync file logging inside ``WH_MOUSE_LL`` (same GUI thread) can starve
+        mouse input machine-wide and itself look like a "frozen screen".
+        """
+        if not self._click_trace_enabled():
+            return
+        if getattr(self, "_click_logger_on", False):
+            return
+        self._click_logger_on = True
+        from src.app_logging import get_logger
+        from src.desktop_ll_mouse import MSLLHOOKSTRUCT, register_ll_mouse_handler
+
+        logger = get_logger()
+
+        def _log(w_param: int, l_param: int) -> bool:
+            try:
+                import win32gui
+
+                ms = MSLLHOOKSTRUCT.from_address(int(l_param))
+                x, y = int(ms.pt.x), int(ms.pt.y)
+                hwnd = int(win32gui.WindowFromPoint((x, y)) or 0)
+                cls = win32gui.GetClassName(hwnd) if hwnd else ""
+                pid = win32gui.GetWindowThreadProcessId(hwnd)[1] if hwnd else 0
+                root = int(win32gui.GetAncestor(hwnd, 2)) if hwnd else 0
+                logger.info(
+                    "ll click wp=%#06x pt=(%d,%d) under=%s pid=%s root=%s",
+                    int(w_param),
+                    x,
+                    y,
+                    cls,
+                    pid,
+                    win32gui.GetClassName(root) if root else "",
+                )
+            except Exception:
+                pass
+            return False
+
+        register_ll_mouse_handler(_log)
+        logger.info("ll click logger installed")
+
+    def _start_gui_stall_watchdog(self) -> None:
+        """Worker thread that flags when the GUI thread stops ticking.
+
+        ``_click_health_tick`` refreshes ``_gui_last_tick`` every 700 ms on the
+        GUI thread; if that stops for > 2 s the GUI thread is stalled (blocking
+        I/O or a long synchronous job) — which, because this process also owns a
+        global WH_MOUSE_LL hook on that thread, freezes mouse input machine-wide.
+        """
+        if getattr(self, "_gui_watchdog_started", False):
+            return
+        self._gui_watchdog_started = True
+        self._gui_last_tick = time.perf_counter()
+        self._gui_stall_logged_at = 0.0
+
+        def _watch() -> None:
+            while True:
+                time.sleep(1.0)
+                try:
+                    last = float(getattr(self, "_gui_last_tick", 0.0))
+                    now = time.perf_counter()
+                    stall = now - last
+                    if (
+                        stall > 2.0
+                        and now - float(getattr(self, "_gui_stall_logged_at", 0.0)) > 2.0
+                    ):
+                        self._gui_stall_logged_at = now
+                        from src.app_logging import get_logger
+
+                        logger = get_logger()
+                        logger.warning("GUI thread stalled %.1fs", stall)
+                        try:
+                            import sys
+                            import threading as _th
+                            import traceback as _tb
+
+                            main = _th.main_thread()
+                            frame = sys._current_frames().get(main.ident)
+                            if frame is not None:
+                                logger.warning(
+                                    "main thread stack:\n%s",
+                                    "".join(_tb.format_stack(frame)),
+                                )
+                        except Exception as exc:
+                            logger.warning("stack dump failed: %s", exc)
+                except Exception:
+                    pass
+
+        import threading
+
+        threading.Thread(target=_watch, daemon=True, name="gui-stall-watch").start()
+
+    def _log_input_signature(self) -> None:
+        """Opt-in diagnostic: log the app's input state whenever it changes.
+
+        Enable with ``DESKTIDY_CLICK_TRACE=1``. External probes only see native
+        hit-testing; this dumps the Qt-side view (grabbers, modal/popup, and
+        which widget Qt believes sits under each fence centre).
+        """
+        if not self._click_trace_enabled():
+            return
+        from PyQt6.QtWidgets import QApplication, QWidget
+
+        from src.app_logging import get_logger
+
+        logger = get_logger()
+        if not getattr(self, "_click_health_alive", False):
+            self._click_health_alive = True
+            logger.info("click health guard alive")
+        try:
+            app = self.qt_app
+            grab = QWidget.mouseGrabber()
+            kgrab = QWidget.keyboardGrabber()
+            modal = app.activeModalWidget() if app is not None else None
+            popup = app.activePopupWidget() if app is not None else None
+            probes = []
+            for fence in list(getattr(self, "fences", None) or ()):
+                try:
+                    center = fence.frameGeometry().center()
+                    top = QApplication.topLevelAt(center)
+                    under = QApplication.widgetAt(center)
+                    try:
+                        hwnd = int(fence.winId()) if fence.winId() else 0
+                    except Exception:
+                        hwnd = 0
+                    style = exst = 0
+                    if hwnd:
+                        import win32gui
+
+                        style = int(win32gui.GetWindowLong(hwnd, -16)) & 0xFFFFFFFF
+                        exst = int(win32gui.GetWindowLong(hwnd, -20)) & 0xFFFFFFFF
+                    probes.append(
+                        f"hw={hwnd:#x}"
+                        f" top={type(top).__name__ if top is not None else 'None'}"
+                        f" at={type(under).__name__ if under is not None else 'None'}"
+                        f" dis={1 if style & 0x08000000 else 0}"
+                        f" tra={1 if exst & 0x20 else 0}"
+                        f" {'vis' if fence.isVisible() else 'hid'}"
+                        f" en={1 if fence.isEnabled() else 0}"
+                    )
+                except Exception:
+                    probes.append("dead")
+            try:
+                from src.desktop_ll_mouse import (
+                    ll_mouse_hook_active,
+                    subscriber_count,
+                )
+
+                hook_on = bool(ll_mouse_hook_active())
+                subs = int(subscriber_count())
+            except Exception:
+                hook_on = None
+                subs = None
+            sig = (
+                type(grab).__name__ if grab is not None else "None",
+                type(kgrab).__name__ if kgrab is not None else "None",
+                repr(QApplication.mouseButtons()),
+                type(modal).__name__ if modal is not None else "None",
+                type(popup).__name__ if popup is not None else "None",
+                tuple(probes),
+                bool(getattr(self, "_overlay_drag_active", False)),
+                bool(getattr(self, "_icons_hidden", False)),
+                time.perf_counter()
+                < float(getattr(self, "_page_switch_quiet_until", 0.0)),
+                hook_on,
+                subs,
+            )
+            if sig != getattr(self, "_input_sig", None):
+                self._input_sig = sig
+                logger.info("input signature %s", sig)
+        except Exception:
+            logger.exception("input signature probe failed")
+
+    def _click_health_tick(self) -> None:
+        """Heal the "desktop clicks frozen" states that never self-recover.
+
+        Two documented causes, both silent and both terminal until a restart:
+        an interrupted marquee leaves an orphaned ``grabMouse`` that swallows
+        every click, and a soft-park / foreign-FG experiment can leave
+        ``WS_EX_TRANSPARENT`` on the shared public-icon host (which every public
+        float shares) or on an arriving fence. The repair that owns this lives
+        on the desktop-foreground path and bails unless Explorer owns FG, so a
+        reveal onto the taskbar leaves the band dead. Guard runs at 700 ms and
+        is debounced, so the ~0.3 s OLE-handoff window is never touched.
+
+        Orphan grabs heal even during page-switch quiet (soft-park needs
+        passthrough, not grabs). Passthrough heal still waits out quiet / OLE.
+        """
+        self._gui_last_tick = time.perf_counter()
+        self._start_gui_stall_watchdog()
+        self._install_click_logger()
+        self._log_input_signature()
+        if getattr(self, "_exiting", False):
+            return
+
+        from PyQt6.QtWidgets import QApplication, QWidget
+
+        from src.app_logging import get_logger
+        from src.win_shell import (
+            overlay_mouse_passthrough,
+            overlay_win32_visible,
+            set_overlay_mouse_passthrough,
+        )
+
+        logger = get_logger()
+        no_buttons = QApplication.mouseButtons() == Qt.MouseButton.NoButton
+        dragging = bool(getattr(self, "_overlay_drag_active", False))
+
+        # 1. A grab held with no button down for ~1.4 s is orphaned.
+        # Safe during page-switch quiet; skip only while an OLE/drag owns input.
+        if not dragging:
+            try:
+                grabber = QWidget.mouseGrabber()
+            except Exception:
+                grabber = None
+            if grabber is not None and no_buttons:
+                self._stuck_grab_ticks = int(getattr(self, "_stuck_grab_ticks", 0)) + 1
+            else:
+                self._stuck_grab_ticks = 0
+            if grabber is not None and int(getattr(self, "_stuck_grab_ticks", 0)) >= 2:
+                self._stuck_grab_ticks = 0
+                try:
+                    grabber.releaseMouse()
+                    logger.warning("click health: released orphaned mouse grab")
+                except Exception:
+                    pass
+            try:
+                import ctypes
+
+                if no_buttons and ctypes.windll.user32.GetCapture():
+                    ctypes.windll.user32.ReleaseCapture()
+                    logger.warning("click health: released stray SetCapture")
+            except Exception:
+                pass
+
+        if dragging:
+            return
+        if time.perf_counter() < float(getattr(self, "_page_switch_quiet_until", 0.0)):
+            return
+
+        # 2. Stuck click-through on the shared host / on a live fence.
+        host = getattr(self, "_public_icon_host", None)
+        if host is not None and overlay_mouse_passthrough(host):
+            self._stuck_host_passthrough_ticks = (
+                int(getattr(self, "_stuck_host_passthrough_ticks", 0)) + 1
+            )
+        else:
+            self._stuck_host_passthrough_ticks = 0
+        if int(getattr(self, "_stuck_host_passthrough_ticks", 0)) >= 2:
+            self._stuck_host_passthrough_ticks = 0
+            self._ensure_public_host_mouse_opaque()
+            logger.warning("click health: cleared public host passthrough")
+
+        stuck = False
+        fences = []
+        for fence in list(getattr(self, "fences", None) or ()):
+            try:
+                if bool(getattr(fence, "_desktidy_soft_parked", False)):
+                    continue
+                if not overlay_win32_visible(fence):
+                    continue
+                if overlay_mouse_passthrough(fence):
+                    stuck = True
+                    fences.append(fence)
+            except (RuntimeError, Exception):
+                continue
+        if stuck:
+            self._stuck_fence_passthrough_ticks = (
+                int(getattr(self, "_stuck_fence_passthrough_ticks", 0)) + 1
+            )
+        else:
+            self._stuck_fence_passthrough_ticks = 0
+        if int(getattr(self, "_stuck_fence_passthrough_ticks", 0)) >= 2:
+            self._stuck_fence_passthrough_ticks = 0
+            for fence in fences:
+                try:
+                    set_overlay_mouse_passthrough(fence, False)
+                except Exception:
+                    continue
+            logger.warning(
+                "click health: cleared fence passthrough count=%s", len(fences)
+            )
+
+        # 3. A native WS_DISABLED window stays hit-testable but is click-deaf.
+        disabled = []
+        candidates = list(getattr(self, "fences", None) or ())
+        if host is not None:
+            candidates.append(host)
+        for widget in candidates:
+            try:
+                if bool(getattr(widget, "_desktidy_soft_parked", False)):
+                    continue
+                if not overlay_win32_visible(widget):
+                    continue
+                import win32gui
+
+                if not win32gui.IsWindowEnabled(int(widget.winId())):
+                    disabled.append(widget)
+            except (RuntimeError, Exception):
+                continue
+        if disabled:
+            self._disabled_fence_ticks = int(getattr(self, "_disabled_fence_ticks", 0)) + 1
+        else:
+            self._disabled_fence_ticks = 0
+        if int(getattr(self, "_disabled_fence_ticks", 0)) >= 2:
+            self._disabled_fence_ticks = 0
+            import win32gui
+
+            for widget in disabled:
+                try:
+                    win32gui.EnableWindow(int(widget.winId()), True)
+                    widget.setEnabled(True)
+                except Exception:
+                    continue
+            logger.warning(
+                "click health: re-enabled click-deaf windows count=%s", len(disabled)
+            )
+
     def next_page(self) -> None:
         if not self._page_nav_hotkey_gate():
             return
@@ -946,6 +1465,7 @@ class PageSwitchMixin:
             next_id = ids[(idx + 1) % len(ids)]
         except ValueError:
             next_id = ids[0]
+        self._reveal_desktop_for_page_nav()
         self.switch_page(next_id)
 
     def prev_page(self) -> None:
@@ -961,6 +1481,7 @@ class PageSwitchMixin:
             prev_id = ids[(idx - 1) % len(ids)]
         except ValueError:
             prev_id = ids[0]
+        self._reveal_desktop_for_page_nav()
         self.switch_page(prev_id)
 
     def _on_page_create_fence_requested(self, page_id: int) -> None:

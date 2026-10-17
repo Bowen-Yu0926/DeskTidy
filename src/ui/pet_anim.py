@@ -717,16 +717,34 @@ def _opaque_bbox(pix: QPixmap) -> QRect:
         return QRect()
     min_x, min_y, max_x, max_y = w, h, -1, -1
     try:
-        import numpy as np
-
+        # Fast path without numpy: scan the raw ARGB32 buffer. On little-endian
+        # ARGB32 lays out B,G,R,A per pixel (alpha at byte 3); ``bytes.translate``
+        # thresholds a whole row in C, so each row is one slice + find/rfind
+        # instead of w*h Python pixel() round-trips (which stalled the GUI thread
+        # for seconds on 1024×2048 sheets during pet warm-up).
+        raw = bytes(img.constBits().asarray(img.sizeInBytes()))
         row_bytes = int(img.bytesPerLine())
-        buf = np.frombuffer(img.constBits().asarray(img.sizeInBytes()), dtype=np.uint8)
-        alpha = buf.reshape(h, row_bytes)[:, 3 : w * 4 : 4]
-        ys, xs = np.where(alpha > 24)
-        if len(xs):
-            min_x, max_x = int(xs.min()), int(xs.max())
-            min_y, max_y = int(ys.min()), int(ys.max())
+        table = bytes(1 if i > 24 else 0 for i in range(256))
+        px4 = w * 4
+        for y in range(h):
+            row = raw[y * row_bytes : y * row_bytes + px4]
+            if len(row) < px4:
+                break
+            flagged = row[3::4].translate(table)
+            first = flagged.find(b"\x01")
+            if first < 0:
+                continue
+            if y < min_y:
+                min_y = y
+            if y > max_y:
+                max_y = y
+            if first < min_x:
+                min_x = first
+            last = flagged.rfind(b"\x01")
+            if last > max_x:
+                max_x = last
     except Exception:
+        # Last-resort correctness fallback (per-pixel) — slow but safe.
         for y in range(h):
             for x in range(w):
                 if (img.pixel(x, y) >> 24) & 0xFF > 24:

@@ -36,6 +36,7 @@ VK_LMENU = 0xA4
 VK_RMENU = 0xA5
 VK_A = 0x41
 VK_C = 0x43
+VK_D = 0x44
 VK_V = 0x56
 VK_X = 0x58
 VK_DELETE = 0x2E
@@ -53,6 +54,7 @@ _proc = None
 _ctrl_vks_down: set[int] = set()
 _shift_vks_down: set[int] = set()
 _alt_vks_down: set[int] = set()
+_win_vks_down: set[int] = set()
 # After Ctrl up, keep a brief chord grace so a racing C KEYDOWN still counts
 # (short tap: Ctrl↑ and C↓ can reorder by a few ms in the LL stream).
 _ctrl_chord_grace_until = 0.0
@@ -68,6 +70,7 @@ MOD_SHIFT = 0x0004
 MOD_WIN = 0x0008
 _VK_LWIN = 0x5B
 _VK_RWIN = 0x5C
+_WIN_VKS = frozenset({_VK_LWIN, _VK_RWIN})
 
 _CHORD_GATE_S = 0.35
 
@@ -149,6 +152,11 @@ def _track_modifier(vk: int, *, down: bool) -> None:
             _alt_vks_down.discard(vk)
             if vk in (VK_LMENU, VK_RMENU):
                 _alt_vks_down.discard(VK_MENU)
+    elif vk in _WIN_VKS:
+        if down:
+            _win_vks_down.add(vk)
+        else:
+            _win_vks_down.discard(vk)
 
 
 def ctrl_physically_down() -> bool:
@@ -202,6 +210,11 @@ def _chord_modifiers_match(want: int) -> bool:
     if want_ctrl != have_ctrl or want_alt != have_alt or want_shift != have_shift:
         return False
     if not (want & MOD_WIN):
+        return True
+    # Prefer the hook-tracked state (reliable over fullscreen apps, where the
+    # async key state can read 0 for a lower-integrity poller); fall back to the
+    # OS state for the first event of a chord.
+    if _win_vks_down:
         return True
     try:
         have_win = bool(
@@ -288,19 +301,24 @@ def _dispatch(n_code: int, w_param: int, l_param: int) -> int:
                     if not _chord_modifiers_match(h.modifiers):
                         h.down = False
                         continue
-                    # Chord matches — consume so the focused app never sees it
-                    # (parity with a successful RegisterHotKey).
-                    eat = True
                     import time
 
                     now = time.monotonic()
                     if not h.down and (now - h.last_fired) >= _CHORD_GATE_S:
                         h.last_fired = now
                         h.down = True
+                        result = None
                         try:
-                            h.callback()
+                            result = h.callback()
                         except Exception:
-                            pass
+                            result = None
+                        # Consume the key (parity with a successful RegisterHotKey)
+                        # unless the callback explicitly opts out by returning
+                        # False — the elevated hotkey helper returns False when the
+                        # foreground is non-elevated so the main app's own hook
+                        # still sees the key.
+                        if result is not False:
+                            eat = True
             elif wp in (WM_KEYUP, WM_SYSKEYUP):
                 for h in _chord_handlers:
                     if h.vk == vk:
@@ -372,6 +390,7 @@ def shutdown_ll_keyboard() -> None:
     _ctrl_vks_down.clear()
     _shift_vks_down.clear()
     _alt_vks_down.clear()
+    _win_vks_down.clear()
     _ctrl_chord_grace_until = 0.0
     if not _hook_id:
         return

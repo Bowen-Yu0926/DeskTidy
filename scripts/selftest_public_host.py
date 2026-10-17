@@ -49,6 +49,7 @@ def test_host_contracts() -> None:
     assert "drop_files_to_public_from_mime" in drop_src
     assert "DESKTIDY_VIRTUAL_MIME" in drop_src
     hit_src = inspect.getsource(public_icon_host.PublicIconHost.hit_test_region)
+    build_hit = inspect.getsource(public_icon_host.PublicIconHost._build_hit_test_region)
     assert "_icon_hit_region" in inspect.getsource(public_icon_host.PublicIconHost)
     assert "_full_host_region" not in inspect.getsource(public_icon_host.PublicIconHost)
     assert "_fence_exclusion_region" in inspect.getsource(public_icon_host.PublicIconHost)
@@ -63,7 +64,10 @@ def test_host_contracts() -> None:
         public_icon_host.PublicIconHost._overlay_exclusion_region
     )
     assert "_chrome_exclusion_region" in overlay_excl
-    assert "_work_area_region_local" in hit_src
+    # Cache hits for WM_NCHITTEST; build path still carves work-area + exclusions.
+    assert "_hit_region_cache" in hit_src
+    assert "_build_hit_test_region" in hit_src
+    assert "_work_area_region_local" in build_hit
     assert "virtual_desktop_work_region" in inspect.getsource(
         public_icon_host.PublicIconHost._work_area_region_local
     )
@@ -85,6 +89,10 @@ def test_host_contracts() -> None:
     assert "_last_mask_region" in refresh_src
     assert "_last_plate_sig" in refresh_src
     assert "mask_same" in refresh_src and "plate_same" in refresh_src
+    # Owned full-desktop plate must not SetWindowRgn (DWM freeze until display change).
+    assert "clearMask" in refresh_src
+    assert "_desktop_plate_unmasked" in refresh_src
+    assert "huge_plate" in refresh_src
     assert "_plate_content_signature" in inspect.getsource(
         public_icon_host.PublicIconHost
     )

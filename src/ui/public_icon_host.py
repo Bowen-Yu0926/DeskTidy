@@ -85,7 +85,7 @@ class PublicIconHost(QWidget):
         )
         self._mask_timer = QTimer(self)
         self._mask_timer.setSingleShot(True)
-        self._mask_timer.setInterval(0)
+        self._mask_timer.setInterval(48)
         self._mask_timer.timeout.connect(self.refresh_click_mask)
         self._mask_batch_depth = 0
         self._mask_refresh_deferred = False
@@ -99,6 +99,9 @@ class PublicIconHost(QWidget):
         self._hit_plate_cache: QRegion | None = None
         self._last_mask_region: QRegion | None = None
         self._last_plate_sig: tuple | None = None
+        self._hit_region_cache: QRegion | None = None
+        self._desktop_plate_unmasked = False
+        self._huge_mask_live = False
         self._painting_plate = False
         self.installEventFilter(self)
         self.sync_desktop_geometry()
@@ -107,6 +110,7 @@ class PublicIconHost(QWidget):
         self._icon_cache = None
         self._marquee_icons = None
         self._hit_plate_cache = None
+        self._hit_region_cache = None
 
     def _plate_content_signature(self) -> tuple:
         """Icon footprints + caption chrome — changes even when the outer mask does not.
@@ -399,7 +403,19 @@ class PublicIconHost(QWidget):
         floats) without swallowing the desktop pet.
         Always clip to the multi-mon *work* region so taskbar strips stay
         clickable (bounding availableGeometry union used to cover them).
+
+        Cached: ``WM_NCHITTEST`` hits this on every desktop mouse move. Rebuilding
+        a full-work-area ``QRegion`` each time stalled the GUI thread (and the
+        low-level mouse hook on that thread) until the user switched displays.
         """
+        cached = self._hit_region_cache
+        if cached is not None:
+            return cached
+        region = self._build_hit_test_region()
+        self._hit_region_cache = region
+        return region
+
+    def _build_hit_test_region(self) -> QRegion:
         if self.session_owns_desktop_drops() and self.has_visible_icons():
             region = QRegion(self.rect())
             work = self._work_area_region_local()
@@ -601,9 +617,37 @@ class PublicIconHost(QWidget):
                 self.setMask(park)
                 self._last_mask_region = QRegion(park)
                 self._last_plate_sig = ()
+                self._desktop_plate_unmasked = False
+                self._huge_mask_live = False
                 self.update(park.boundingRect())
                 return
             plate_sig = self._plate_content_signature()
+            host_area = max(1, self.width() * self.height())
+            bounds = region.boundingRect()
+            huge_plate = (
+                self.session_owns_desktop_drops()
+                and bounds.width() * bounds.height() > int(host_area * 0.4)
+            )
+            if huge_plate:
+                # Full-desktop SetWindowRgn + plate repaint freezes DWM / the GUI
+                # thread until a display change. Hit-testing stays in nativeEvent.
+                if not self._desktop_plate_unmasked:
+                    self.clearMask()
+                    self._desktop_plate_unmasked = True
+                plate_same = (
+                    self._last_plate_sig is not None
+                    and self._last_plate_sig == plate_sig
+                )
+                if plate_same and self._huge_mask_live:
+                    return
+                self._huge_mask_live = True
+                self._last_plate_sig = plate_sig
+                self._last_mask_region = None
+                if not plate_same:
+                    self.update(QRect(0, 0, 1, 1))
+                return
+            self._huge_mask_live = False
+            self._desktop_plate_unmasked = False
             # Keepalive / ensure_live used to setMask+update every tick; repainting
             # a full-desktop alpha plate froze the UI (MainThread stuck in paintEvent).
             last = self._last_mask_region
@@ -613,6 +657,11 @@ class PublicIconHost(QWidget):
             )
             if mask_same and plate_same:
                 return
+            prev_plate = (
+                QRegion(self._hit_plate_cache)
+                if self._hit_plate_cache is not None
+                else QRegion()
+            )
             if not mask_same:
                 self.invalidate_icon_cache()
                 region = self.hit_test_region()
@@ -631,7 +680,12 @@ class PublicIconHost(QWidget):
             plate = self._hit_plate_region()
             if plate.isEmpty():
                 return
-            self.update(plate.boundingRect())
+            changed = prev_plate.xored(plate) if not prev_plate.isEmpty() else plate
+            dirty = changed.boundingRect()
+            if dirty.isEmpty() or dirty.width() * dirty.height() > host_area // 3:
+                self.update(QRect(0, 0, 1, 1))
+                return
+            self.update(dirty)
         except RuntimeError:
             return
 

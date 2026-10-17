@@ -17,6 +17,7 @@ WH_MOUSE_LL = 14
 
 # Only messages DeskTidy subscribers care about. Skipping WM_MOUSEMOVE (and
 # plain wheel) avoids Python fan-out on every system-wide cursor pixel.
+WM_LBUTTONDOWN = 0x0201
 WM_LBUTTONDBLCLK = 0x0203
 WM_LBUTTONUP = 0x0202
 WM_RBUTTONDOWN = 0x0204
@@ -25,8 +26,9 @@ WM_MOUSEWHEEL = 0x020A
 WM_MOUSEHWHEEL = 0x020E
 _VK_MENU = 0x12
 _VK_CONTROL = 0x11
+# WM_LBUTTONDOWN is carried for diagnostics only — no subscriber acts on it.
 _INTERESTING_WPARAMS = frozenset(
-    {WM_LBUTTONUP, WM_LBUTTONDBLCLK, WM_RBUTTONDOWN, WM_RBUTTONUP}
+    {WM_LBUTTONDOWN, WM_LBUTTONUP, WM_LBUTTONDBLCLK, WM_RBUTTONDOWN, WM_RBUTTONUP}
 )
 
 # Return True to consume the event (skip CallNextHookEx).

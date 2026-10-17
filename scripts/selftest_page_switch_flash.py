@@ -236,8 +236,17 @@ def test_soft_park_contracts() -> None:
     # 切页 must seat fences under SoftMgr/WeChat before any HWND_TOP raise.
     assert "_seat_live_overlays_under_apps" in restore_src
     assert "_foreign_app_owns_foreground" in restore_src
+    # Hotkey (foreign FG): after sink, band-raise so icons are not under DefView.
+    assert "_raise_live_overlays_above_defview" in restore_src
+    foreign_restore = restore_src.split("if self._foreign_app_owns_foreground():", 1)[1]
+    assert foreign_restore.index("_sink_overlays_for_foreign_app") < foreign_restore.index(
+        "_raise_live_overlays_above_defview"
+    )
     seat_src = inspect.getsource(DeskTidyApp._seat_live_overlays_under_apps)
     assert "force=True" in seat_src
+    raise_live = inspect.getsource(DeskTidyApp._raise_live_overlays_above_defview)
+    assert "raise_overlay_in_desktop_band" in raise_live
+    assert "_sink_public_host_below_overlays" in raise_live
     ensure_live = inspect.getsource(DeskTidyApp.ensure_live_fences_interactive)
     assert "raise_overlay_in_desktop_band" in ensure_live
     assert "pet_widget" in ensure_live
@@ -250,9 +259,14 @@ def test_soft_park_contracts() -> None:
     # Tray organize / refresh_public: raise only on Explorer desktop FG.
     assert "is_explorer_desktop_foreground" in ensure_live
     assert "skip_raise" in ensure_live
-    # skip_raise must still sink host (not leave full-desktop plate above floats).
+    # skip_raise sinks the host only. Seat/band-raise live on page-switch restore
+    # and fullscreen reveal — calling them from every ensure_live froze the desktop.
     skip_block = ensure_live.split("if skip_raise:", 1)[1].split("return", 1)[0]
     assert "_sink_public_host_below_overlays" in skip_block
+    assert "_raise_live_overlays_above_defview" not in skip_block
+    assert "_seat_live_overlays_under_apps" not in skip_block
+    refresh_src = inspect.getsource(DeskTidyApp._refresh_fences_after_page_switch)
+    assert "flush_icon_grid_paint" in refresh_src.split("else:", 1)[-1]
     raise_src = inspect.getsource(
         __import__("src.desktop_shell_host", fromlist=["x"]).raise_overlay_in_desktop_band
     )
@@ -273,6 +287,18 @@ def test_soft_park_contracts() -> None:
     assert finish_src2.index("_refresh_fences_after_page_switch") < finish_src2.index(
         "_page_switch_quiet_until = 0.0"
     )
+    # Hotkey切页 under a fullscreen foreign app: minimize it to reveal the desktop.
+    assert "_reveal_desktop_for_page_nav" in inspect.getsource(DeskTidyApp.next_page)
+    assert "_reveal_desktop_for_page_nav" in inspect.getsource(DeskTidyApp.prev_page)
+    reveal_src = inspect.getsource(DeskTidyApp._reveal_desktop_for_page_nav)
+    assert "minimize_fullscreen_cover" in reveal_src
+    ws = __import__("src.win_shell", fromlist=["x"])
+    fullscreen_src = inspect.getsource(ws.foreground_fullscreen_hwnd)
+    assert "GetMonitorInfoW" in fullscreen_src
+    assert "rcMonitor" in fullscreen_src
+    min_src = inspect.getsource(ws.minimize_fullscreen_cover)
+    assert "PostMessageW" in min_src
+    assert "IsIconic" in min_src
 
 
 def test_icon_click_still_nofocus() -> None:
@@ -630,7 +656,7 @@ def test_docs_first_visit_icons_after_switch() -> None:
 
 
 def test_parked_restore_uses_reload_not_force() -> None:
-    """文档→工作: parked grid must reload in-place, not force rebuild."""
+    """文档→工作: parked grid must not force rebuild; flush client paint only."""
     import tempfile
     from pathlib import Path
     from unittest.mock import patch
@@ -674,7 +700,8 @@ def test_parked_restore_uses_reload_not_force() -> None:
                 app.processEvents()
                 refresh_mock.assert_not_called()
                 reload_mock.assert_not_called()
-                flush_mock.assert_not_called()
+                # Warmed grids still flush after batch SHOW (hotkey blank icons).
+                flush_mock.assert_called_once()
         finally:
             w.close()
             w.deleteLater()
@@ -851,6 +878,7 @@ def test_arriving_fences_mouse_cleared_before_icon_fill() -> None:
     desk._seat_live_overlays_under_apps = lambda: None  # type: ignore[method-assign]
     desk._foreign_app_owns_foreground = lambda: False  # type: ignore[method-assign]
     desk._sink_overlays_for_foreign_app = lambda: None  # type: ignore[method-assign]
+    desk._raise_live_overlays_above_defview = lambda: None  # type: ignore[method-assign]
     desk._ensure_public_host_mouse_opaque = lambda: None  # type: ignore[method-assign]
     desk._sink_public_host_below_overlays = (  # type: ignore[method-assign]
         lambda *a, **k: None
@@ -918,9 +946,119 @@ def test_hotkey_page_nav_dedupes_double_fire() -> None:
     assert "if bool(getattr(fence, \"_desktidy_soft_parked\", False)):\n                    continue" not in ensure
 
 
+def test_fullscreen_foreground_reveal() -> None:
+    """Fullscreen FG app is detected (to minimize); maximized window is not."""
+    from unittest.mock import patch
+
+    from src import win_shell
+
+    def _fill_monitor(_monitor, ref):
+        obj = ref._obj
+        obj.rcMonitor.left = 0
+        obj.rcMonitor.top = 0
+        obj.rcMonitor.right = 1920
+        obj.rcMonitor.bottom = 1080
+        return 1
+
+    def _detect(rect):
+        with patch.object(
+            win_shell.user32, "GetForegroundWindow", return_value=1234
+        ), patch.object(
+            win_shell.user32, "GetDesktopWindow", return_value=1
+        ), patch.object(
+            win_shell, "_is_own_tool_window", return_value=False
+        ), patch.object(
+            win_shell, "hwnd_is_desktop_shell_menu", return_value=False
+        ), patch.object(
+            win_shell, "_hwnd_is_shell_taskbar", return_value=False
+        ), patch.object(
+            win_shell, "is_explorer_desktop_foreground", return_value=False
+        ), patch.object(
+            win_shell.win32gui, "GetClassName", return_value="Chrome_WidgetWin_1"
+        ), patch.object(
+            win_shell.user32, "GetWindowLongW", return_value=0
+        ), patch.object(
+            win_shell.win32gui, "GetWindowRect", return_value=rect
+        ), patch.object(
+            win_shell.user32, "MonitorFromWindow", return_value=99
+        ), patch.object(
+            win_shell.user32, "GetMonitorInfoW", side_effect=_fill_monitor
+        ):
+            return win_shell.foreground_fullscreen_hwnd()
+
+    assert _detect((0, 0, 1920, 1080)) == 1234
+    assert _detect((0, 0, 1920, 1040)) == 0
+    assert _detect((120, 80, 1800, 980)) == 0
+
+    # Borderless games re-assert vs ShowWindow; must post SC_MINIMIZE instead.
+    minimize_src = inspect.getsource(win_shell.minimize_fullscreen_cover)
+    assert "PostMessageW" in minimize_src
+    assert "_WM_SYSCOMMAND" in minimize_src
+    assert "_SC_MINIMIZE" in minimize_src
+    # Falls back to the topmost fullscreen cover when FG is another window.
+    assert "desktop_cover_fullscreen_hwnd" in minimize_src
+    cover_src = inspect.getsource(win_shell.desktop_cover_fullscreen_hwnd)
+    assert "EnumWindows" in cover_src
+    assert "Windows.UI.Core.CoreWindow" in win_shell._FULLSCREEN_SKIP_CLASSES
+
+    # Revealing the desktop must re-arm the fences: the z-order churn can leave
+    # them soft-parked (icons paint but cannot be selected).
+    from src.app import DeskTidyApp
+
+    # One owner for desktop-band visibility after Win+D / reveal / FG recover.
+    restore_src = inspect.getsource(DeskTidyApp._restore_desktop_band_overlays)
+    assert "_remap_hidden_overlay_hwnds" in restore_src
+    assert "_raise_live_overlays_above_defview" in restore_src
+    assert "_seat_live_overlays_under_apps" in restore_src
+    assert "ensure_live_fences_interactive" in restore_src
+    schedule_src = inspect.getsource(DeskTidyApp._schedule_desktop_band_restore)
+    assert "_band_restore_timer" in schedule_src
+    assert "_band_restore_settle_left" in schedule_src
+    reveal_src = inspect.getsource(DeskTidyApp._reveal_desktop_for_page_nav)
+    assert "_schedule_desktop_band_restore" in reveal_src
+    assert "always_rearm" not in reveal_src
+    # Page-nav only schedules restore when a fullscreen cover was minimized.
+    assert "if minimized:" in reveal_src
+    # The desktop-foreground repair bails unless Explorer owns FG (a Win+D
+    # reveal lands on the taskbar), so a standing guard must own the heal.
+    guard_src = inspect.getsource(DeskTidyApp._click_health_tick)
+    assert "mouseGrabber" in guard_src and "releaseMouse" in guard_src
+    assert "overlay_mouse_passthrough" in guard_src
+    assert "_overlay_drag_active" in guard_src
+    # Quiet uses the same clock as switch_page arms (_page_switch_quiet_until).
+    assert "perf_counter" in guard_src
+    # Hook-path click trace must stay opt-in (default-on freezes machine input).
+    logger_src = inspect.getsource(DeskTidyApp._install_click_logger)
+    assert "DESKTIDY_CLICK_TRACE" in logger_src
+    assert "_click_trace_enabled" in logger_src
+    timer_src = inspect.getsource(DeskTidyApp.__init__)
+    assert "_click_health_timer" in timer_src
+    assert "_band_restore_timer" in timer_src
+    # Win+P / unplug must heal grab + host passthrough (users: switch screen → fixed).
+    display_src = inspect.getsource(DeskTidyApp._on_display_layout_changed)
+    assert "_release_stuck_grabs" in display_src
+    assert "_ensure_public_host_mouse_opaque" in display_src
+    assert "ensure_live_fences_interactive" in display_src
+    # Win+D → schedule band restore (not a parallel rearm implementation).
+    show_desktop = inspect.getsource(DeskTidyApp._on_show_desktop_relayed)
+    assert "_schedule_desktop_band_restore" in show_desktop
+    # Main-process LL hook catches normal Win+D (FG monitor is silent on desktop).
+    chords = inspect.getsource(DeskTidyApp._register_hotkey_chords)
+    assert "MOD_WIN" in chords and "VK_D" in chords
+    assert "_on_show_desktop_relayed" in chords
+    assert "return False" in chords
+    recover = inspect.getsource(DeskTidyApp._recover_from_desktop_foreground)
+    assert "_restore_desktop_band_overlays" in recover
+    # FG sync must not call band restore — Win+D / reveal schedule it.
+    sync_src = inspect.getsource(DeskTidyApp._sync_overlays_to_foreground)
+    assert "self._schedule_desktop_band_restore" not in sync_src
+    assert "self._restore_desktop_band_overlays" not in sync_src
+
+
 def main() -> int:
     print("DeskTidy page-switch / icon-flash contracts")
     run("soft park contracts (no opacity-0)", test_soft_park_contracts)
+    run("全屏外部程序切页最小化露桌面", test_fullscreen_foreground_reveal)
     run("快捷键切页防双触发", test_hotkey_page_nav_dedupes_double_fire)
     run("icon click NoFocus preserved", test_icon_click_still_nofocus)
     run("icon selection batch (no paintEvent storm)", test_icon_selection_batch_contracts)

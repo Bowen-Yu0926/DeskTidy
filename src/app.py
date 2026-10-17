@@ -159,6 +159,12 @@ class DeskTidyApp(FenceLayoutMixin, WatcherMixin, DesktopViewMixin, FenceLifecyc
         self._overlay_last_needed_restore = False
         self._last_desktop_fg_recover = 0.0
         self._last_bg_trim_time = 0.0
+        # Coalesced desktop-band restore (Win+D / reveal / FG recover).
+        self._band_restore_settle_left = 0
+        self._band_restore_attempt = 0
+        self._band_restore_timer = QTimer()
+        self._band_restore_timer.setSingleShot(True)
+        self._band_restore_timer.timeout.connect(self._run_desktop_band_restore_tick)
         # Tracks FG so Win+D / Alt+Tab-back can force re-attach without thrashing
         # while the mouse moves over an already-shown desktop.
         self._last_fg_was_desktop = False
@@ -263,6 +269,13 @@ class DeskTidyApp(FenceLayoutMixin, WatcherMixin, DesktopViewMixin, FenceLifecyc
         self._desktop_fg_recover_timer.timeout.connect(
             self._recover_from_desktop_foreground
         )
+        # Guard for the "desktop clicks frozen until restart" states (orphaned
+        # grabMouse / stuck host passthrough) that the desktop-foreground repair
+        # never reaches when the taskbar, not Explorer, owns FG.
+        self._click_health_timer = QTimer()
+        self._click_health_timer.setInterval(700)
+        self._click_health_timer.timeout.connect(self._click_health_tick)
+        self._click_health_timer.start()
         mark("timers_ready")
         app_icon = get_app_icon()
         if not app_icon.isNull():
@@ -351,6 +364,7 @@ class DeskTidyApp(FenceLayoutMixin, WatcherMixin, DesktopViewMixin, FenceLifecyc
         self._hotkey_capture_depth = 0
         self._hotkey_refresh_pending = False
         self._hotkey_refresh_timer: QTimer | None = None
+        self._hotkey_relay = None
         mark("hotkey_manager_ready")
 
         # Create monitors early, but start the heavier ones after first paint.
@@ -1221,6 +1235,12 @@ class DeskTidyApp(FenceLayoutMixin, WatcherMixin, DesktopViewMixin, FenceLifecyc
                 self.settings["last_display_fingerprint"] = old_fp
             self._display_fingerprint = new_fp
 
+        # Display churn (Win+P / unplug / DPI) often clears a "frozen desktop"
+        # for users — make that recovery explicit: orphan grabMouse and leftover
+        # WS_EX_TRANSPARENT on the shared host / live fences.
+        self._release_stuck_grabs()
+        self._ensure_public_host_mouse_opaque()
+
         if not self._fences_should_show() or not self.fences:
             self._setup_page_indicator()
             # Taskbar move/auto-hide keeps the same fingerprint — still remask so
@@ -1240,6 +1260,10 @@ class DeskTidyApp(FenceLayoutMixin, WatcherMixin, DesktopViewMixin, FenceLifecyc
             pass
         self._setup_page_indicator()
         self._ensure_desktop_overlays_visible()
+        try:
+            self.ensure_live_fences_interactive()
+        except Exception:
+            pass
         self._refresh_public_host_click_mask()
 
     def _migrate_fence_pages(self) -> None:
@@ -2100,8 +2124,9 @@ class DeskTidyApp(FenceLayoutMixin, WatcherMixin, DesktopViewMixin, FenceLifecyc
         was_desktop = bool(getattr(self, "_last_fg_was_desktop", False))
         self._last_fg_was_desktop = True
         if was_desktop:
-            # Still remap: drag/shell churn can leave fences SW_HIDE while Qt
-            # reports visible — was_desktop must not skip the heal path.
+            # Still on Explorer FG: only remap SW_HIDE stragglers. Win+D while
+            # already on the desktop does not emit a FG edge — band restore is
+            # owned by the LL Win+D / page-nav reveal scheduler, not FG sync.
             if self._fences_should_show():
                 self._remap_hidden_overlay_hwnds()
             return
@@ -2174,6 +2199,8 @@ class DeskTidyApp(FenceLayoutMixin, WatcherMixin, DesktopViewMixin, FenceLifecyc
             # raise_band after Alt+Tab flashed the page bar on every return.
             if self._page_chrome_needs_raise():
                 self._ensure_page_chrome_visible(raise_band=True)
+        # Band visibility/z-order is one owner — do not reimplement raise here.
+        self._restore_desktop_band_overlays(attempt=0)
         self._schedule_overlay_keepalive()
 
     def _iter_overlay_widgets(self):
@@ -2675,7 +2702,8 @@ class DeskTidyApp(FenceLayoutMixin, WatcherMixin, DesktopViewMixin, FenceLifecyc
         the grab stays active and silently swallows every click on the settings
         window — and on foreign app tips such as WeChat「我知道了」. Aborting
         the marquee on the public host plus a global grabber release covers
-        fence/screenshot grabs too.
+        fence/screenshot grabs too. Also clear a stuck pet hold/drag so the
+        sprite does not keep following the cursor after a lost release.
         """
         from PyQt6.QtWidgets import QWidget
 
@@ -2685,6 +2713,14 @@ class DeskTidyApp(FenceLayoutMixin, WatcherMixin, DesktopViewMixin, FenceLifecyc
                 abort = getattr(host, "_abort_marquee", None)
                 if callable(abort):
                     abort()
+            except RuntimeError:
+                pass
+        pet = getattr(self, "pet_widget", None)
+        if pet is not None:
+            try:
+                cancel = getattr(pet, "_cancel_drag_if_active", None)
+                if callable(cancel):
+                    cancel()
             except RuntimeError:
                 pass
         # Fence / screenshot overlays also grab — release any survivor.
@@ -4837,6 +4873,7 @@ class DeskTidyApp(FenceLayoutMixin, WatcherMixin, DesktopViewMixin, FenceLifecyc
         for name in (
             "_overlay_keepalive_timer",
             "_desktop_fg_recover_timer",
+            "_band_restore_timer",
             "_refresh_fences_timer",
             "_refresh_public_timer",
             "_watch_debounce",

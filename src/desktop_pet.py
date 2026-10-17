@@ -104,10 +104,21 @@ _COMMON_LINES: tuple[str, ...] = (
 _ACTION_KEYS = ("pet", "sleep", "wake", "wait", "climb", "fall", "trash")
 
 
+_RESOURCE_BASE_CACHE: Path | None = None
+
+
 def _resource_base() -> Path:
-    if getattr(sys, "frozen", False):
-        return Path(sys._MEIPASS)
-    return Path(__file__).resolve().parent.parent
+    """Base dir for assets — cached: ``Path.resolve()`` does per-component
+    ``os.stat`` (GetFinalPathNameByHandle) and, called once per pose frame during
+    pet warm-up, stalled the GUI thread for seconds on this machine. Compute it
+    once and reuse."""
+    global _RESOURCE_BASE_CACHE
+    if _RESOURCE_BASE_CACHE is None:
+        if getattr(sys, "frozen", False):
+            _RESOURCE_BASE_CACHE = Path(sys._MEIPASS)
+        else:
+            _RESOURCE_BASE_CACHE = Path(__file__).resolve().parent.parent
+    return _RESOURCE_BASE_CACHE
 
 
 def pet_catalog() -> dict[str, dict[str, Any]]:
