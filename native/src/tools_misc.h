@@ -12,5 +12,5 @@ bool StartScreenRecord(HWND owner);  // toggle record (badge to stop)
 void ConfigureScreenRecord(HWND owner);
 void OpenCalculator();
 void ShowAppHelp(HWND owner);
-void OpenUpdatePage();
+void OpenUpdatePage();  // GitHub API compare + optional open Releases
 bool SendPathsToRecycleBin(const std::vector<std::wstring>& paths);

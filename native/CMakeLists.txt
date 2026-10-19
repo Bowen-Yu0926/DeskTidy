@@ -54,6 +54,7 @@ add_executable(desktidy_native WIN32
   src/app_prefs.cpp
   src/screen_record.cpp
   src/fence_region_overlay.cpp
+  src/update_check.cpp
   src/version.rc
 )
 
@@ -61,7 +62,7 @@ target_include_directories(desktidy_native PRIVATE src)
 target_compile_definitions(desktidy_native PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
 target_link_libraries(desktidy_native PRIVATE
   user32 gdi32 shell32 ole32 oleaut32 uuid comctl32 advapi32
-  gdiplus comdlg32 crypt32 winhttp bcrypt msimg32
+  gdiplus comdlg32 crypt32 winhttp bcrypt msimg32 version
 )
 
 if(MSVC)

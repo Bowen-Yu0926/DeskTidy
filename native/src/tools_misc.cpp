@@ -6,6 +6,7 @@
 #include "prompt_text.h"
 #include "screen_record.h"
 #include "tool_paths.h"
+#include "update_check.h"
 
 #include <Shellapi.h>
 #include <ShlObj.h>
@@ -323,11 +324,7 @@ void ShowAppHelp(HWND owner) {
       L"帮助", MB_OK | MB_ICONINFORMATION);
 }
 
-void OpenUpdatePage() {
-  ShellExecuteW(nullptr, L"open",
-                L"https://github.com/Bowen-Yu0926/DeskTidy/releases", nullptr,
-                nullptr, SW_SHOWNORMAL);
-}
+void OpenUpdatePage() { CheckForUpdates(nullptr); }
 
 bool SendPathsToRecycleBin(const std::vector<std::wstring>& paths) {
   if (paths.empty()) {
