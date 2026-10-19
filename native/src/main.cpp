@@ -27,6 +27,25 @@ std::wstring FindCliAction(LPWSTR cmd) {
 }  // namespace
 
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR cmd_line, int) {
+  // Per-monitor DPI so fence icons are not bitmap-upscaled by the system.
+  using SetDpiCtxFn = BOOL(WINAPI*)(void*);
+  HMODULE user32 = GetModuleHandleW(L"user32.dll");
+  if (user32) {
+    auto set_ctx = reinterpret_cast<SetDpiCtxFn>(
+        GetProcAddress(user32, "SetProcessDpiAwarenessContext"));
+    if (set_ctx) {
+      // DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 == (DPI_AWARENESS_CONTEXT)-4
+      set_ctx(reinterpret_cast<void*>(static_cast<INT_PTR>(-4)));
+    } else {
+      using SetDpiAwareFn = BOOL(WINAPI*)();
+      auto set_aware = reinterpret_cast<SetDpiAwareFn>(
+          GetProcAddress(user32, "SetProcessDPIAware"));
+      if (set_aware) {
+        set_aware();
+      }
+    }
+  }
+
   const std::wstring action = FindCliAction(cmd_line);
 
   if (!AcquireNativeInstanceLock()) {

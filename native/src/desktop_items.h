@@ -14,5 +14,5 @@ struct DesktopItem {
 // User desktop + Public desktop (.lnk / files / folders). Skips hidden system clutter.
 std::vector<DesktopItem> ScanDesktopItems();
 
-// Extract a small icon for painting; caller DestroyIcon when done (or keep cached).
-HICON LoadItemIcon(const std::wstring& path, int size_px = 32);
+// High-res shell icon (Jumbo/ExtraLarge when available). Caller DestroyIcon.
+HICON LoadItemIcon(const std::wstring& path, int size_px = 48);

@@ -12,7 +12,7 @@
 namespace {
 constexpr wchar_t kClassName[] = L"DeskTidyNativeDock";
 constexpr int kH = 64;
-constexpr int kIcon = 36;
+constexpr int kIcon = 48;
 constexpr int kPad = 12;
 bool g_registered = false;
 }  // namespace

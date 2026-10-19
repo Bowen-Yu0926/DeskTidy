@@ -16,14 +16,32 @@
 
 namespace {
 constexpr wchar_t kClassName[] = L"DeskTidyNativeFence";
-constexpr int kHeaderH = 36;
-constexpr int kPad = 10;
-constexpr int kCellW = 76;
-constexpr int kCellH = 86;
-constexpr int kIconSize = 32;
+constexpr int kHeaderH0 = 36;
+constexpr int kPad0 = 10;
+constexpr int kCellW0 = 92;
+constexpr int kCellH0 = 104;
+constexpr int kIconSize0 = 48;
 constexpr int kDragThreshold = 6;
 constexpr int kEdge = 8;
 bool g_class_registered = false;
+
+int FenceDpi(HWND hwnd) {
+  using Fn = UINT(WINAPI*)(HWND);
+  static Fn get_dpi = reinterpret_cast<Fn>(
+      GetProcAddress(GetModuleHandleW(L"user32.dll"), "GetDpiForWindow"));
+  if (get_dpi && hwnd) {
+    const UINT dpi = get_dpi(hwnd);
+    if (dpi > 0) {
+      return static_cast<int>(dpi);
+    }
+  }
+  HDC dc = GetDC(nullptr);
+  const int dpi = GetDeviceCaps(dc, LOGPIXELSX);
+  ReleaseDC(nullptr, dc);
+  return dpi > 0 ? dpi : 96;
+}
+
+int S(HWND hwnd, int px) { return MulDiv(px, FenceDpi(hwnd), 96); }
 }  // namespace
 
 void FenceWindow::ApplyStyle() {
@@ -184,7 +202,7 @@ void FenceWindow::SetItems(std::vector<DesktopItem> items) {
   for (auto& it : items) {
     Cell cell;
     cell.item = std::move(it);
-    cell.icon = LoadItemIcon(cell.item.path, kIconSize);
+    cell.icon = LoadItemIcon(cell.item.path, S(hwnd_, kIconSize0));
     cells_.push_back(std::move(cell));
   }
   scroll_y_ = 0;
@@ -202,25 +220,29 @@ void FenceWindow::LayoutCells() {
   }
   RECT rc{};
   GetClientRect(hwnd_, &rc);
-  const int inner_l = rc.left + kPad;
-  const int inner_t = rc.top + kHeaderH - scroll_y_;
-  const int inner_r = rc.right - kPad;
-  const int cols = (std::max)(1, (inner_r - inner_l) / kCellW);
+  const int pad = S(hwnd_, kPad0);
+  const int header = S(hwnd_, kHeaderH0);
+  const int cell_w = S(hwnd_, kCellW0);
+  const int cell_h = S(hwnd_, kCellH0);
+  const int inner_l = rc.left + pad;
+  const int inner_t = rc.top + header - scroll_y_;
+  const int inner_r = rc.right - pad;
+  const int cols = (std::max)(1, (inner_r - inner_l) / cell_w);
   for (size_t i = 0; i < cells_.size(); ++i) {
     const int col = static_cast<int>(i % static_cast<size_t>(cols));
     const int row = static_cast<int>(i / static_cast<size_t>(cols));
     RECT& b = cells_[i].bounds;
-    b.left = inner_l + col * kCellW;
-    b.top = inner_t + row * kCellH;
-    b.right = b.left + kCellW;
-    b.bottom = b.top + kCellH;
+    b.left = inner_l + col * cell_w;
+    b.top = inner_t + row * cell_h;
+    b.right = b.left + cell_w;
+    b.bottom = b.top + cell_h;
   }
   const int rows =
       cells_.empty()
           ? 0
           : static_cast<int>((cells_.size() + static_cast<size_t>(cols) - 1) /
                              static_cast<size_t>(cols));
-  content_h_ = rows * kCellH;
+  content_h_ = rows * cell_h;
   ClampScroll();
 }
 
@@ -230,7 +252,8 @@ void FenceWindow::ClampScroll() {
     return;
   }
   GetClientRect(hwnd_, &rc);
-  const int view = (std::max)(0, static_cast<int>(rc.bottom) - kHeaderH - kPad);
+  const int view = (std::max)(
+      0, static_cast<int>(rc.bottom) - S(hwnd_, kHeaderH0) - S(hwnd_, kPad0));
   const int max_scroll = (std::max)(0, content_h_ - view);
   if (scroll_y_ < 0) {
     scroll_y_ = 0;
@@ -241,7 +264,7 @@ void FenceWindow::ClampScroll() {
 }
 
 int FenceWindow::HitTestIcon(int x, int y) const {
-  if (y < kHeaderH) {
+  if (y < S(hwnd_, kHeaderH0)) {
     return -1;
   }
   for (size_t i = 0; i < cells_.size(); ++i) {
@@ -564,10 +587,12 @@ void FenceWindow::BeginInlineRename() {
   }
   rename_index_ = index;
   const RECT& b = cells_[static_cast<size_t>(index)].bounds;
+  const int icon = S(hwnd_, kIconSize0);
+  const int cell_w = S(hwnd_, kCellW0);
   rename_edit_ = CreateWindowExW(
       0, L"EDIT", cells_[static_cast<size_t>(index)].item.name.c_str(),
       WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL, b.left + 2,
-      b.top + 4 + kIconSize, kCellW - 4, 20, hwnd_,
+      b.top + 4 + icon, cell_w - 4, S(hwnd_, 20), hwnd_,
       reinterpret_cast<HMENU>(static_cast<INT_PTR>(kRenameEdit)), nullptr,
       nullptr);
   if (!rename_edit_) {
@@ -814,7 +839,7 @@ LRESULT FenceWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
       }
       icon_press_ = false;
       icon_press_index_ = -1;
-      if (press_client_.y >= kHeaderH) {
+      if (press_client_.y >= S(hwnd_, kHeaderH0)) {
         rubber_ = true;
         dragging_ = false;
         rubber_a_ = rubber_b_ = press_client_;
@@ -989,7 +1014,8 @@ LRESULT FenceWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
         OpenItem(icon);
         return 0;
       }
-      if (y < kHeaderH && HitTestEdge(x, y) == Edge::None && on_rename_) {
+      if (y < S(hwnd_, kHeaderH0) && HitTestEdge(x, y) == Edge::None &&
+          on_rename_) {
         on_rename_(this);
       }
       return 0;
@@ -1024,10 +1050,16 @@ void FenceWindow::Paint(HDC hdc) {
   SelectObject(hdc, old_brush);
   DeleteObject(pen);
 
+  const int header = S(hwnd_, kHeaderH0);
+  const int pad = S(hwnd_, kPad0);
+  const int cell_w = S(hwnd_, kCellW0);
+  const int icon = S(hwnd_, kIconSize0);
+  const int font_px = S(hwnd_, 13);
+
   // Accent bar under title.
   RECT bar = rc;
-  bar.top = kHeaderH - 3;
-  bar.bottom = kHeaderH - 1;
+  bar.top = header - 3;
+  bar.bottom = header - 1;
   bar.left += 12;
   bar.right -= 12;
   HBRUSH accent_br = CreateSolidBrush(accent_);
@@ -1037,16 +1069,16 @@ void FenceWindow::Paint(HDC hdc) {
   SetBkMode(hdc, TRANSPARENT);
   SetTextColor(hdc, title_color_);
   RECT title_rc = rc;
-  title_rc.top += 8;
-  title_rc.bottom = title_rc.top + 24;
+  title_rc.top += S(hwnd_, 8);
+  title_rc.bottom = title_rc.top + S(hwnd_, 24);
   wchar_t title_buf[256];
   swprintf_s(title_buf, L"%s  · p%d", title_.c_str(), page_ + 1);
   DrawTextW(hdc, title_buf, -1, &title_rc,
             DT_CENTER | DT_TOP | DT_SINGLELINE | DT_END_ELLIPSIS);
 
-  const int view = (std::max)(0, static_cast<int>(rc.bottom) - kHeaderH - kPad);
+  const int view = (std::max)(0, static_cast<int>(rc.bottom) - header - pad);
   if (content_h_ > view && view > 0) {
-    const int track_top = kHeaderH + 2;
+    const int track_top = header + 2;
     const int track_h = (std::max)(8, static_cast<int>(rc.bottom) - track_top - 4);
     const int thumb_h =
         (std::max)(16, track_h * view / (std::max)(1, content_h_));
@@ -1061,9 +1093,9 @@ void FenceWindow::Paint(HDC hdc) {
     DeleteObject(thumb_br);
   }
 
-  IntersectClipRect(hdc, rc.left, kHeaderH, rc.right, rc.bottom);
+  IntersectClipRect(hdc, rc.left, header, rc.right, rc.bottom);
 
-  HFONT font = CreateFontW(12, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+  HFONT font = CreateFontW(-font_px, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
                            DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
                            CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
                            DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
@@ -1072,7 +1104,7 @@ void FenceWindow::Paint(HDC hdc) {
   for (size_t i = 0; i < cells_.size(); ++i) {
     const auto& cell = cells_[i];
     const RECT& b = cell.bounds;
-    if (b.bottom < kHeaderH || b.top > rc.bottom) {
+    if (b.bottom < header || b.top > rc.bottom) {
       continue;
     }
     if (i < selected_.size() && selected_[i]) {
@@ -1085,19 +1117,18 @@ void FenceWindow::Paint(HDC hdc) {
       DeleteObject(sp);
     }
     if (cell.icon) {
-      const int ix = b.left + (kCellW - kIconSize) / 2;
+      const int ix = b.left + (cell_w - icon) / 2;
       const int iy = b.top + 4;
       if (ClipboardPathIsCut(cell.item.path)) {
         DrawStateW(hdc, nullptr, nullptr,
-                   reinterpret_cast<LPARAM>(cell.icon), 0, ix, iy, kIconSize,
-                   kIconSize, DST_ICON | DSS_DISABLED);
+                   reinterpret_cast<LPARAM>(cell.icon), 0, ix, iy, icon, icon,
+                   DST_ICON | DSS_DISABLED);
       } else {
-        DrawIconEx(hdc, ix, iy, cell.icon, kIconSize, kIconSize, 0, nullptr,
-                   DI_NORMAL);
+        DrawIconEx(hdc, ix, iy, cell.icon, icon, icon, 0, nullptr, DI_NORMAL);
       }
     }
     RECT label = b;
-    label.top = b.top + 4 + kIconSize + 2;
+    label.top = b.top + 4 + icon + 2;
     label.left += 2;
     label.right -= 2;
     DrawTextW(hdc, cell.item.name.c_str(), -1, &label,

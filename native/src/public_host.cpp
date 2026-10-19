@@ -11,7 +11,7 @@
 
 namespace {
 constexpr wchar_t kClass[] = L"DeskTidyNativePublic";
-constexpr int kIcon = 32;
+constexpr int kIcon = 48;
 constexpr int kPad = 8;
 bool g_reg = false;
 }  // namespace
