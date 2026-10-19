@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(DeskTidyNative LANGUAGES CXX)
+project(DeskTidyNative LANGUAGES CXX RC)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -22,6 +22,9 @@ add_executable(desktidy_native WIN32
   src/page_bar.cpp
   src/desktop_watch.cpp
   src/prompt_text.cpp
+  src/autostart.cpp
+  src/instance_lock.cpp
+  src/version.rc
 )
 
 target_include_directories(desktidy_native PRIVATE src)

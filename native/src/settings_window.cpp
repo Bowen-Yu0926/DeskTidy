@@ -16,6 +16,7 @@ constexpr int kEditTitle = 1101;
 constexpr int kComboPage = 1102;
 constexpr int kChkDock = 1103;
 constexpr int kChkPet = 1104;
+constexpr int kChkAutostart = 1105;
 }  // namespace
 
 bool SettingsWindow::Create(HINSTANCE instance) {
@@ -97,6 +98,11 @@ bool SettingsWindow::Create(HINSTANCE instance) {
       L"BUTTON", L"显示宠物", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 150, 330,
       120, 24, hwnd_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kChkPet)),
       instance, nullptr);
+  chk_autostart_ = CreateWindowW(
+      L"BUTTON", L"开机启动", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 280, 330,
+      120, 24, hwnd_,
+      reinterpret_cast<HMENU>(static_cast<INT_PTR>(kChkAutostart)), instance,
+      nullptr);
 
   CreateWindowW(L"BUTTON", L"虚拟整理(钉选)", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
                 20, 370, 140, 30, hwnd_,
@@ -156,7 +162,7 @@ void SettingsWindow::SetFenceNames(const std::vector<std::wstring>& names) {
   }
 }
 
-void SettingsWindow::SetToggles(bool dock_on, bool pet_on) {
+void SettingsWindow::SetToggles(bool dock_on, bool pet_on, bool autostart_on) {
   if (chk_dock_) {
     SendMessageW(chk_dock_, BM_SETCHECK, dock_on ? BST_CHECKED : BST_UNCHECKED,
                  0);
@@ -164,13 +170,17 @@ void SettingsWindow::SetToggles(bool dock_on, bool pet_on) {
   if (chk_pet_) {
     SendMessageW(chk_pet_, BM_SETCHECK, pet_on ? BST_CHECKED : BST_UNCHECKED, 0);
   }
+  if (chk_autostart_) {
+    SendMessageW(chk_autostart_, BM_SETCHECK,
+                 autostart_on ? BST_CHECKED : BST_UNCHECKED, 0);
+  }
 }
 
 void SettingsWindow::SetHandlers(VoidFn on_add, IndexFn on_remove, VoidFn on_seat,
                                  RenameFn on_rename, PageFn on_page,
                                  VoidFn on_org_virtual, VoidFn on_org_physical,
                                  BoolFn on_dock, BoolFn on_pet,
-                                 VoidFn on_edit_rules) {
+                                 VoidFn on_edit_rules, BoolFn on_autostart) {
   on_add_ = std::move(on_add);
   on_remove_ = std::move(on_remove);
   on_seat_ = std::move(on_seat);
@@ -181,6 +191,7 @@ void SettingsWindow::SetHandlers(VoidFn on_add, IndexFn on_remove, VoidFn on_sea
   on_dock_ = std::move(on_dock);
   on_pet_ = std::move(on_pet);
   on_edit_rules_ = std::move(on_edit_rules);
+  on_autostart_ = std::move(on_autostart);
 }
 
 int SettingsWindow::SelectedIndex() const {
@@ -279,6 +290,11 @@ LRESULT SettingsWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
       }
       if (id == kChkPet && code == BN_CLICKED && on_pet_) {
         on_pet_(SendMessageW(chk_pet_, BM_GETCHECK, 0, 0) == BST_CHECKED);
+        return 0;
+      }
+      if (id == kChkAutostart && code == BN_CLICKED && on_autostart_) {
+        on_autostart_(SendMessageW(chk_autostart_, BM_GETCHECK, 0, 0) ==
+                      BST_CHECKED);
         return 0;
       }
       break;

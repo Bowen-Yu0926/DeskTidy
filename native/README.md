@@ -15,13 +15,17 @@ Python on `main` remains the shipping product until installer cutover. See
 - Dock, pet, sticky notes (Ctrl+Shift+N)
 - Settings: rename / page / toggles / edit rules
 
-## Build / run
+## Build / run / package
 
 ```bat
 cd native
 build.bat
 ..\scripts\run_native.bat
 ..\scripts\selftest_native.bat
+..\scripts\build_native_installer.bat
 ```
 
+Installer output: `dist\DeskTidyNative_Setup_<version>.exe`  
 Data: `%LOCALAPPDATA%\DeskTidyNative\`
+
+Also: single-instance lock, Startup-folder autostart toggle in settings/tray.

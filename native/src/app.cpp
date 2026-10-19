@@ -1,5 +1,6 @@
 #include "app.h"
 
+#include "autostart.h"
 #include "desktop_items.h"
 #include "desktop_shell.h"
 #include "organize.h"
@@ -111,7 +112,8 @@ bool App::Init(HINSTANCE instance) {
       [this](int index, int page) { SetFencePageAt(index, page); },
       [this]() { OrganizeVirtual(); }, [this]() { OrganizePhysical(); },
       [this](bool on) { SetDockVisible(on); },
-      [this](bool on) { SetPetVisible(on); }, [this]() { EditRules(); });
+      [this](bool on) { SetPetVisible(on); }, [this]() { EditRules(); },
+      [this](bool on) { SetAutostart(on); });
 
   notes_.Create(instance);
   dock_.Create(instance);
@@ -137,7 +139,7 @@ bool App::Init(HINSTANCE instance) {
   PersistLayouts();
   RefreshDesktopIcons();
   RefreshSettingsList();
-  settings_.SetToggles(dock_visible_, pet_visible_);
+  settings_.SetToggles(dock_visible_, pet_visible_, IsNativeAutostartEnabled());
   ApplyPageVisibility();
 
   page_bar_.SetPage(current_page_);
@@ -199,7 +201,7 @@ void App::Shutdown() {
 void App::OpenSettings() {
   SeatAllFencesUnderApps();
   RefreshSettingsList();
-  settings_.SetToggles(dock_visible_, pet_visible_);
+  settings_.SetToggles(dock_visible_, pet_visible_, IsNativeAutostartEnabled());
   settings_.Show();
 }
 
@@ -415,6 +417,16 @@ void App::ToggleDock() { SetDockVisible(!dock_visible_); }
 
 void App::TogglePet() { SetPetVisible(!pet_visible_); }
 
+void App::SetAutostart(bool on) {
+  if (!SetNativeAutostart(on)) {
+    MessageBoxW(settings_.Hwnd(), L"无法更新开机启动快捷方式。",
+                L"DeskTidy Native", MB_OK | MB_ICONWARNING);
+  }
+  settings_.SetToggles(dock_visible_, pet_visible_, IsNativeAutostartEnabled());
+}
+
+void App::ToggleAutostart() { SetAutostart(!IsNativeAutostartEnabled()); }
+
 void App::EditRules() {
   SaveRules(rules_);
   const std::wstring path = RuleFilePath();
@@ -548,9 +560,12 @@ LRESULT CALLBACK App::TrayWndProc(HWND hwnd, UINT msg, WPARAM wparam,
         AppendMenuW(menu, MF_STRING, 9, L"编辑扩展名规则");
         AppendMenuW(menu, MF_STRING, 10, L"切换 Dock");
         AppendMenuW(menu, MF_STRING, 11, L"切换宠物");
-        AppendMenuW(menu, MF_STRING, 12, L"恢复桌面层");
+        AppendMenuW(menu,
+                    MF_STRING | (IsNativeAutostartEnabled() ? MF_CHECKED : 0),
+                    12, L"开机启动");
+        AppendMenuW(menu, MF_STRING, 13, L"恢复桌面层");
         AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-        AppendMenuW(menu, MF_STRING, 13, L"退出");
+        AppendMenuW(menu, MF_STRING, 14, L"退出");
         SetForegroundWindow(hwnd);
         const int cmd =
             TrackPopupMenu(menu, TPM_RETURNCMD | TPM_NONOTIFY, pt.x, pt.y, 0,
@@ -592,9 +607,12 @@ LRESULT CALLBACK App::TrayWndProc(HWND hwnd, UINT msg, WPARAM wparam,
             self->TogglePet();
             break;
           case 12:
-            self->RestoreDesktopChrome();
+            self->ToggleAutostart();
             break;
           case 13:
+            self->RestoreDesktopChrome();
+            break;
+          case 14:
             PostQuitMessage(0);
             break;
           default:

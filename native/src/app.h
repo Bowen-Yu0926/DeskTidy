@@ -40,6 +40,8 @@ class App {
   void SetPetVisible(bool on);
   void ToggleDock();
   void TogglePet();
+  void SetAutostart(bool on);
+  void ToggleAutostart();
   void RestoreDesktopChrome();
   void EditRules();
   void UnpinPath(const std::wstring& path);

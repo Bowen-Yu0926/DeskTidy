@@ -23,11 +23,11 @@ class SettingsWindow {
   bool IsOpen() const;
 
   void SetFenceNames(const std::vector<std::wstring>& names);
-  void SetToggles(bool dock_on, bool pet_on);
+  void SetToggles(bool dock_on, bool pet_on, bool autostart_on);
   void SetHandlers(VoidFn on_add, IndexFn on_remove, VoidFn on_seat,
                    RenameFn on_rename, PageFn on_page, VoidFn on_org_virtual,
                    VoidFn on_org_physical, BoolFn on_dock, BoolFn on_pet,
-                   VoidFn on_edit_rules);
+                   VoidFn on_edit_rules, BoolFn on_autostart);
 
  private:
   static LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
@@ -40,6 +40,7 @@ class SettingsWindow {
   HWND combo_page_ = nullptr;
   HWND chk_dock_ = nullptr;
   HWND chk_pet_ = nullptr;
+  HWND chk_autostart_ = nullptr;
   VoidFn on_add_;
   IndexFn on_remove_;
   VoidFn on_seat_;
@@ -50,4 +51,5 @@ class SettingsWindow {
   BoolFn on_dock_;
   BoolFn on_pet_;
   VoidFn on_edit_rules_;
+  BoolFn on_autostart_;
 };
