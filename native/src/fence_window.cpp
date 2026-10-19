@@ -7,6 +7,7 @@
 #include "shell_clipboard.h"
 #include "toast.h"
 
+#include <ShlObj.h>
 #include <Shellapi.h>
 #include <windowsx.h>
 
@@ -47,6 +48,7 @@ bool FenceWindow::Create(HINSTANCE instance, const FenceLayout& layout) {
   title_ = layout.title;
   page_ = layout.page;
   style_id_ = NormalizeFenceStyleId(layout.style_id);
+  portal_path_ = layout.portal_path;
 
   if (!g_class_registered) {
     WNDCLASSEXW wc{};
@@ -141,6 +143,7 @@ FenceLayout FenceWindow::CurrentLayout() const {
   fl.title = title_;
   fl.page = page_;
   fl.style_id = style_id_;
+  fl.portal_path = portal_path_;
   if (hwnd_) {
     RECT rc{};
     GetWindowRect(hwnd_, &rc);
@@ -478,6 +481,140 @@ void FenceWindow::ShowIconMenu(int index, POINT screen) {
   }
 }
 
+void FenceWindow::SetPortalPath(const std::wstring& path) {
+  portal_path_ = path;
+}
+
+void FenceWindow::CopySelection() {
+  const auto paths = SelectedPaths();
+  if (!paths.empty()) {
+    ClipboardSetFiles(hwnd_, paths, false);
+    ShowToast(L"已复制到剪贴板");
+  }
+}
+
+void FenceWindow::CutSelection() {
+  const auto paths = SelectedPaths();
+  if (!paths.empty() && ClipboardSetFiles(hwnd_, paths, true)) {
+    ShowToast(L"已剪切到剪贴板");
+    InvalidateRect(hwnd_, nullptr, FALSE);
+  }
+}
+
+void FenceWindow::DeleteSelection() {
+  const auto paths = SelectedPaths();
+  if (paths.empty()) {
+    return;
+  }
+  if (RecycleShellPaths(hwnd_, paths) != IconFsResult::Ok) {
+    return;
+  }
+  for (const auto& p : paths) {
+    if (on_unpin_) {
+      on_unpin_(this, p);
+    }
+  }
+}
+
+void FenceWindow::SelectAll() {
+  if (selected_.size() != cells_.size()) {
+    selected_.assign(cells_.size(), 0);
+  }
+  std::fill(selected_.begin(), selected_.end(), static_cast<char>(1));
+  if (!cells_.empty()) {
+    selection_anchor_ = 0;
+  }
+  InvalidateRect(hwnd_, nullptr, FALSE);
+}
+
+namespace {
+constexpr int kRenameEdit = 77;
+LRESULT CALLBACK RenameEditProc(HWND hwnd, UINT msg, WPARAM wparam,
+                                LPARAM lparam) {
+  auto* self = reinterpret_cast<FenceWindow*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+  if (msg == WM_KEYDOWN && (wparam == VK_RETURN || wparam == VK_ESCAPE)) {
+    if (self) {
+      self->FinishInlineRename(wparam == VK_RETURN);
+    }
+    return 0;
+  }
+  WNDPROC old = reinterpret_cast<WNDPROC>(GetPropW(hwnd, L"oldproc"));
+  if (old) {
+    return CallWindowProcW(old, hwnd, msg, wparam, lparam);
+  }
+  return DefWindowProcW(hwnd, msg, wparam, lparam);
+}
+}  // namespace
+
+void FenceWindow::BeginInlineRename() {
+  int index = -1;
+  int count = 0;
+  for (size_t i = 0; i < selected_.size() && i < cells_.size(); ++i) {
+    if (selected_[i]) {
+      index = static_cast<int>(i);
+      ++count;
+    }
+  }
+  if (count != 1 || index < 0) {
+    return;
+  }
+  if (rename_edit_) {
+    DestroyWindow(rename_edit_);
+    rename_edit_ = nullptr;
+  }
+  rename_index_ = index;
+  const RECT& b = cells_[static_cast<size_t>(index)].bounds;
+  rename_edit_ = CreateWindowExW(
+      0, L"EDIT", cells_[static_cast<size_t>(index)].item.name.c_str(),
+      WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL, b.left + 2,
+      b.top + 4 + kIconSize, kCellW - 4, 20, hwnd_,
+      reinterpret_cast<HMENU>(static_cast<INT_PTR>(kRenameEdit)), nullptr,
+      nullptr);
+  if (!rename_edit_) {
+    return;
+  }
+  rename_proc_ = reinterpret_cast<WNDPROC>(
+      SetWindowLongPtrW(rename_edit_, GWLP_WNDPROC,
+                        reinterpret_cast<LONG_PTR>(RenameEditProc)));
+  SetPropW(rename_edit_, L"oldproc", reinterpret_cast<HANDLE>(rename_proc_));
+  SetWindowLongPtrW(rename_edit_, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(this));
+  SendMessageW(rename_edit_, EM_SETSEL, 0, -1);
+  SetFocus(rename_edit_);
+}
+
+void FenceWindow::FinishInlineRename(bool commit) {
+  if (!rename_edit_) {
+    return;
+  }
+  wchar_t buf[260] = {};
+  GetWindowTextW(rename_edit_, buf, 260);
+  const int index = rename_index_;
+  DestroyWindow(rename_edit_);
+  rename_edit_ = nullptr;
+  rename_index_ = -1;
+  if (!commit || index < 0 || index >= static_cast<int>(cells_.size())) {
+    return;
+  }
+  const std::wstring old_path = cells_[static_cast<size_t>(index)].item.path;
+  const size_t slash = old_path.find_last_of(L"\\/");
+  const std::wstring parent =
+      slash == std::wstring::npos ? L"" : old_path.substr(0, slash);
+  const std::wstring name =
+      slash == std::wstring::npos ? old_path : old_path.substr(slash + 1);
+  const std::wstring neu = buf;
+  if (neu.empty() || neu == name) {
+    return;
+  }
+  const std::wstring dest = parent.empty() ? neu : parent + L"\\" + neu;
+  if (!MoveFileW(old_path.c_str(), dest.c_str())) {
+    ShowToast(L"无法重命名");
+    return;
+  }
+  if (on_path_replaced_) {
+    on_path_replaced_(old_path, dest);
+  }
+}
+
 void FenceWindow::PasteClipboardFiles() {
   std::vector<std::wstring> paths;
   if (!ClipboardGetFiles(&paths) || paths.empty()) {
@@ -494,11 +631,21 @@ void FenceWindow::ShowFenceMenu(POINT screen) {
   HMENU menu = CreatePopupMenu();
   AppendMenuW(menu, MF_STRING, 10, L"重命名分区…");
   AppendMenuW(menu, MF_STRING, 13, L"粘贴文件");
+  AppendMenuW(menu, MF_STRING, 14,
+              portal_path_.empty() ? L"设为门户文件夹…" : L"更换门户文件夹…");
+  if (!portal_path_.empty()) {
+    AppendMenuW(menu, MF_STRING, 15, L"取消门户");
+  }
   AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-  AppendMenuW(menu, MF_STRING | (page_ == 0 ? MF_CHECKED : 0), 11,
-              L"放到第 1 页");
-  AppendMenuW(menu, MF_STRING | (page_ == 1 ? MF_CHECKED : 0), 12,
-              L"放到第 2 页");
+  HMENU pages = CreatePopupMenu();
+  if (page_names_.empty()) {
+    page_names_ = {L"第 1 页", L"第 2 页"};
+  }
+  for (size_t i = 0; i < page_names_.size() && i < 12; ++i) {
+    const UINT flags = MF_STRING | (page_ == static_cast<int>(i) ? MF_CHECKED : 0);
+    AppendMenuW(pages, flags, 400 + static_cast<UINT>(i), page_names_[i].c_str());
+  }
+  AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(pages), L"所在页面");
   AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
   HMENU styles = CreatePopupMenu();
   const auto all = AllFenceStyles();
@@ -517,10 +664,32 @@ void FenceWindow::ShowFenceMenu(POINT screen) {
     on_rename_(this);
   } else if (cmd == 13) {
     PasteClipboardFiles();
-  } else if (cmd == 11 && on_set_page_) {
-    on_set_page_(this, 0);
-  } else if (cmd == 12 && on_set_page_) {
-    on_set_page_(this, 1);
+  } else if (cmd == 14 || cmd == 15) {
+    if (cmd == 15) {
+      portal_path_.clear();
+      if (on_portal_) {
+        on_portal_(this, L"");
+      }
+    } else {
+      BROWSEINFOW bi{};
+      bi.hwndOwner = hwnd_;
+      bi.lpszTitle = L"选择要镜像的文件夹";
+      bi.ulFlags = BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE;
+      PIDLIST_ABSOLUTE pidl = SHBrowseForFolderW(&bi);
+      if (pidl) {
+        wchar_t path[MAX_PATH] = {};
+        if (SHGetPathFromIDListW(pidl, path)) {
+          portal_path_ = path;
+          if (on_portal_) {
+            on_portal_(this, portal_path_);
+          }
+        }
+        CoTaskMemFree(pidl);
+      }
+    }
+  } else if (cmd >= 400 && cmd < 400 + static_cast<int>(page_names_.size()) &&
+             on_set_page_) {
+    on_set_page_(this, cmd - 400);
   } else if (cmd >= 100 && cmd < 100 + static_cast<int>(all.size())) {
     SetStyleId(all[static_cast<size_t>(cmd - 100)]->id);
     if (on_style_changed_) {
@@ -548,6 +717,24 @@ LRESULT CALLBACK FenceWindow::WndProc(HWND hwnd, UINT msg, WPARAM wparam,
 }
 
 LRESULT FenceWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
+  if (msg == WM_APP + 60) {
+    const int vk = static_cast<int>(wparam);
+    const bool ctrl = lparam != 0;
+    if (vk == VK_DELETE) {
+      DeleteSelection();
+    } else if (vk == VK_F2) {
+      BeginInlineRename();
+    } else if (ctrl && vk == 'C') {
+      CopySelection();
+    } else if (ctrl && vk == 'X') {
+      CutSelection();
+    } else if (ctrl && vk == 'V') {
+      PasteClipboardFiles();
+    } else if (ctrl && vk == 'A') {
+      SelectAll();
+    }
+    return 0;
+  }
   switch (msg) {
     case WM_PAINT: {
       PAINTSTRUCT ps{};
@@ -619,6 +806,7 @@ LRESULT FenceWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
       if (icon >= 0) {
         dragging_ = false;
         drag_moved_ = false;
+        rubber_ = false;
         icon_press_ = true;
         icon_press_index_ = icon;
         SetCapture(hwnd_);
@@ -626,6 +814,14 @@ LRESULT FenceWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
       }
       icon_press_ = false;
       icon_press_index_ = -1;
+      if (press_client_.y >= kHeaderH) {
+        rubber_ = true;
+        dragging_ = false;
+        rubber_a_ = rubber_b_ = press_client_;
+        SetCapture(hwnd_);
+        return 0;
+      }
+      rubber_ = false;
       dragging_ = true;
       drag_moved_ = false;
       POINT pt = press_client_;
@@ -678,6 +874,11 @@ LRESULT FenceWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
                      SWP_NOZORDER | SWP_NOACTIVATE);
         return 0;
       }
+      if (rubber_ && (wparam & MK_LBUTTON)) {
+        rubber_b_ = {GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
+        InvalidateRect(hwnd_, nullptr, FALSE);
+        return 0;
+      }
       if (icon_press_ && (wparam & MK_LBUTTON)) {
         const int x = GET_X_LPARAM(lparam);
         const int y = GET_Y_LPARAM(lparam);
@@ -701,6 +902,28 @@ LRESULT FenceWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
       const int x = GET_X_LPARAM(lparam);
       const int y = GET_Y_LPARAM(lparam);
       ReleaseCapture();
+      if (rubber_) {
+        rubber_ = false;
+        const int l = (std::min)(rubber_a_.x, rubber_b_.x);
+        const int t = (std::min)(rubber_a_.y, rubber_b_.y);
+        const int r = (std::max)(rubber_a_.x, rubber_b_.x);
+        const int b = (std::max)(rubber_a_.y, rubber_b_.y);
+        if (selected_.size() != cells_.size()) {
+          selected_.assign(cells_.size(), 0);
+        }
+        std::fill(selected_.begin(), selected_.end(), static_cast<char>(0));
+        for (size_t i = 0; i < cells_.size(); ++i) {
+          const RECT& cell = cells_[i].bounds;
+          const bool hit = !(cell.right < l || cell.left > r || cell.bottom < t ||
+                             cell.top > b);
+          if (hit) {
+            selected_[i] = 1;
+            selection_anchor_ = static_cast<int>(i);
+          }
+        }
+        InvalidateRect(hwnd_, nullptr, FALSE);
+        return 0;
+      }
       if (resizing_) {
         resizing_ = false;
         resize_edge_ = Edge::None;
@@ -883,4 +1106,18 @@ void FenceWindow::Paint(HDC hdc) {
 
   SelectObject(hdc, old_font);
   DeleteObject(font);
+  SelectClipRgn(hdc, nullptr);
+  if (rubber_) {
+    const int l = (std::min)(rubber_a_.x, rubber_b_.x);
+    const int t = (std::min)(rubber_a_.y, rubber_b_.y);
+    const int r = (std::max)(rubber_a_.x, rubber_b_.x);
+    const int b = (std::max)(rubber_a_.y, rubber_b_.y);
+    HPEN sp = CreatePen(PS_SOLID, 1, accent_);
+    HGDIOBJ op = SelectObject(hdc, sp);
+    HGDIOBJ ob = SelectObject(hdc, GetStockObject(NULL_BRUSH));
+    Rectangle(hdc, l, t, r, b);
+    SelectObject(hdc, op);
+    SelectObject(hdc, ob);
+    DeleteObject(sp);
+  }
 }

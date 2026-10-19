@@ -178,6 +178,109 @@ std::wstring Widen(const std::string& s) {
   return out;
 }
 
+std::wstring FindExeAssetUrl(const std::string& json) {
+  const std::string key = "browser_download_url";
+  size_t p = 0;
+  while ((p = json.find(key, p)) != std::string::npos) {
+    const size_t colon = json.find(':', p + key.size());
+    if (colon == std::string::npos) {
+      break;
+    }
+    const size_t q1 = json.find('"', colon + 1);
+    if (q1 == std::string::npos) {
+      break;
+    }
+    size_t q2 = q1 + 1;
+    std::string url;
+    while (q2 < json.size() && json[q2] != '"') {
+      if (json[q2] == '\\' && q2 + 1 < json.size()) {
+        ++q2;
+      }
+      url.push_back(json[q2++]);
+    }
+    if (url.size() > 4 && url.rfind(".exe") == url.size() - 4) {
+      return Widen(url);
+    }
+    p = q2;
+  }
+  return {};
+}
+
+bool DownloadToFile(const std::wstring& url, const std::wstring& dest,
+                    std::wstring* err) {
+  URL_COMPONENTS uc{};
+  wchar_t host[256] = {};
+  wchar_t path[2048] = {};
+  uc.dwStructSize = sizeof(uc);
+  uc.lpszHostName = host;
+  uc.dwHostNameLength = 256;
+  uc.lpszUrlPath = path;
+  uc.dwUrlPathLength = 2048;
+  if (!WinHttpCrackUrl(url.c_str(), 0, 0, &uc)) {
+    *err = L"无法解析下载地址";
+    return false;
+  }
+  HINTERNET session =
+      WinHttpOpen(L"DeskTidyNative-Updater", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
+                  WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+  if (!session) {
+    *err = L"WinHttpOpen failed";
+    return false;
+  }
+  WinHttpSetTimeouts(session, 8000, 8000, 60000, 60000);
+  HINTERNET conn =
+      WinHttpConnect(session, host, INTERNET_DEFAULT_HTTPS_PORT, 0);
+  HINTERNET req = conn ? WinHttpOpenRequest(
+                             conn, L"GET", path, nullptr, WINHTTP_NO_REFERER,
+                             WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_SECURE)
+                       : nullptr;
+  DWORD policy = WINHTTP_OPTION_REDIRECT_POLICY_ALWAYS;
+  if (req) {
+    WinHttpSetOption(req, WINHTTP_OPTION_REDIRECT_POLICY, &policy,
+                     sizeof(policy));
+  }
+  if (!req || !WinHttpSendRequest(req, WINHTTP_NO_ADDITIONAL_HEADERS, 0,
+                                  WINHTTP_NO_REQUEST_DATA, 0, 0, 0) ||
+      !WinHttpReceiveResponse(req, nullptr)) {
+    *err = L"下载失败";
+    if (req) {
+      WinHttpCloseHandle(req);
+    }
+    if (conn) {
+      WinHttpCloseHandle(conn);
+    }
+    WinHttpCloseHandle(session);
+    return false;
+  }
+  std::ofstream out(dest, std::ios::binary);
+  if (!out) {
+    *err = L"无法写入安装包";
+    WinHttpCloseHandle(req);
+    WinHttpCloseHandle(conn);
+    WinHttpCloseHandle(session);
+    return false;
+  }
+  for (;;) {
+    DWORD avail = 0;
+    if (!WinHttpQueryDataAvailable(req, &avail)) {
+      break;
+    }
+    if (avail == 0) {
+      break;
+    }
+    std::string chunk(avail, '\0');
+    DWORD read = 0;
+    if (!WinHttpReadData(req, chunk.data(), avail, &read) || read == 0) {
+      break;
+    }
+    out.write(chunk.data(), read);
+  }
+  WinHttpCloseHandle(req);
+  WinHttpCloseHandle(conn);
+  WinHttpCloseHandle(session);
+  return true;
+}
+
 }  // namespace
 
 std::wstring NativeProductVersion() {
@@ -288,11 +391,39 @@ void CheckForUpdates(HWND owner) {
     return;
   }
   const std::wstring msg = L"发现新版本 " + latest + L"（当前 " + current +
-                           L"）。\n\n是否打开发布页？";
-  if (MessageBoxW(owner, msg.c_str(), L"检查更新",
-                  MB_YESNO | MB_ICONQUESTION) == IDYES) {
+                           L"）。\n\n是：下载安装包并运行\n否：打开发布页";
+  const int answer = MessageBoxW(owner, msg.c_str(), L"检查更新",
+                                 MB_YESNOCANCEL | MB_ICONQUESTION);
+  if (answer == IDNO) {
     ShellExecuteW(nullptr, L"open",
                   html.empty() ? kReleasesPage : html.c_str(), nullptr, nullptr,
                   SW_SHOWNORMAL);
+    return;
   }
+  if (answer != IDYES) {
+    return;
+  }
+  std::string body;
+  std::wstring err;
+  if (!HttpGetJson(&body, &err)) {
+    MessageBoxW(owner, (L"下载信息获取失败：\n" + err).c_str(), L"检查更新",
+                MB_OK | MB_ICONWARNING);
+    return;
+  }
+  const std::wstring asset = FindExeAssetUrl(body);
+  if (asset.empty()) {
+    ShellExecuteW(nullptr, L"open",
+                  html.empty() ? kReleasesPage : html.c_str(), nullptr, nullptr,
+                  SW_SHOWNORMAL);
+    return;
+  }
+  wchar_t temp[MAX_PATH] = {};
+  GetTempPathW(MAX_PATH, temp);
+  const std::wstring dest = std::wstring(temp) + L"DeskTidyNativeSetup.exe";
+  if (!DownloadToFile(asset, dest, &err)) {
+    MessageBoxW(owner, (L"下载失败：\n" + err).c_str(), L"检查更新",
+                MB_OK | MB_ICONWARNING);
+    return;
+  }
+  ShellExecuteW(nullptr, L"open", dest.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
 }

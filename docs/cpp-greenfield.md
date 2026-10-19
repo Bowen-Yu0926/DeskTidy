@@ -76,8 +76,16 @@ Native Win32 host — feature MVP map vs Python product.
 | Dock / public / search icon shell menu | done |
 | Fence multi-select + cut ghost | done |
 | Fence multi-drag, scroll thumb, title rename | done |
-| DeskNote Toast UI / WebView editor | not ported |
-| Full Shimeji climb/ledge physics | not ported |
+| Multi-page bar (+/-) | done |
+| Portal fences (folder mirror) | done |
+| Layout editor canvas | done |
+| Fence rubber-band + keyboard (Del/F2/Ctrl+C/X/V/A) | done |
+| App theme cycle (fence styles) | done |
+| Update download/run installer | done |
+| Pet climb/ledge + buoy bar | done |
+| Notes toast / MD export / pandoc / HTML paste / open-with | done |
+| DeskNote WebView editor | not ported (RichEdit + toast mode instead) |
+| Full Shimeji climb fidelity | partial (window-ledge climb) |
 
 ## Build
 

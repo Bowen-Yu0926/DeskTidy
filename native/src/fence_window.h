@@ -22,6 +22,8 @@ class FenceWindow {
   using PageFn = std::function<void(FenceWindow*, int page)>;
   using RenameFn = std::function<void(FenceWindow*)>;
   using StyleFn = std::function<void(FenceWindow*)>;
+  using PortalFn =
+      std::function<void(FenceWindow*, const std::wstring& path)>;
 
   bool Create(HINSTANCE instance, const FenceLayout& layout);
   void Destroy();
@@ -47,11 +49,23 @@ class FenceWindow {
   void SetOnSetPage(PageFn fn) { on_set_page_ = std::move(fn); }
   void SetOnRename(RenameFn fn) { on_rename_ = std::move(fn); }
   void SetOnStyleChanged(StyleFn fn) { on_style_changed_ = std::move(fn); }
+  void SetOnPortal(PortalFn fn) { on_portal_ = std::move(fn); }
 
   void SetItems(std::vector<DesktopItem> items);
   void ClearIcons();
   const std::vector<DesktopItem> ItemSnapshot() const;
   void PasteClipboardFiles();
+  void SetPortalPath(const std::wstring& path);
+  const std::wstring& PortalPath() const { return portal_path_; }
+  void SetPageNames(std::vector<std::wstring> names) {
+    page_names_ = std::move(names);
+  }
+  void CopySelection();
+  void CutSelection();
+  void DeleteSelection();
+  void SelectAll();
+  void BeginInlineRename();
+  void FinishInlineRename(bool commit);
 
  private:
   struct Cell {
@@ -121,6 +135,15 @@ class FenceWindow {
   PageFn on_set_page_;
   RenameFn on_rename_;
   StyleFn on_style_changed_;
+  PortalFn on_portal_;
+  std::wstring portal_path_;
+  std::vector<std::wstring> page_names_;
+  bool rubber_ = false;
+  POINT rubber_a_{};
+  POINT rubber_b_{};
+  HWND rename_edit_ = nullptr;
+  int rename_index_ = -1;
+  WNDPROC rename_proc_ = nullptr;
   std::vector<Cell> cells_;
   std::vector<char> selected_;
   int selection_anchor_ = -1;

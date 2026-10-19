@@ -12,10 +12,12 @@ struct FenceLayout {
   int h = 360;
   int page = 0;
   std::string style_id = "charcoal";
+  std::wstring portal_path;
 };
 
 struct AppState {
   std::vector<FenceLayout> fences;
+  std::vector<std::wstring> page_names;
   int current_page = 0;
   bool dock_visible = true;
   bool pet_visible = true;

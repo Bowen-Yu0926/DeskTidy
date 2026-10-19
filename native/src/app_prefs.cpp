@@ -109,6 +109,10 @@ AppPrefs LoadAppPrefs() {
   if (!dir.empty()) {
     prefs.record_output_dir = WidenUtf8(dir);
   }
+  const std::string theme = ParseStringField(json, "theme_id");
+  if (!theme.empty()) {
+    prefs.theme_id = theme;
+  }
   return prefs;
 }
 
@@ -123,5 +127,6 @@ void SaveAppPrefs(const AppPrefs& prefs) {
       << (prefs.auto_organize_watch ? "true" : "false")
       << ",\n  \"record_seconds\": " << prefs.record_seconds
       << ",\n  \"record_output_dir\": \""
-      << EscapeJson(NarrowUtf8(prefs.record_output_dir)) << "\"\n}\n";
+      << EscapeJson(NarrowUtf8(prefs.record_output_dir))
+      << "\",\n  \"theme_id\": \"" << EscapeJson(prefs.theme_id) << "\"\n}\n";
 }

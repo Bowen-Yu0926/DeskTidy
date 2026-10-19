@@ -265,6 +265,8 @@ AppState LoadAppState() {
     FindNumber(obj, "h", &h);
     FindNumber(obj, "page", &page);
     FindString(obj, "style", &style_id);
+    std::string portal;
+    FindString(obj, "portal", &portal);
     if (w < 120) {
       w = 280;
     }
@@ -280,6 +282,7 @@ AppState LoadAppState() {
     fl.h = h;
     fl.page = page;
     fl.style_id = style_id.empty() ? "charcoal" : style_id;
+    fl.portal_path = Widen(portal);
     state.fences.push_back(fl);
   }
   if (state.fences.empty()) {
@@ -382,6 +385,51 @@ AppState LoadAppState() {
     }
   }
   HealFenceLayouts(&state.fences);
+  const auto pages_key = json.find("\"pages\"");
+  if (pages_key != std::string::npos) {
+    const auto lb = json.find('[', pages_key);
+    const auto rb = lb == std::string::npos ? std::string::npos : json.find(']', lb);
+    if (lb != std::string::npos && rb != std::string::npos) {
+      const std::string arr = json.substr(lb, rb - lb + 1);
+      size_t q = 0;
+      while (true) {
+        const size_t a = arr.find('"', q);
+        if (a == std::string::npos) {
+          break;
+        }
+        size_t b = a + 1;
+        std::string name;
+        while (b < arr.size() && arr[b] != '"') {
+          if (arr[b] == '\\' && b + 1 < arr.size()) {
+            ++b;
+          }
+          name.push_back(arr[b++]);
+        }
+        if (!name.empty()) {
+          state.page_names.push_back(Widen(name));
+        }
+        q = b + 1;
+      }
+    }
+  }
+  if (state.page_names.size() < 2) {
+    state.page_names = {L"第 1 页", L"第 2 页"};
+  }
+  int max_page = 0;
+  for (const auto& f : state.fences) {
+    if (f.page > max_page) {
+      max_page = f.page;
+    }
+  }
+  while (static_cast<int>(state.page_names.size()) <= max_page) {
+    state.page_names.push_back(L"第 " +
+                               std::to_wstring(state.page_names.size() + 1) +
+                               L" 页");
+  }
+  if (state.current_page < 0 ||
+      state.current_page >= static_cast<int>(state.page_names.size())) {
+    state.current_page = 0;
+  }
   return state;
 }
 
@@ -451,7 +499,18 @@ bool SaveAppState(const AppState& state) {
       << ",\n"
       << "  \"pet_visible\":" << (state.pet_visible ? "true" : "false") << ",\n"
       << "  \"last_display_fingerprint\":\"" << EscapeJson(fp_out) << "\",\n"
-      << "  \"fences\": [\n";
+      << "  \"pages\": [";
+  std::vector<std::wstring> pages = state.page_names;
+  if (pages.size() < 2) {
+    pages = {L"第 1 页", L"第 2 页"};
+  }
+  for (size_t i = 0; i < pages.size(); ++i) {
+    if (i) {
+      out << ", ";
+    }
+    out << "\"" << EscapeJson(Narrow(pages[i])) << "\"";
+  }
+  out << "],\n  \"fences\": [\n";
   for (size_t i = 0; i < state.fences.size(); ++i) {
     const auto& f = state.fences[i];
     out << "    {"
@@ -463,7 +522,8 @@ bool SaveAppState(const AppState& state) {
         << "\"h\":" << f.h << ","
         << "\"page\":" << f.page << ","
         << "\"style\":\""
-        << EscapeJson(f.style_id.empty() ? "charcoal" : f.style_id) << "\"}";
+        << EscapeJson(f.style_id.empty() ? "charcoal" : f.style_id) << "\","
+        << "\"portal\":\"" << EscapeJson(Narrow(f.portal_path)) << "\"}";
     if (i + 1 < state.fences.size()) {
       out << ",";
     }

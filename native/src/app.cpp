@@ -19,6 +19,9 @@
 #include "whitelist.h"
 #include "paths_util.h"
 #include "prompt_text.h"
+#include "fence_keys.h"
+#include "fence_style.h"
+#include "layout_editor.h"
 #include "shell_clipboard.h"
 #include "shell_verbs.h"
 #include "snapshot.h"
@@ -80,6 +83,14 @@ void App::WireFence(FenceWindow* fence) {
     }
   });
   fence->SetOnStyleChanged([this](FenceWindow*) { PersistLayouts(); });
+  fence->SetOnPortal([this](FenceWindow* f, const std::wstring&) {
+    if (f) {
+      f->SetPageNames(page_names_);
+    }
+    PersistLayouts();
+    RefreshDesktopIcons();
+  });
+  fence->SetPageNames(page_names_);
 }
 
 bool App::SpawnFence(const FenceLayout& layout) {
@@ -160,6 +171,8 @@ bool App::Init(HINSTANCE instance) {
   });
   page_bar_.Create(instance);
   page_bar_.SetOnPage([this](int page) { SetPage(page); });
+  page_bar_.SetOnAddPage([this]() { AddPage(); });
+  page_bar_.SetOnRemovePage([this]() { RemoveCurrentPage(); });
   page_bar_.SetOnNotes([this]() { OpenNotes(); });
   page_bar_.SetOnSearch([this]() { OpenSearch(); });
   page_bar_.SetOnCapture([this]() { StartRegionCapture(); });
@@ -186,6 +199,10 @@ bool App::Init(HINSTANCE instance) {
 
   const AppState state = LoadAppState();
   current_page_ = state.current_page;
+  page_names_ = state.page_names;
+  if (page_names_.size() < 2) {
+    page_names_ = {L"第 1 页", L"第 2 页"};
+  }
   dock_visible_ = state.dock_visible;
   pet_visible_ = state.pet_visible;
   pins_ = LoadPins();
@@ -197,16 +214,22 @@ bool App::Init(HINSTANCE instance) {
       return false;
     }
   }
+  if (!prefs_.theme_id.empty()) {
+    for (auto& fence : fences_) {
+      if (fence && fence->StyleId() == "charcoal") {
+        // leave explicit styles; theme applies to new fences via prefs
+      }
+    }
+  }
   PersistLayouts();
   RefreshDesktopIcons();
   RefreshSettingsList();
   settings_.SetToggles(dock_visible_, pet_visible_, IsNativeAutostartEnabled());
   settings_.SetOrganizePrefs(prefs_.auto_organize_on_startup,
                              prefs_.auto_organize_watch);
+  SyncPageChrome();
   ApplyPageVisibility();
-
-  page_bar_.SetPage(current_page_);
-  page_bar_.Show();
+  InstallFenceKeyHook();
   dock_.SetVisible(dock_visible_);
   pet_.SetVisible(pet_visible_);
   public_host_.SetVisible(public_visible_);
@@ -286,9 +309,11 @@ int App::Run() {
 }
 
 void App::Shutdown() {
+  RemoveFenceKeyHook();
   PersistLayouts();
   SavePins(pins_);
   SaveRules(rules_);
+  SaveAppPrefs(prefs_);
   if (message_hwnd_) {
     KillTimer(message_hwnd_, kTimerRestore);
     KillTimer(message_hwnd_, kTimerPet);
@@ -402,6 +427,7 @@ void App::ToggleFencesVisible() {
 void App::SaveLayoutSnapshot() {
   AppState state;
   state.current_page = current_page_;
+  state.page_names = page_names_;
   state.dock_visible = dock_visible_;
   state.pet_visible = pet_visible_;
   for (const auto& f : fences_) {
@@ -438,6 +464,10 @@ void App::ReloadFencesFromState(const AppState& state) {
   }
   fences_.clear();
   current_page_ = state.current_page;
+  page_names_ = state.page_names;
+  if (page_names_.size() < 1) {
+    page_names_ = {L"第 1 页", L"第 2 页"};
+  }
   dock_visible_ = state.dock_visible;
   pet_visible_ = state.pet_visible;
   AppState healed = state;
@@ -446,6 +476,7 @@ void App::ReloadFencesFromState(const AppState& state) {
     SpawnFence(layout);
   }
   PersistLayouts();
+  SyncPageChrome();
   RefreshDesktopIcons();
   RefreshSettingsList();
   ApplyPageVisibility();
@@ -579,6 +610,7 @@ void App::SeatAllFencesUnderApps() {
 void App::PersistLayouts() {
   AppState state;
   state.current_page = current_page_;
+  state.page_names = page_names_;
   state.dock_visible = dock_visible_;
   state.pet_visible = pet_visible_;
   state.fences.reserve(fences_.size());
@@ -588,6 +620,114 @@ void App::PersistLayouts() {
     }
   }
   SaveAppState(state);
+}
+
+void App::SyncPageChrome() {
+  if (page_names_.size() < 1) {
+    page_names_ = {L"第 1 页", L"第 2 页"};
+  }
+  page_bar_.SetPageCount(static_cast<int>(page_names_.size()));
+  page_bar_.SetPage(current_page_);
+  page_bar_.Show();
+  for (auto& fence : fences_) {
+    if (fence) {
+      fence->SetPageNames(page_names_);
+    }
+  }
+}
+
+void App::AddPage() {
+  if (page_names_.size() >= 12) {
+    ShowToast(L"最多 12 页");
+    return;
+  }
+  page_names_.push_back(L"第 " + std::to_wstring(page_names_.size() + 1) +
+                        L" 页");
+  SyncPageChrome();
+  SetPage(static_cast<int>(page_names_.size()) - 1);
+  ShowToast(L"已添加页面");
+}
+
+void App::RemoveCurrentPage() {
+  if (page_names_.size() <= 1) {
+    ShowToast(L"至少保留一页");
+    return;
+  }
+  const int remove = current_page_;
+  for (auto& fence : fences_) {
+    if (!fence) {
+      continue;
+    }
+    if (fence->Page() == remove) {
+      fence->SetPage(0);
+    } else if (fence->Page() > remove) {
+      fence->SetPage(fence->Page() - 1);
+    }
+  }
+  page_names_.erase(page_names_.begin() + remove);
+  if (current_page_ >= static_cast<int>(page_names_.size())) {
+    current_page_ = static_cast<int>(page_names_.size()) - 1;
+  }
+  SyncPageChrome();
+  ApplyPageVisibility();
+  PersistLayouts();
+  ShowToast(L"已删除当前页");
+}
+
+void App::OpenLayoutEditor() {
+  AppState state;
+  state.current_page = current_page_;
+  state.page_names = page_names_;
+  state.dock_visible = dock_visible_;
+  state.pet_visible = pet_visible_;
+  for (const auto& fence : fences_) {
+    if (fence) {
+      state.fences.push_back(fence->CurrentLayout());
+    }
+  }
+  if (!ShowLayoutEditor(settings_.Hwnd(), &state)) {
+    return;
+  }
+  page_names_ = state.page_names;
+  current_page_ = state.current_page;
+  for (auto& fence : fences_) {
+    if (fence) {
+      fence->Destroy();
+    }
+  }
+  fences_.clear();
+  for (const auto& layout : state.fences) {
+    SpawnFence(layout);
+  }
+  PersistLayouts();
+  SyncPageChrome();
+  RefreshDesktopIcons();
+  ApplyPageVisibility();
+  RefreshSettingsList();
+  ShowToast(L"布局已应用");
+}
+
+void App::CycleTheme() {
+  const auto styles = AllFenceStyles();
+  if (styles.empty()) {
+    return;
+  }
+  size_t idx = 0;
+  for (size_t i = 0; i < styles.size(); ++i) {
+    if (styles[i]->id == prefs_.theme_id) {
+      idx = (i + 1) % styles.size();
+      break;
+    }
+  }
+  prefs_.theme_id = styles[idx]->id;
+  SaveAppPrefs(prefs_);
+  for (auto& fence : fences_) {
+    if (fence) {
+      fence->SetStyleId(prefs_.theme_id);
+    }
+  }
+  PersistLayouts();
+  ShowToast(std::wstring(L"主题：") + styles[idx]->name);
 }
 
 void App::RefreshSettingsList() {
@@ -609,6 +749,17 @@ void App::RefreshSettingsList() {
 void App::OnPathsDropped(FenceWindow* fence,
                          const std::vector<std::wstring>& paths) {
   if (!fence) {
+    return;
+  }
+  if (!fence->PortalPath().empty()) {
+    for (const auto& p : paths) {
+      const size_t slash = p.find_last_of(L"\\/");
+      const std::wstring name =
+          slash == std::wstring::npos ? p : p.substr(slash + 1);
+      const std::wstring dest = fence->PortalPath() + L"\\" + name;
+      CopyFileW(p.c_str(), dest.c_str(), FALSE);
+    }
+    RefreshDesktopIcons();
     return;
   }
   for (const auto& p : paths) {
@@ -648,6 +799,36 @@ void App::RefreshDesktopIcons() {
 
   for (auto& fence : fences_) {
     if (!fence) {
+      continue;
+    }
+    if (!fence->PortalPath().empty()) {
+      std::vector<DesktopItem> portal_items;
+      WIN32_FIND_DATAW fd{};
+      const std::wstring pattern = fence->PortalPath() + L"\\*";
+      HANDLE find = FindFirstFileW(pattern.c_str(), &fd);
+      if (find != INVALID_HANDLE_VALUE) {
+        do {
+          if (wcscmp(fd.cFileName, L".") == 0 ||
+              wcscmp(fd.cFileName, L"..") == 0) {
+            continue;
+          }
+          if (fd.dwFileAttributes & FILE_ATTRIBUTE_HIDDEN) {
+            continue;
+          }
+          DesktopItem item;
+          item.path = fence->PortalPath() + L"\\" + fd.cFileName;
+          item.name = fd.cFileName;
+          item.is_link =
+              item.name.size() >= 4 &&
+              _wcsicmp(item.name.c_str() + item.name.size() - 4, L".lnk") == 0;
+          portal_items.push_back(std::move(item));
+          if (portal_items.size() >= 200) {
+            break;
+          }
+        } while (FindNextFileW(find, &fd));
+        FindClose(find);
+      }
+      fence->SetItems(std::move(portal_items));
       continue;
     }
     auto it = by_fence.find(fence->Id());
@@ -713,10 +894,12 @@ void App::SetPage(int page) {
   if (page < 0) {
     page = 0;
   }
-  if (page > 1) {
-    page = 1;
+  const int max_page = (std::max)(0, static_cast<int>(page_names_.size()) - 1);
+  if (page > max_page) {
+    page = max_page;
   }
   current_page_ = page;
+  page_bar_.SetPage(current_page_);
   ApplyPageVisibility();
   PersistLayouts();
 }
@@ -852,6 +1035,8 @@ void App::AddFenceAtRect(const RECT& screen) {
   layout.w = (std::max)(160, static_cast<int>(screen.right - screen.left));
   layout.h = (std::max)(180, static_cast<int>(screen.bottom - screen.top));
   layout.page = current_page_;
+  layout.style_id =
+      prefs_.theme_id.empty() ? "charcoal" : prefs_.theme_id;
   if (!SpawnFence(layout)) {
     return;
   }
@@ -1003,6 +1188,8 @@ LRESULT CALLBACK App::TrayWndProc(HWND hwnd, UINT msg, WPARAM wparam,
         AppendMenuW(menu, MF_STRING, 33, Tr("page_folders").c_str());
         AppendMenuW(menu, MF_STRING, 34, Tr("help").c_str());
         AppendMenuW(menu, MF_STRING, 35, L"卸载清理…");
+        AppendMenuW(menu, MF_STRING, 38, L"布局编辑…");
+        AppendMenuW(menu, MF_STRING, 39, L"切换主题");
         AppendMenuW(menu, MF_STRING, 37, L"复制数据目录路径");
         AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
         AppendMenuW(menu, MF_STRING, 29, Tr("exit").c_str());
@@ -1129,6 +1316,12 @@ LRESULT CALLBACK App::TrayWndProc(HWND hwnd, UINT msg, WPARAM wparam,
             if (ClipboardSetText(hwnd, NativeDataDir())) {
               ShowToast(L"数据目录路径已复制");
             }
+            break;
+          case 38:
+            self->OpenLayoutEditor();
+            break;
+          case 39:
+            self->CycleTheme();
             break;
           case 29:
             PostQuitMessage(0);

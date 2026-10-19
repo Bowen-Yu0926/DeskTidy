@@ -23,6 +23,11 @@ class NotesWindow {
   void OpenLibrary();
   void SearchLibrary();
   void PreviewMarkdown();
+  void ExportMarkdown();
+  void ExportWithPandoc();
+  void OpenWithShell();
+  void PasteHtmlAsMarkdown();
+  void ToggleToast();
   void SetFontSize(int pt);
   void InsertTemplate();
   void ShowFind(bool replace);
@@ -39,4 +44,5 @@ class NotesWindow {
   wchar_t replace_with_[256]{};
   HWND find_dlg_ = nullptr;
   UINT find_msg_ = 0;
+  bool toast_ = false;
 };

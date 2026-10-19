@@ -60,6 +60,8 @@ add_executable(desktidy_native WIN32
   src/toast.cpp
   src/help_center.cpp
   src/native_cleanup.cpp
+  src/fence_keys.cpp
+  src/layout_editor.cpp
   src/version.rc
 )
 

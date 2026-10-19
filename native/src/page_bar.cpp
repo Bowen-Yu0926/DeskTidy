@@ -7,10 +7,10 @@
 
 namespace {
 constexpr wchar_t kClassName[] = L"DeskTidyNativePageBar";
-constexpr int kW = 280;
 constexpr int kH = 36;
-// Slots: [0]=page1 [1]=page2 [2]=notes [3]=search [4]=shot
-constexpr int kSlots = 5;
+constexpr int kSlot = 36;
+// After page buttons: add, remove, notes, search, shot.
+constexpr int kTools = 5;
 bool g_registered = false;
 }  // namespace
 
@@ -26,11 +26,12 @@ bool PageBar::Create(HINSTANCE instance) {
     g_registered = true;
   }
   const RECT work = PrimaryWorkArea();
-  const int x = work.left + (work.right - work.left - kW) / 2;
+  const int w = kSlot * (page_count_ + kTools);
+  const int x = work.left + (work.right - work.left - w) / 2;
   const int y = work.bottom - kH - 4;
   hwnd_ = CreateWindowExW(
       WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_LAYERED, kClassName,
-      L"Pages", WS_POPUP, x, y, kW, kH, nullptr, nullptr, instance, this);
+      L"Pages", WS_POPUP, x, y, w, kH, nullptr, nullptr, instance, this);
   if (!hwnd_) {
     return false;
   }
@@ -67,6 +68,25 @@ void PageBar::SetPage(int page) {
   }
 }
 
+void PageBar::SetPageCount(int count) {
+  if (count < 1) {
+    count = 1;
+  }
+  if (count > 12) {
+    count = 12;
+  }
+  page_count_ = count;
+  if (!hwnd_) {
+    return;
+  }
+  const RECT work = PrimaryWorkArea();
+  const int w = kSlot * (page_count_ + kTools);
+  const int x = work.left + (work.right - work.left - w) / 2;
+  const int y = work.bottom - kH - 4;
+  SetWindowPos(hwnd_, nullptr, x, y, w, kH, SWP_NOZORDER | SWP_NOACTIVATE);
+  InvalidateRect(hwnd_, nullptr, TRUE);
+}
+
 void PageBar::AttachToDesktopLayer() {
   if (!hwnd_) {
     return;
@@ -77,18 +97,13 @@ void PageBar::AttachToDesktopLayer() {
 }
 
 int PageBar::HitTest(int x) const {
-  RECT rc{};
-  GetClientRect(hwnd_, &rc);
-  const int slot = rc.right / kSlots;
-  if (slot <= 0) {
-    return -1;
-  }
-  int i = x / slot;
+  int i = x / kSlot;
+  const int n = page_count_ + kTools;
   if (i < 0) {
     i = 0;
   }
-  if (i >= kSlots) {
-    i = kSlots - 1;
+  if (i >= n) {
+    i = n - 1;
   }
   return i;
 }
@@ -121,15 +136,17 @@ LRESULT PageBar::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
     }
     case WM_LBUTTONUP: {
       const int hit = HitTest(GET_X_LPARAM(lparam));
-      if (hit == 0 && on_page_) {
-        on_page_(0);
-      } else if (hit == 1 && on_page_) {
-        on_page_(1);
-      } else if (hit == 2 && on_notes_) {
+      if (hit >= 0 && hit < page_count_ && on_page_) {
+        on_page_(hit);
+      } else if (hit == page_count_ && on_add_page_) {
+        on_add_page_();
+      } else if (hit == page_count_ + 1 && on_remove_page_) {
+        on_remove_page_();
+      } else if (hit == page_count_ + 2 && on_notes_) {
         on_notes_();
-      } else if (hit == 3 && on_search_) {
+      } else if (hit == page_count_ + 3 && on_search_) {
         on_search_();
-      } else if (hit == 4 && on_capture_) {
+      } else if (hit == page_count_ + 4 && on_capture_) {
         on_capture_();
       }
       return 0;
@@ -151,15 +168,29 @@ void PageBar::Paint(HDC hdc) {
   DeleteObject(bg);
   SetBkMode(hdc, TRANSPARENT);
 
-  const wchar_t* labels[kSlots] = {L"1", L"2", L"记", L"搜", L"截"};
-  const int slot = rc.right / kSlots;
-  for (int i = 0; i < kSlots; ++i) {
-    RECT r{i * slot + 3, 4, (i + 1) * slot - 3, rc.bottom - 4};
-    const bool on = (i < 2) && (page_ == i);
+  const int n = page_count_ + kTools;
+  for (int i = 0; i < n; ++i) {
+    RECT r{i * kSlot + 3, 4, (i + 1) * kSlot - 3, rc.bottom - 4};
+    const bool on = i < page_count_ && page_ == i;
     HBRUSH b = CreateSolidBrush(on ? RGB(70, 130, 200) : RGB(45, 50, 60));
     FillRect(hdc, &r, b);
     DeleteObject(b);
+    wchar_t label[8] = L"?";
+    if (i < page_count_) {
+      swprintf_s(label, L"%d", i + 1);
+    } else if (i == page_count_) {
+      wcscpy_s(label, L"+");
+    } else if (i == page_count_ + 1) {
+      wcscpy_s(label, L"-");
+    } else if (i == page_count_ + 2) {
+      wcscpy_s(label, L"记");
+    } else if (i == page_count_ + 3) {
+      wcscpy_s(label, L"搜");
+    } else {
+      wcscpy_s(label, L"截");
+    }
     SetTextColor(hdc, RGB(230, 230, 230));
-    DrawTextW(hdc, labels[i], -1, &r, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    DrawTextW(hdc, label, -1, &r, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
   }
+  (void)rc;
 }

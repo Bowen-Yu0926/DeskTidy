@@ -49,6 +49,11 @@ class App {
   void RenameFenceAt(int index, const std::wstring& title);
   void SetFencePageAt(int index, int page);
   void SetPage(int page);
+  void AddPage();
+  void RemoveCurrentPage();
+  void OpenLayoutEditor();
+  void CycleTheme();
+  void SyncPageChrome();
   void OrganizeVirtual(bool quiet = false);
   void OrganizePhysical();
   void SetOrganizeStartup(bool on);
@@ -110,6 +115,7 @@ class App {
   DesktopWatch desktop_watch_;
   AppPrefs prefs_;
   std::string display_fp_;
+  std::vector<std::wstring> page_names_;
   int current_page_ = 0;
   bool dock_visible_ = true;
   bool pet_visible_ = true;

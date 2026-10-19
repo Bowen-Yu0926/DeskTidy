@@ -21,6 +21,7 @@ class PetWindow {
   HWND Hwnd() const { return hwnd_; }
   void AttachToDesktopLayer();
   void Tick();
+  void StartClimb();
   void SetOnTrash(TrashFn fn) { on_trash_ = std::move(fn); }
 
  private:
@@ -38,6 +39,9 @@ class PetWindow {
   void ShowContextMenu(POINT screen);
   void StartFall();
   void StartWalk();
+  void CreateBuoy(HINSTANCE instance);
+  static LRESULT CALLBACK BuoyProc(HWND, UINT, WPARAM, LPARAM);
+  void PaintBuoy(HDC hdc);
   void PersistPrefs();
   void LoadPrefs();
 
@@ -66,5 +70,11 @@ class PetWindow {
   float pos_y_ = 0.f;
   bool falling_ = false;
   bool walking_ = false;
+  bool climbing_ = false;
+  bool on_ledge_ = false;
+  int ledge_left_ = 0;
+  int ledge_right_ = 0;
+  int ledge_top_ = 0;
   int walk_dir_ = 1;
+  HWND buoy_ = nullptr;
 };

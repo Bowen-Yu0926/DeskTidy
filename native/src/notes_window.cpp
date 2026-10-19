@@ -7,6 +7,7 @@
 
 #include <commdlg.h>
 #include <Richedit.h>
+#include <Shellapi.h>
 #include <ShlObj.h>
 
 #include <algorithm>
@@ -33,6 +34,11 @@ constexpr int kMenuPreview = 2110;
 constexpr int kMenuFind = 2111;
 constexpr int kMenuReplace = 2112;
 constexpr int kMenuSearchLib = 2113;
+constexpr int kMenuExportMd = 2114;
+constexpr int kMenuPandoc = 2115;
+constexpr int kMenuOpenWith = 2116;
+constexpr int kMenuPasteHtml = 2117;
+constexpr int kMenuToast = 2118;
 
 struct StreamCookie {
   std::string data;
@@ -98,6 +104,11 @@ bool NotesWindow::Create(HINSTANCE instance) {
   AppendMenuW(file, MF_STRING, kMenuLibrary, L"笔记库…");
   AppendMenuW(file, MF_STRING, kMenuSearchLib, L"搜索笔记…");
   AppendMenuW(file, MF_STRING, kMenuPreview, L"Markdown 预览");
+  AppendMenuW(file, MF_STRING, kMenuExportMd, L"导出 Markdown…");
+  AppendMenuW(file, MF_STRING, kMenuPandoc, L"用 Pandoc 导出 DOCX");
+  AppendMenuW(file, MF_STRING, kMenuOpenWith, L"打开方式…");
+  AppendMenuW(file, MF_STRING, kMenuPasteHtml, L"粘贴 HTML 为 Markdown");
+  AppendMenuW(file, MF_STRING, kMenuToast, L"便签条模式");
   AppendMenuW(file, MF_SEPARATOR, 0, nullptr);
   AppendMenuW(file, MF_STRING, kMenuTpl, L"插入模板");
   AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(file), L"文件");
@@ -268,6 +279,136 @@ void NotesWindow::PreviewMarkdown() {
     }
   }
   PreviewMarkdownText(hwnd_, CurrentPlainText(), L"便签预览");
+}
+
+void NotesWindow::ExportMarkdown() {
+  wchar_t file[MAX_PATH] = L"note.md";
+  OPENFILENAMEW ofn{};
+  ofn.lStructSize = sizeof(ofn);
+  ofn.hwndOwner = hwnd_;
+  ofn.lpstrFilter = L"Markdown\0*.md\0";
+  ofn.lpstrFile = file;
+  ofn.nMaxFile = MAX_PATH;
+  ofn.Flags = OFN_OVERWRITEPROMPT;
+  ofn.lpstrDefExt = L"md";
+  if (!GetSaveFileNameW(&ofn)) {
+    return;
+  }
+  std::ofstream out(file, std::ios::binary);
+  if (out) {
+    out << NarrowUtf8(CurrentPlainText());
+  }
+}
+
+void NotesWindow::ExportWithPandoc() {
+  wchar_t temp[MAX_PATH] = {};
+  GetTempPathW(MAX_PATH, temp);
+  const std::wstring src = std::wstring(temp) + L"desktidy_note.md";
+  const std::wstring dst = std::wstring(temp) + L"desktidy_note.docx";
+  {
+    std::ofstream out(src, std::ios::binary);
+    if (!out) {
+      return;
+    }
+    out << NarrowUtf8(CurrentPlainText());
+  }
+  std::wstring cmd = L"pandoc \"" + src + L"\" -o \"" + dst + L"\"";
+  STARTUPINFOW si{};
+  si.cb = sizeof(si);
+  PROCESS_INFORMATION pi{};
+  if (!CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, FALSE,
+                      CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
+    MessageBoxW(hwnd_, L"未找到 pandoc。安装后把它加入 PATH 再导出。", L"导出",
+                MB_OK | MB_ICONINFORMATION);
+    return;
+  }
+  WaitForSingleObject(pi.hProcess, 20000);
+  CloseHandle(pi.hThread);
+  CloseHandle(pi.hProcess);
+  ShellExecuteW(nullptr, L"open", dst.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+}
+
+void NotesWindow::OpenWithShell() {
+  Save();
+  if (path_.empty()) {
+    return;
+  }
+  const std::wstring cmd =
+      L"rundll32.exe shell32.dll,OpenAs_RunDLL " + path_;
+  ShellExecuteW(hwnd_, L"open", L"rundll32.exe",
+                (L"shell32.dll,OpenAs_RunDLL \"" + path_ + L"\"").c_str(),
+                nullptr, SW_SHOWNORMAL);
+  (void)cmd;
+}
+
+void NotesWindow::PasteHtmlAsMarkdown() {
+  const UINT fmt = RegisterClipboardFormatW(L"HTML Format");
+  if (!fmt || !OpenClipboard(hwnd_)) {
+    return;
+  }
+  HANDLE data = GetClipboardData(fmt);
+  std::string html;
+  if (data) {
+    const char* text = static_cast<const char*>(GlobalLock(data));
+    if (text) {
+      html = text;
+      GlobalUnlock(data);
+    }
+  }
+  CloseClipboard();
+  if (html.empty()) {
+    MessageBoxW(hwnd_, L"剪贴板里没有 HTML。", L"便签", MB_OK);
+    return;
+  }
+  const auto start = html.find("<!--StartFragment-->");
+  const auto end = html.find("<!--EndFragment-->");
+  std::string frag = (start != std::string::npos && end != std::string::npos &&
+                      end > start)
+                         ? html.substr(start + 20, end - (start + 20))
+                         : html;
+  std::string md;
+  for (size_t i = 0; i < frag.size(); ++i) {
+    if (frag.compare(i, 4, "<br>") == 0 || frag.compare(i, 5, "<br/>") == 0 ||
+        frag.compare(i, 3, "<p>") == 0 || frag.compare(i, 4, "</p>") == 0) {
+      md.push_back('\n');
+      while (i < frag.size() && frag[i] != '>') {
+        ++i;
+      }
+      continue;
+    }
+    if (frag[i] == '<') {
+      while (i < frag.size() && frag[i] != '>') {
+        ++i;
+      }
+      continue;
+    }
+    if (frag[i] == '&') {
+      if (frag.compare(i, 5, "&amp;") == 0) {
+        md.push_back('&');
+        i += 4;
+        continue;
+      }
+      if (frag.compare(i, 4, "&lt;") == 0) {
+        md.push_back('<');
+        i += 3;
+        continue;
+      }
+    }
+    md.push_back(frag[i]);
+  }
+  const std::wstring wide = WidenUtf8(md);
+  SendMessageW(edit_, EM_REPLACESEL, TRUE, reinterpret_cast<LPARAM>(wide.c_str()));
+}
+
+void NotesWindow::ToggleToast() {
+  toast_ = !toast_;
+  if (toast_) {
+    SetWindowPos(hwnd_, HWND_TOPMOST, 40, 40, 280, 140, SWP_SHOWWINDOW);
+    SetWindowTextW(hwnd_, L"便签条");
+  } else {
+    SetWindowPos(hwnd_, HWND_NOTOPMOST, 80, 80, 320, 300, SWP_SHOWWINDOW);
+    SetWindowTextW(hwnd_, L"便签");
+  }
 }
 
 void NotesWindow::SearchLibrary() {
@@ -451,6 +592,21 @@ LRESULT NotesWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
           return 0;
         case kMenuPreview:
           PreviewMarkdown();
+          return 0;
+        case kMenuExportMd:
+          ExportMarkdown();
+          return 0;
+        case kMenuPandoc:
+          ExportWithPandoc();
+          return 0;
+        case kMenuOpenWith:
+          OpenWithShell();
+          return 0;
+        case kMenuPasteHtml:
+          PasteHtmlAsMarkdown();
+          return 0;
+        case kMenuToast:
+          ToggleToast();
           return 0;
         case kMenuFind:
           ShowFind(false);

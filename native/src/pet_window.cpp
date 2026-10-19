@@ -344,9 +344,71 @@ void PetWindow::LoadFramePack() {
   SetPose(L"idle");
 }
 
+void PetWindow::StartClimb() {
+  if (!hwnd_) {
+    return;
+  }
+  RECT self{};
+  GetWindowRect(hwnd_, &self);
+  struct Pick {
+    HWND skip;
+    RECT best{};
+    bool found = false;
+    int best_top = 0;
+  } pick;
+  pick.skip = hwnd_;
+  pick.best_top = self.top;
+  EnumWindows(
+      [](HWND hwnd, LPARAM lp) -> BOOL {
+        auto* p = reinterpret_cast<Pick*>(lp);
+        if (hwnd == p->skip || !IsWindowVisible(hwnd)) {
+          return TRUE;
+        }
+        wchar_t cls[64] = {};
+        GetClassNameW(hwnd, cls, 64);
+        if (wcsncmp(cls, L"DeskTidyNative", 14) == 0) {
+          return TRUE;
+        }
+        RECT rc{};
+        if (!GetWindowRect(hwnd, &rc)) {
+          return TRUE;
+        }
+        if (rc.bottom - rc.top < 40 || rc.right - rc.left < 80) {
+          return TRUE;
+        }
+        RECT self{};
+        GetWindowRect(p->skip, &self);
+        const bool overlap = rc.right > self.left && rc.left < self.right;
+        if (!overlap || rc.top >= self.top) {
+          return TRUE;
+        }
+        if (!p->found || rc.top > p->best_top) {
+          p->found = true;
+          p->best = rc;
+          p->best_top = rc.top;
+        }
+        return TRUE;
+      },
+      reinterpret_cast<LPARAM>(&pick));
+  if (!pick.found) {
+    return;
+  }
+  ledge_left_ = pick.best.left;
+  ledge_right_ = pick.best.right;
+  ledge_top_ = pick.best.top;
+  climbing_ = true;
+  on_ledge_ = false;
+  walking_ = false;
+  falling_ = false;
+  pos_x_ = static_cast<float>(self.left);
+  pos_y_ = static_cast<float>(self.top);
+}
+
 void PetWindow::StartWalk() {
   walking_ = true;
   falling_ = false;
+  climbing_ = false;
+  on_ledge_ = false;
   vel_x_ = 2.5f * static_cast<float>(walk_dir_);
   vel_y_ = 0.f;
   if (std::find(pose_names_.begin(), pose_names_.end(), L"walk") !=
@@ -394,6 +456,7 @@ void PetWindow::ShowContextMenu(POINT screen) {
   }
   AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
   AppendMenuW(menu, MF_STRING, 1, L"走走");
+  AppendMenuW(menu, MF_STRING, 4, L"攀上窗台");
   AppendMenuW(menu, MF_STRING, 2, L"跌落");
   AppendMenuW(menu, MF_STRING, 3, L"待机");
   SetForegroundWindow(hwnd_);
@@ -403,11 +466,17 @@ void PetWindow::ShowContextMenu(POINT screen) {
   DestroyMenu(menu);
   if (cmd == 1) {
     StartWalk();
+  } else if (cmd == 4) {
+    StartClimb();
   } else if (cmd == 2) {
     StartFall();
+    climbing_ = false;
+    on_ledge_ = false;
   } else if (cmd == 3) {
     walking_ = false;
     falling_ = false;
+    climbing_ = false;
+    on_ledge_ = false;
     if (!pose_names_.empty()) {
       SetPose(L"idle");
     }
@@ -457,7 +526,88 @@ bool PetWindow::Create(HINSTANCE instance) {
   }
   SetWindowLongPtrW(hwnd_, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(this));
   EnsureDropTarget();
+  CreateBuoy(instance);
   return true;
+}
+
+void PetWindow::CreateBuoy(HINSTANCE instance) {
+  static bool registered = false;
+  if (!registered) {
+    WNDCLASSEXW wc{};
+    wc.cbSize = sizeof(wc);
+    wc.lpfnWndProc = PetWindow::BuoyProc;
+    wc.hInstance = instance;
+    wc.hCursor = LoadCursor(nullptr, IDC_HAND);
+    wc.lpszClassName = L"DeskTidyNativePetBuoy";
+    RegisterClassExW(&wc);
+    registered = true;
+  }
+  const RECT work = PrimaryWorkArea();
+  buoy_ = CreateWindowExW(
+      WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_LAYERED,
+      L"DeskTidyNativePetBuoy", L"PetBuoy", WS_POPUP, work.left + 12,
+      work.bottom - 44, 132, 28, nullptr, nullptr, instance, this);
+  if (!buoy_) {
+    return;
+  }
+  SetLayeredWindowAttributes(buoy_, 0, 220, LWA_ALPHA);
+  SetWindowLongPtrW(buoy_, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(this));
+}
+
+void PetWindow::PaintBuoy(HDC hdc) {
+  RECT rc{};
+  GetClientRect(buoy_, &rc);
+  HBRUSH bg = CreateSolidBrush(RGB(28, 32, 40));
+  FillRect(hdc, &rc, bg);
+  DeleteObject(bg);
+  const wchar_t* labels[] = {L"走", L"爬", L"落"};
+  SetBkMode(hdc, TRANSPARENT);
+  SetTextColor(hdc, RGB(230, 230, 230));
+  for (int i = 0; i < 3; ++i) {
+    RECT r{i * 44 + 2, 2, (i + 1) * 44 - 2, rc.bottom - 2};
+    HBRUSH b = CreateSolidBrush(RGB(55, 70, 90));
+    FillRect(hdc, &r, b);
+    DeleteObject(b);
+    DrawTextW(hdc, labels[i], -1, &r, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+  }
+}
+
+LRESULT CALLBACK PetWindow::BuoyProc(HWND hwnd, UINT msg, WPARAM wparam,
+                                     LPARAM lparam) {
+  auto* self =
+      reinterpret_cast<PetWindow*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+  if (msg == WM_NCCREATE) {
+    auto* cs = reinterpret_cast<CREATESTRUCTW*>(lparam);
+    SetWindowLongPtrW(hwnd, GWLP_USERDATA,
+                      reinterpret_cast<LONG_PTR>(cs->lpCreateParams));
+    return TRUE;
+  }
+  if (!self) {
+    return DefWindowProcW(hwnd, msg, wparam, lparam);
+  }
+  if (msg == WM_PAINT) {
+    PAINTSTRUCT ps{};
+    HDC hdc = BeginPaint(hwnd, &ps);
+    self->PaintBuoy(hdc);
+    EndPaint(hwnd, &ps);
+    return 0;
+  }
+  if (msg == WM_LBUTTONUP) {
+    const int x = GET_X_LPARAM(lparam);
+    if (x < 44) {
+      self->StartWalk();
+    } else if (x < 88) {
+      self->StartClimb();
+    } else {
+      self->StartFall();
+    }
+    return 0;
+  }
+  if (msg == WM_DESTROY) {
+    self->buoy_ = nullptr;
+    return 0;
+  }
+  return DefWindowProcW(hwnd, msg, wparam, lparam);
 }
 
 void PetWindow::EnsureDropTarget() {
@@ -477,6 +627,10 @@ void PetWindow::EnsureDropTarget() {
 }
 
 void PetWindow::Destroy() {
+  if (buoy_) {
+    DestroyWindow(buoy_);
+    buoy_ = nullptr;
+  }
   if (hwnd_) {
     RevokePathDropTarget(hwnd_);
     DestroyWindow(hwnd_);
@@ -499,11 +653,20 @@ void PetWindow::Show() {
   }
   ShowWindow(hwnd_, SW_SHOWNOACTIVATE);
   AttachToDesktopLayer();
+  if (buoy_) {
+    ShowWindow(buoy_, SW_SHOWNOACTIVATE);
+    AttachOverlayToDesktop(buoy_, true);
+    PlaceOverlayInDesktopBand(buoy_, true);
+    RaiseOverlayInDesktopBand(buoy_);
+  }
 }
 
 void PetWindow::Hide() {
   if (hwnd_) {
     ShowWindow(hwnd_, SW_HIDE);
+  }
+  if (buoy_) {
+    ShowWindow(buoy_, SW_HIDE);
   }
 }
 
@@ -540,6 +703,37 @@ void PetWindow::Tick() {
   const RECT work = PrimaryWorkArea();
   const int ww = sprite_w_ > 0 ? sprite_w_ : kSize;
   const int hh = sprite_h_ > 0 ? sprite_h_ : kSize;
+
+  if (climbing_) {
+    pos_y_ -= 3.f;
+    if (pos_y_ <= static_cast<float>(ledge_top_ - hh)) {
+      pos_y_ = static_cast<float>(ledge_top_ - hh);
+      climbing_ = false;
+      on_ledge_ = true;
+      walking_ = true;
+      vel_x_ = 2.2f * static_cast<float>(walk_dir_);
+    }
+    SetWindowPos(hwnd_, nullptr, static_cast<int>(pos_x_),
+                 static_cast<int>(pos_y_), 0, 0,
+                 SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+    return;
+  }
+
+  if (on_ledge_) {
+    pos_x_ += vel_x_;
+    if (pos_x_ < static_cast<float>(ledge_left_) ||
+        pos_x_ + ww > static_cast<float>(ledge_right_)) {
+      walk_dir_ = -walk_dir_;
+      vel_x_ = 2.2f * static_cast<float>(walk_dir_);
+      pos_x_ = (std::max)(static_cast<float>(ledge_left_),
+                          (std::min)(pos_x_, static_cast<float>(ledge_right_ - ww)));
+    }
+    pos_y_ = static_cast<float>(ledge_top_ - hh);
+    SetWindowPos(hwnd_, nullptr, static_cast<int>(pos_x_),
+                 static_cast<int>(pos_y_), 0, 0,
+                 SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+    return;
+  }
 
   if (falling_) {
     vel_y_ += 0.55f;
@@ -643,6 +837,8 @@ LRESULT PetWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
       pos_y_ = static_cast<float>(rc.top);
       walking_ = false;
       falling_ = false;
+      climbing_ = false;
+      on_ledge_ = false;
       AttachToDesktopLayer();
       return 0;
     }
