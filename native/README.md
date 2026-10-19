@@ -7,10 +7,11 @@ overlay HWNDs owned by the SHELLDLL_DefView host, under normal APPWINDOWs
 This tree is independent of the Python/PyQt app. Product parity is staged;
 MVP scope:
 
-- One dark fence panel (drag move, paint)
+- Multiple dark fence panels (drag move, paint)
+- Layout persistence (`%LOCALAPPDATA%\\DeskTidyNative\\layout.json`)
 - Attach to DefView host (`GWLP_HWNDPARENT`)
 - DefView-adjacent Z-order only (never band-top / `HWND_TOP` for overlays)
-- Simple settings window (normal APPWINDOW) that must stay above the fence
+- Settings window (normal APPWINDOW): list / add / remove fences; stays above overlays
 
 ## Build (MSVC + CMake)
 

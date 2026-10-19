@@ -8,25 +8,33 @@ namespace {
 constexpr wchar_t kClassName[] = L"DeskTidyNativeFence";
 constexpr COLORREF kPanelBg = RGB(32, 36, 44);
 constexpr COLORREF kPanelBorder = RGB(70, 78, 92);
+bool g_class_registered = false;
 }  // namespace
 
-bool FenceWindow::Create(HINSTANCE instance, int x, int y, int w, int h,
-                         const std::wstring& title) {
-  title_ = title;
+bool FenceWindow::Create(HINSTANCE instance, const FenceLayout& layout) {
+  id_ = layout.id;
+  title_ = layout.title;
 
-  WNDCLASSEXW wc{};
-  wc.cbSize = sizeof(wc);
-  wc.lpfnWndProc = FenceWindow::WndProc;
-  wc.hInstance = instance;
-  wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
-  wc.lpszClassName = kClassName;
-  wc.hbrBackground = nullptr;
-  RegisterClassExW(&wc);
+  if (!g_class_registered) {
+    WNDCLASSEXW wc{};
+    wc.cbSize = sizeof(wc);
+    wc.lpfnWndProc = FenceWindow::WndProc;
+    wc.hInstance = instance;
+    wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
+    wc.lpszClassName = kClassName;
+    wc.hbrBackground = nullptr;
+    if (!RegisterClassExW(&wc)) {
+      if (GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {
+        return false;
+      }
+    }
+    g_class_registered = true;
+  }
 
   hwnd_ = CreateWindowExW(
-      WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_LAYERED,
-      kClassName, title.c_str(), WS_POPUP,
-      x, y, w, h, nullptr, nullptr, instance, this);
+      WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_LAYERED, kClassName,
+      title_.c_str(), WS_POPUP, layout.x, layout.y, layout.w, layout.h, nullptr,
+      nullptr, instance, this);
 
   if (!hwnd_) {
     return false;
@@ -44,6 +52,29 @@ void FenceWindow::Destroy() {
   }
 }
 
+void FenceWindow::SetTitle(const std::wstring& title) {
+  title_ = title;
+  if (hwnd_) {
+    SetWindowTextW(hwnd_, title_.c_str());
+    InvalidateRect(hwnd_, nullptr, TRUE);
+  }
+}
+
+FenceLayout FenceWindow::CurrentLayout() const {
+  FenceLayout fl;
+  fl.id = id_;
+  fl.title = title_;
+  if (hwnd_) {
+    RECT rc{};
+    GetWindowRect(hwnd_, &rc);
+    fl.x = rc.left;
+    fl.y = rc.top;
+    fl.w = rc.right - rc.left;
+    fl.h = rc.bottom - rc.top;
+  }
+  return fl;
+}
+
 void FenceWindow::Show() {
   if (!hwnd_) {
     return;
@@ -57,7 +88,6 @@ void FenceWindow::AttachToDesktopLayer() {
     return;
   }
   AttachOverlayToDesktop(hwnd_, true);
-  // After attach, seat then DefView-adjacent raise (never band-top).
   PlaceOverlayInDesktopBand(hwnd_, true);
   RaiseOverlayInDesktopBand(hwnd_);
 }
@@ -113,18 +143,12 @@ LRESULT FenceWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
       if (dragging_) {
         dragging_ = false;
         ReleaseCapture();
-        // Re-seat after drag so we don't end above APPWINDOWs.
         AttachToDesktopLayer();
+        if (on_moved_) {
+          on_moved_(this);
+        }
       }
       return 0;
-    }
-    case WM_NCHITTEST: {
-      // Client area is the move grip for MVP.
-      LRESULT hit = DefWindowProcW(hwnd_, msg, wparam, lparam);
-      if (hit == HTCLIENT) {
-        return HTCLIENT;
-      }
-      return hit;
     }
     case WM_DESTROY:
       hwnd_ = nullptr;
@@ -154,8 +178,7 @@ void FenceWindow::Paint(HDC hdc) {
   SetTextColor(hdc, RGB(220, 224, 230));
   RECT text = rc;
   text.top += 12;
-  DrawTextW(hdc, title_.c_str(), -1, &text,
-            DT_CENTER | DT_TOP | DT_SINGLELINE);
+  DrawTextW(hdc, title_.c_str(), -1, &text, DT_CENTER | DT_TOP | DT_SINGLELINE);
 
   RECT hint = rc;
   hint.top = rc.bottom / 2 - 10;

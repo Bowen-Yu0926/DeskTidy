@@ -5,11 +5,24 @@
 #include <CommCtrl.h>
 #include <Shellapi.h>
 
+#include <utility>
+
 namespace {
 constexpr UINT kTrayMsg = WM_APP + 1;
 constexpr UINT kHotkeySettings = 1;
 constexpr wchar_t kMsgClass[] = L"DeskTidyNativeMsg";
 }  // namespace
+
+bool App::SpawnFence(const FenceLayout& layout) {
+  auto fence = std::make_unique<FenceWindow>();
+  if (!fence->Create(instance_, layout)) {
+    return false;
+  }
+  fence->SetOnMoved([this](FenceWindow*) { PersistLayouts(); });
+  fence->Show();
+  fences_.push_back(std::move(fence));
+  return true;
+}
 
 bool App::Init(HINSTANCE instance) {
   instance_ = instance;
@@ -32,24 +45,29 @@ bool App::Init(HINSTANCE instance) {
   SetWindowLongPtrW(message_hwnd_, GWLP_USERDATA,
                     reinterpret_cast<LONG_PTR>(this));
 
-  // Register Ctrl+Shift+S -> settings (MVP; avoids hunting a tray).
   RegisterHotKey(message_hwnd_, kHotkeySettings, MOD_CONTROL | MOD_SHIFT, 'S');
 
-  const int screen_w = GetSystemMetrics(SM_CXSCREEN);
-  const int fence_w = 280;
-  const int fence_h = 360;
-  const int x = screen_w - fence_w - 40;
-  const int y = 40;
-
-  if (!fence_.Create(instance, x, y, fence_w, fence_h, L"软件")) {
-    return false;
-  }
   if (!settings_.Create(instance)) {
     return false;
   }
+  settings_.SetHandlers(
+      [this]() { AddFence(); },
+      [this](int index) { RemoveFenceAt(index); },
+      [this]() {
+        SeatAllFencesUnderApps();
+        settings_.Show();
+      });
+
+  const auto layouts = LoadLayouts();
+  for (const auto& layout : layouts) {
+    if (!SpawnFence(layout)) {
+      return false;
+    }
+  }
+  PersistLayouts();
+  RefreshSettingsList();
 
   CreateTrayIcon();
-  fence_.Show();
   return true;
 }
 
@@ -63,30 +81,89 @@ int App::Run() {
 }
 
 void App::Shutdown() {
+  PersistLayouts();
   RemoveTrayIcon();
   if (message_hwnd_) {
     UnregisterHotKey(message_hwnd_, kHotkeySettings);
     DestroyWindow(message_hwnd_);
     message_hwnd_ = nullptr;
   }
-  fence_.Destroy();
+  for (auto& fence : fences_) {
+    if (fence) {
+      fence->Destroy();
+    }
+  }
+  fences_.clear();
   settings_.Destroy();
 }
 
 void App::OpenSettings() {
-  // Fences layer: seat fence under apps, then raise settings APPWINDOW.
-  SeatFenceUnderApps();
+  SeatAllFencesUnderApps();
+  RefreshSettingsList();
   settings_.Show();
 }
 
+void App::SeatAllFencesUnderApps() {
+  for (auto& fence : fences_) {
+    if (!fence || !fence->Hwnd()) {
+      continue;
+    }
+    AttachOverlayToDesktop(fence->Hwnd(), true);
+    PlaceOverlayInDesktopBand(fence->Hwnd(), true);
+  }
+}
 
-void App::SeatFenceUnderApps() {
-  HWND hwnd = fence_.Hwnd();
-  if (!hwnd) {
+void App::PersistLayouts() {
+  std::vector<FenceLayout> layouts;
+  layouts.reserve(fences_.size());
+  for (const auto& fence : fences_) {
+    if (fence) {
+      layouts.push_back(fence->CurrentLayout());
+    }
+  }
+  SaveLayouts(layouts);
+}
+
+void App::RefreshSettingsList() {
+  std::vector<std::wstring> names;
+  names.reserve(fences_.size());
+  for (const auto& fence : fences_) {
+    if (fence) {
+      names.push_back(fence->Title() + L"  [" +
+                      std::wstring(fence->Id().begin(), fence->Id().end()) +
+                      L"]");
+    }
+  }
+  settings_.SetFenceNames(names);
+}
+
+void App::AddFence() {
+  FenceLayout layout;
+  layout.id = MakeFenceId();
+  layout.title = L"新建分区";
+  layout.w = 260;
+  layout.h = 280;
+  layout.x = 80 + static_cast<int>(fences_.size()) * 28;
+  layout.y = 80 + static_cast<int>(fences_.size()) * 28;
+  if (!SpawnFence(layout)) {
     return;
   }
-  AttachOverlayToDesktop(hwnd, true);
-  PlaceOverlayInDesktopBand(hwnd, true);
+  SeatAllFencesUnderApps();
+  PersistLayouts();
+  RefreshSettingsList();
+  if (settings_.IsOpen()) {
+    settings_.Show();
+  }
+}
+
+void App::RemoveFenceAt(int index) {
+  if (index < 0 || index >= static_cast<int>(fences_.size())) {
+    return;
+  }
+  fences_[static_cast<size_t>(index)]->Destroy();
+  fences_.erase(fences_.begin() + index);
+  PersistLayouts();
+  RefreshSettingsList();
 }
 
 void App::CreateTrayIcon() {
@@ -132,9 +209,10 @@ LRESULT CALLBACK App::TrayWndProc(HWND hwnd, UINT msg, WPARAM wparam,
         GetCursorPos(&pt);
         HMENU menu = CreatePopupMenu();
         AppendMenuW(menu, MF_STRING, 1, L"Settings");
-        AppendMenuW(menu, MF_STRING, 2, L"Seat fence under apps");
+        AppendMenuW(menu, MF_STRING, 2, L"Add fence");
+        AppendMenuW(menu, MF_STRING, 3, L"Seat fences under apps");
         AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-        AppendMenuW(menu, MF_STRING, 3, L"Exit");
+        AppendMenuW(menu, MF_STRING, 4, L"Exit");
         SetForegroundWindow(hwnd);
         const int cmd =
             TrackPopupMenu(menu, TPM_RETURNCMD | TPM_NONOTIFY, pt.x, pt.y, 0,
@@ -143,8 +221,10 @@ LRESULT CALLBACK App::TrayWndProc(HWND hwnd, UINT msg, WPARAM wparam,
         if (cmd == 1) {
           self->OpenSettings();
         } else if (cmd == 2) {
-          self->SeatFenceUnderApps();
+          self->AddFence();
         } else if (cmd == 3) {
+          self->SeatAllFencesUnderApps();
+        } else if (cmd == 4) {
           PostQuitMessage(0);
         }
         return 0;

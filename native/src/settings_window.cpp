@@ -2,7 +2,10 @@
 
 namespace {
 constexpr wchar_t kClassName[] = L"DeskTidyNativeSettings";
-constexpr int kBtnReassert = 1001;
+constexpr int kBtnAdd = 1001;
+constexpr int kBtnRemove = 1002;
+constexpr int kBtnSeat = 1003;
+constexpr int kListId = 1100;
 }  // namespace
 
 bool SettingsWindow::Create(HINSTANCE instance) {
@@ -16,9 +19,9 @@ bool SettingsWindow::Create(HINSTANCE instance) {
   RegisterClassExW(&wc);
 
   hwnd_ = CreateWindowExW(
-      WS_EX_APPWINDOW, kClassName, L"DeskTidy Native — Settings",
-      WS_OVERLAPPEDWINDOW & ~WS_THICKFRAME & ~WS_MAXIMIZEBOX,
-      CW_USEDEFAULT, CW_USEDEFAULT, 420, 280, nullptr, nullptr, instance, this);
+      WS_EX_APPWINDOW, kClassName, L"DeskTidy Native - Settings",
+      WS_OVERLAPPEDWINDOW & ~WS_THICKFRAME & ~WS_MAXIMIZEBOX, CW_USEDEFAULT,
+      CW_USEDEFAULT, 460, 420, nullptr, nullptr, instance, this);
 
   if (!hwnd_) {
     return false;
@@ -27,18 +30,34 @@ bool SettingsWindow::Create(HINSTANCE instance) {
   SetWindowLongPtrW(hwnd_, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(this));
 
   CreateWindowW(L"STATIC",
-                L"Fences desktop-layer MVP\r\n\r\n"
-                L"This settings window is a normal APPWINDOW.\r\n"
-                L"The fence overlay must stay underneath it.\r\n\r\n"
-                L"If the fence covers this window, Z-order is wrong.\r\n"
-                L"(Hotkey: Ctrl+Shift+S)",
-                WS_CHILD | WS_VISIBLE, 24, 24, 360, 140, hwnd_, nullptr,
-                instance, nullptr);
+                L"Fences desktop-layer MVP\r\n"
+                L"Settings is a normal APPWINDOW; fences stay underneath.\r\n"
+                L"Hotkey: Ctrl+Shift+S",
+                WS_CHILD | WS_VISIBLE, 20, 16, 400, 56, hwnd_, nullptr, instance,
+                nullptr);
 
-  button_ = CreateWindowW(L"BUTTON", L"Bring settings to front",
-                          WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 24, 160, 200,
-                          32, hwnd_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kBtnReassert)),
+  CreateWindowW(L"STATIC", L"Fences", WS_CHILD | WS_VISIBLE, 20, 80, 100, 20,
+                hwnd_, nullptr, instance, nullptr);
+
+  list_ = CreateWindowExW(WS_EX_CLIENTEDGE, L"LISTBOX", L"",
+                          WS_CHILD | WS_VISIBLE | LBS_NOTIFY | WS_VSCROLL, 20,
+                          104, 400, 180, hwnd_,
+                          reinterpret_cast<HMENU>(static_cast<INT_PTR>(kListId)),
                           instance, nullptr);
+
+  btn_add_ = CreateWindowW(
+      L"BUTTON", L"Add fence", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 20, 300,
+      120, 32, hwnd_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kBtnAdd)),
+      instance, nullptr);
+  btn_remove_ = CreateWindowW(
+      L"BUTTON", L"Remove selected", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 150,
+      300, 140, 32, hwnd_,
+      reinterpret_cast<HMENU>(static_cast<INT_PTR>(kBtnRemove)), instance,
+      nullptr);
+  btn_seat_ = CreateWindowW(
+      L"BUTTON", L"Seat under apps", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 300,
+      300, 120, 32, hwnd_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kBtnSeat)),
+      instance, nullptr);
   return true;
 }
 
@@ -55,7 +74,6 @@ void SettingsWindow::Show() {
   }
   ShowWindow(hwnd_, SW_SHOW);
   SetForegroundWindow(hwnd_);
-  // Win32 raise above desktop-band overlays (Qt raise_ alone is not enough).
   SetWindowPos(hwnd_, HWND_TOP, 0, 0, 0, 0,
                SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
 }
@@ -68,6 +86,23 @@ void SettingsWindow::Hide() {
 
 bool SettingsWindow::IsOpen() const {
   return hwnd_ && IsWindowVisible(hwnd_) && !IsIconic(hwnd_);
+}
+
+void SettingsWindow::SetFenceNames(const std::vector<std::wstring>& names) {
+  if (!list_) {
+    return;
+  }
+  SendMessageW(list_, LB_RESETCONTENT, 0, 0);
+  for (const auto& name : names) {
+    SendMessageW(list_, LB_ADDSTRING, 0, reinterpret_cast<LPARAM>(name.c_str()));
+  }
+}
+
+void SettingsWindow::SetHandlers(VoidFn on_add, IndexFn on_remove,
+                                 VoidFn on_seat) {
+  on_add_ = std::move(on_add);
+  on_remove_ = std::move(on_remove);
+  on_seat_ = std::move(on_seat);
 }
 
 LRESULT CALLBACK SettingsWindow::WndProc(HWND hwnd, UINT msg, WPARAM wparam,
@@ -90,12 +125,26 @@ LRESULT CALLBACK SettingsWindow::WndProc(HWND hwnd, UINT msg, WPARAM wparam,
 
 LRESULT SettingsWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
   switch (msg) {
-    case WM_COMMAND:
-      if (LOWORD(wparam) == kBtnReassert) {
-        Show();
+    case WM_COMMAND: {
+      const int id = LOWORD(wparam);
+      if (id == kBtnAdd && on_add_) {
+        on_add_();
+        return 0;
+      }
+      if (id == kBtnRemove && on_remove_ && list_) {
+        const int sel =
+            static_cast<int>(SendMessageW(list_, LB_GETCURSEL, 0, 0));
+        if (sel >= 0) {
+          on_remove_(sel);
+        }
+        return 0;
+      }
+      if (id == kBtnSeat && on_seat_) {
+        on_seat_();
         return 0;
       }
       break;
+    }
     case WM_CLOSE:
       Hide();
       return 0;

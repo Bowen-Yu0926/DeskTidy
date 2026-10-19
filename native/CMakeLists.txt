@@ -10,6 +10,7 @@ add_executable(desktidy_native WIN32
   src/desktop_shell.cpp
   src/fence_window.cpp
   src/settings_window.cpp
+  src/layout.cpp
 )
 
 target_include_directories(desktidy_native PRIVATE src)
