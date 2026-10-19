@@ -2,6 +2,7 @@
 
 #include "app_prefs.h"
 #include "capture_overlay.h"
+#include "fence_region_overlay.h"
 #include "desktop_watch.h"
 #include "dock_window.h"
 #include "fence_window.h"
@@ -43,6 +44,7 @@ class App {
   void RefreshSettingsList();
   void RefreshDesktopIcons();
   void AddFence();
+  void AddFenceAtRect(const RECT& screen);
   void RemoveFenceAt(int index);
   void RenameFenceAt(int index, const std::wstring& title);
   void SetFencePageAt(int index, int page);
@@ -97,6 +99,7 @@ class App {
   PageBar page_bar_;
   PublicHost public_host_;
   CaptureOverlay capture_;
+  FenceRegionOverlay fence_region_;
   std::vector<std::unique_ptr<PinnedImage>> pins_img_;
   PinMap pins_;
   RuleMap rules_;

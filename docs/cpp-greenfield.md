@@ -44,6 +44,7 @@ Native Win32 host — feature MVP map vs Python product.
 | Auto-organize watch + startup pin | done |
 | Organize suppress (unpin grace) | done |
 | Record toggle + badge + duration/dir | done |
+| Drag-to-create fence region | done |
 | DeskNote Toast UI / WebView editor | not ported |
 | Full Shimeji climb/ledge physics | not ported |
 

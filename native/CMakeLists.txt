@@ -53,6 +53,7 @@ add_executable(desktidy_native WIN32
   src/organize_suppress.cpp
   src/app_prefs.cpp
   src/screen_record.cpp
+  src/fence_region_overlay.cpp
   src/version.rc
 )
 

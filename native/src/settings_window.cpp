@@ -102,7 +102,7 @@ bool SettingsWindow::Create(HINSTANCE instance) {
       300, 140, 28, hwnd_,
       reinterpret_cast<HMENU>(static_cast<INT_PTR>(kBtnApply)), instance,
       nullptr);
-  btn_add_ = CreateWindowW(L"BUTTON", L"添加分区",
+  btn_add_ = CreateWindowW(L"BUTTON", L"框选添加",
                            WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 170, 300, 100,
                            28, hwnd_,
                            reinterpret_cast<HMENU>(static_cast<INT_PTR>(kBtnAdd)),

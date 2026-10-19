@@ -699,13 +699,26 @@ void App::EditRules() {
 }
 
 void App::AddFence() {
+  if (!fence_region_.Begin(instance_, [this](const RECT& screen) {
+        AddFenceAtRect(screen);
+      })) {
+    // Fallback: place a default-sized fence if overlay fails.
+    RECT r{80 + static_cast<int>(fences_.size()) * 28,
+           80 + static_cast<int>(fences_.size()) * 28, 0, 0};
+    r.right = r.left + 260;
+    r.bottom = r.top + 280;
+    AddFenceAtRect(r);
+  }
+}
+
+void App::AddFenceAtRect(const RECT& screen) {
   FenceLayout layout;
   layout.id = MakeFenceId();
   layout.title = L"新建分区";
-  layout.w = 260;
-  layout.h = 280;
-  layout.x = 80 + static_cast<int>(fences_.size()) * 28;
-  layout.y = 80 + static_cast<int>(fences_.size()) * 28;
+  layout.x = screen.left;
+  layout.y = screen.top;
+  layout.w = (std::max)(160, static_cast<int>(screen.right - screen.left));
+  layout.h = (std::max)(180, static_cast<int>(screen.bottom - screen.top));
   layout.page = current_page_;
   if (!SpawnFence(layout)) {
     return;
