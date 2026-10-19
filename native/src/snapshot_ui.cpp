@@ -45,7 +45,7 @@ bool ManageSnapshotsDialog(HWND owner, AppState* applied) {
     return false;
   }
 
-  if (!LoadSnapshot(list[static_cast<size_t>(idx)].path, applied)) {
+  if (!LoadSnapshotWithIcons(list[static_cast<size_t>(idx)].path, applied)) {
     MessageBoxW(owner, L"读取快照失败。", L"布局快照", MB_OK | MB_ICONWARNING);
     return false;
   }

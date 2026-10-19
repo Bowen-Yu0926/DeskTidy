@@ -6,6 +6,8 @@
 #include <ShlObj.h>
 
 #include <filesystem>
+#include <string>
+#include <vector>
 
 namespace fs = std::filesystem;
 
@@ -72,6 +74,54 @@ int OrganizeCountPhysicalMoves(const std::vector<DesktopItem>& items) {
     ++n;
   }
   return n;
+}
+
+std::vector<std::wstring> OrganizePreviewPhysicalMoves(
+    const std::vector<DesktopItem>& items) {
+  std::vector<std::wstring> names;
+  const std::wstring desktop = DesktopDir();
+  if (desktop.empty()) {
+    return names;
+  }
+  const fs::path root = fs::path(desktop) / L"DeskTidy";
+  const auto wl = LoadWhitelist();
+  for (const auto& it : items) {
+    if (!IsUnderDir(it.path, desktop)) {
+      continue;
+    }
+    if (IsUnderDir(it.path, root.wstring())) {
+      continue;
+    }
+    if (IsWhitelisted(it.path, wl) || IsWhitelisted(it.name, wl)) {
+      continue;
+    }
+    names.push_back(it.name.empty() ? it.path : it.name);
+    if (names.size() >= 40) {
+      break;
+    }
+  }
+  return names;
+}
+
+bool OrganizeConfirmPhysical(HWND owner, const std::vector<DesktopItem>& items) {
+  const auto names = OrganizePreviewPhysicalMoves(items);
+  const int will = OrganizeCountPhysicalMoves(items);
+  std::wstring msg = L"将把约 " + std::to_wstring(will) +
+                     L" 个桌面项目移入 Desktop\\DeskTidy（白名单除外）。\n\n";
+  if (names.empty()) {
+    msg += L"（没有可移动项）\n";
+  } else {
+    msg += L"预览：\n";
+    for (size_t i = 0; i < names.size(); ++i) {
+      msg += L" · " + names[i] + L"\n";
+    }
+    if (will > static_cast<int>(names.size())) {
+      msg += L" · …\n";
+    }
+  }
+  msg += L"\n继续？";
+  return MessageBoxW(owner, msg.c_str(), L"物理整理",
+                     MB_YESNO | MB_ICONWARNING) == IDYES;
 }
 
 int OrganizeMoveIntoFolders(const std::vector<DesktopItem>& items) {

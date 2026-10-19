@@ -1,6 +1,8 @@
 #include "tools_misc.h"
 
+#include "display_geom.h"
 #include "paths_util.h"
+#include "prompt_text.h"
 #include "tool_paths.h"
 
 #include <Shellapi.h>
@@ -276,6 +278,28 @@ bool StartScreenRecord(HWND owner) {
     return false;
   }
 
+  const auto mons = EnumMonitors();
+  int mon_index = -1;  // -1 = full virtual desktop
+  if (mons.size() > 1) {
+    std::wstring msg = L"选择录制目标：\n\n0. 整桌面（所有显示器）\n";
+    for (size_t i = 0; i < mons.size(); ++i) {
+      const auto& m = mons[i];
+      msg += std::to_wstring(i + 1) + L". " +
+             std::to_wstring(m.monitor.right - m.monitor.left) + L"x" +
+             std::to_wstring(m.monitor.bottom - m.monitor.top) +
+             (m.primary ? L" (主屏)" : L"") + L"\n";
+    }
+    msg += L"\n输入编号（默认 0）：";
+    const std::wstring ans = PromptText(owner, L"录屏", msg.c_str(), L"0");
+    if (!ans.empty()) {
+      if (ans == L"0") {
+        mon_index = -1;
+      } else {
+        mon_index = _wtoi(ans.c_str()) - 1;
+      }
+    }
+  }
+
   PWSTR vids = nullptr;
   std::wstring out_dir = NativeDataDir();
   if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Videos, 0, nullptr, &vids)) &&
@@ -291,9 +315,17 @@ bool StartScreenRecord(HWND owner) {
              st.wDay, st.wHour, st.wMinute, st.wSecond);
   const std::wstring out = JoinPath(out_dir, name);
 
-  std::wstring cmd = L"\"" + ff +
-                     L"\" -y -f gdigrab -framerate 30 -i desktop -t 15 \"" +
-                     out + L"\"";
+  std::wstring region;
+  if (mon_index >= 0 && mon_index < static_cast<int>(mons.size())) {
+    const RECT& r = mons[static_cast<size_t>(mon_index)].monitor;
+    wchar_t off[160];
+    swprintf_s(off, L" -offset_x %d -offset_y %d -video_size %dx%d", r.left,
+               r.top, r.right - r.left, r.bottom - r.top);
+    region = off;
+  }
+
+  std::wstring cmd = L"\"" + ff + L"\" -y -f gdigrab -framerate 30" + region +
+                     L" -i desktop -t 15 \"" + out + L"\"";
   STARTUPINFOW si{};
   si.cb = sizeof(si);
   PROCESS_INFORMATION pi{};
@@ -303,12 +335,38 @@ bool StartScreenRecord(HWND owner) {
                      CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
     CloseHandle(pi.hThread);
     CloseHandle(pi.hProcess);
-    MessageBoxW(owner, (L"已启动 15 秒桌面录制：\n" + out).c_str(), L"录屏",
+    MessageBoxW(owner,
+                (L"正在录制 15 秒…\n完成后文件：\n" + out).c_str(), L"录屏",
                 MB_OK | MB_ICONINFORMATION);
     return true;
   }
   MessageBoxW(owner, L"无法启动 ffmpeg。", L"录屏", MB_OK | MB_ICONWARNING);
   return false;
+}
+
+void OpenCalculator() {
+  if (ShellExecuteW(nullptr, L"open", L"calc.exe", nullptr, nullptr,
+                    SW_SHOWNORMAL) <= reinterpret_cast<HINSTANCE>(32)) {
+    ShellExecuteW(nullptr, L"open", L"calculator:", nullptr, nullptr,
+                  SW_SHOWNORMAL);
+  }
+}
+
+void ShowAppHelp(HWND owner) {
+  MessageBoxW(
+      owner,
+      L"DeskTidy Native\n\n"
+      L"· 分区：拖放钉选、右键样式/换页\n"
+      L"· 整理：虚拟钉选 / 物理归档（可白名单）\n"
+      L"· 截图：区域钉桌面 / 全屏\n"
+      L"· 录屏：可选显示器，15 秒\n"
+      L"· 保险库：本地 DPAPI + 可选云同步\n"
+      L"· 便签：RichEdit 粗斜体\n"
+      L"· 宠物：pets\\*.png 帧动画\n"
+      L"· 托盘：语言切换、快捷键改绑、快照\n\n"
+      L"数据目录：%LocalAppData%\\DeskTidyNative\\\n"
+      L"更新：GitHub Releases",
+      L"帮助", MB_OK | MB_ICONINFORMATION);
 }
 
 void OpenUpdatePage() {

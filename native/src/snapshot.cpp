@@ -1,6 +1,7 @@
 #include "snapshot.h"
 
 #include "paths_util.h"
+#include "shell_icons.h"
 
 #include <Windows.h>
 
@@ -66,5 +67,33 @@ bool LoadSnapshot(const std::wstring& path, AppState* out) {
     return false;
   }
   *out = LoadAppState();
+  return true;
+}
+
+bool SaveSnapshotWithIcons(const AppState& state, const std::wstring& name) {
+  if (!SaveSnapshot(state, name)) {
+    return false;
+  }
+  std::wstring safe = name;
+  for (auto& ch : safe) {
+    if (ch == L'\\' || ch == L'/' || ch == L':' || ch == L'*' || ch == L'?' ||
+        ch == L'"' || ch == L'<' || ch == L'>' || ch == L'|') {
+      ch = L'_';
+    }
+  }
+  const std::wstring path = JoinPath(SnapshotDir(), safe + L".json");
+  const auto icons = CaptureShellIconPositions();
+  SaveShellIconsSidecar(path, icons);
+  return true;
+}
+
+bool LoadSnapshotWithIcons(const std::wstring& path, AppState* out) {
+  if (!LoadSnapshot(path, out)) {
+    return false;
+  }
+  const auto icons = LoadShellIconsSidecar(path);
+  if (!icons.empty()) {
+    RestoreShellIconPositions(icons);
+  }
   return true;
 }

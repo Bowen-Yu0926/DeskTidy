@@ -45,6 +45,8 @@ add_executable(desktidy_native WIN32
   src/minutes.cpp
   src/i18n.cpp
   src/vault_http.cpp
+  src/shell_icons.cpp
+  src/page_folders.cpp
   src/version.rc
 )
 

@@ -9,6 +9,7 @@
 #include "i18n.h"
 #include "organize.h"
 #include "minutes.h"
+#include "page_folders.h"
 #include "snapshot_ui.h"
 #include "whitelist.h"
 #include "paths_util.h"
@@ -345,7 +346,7 @@ void App::SaveLayoutSnapshot() {
   wchar_t name[64];
   swprintf_s(name, L"snap_%04d%02d%02d_%02d%02d%02d", st.wYear, st.wMonth,
              st.wDay, st.wHour, st.wMinute, st.wSecond);
-  if (SaveSnapshot(state, name)) {
+  if (SaveSnapshotWithIcons(state, name)) {
     MessageBoxW(settings_.Hwnd(), (std::wstring(L"已保存快照：") + name).c_str(),
                 L"布局快照", MB_OK | MB_ICONINFORMATION);
   }
@@ -618,14 +619,7 @@ void App::OrganizeVirtual() {
 
 void App::OrganizePhysical() {
   const auto items = ScanDesktopItems();
-  const int will = OrganizeCountPhysicalMoves(items);
-  wchar_t ask[160];
-  swprintf_s(ask,
-             L"将把约 %d 个桌面项目移入 Desktop\\DeskTidy（白名单除外）。\n"
-             L"继续？",
-             will);
-  if (MessageBoxW(settings_.Hwnd(), ask, L"物理整理",
-                  MB_YESNO | MB_ICONWARNING) != IDYES) {
+  if (!OrganizeConfirmPhysical(settings_.Hwnd(), items)) {
     return;
   }
   const int n = OrganizeMoveIntoFolders(items);
@@ -819,6 +813,9 @@ LRESULT CALLBACK App::TrayWndProc(HWND hwnd, UINT msg, WPARAM wparam,
         AppendMenuW(menu, MF_STRING, 27, Tr("edit_hotkeys").c_str());
         AppendMenuW(menu, MF_STRING, 28, Tr("fullscreen_shot").c_str());
         AppendMenuW(menu, MF_STRING, 31, Tr("language").c_str());
+        AppendMenuW(menu, MF_STRING, 32, Tr("calculator").c_str());
+        AppendMenuW(menu, MF_STRING, 33, Tr("page_folders").c_str());
+        AppendMenuW(menu, MF_STRING, 34, Tr("help").c_str());
         AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
         AppendMenuW(menu, MF_STRING, 29, Tr("exit").c_str());
         SetForegroundWindow(hwnd);
@@ -920,6 +917,15 @@ LRESULT CALLBACK App::TrayWndProc(HWND hwnd, UINT msg, WPARAM wparam,
             MessageBoxW(self->settings_.Hwnd(),
                         (std::wstring(L"Language: ") + WidenUtf8(CurrentLang())).c_str(),
                         Tr("language").c_str(), MB_OK | MB_ICONINFORMATION);
+            break;
+          case 32:
+            OpenCalculator();
+            break;
+          case 33:
+            OpenPageFolderMenu(self->settings_.Hwnd());
+            break;
+          case 34:
+            ShowAppHelp(self->settings_.Hwnd());
             break;
           case 29:
             PostQuitMessage(0);

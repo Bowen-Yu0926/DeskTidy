@@ -31,6 +31,14 @@ Native Win32 host — feature MVP map vs Python product.
 | Pet PNG frame pack + dissolve | done |
 | UI language zh/en (`ui_lang.txt`) | done |
 | Per-display layout profiles | done |
+| Calculator / page folders / help | done |
+| Record pick monitor | done |
+| Snapshot + shell icon positions | done |
+| Organize physical preview | done |
+| Vault ZK (enc_ver=1) | not ported |
+| DeskNote Toast UI / MD library | not ported |
+| Pet character state machine | not ported |
+| Full settings sidebar UI | not ported |
 
 ## Build
 
