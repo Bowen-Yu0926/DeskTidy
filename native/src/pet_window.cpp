@@ -633,14 +633,11 @@ void PetWindow::PaintPages(HDC hdc) {
                                                    : RGB(55, 70, 90));
     FillRect(hdc, &r, b);
     DeleteObject(b);
-    std::wstring label = std::to_wstring(i + 1);
-    if (static_cast<size_t>(i) < page_names_.size() &&
-        !page_names_[static_cast<size_t>(i)].empty()) {
-      label = page_names_[static_cast<size_t>(i)].substr(0, 2);
-    }
+    // Prefer short numeric chips; full page names are often "第 N 页".
+    const std::wstring label = std::to_wstring(i + 1);
     SetTextColor(hdc, RGB(240, 240, 240));
     DrawTextW(hdc, label.c_str(), -1, &r,
-              DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+              DT_CENTER | DT_VCENTER | DT_SINGLELINE);
   }
 }
 
