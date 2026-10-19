@@ -21,6 +21,7 @@ class NotesWindow {
   void Save();
   void SaveAs();
   void OpenLibrary();
+  void SearchLibrary();
   void PreviewMarkdown();
   void SetFontSize(int pt);
   void InsertTemplate();

@@ -32,6 +32,7 @@ constexpr int kMenuLibrary = 2109;
 constexpr int kMenuPreview = 2110;
 constexpr int kMenuFind = 2111;
 constexpr int kMenuReplace = 2112;
+constexpr int kMenuSearchLib = 2113;
 
 struct StreamCookie {
   std::string data;
@@ -95,6 +96,7 @@ bool NotesWindow::Create(HINSTANCE instance) {
   AppendMenuW(file, MF_STRING, kMenuSave, L"保存");
   AppendMenuW(file, MF_STRING, kMenuSaveAs, L"另存为…");
   AppendMenuW(file, MF_STRING, kMenuLibrary, L"笔记库…");
+  AppendMenuW(file, MF_STRING, kMenuSearchLib, L"搜索笔记…");
   AppendMenuW(file, MF_STRING, kMenuPreview, L"Markdown 预览");
   AppendMenuW(file, MF_SEPARATOR, 0, nullptr);
   AppendMenuW(file, MF_STRING, kMenuTpl, L"插入模板");
@@ -268,6 +270,17 @@ void NotesWindow::PreviewMarkdown() {
   PreviewMarkdownText(hwnd_, CurrentPlainText(), L"便签预览");
 }
 
+void NotesWindow::SearchLibrary() {
+  Save();
+  const std::wstring picked = SearchNotesInLibrary(hwnd_);
+  if (picked.empty()) {
+    return;
+  }
+  path_ = picked;
+  Load();
+  SetWindowTextW(hwnd_, (L"便签 · " + path_).c_str());
+}
+
 void NotesWindow::OpenLibrary() {
   Save();
   const std::wstring picked = PickNoteFromLibrary(hwnd_);
@@ -432,6 +445,9 @@ LRESULT NotesWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
           return 0;
         case kMenuLibrary:
           OpenLibrary();
+          return 0;
+        case kMenuSearchLib:
+          SearchLibrary();
           return 0;
         case kMenuPreview:
           PreviewMarkdown();

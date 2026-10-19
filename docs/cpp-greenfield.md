@@ -48,6 +48,7 @@ Native Win32 host — feature MVP map vs Python product.
 | GitHub Releases version check | done |
 | Notes find / replace | done |
 | Region capture click-to-window | done |
+| Notes library text search | done |
 | Vault password generate + clipboard clear | done |
 | DeskNote Toast UI / WebView editor | not ported |
 | Full Shimeji climb/ledge physics | not ported |
