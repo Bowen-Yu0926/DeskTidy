@@ -3,6 +3,7 @@
 #include "i18n.h"
 #include "paths_util.h"
 #include "prompt_text.h"
+#include "toast.h"
 #include "vault_crypto.h"
 #include "vault_http.h"
 
@@ -33,6 +34,7 @@ constexpr int kGen = 5012;
 constexpr int kCopy = 5013;
 constexpr int kUpdate = 5014;
 constexpr int kNote = 5015;
+constexpr int kCopyUser = 5016;
 constexpr UINT_PTR kClipTimer = 70;
 
 std::wstring VaultPath() { return JoinPath(NativeDataDir(), L"vault.dpapi"); }
@@ -151,9 +153,13 @@ bool VaultWindow::Create(HINSTANCE instance) {
                 reinterpret_cast<HMENU>(static_cast<INT_PTR>(kGen)), instance,
                 nullptr);
   CreateWindowW(L"BUTTON", L"复制密码", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 350,
-                384, 100, 30, hwnd_,
+                384, 80, 30, hwnd_,
                 reinterpret_cast<HMENU>(static_cast<INT_PTR>(kCopy)), instance,
                 nullptr);
+  CreateWindowW(L"BUTTON", L"复制用户", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 440,
+                384, 80, 30, hwnd_,
+                reinterpret_cast<HMENU>(static_cast<INT_PTR>(kCopyUser)),
+                instance, nullptr);
   CreateWindowW(L"STATIC",
                 L"备注仅存本地。复制密码约 30 秒后清空剪贴板。云同步不含备注。",
                 WS_CHILD | WS_VISIBLE, 12, 430, 520, 40, hwnd_, nullptr,
@@ -196,6 +202,31 @@ void VaultWindow::GeneratePassword() {
   SetWindowTextW(edit_pass_, pwd.c_str());
 }
 
+void VaultWindow::CopyFieldToClipboard(const std::wstring& value,
+                                       const wchar_t* tip) {
+  if (value.empty() || !OpenClipboard(hwnd_)) {
+    return;
+  }
+  EmptyClipboard();
+  const size_t bytes = (value.size() + 1) * sizeof(wchar_t);
+  HGLOBAL mem = GlobalAlloc(GMEM_MOVEABLE, bytes);
+  if (!mem) {
+    CloseClipboard();
+    return;
+  }
+  void* dst = GlobalLock(mem);
+  memcpy(dst, value.c_str(), bytes);
+  GlobalUnlock(mem);
+  SetClipboardData(CF_UNICODETEXT, mem);
+  CloseClipboard();
+  clip_secret_ = value;
+  if (clip_timer_) {
+    KillTimer(hwnd_, clip_timer_);
+  }
+  clip_timer_ = SetTimer(hwnd_, kClipTimer, 30000, nullptr);
+  ShowToast(tip ? tip : L"已复制");
+}
+
 void VaultWindow::CopyPassword() {
   std::wstring secret;
   if (list_) {
@@ -209,28 +240,23 @@ void VaultWindow::CopyPassword() {
     GetWindowTextW(edit_pass_, buf, 512);
     secret = buf;
   }
-  if (secret.empty() || !OpenClipboard(hwnd_)) {
-    return;
+  CopyFieldToClipboard(secret, L"密码已复制 · 30 秒后清空");
+}
+
+void VaultWindow::CopyUsername() {
+  std::wstring user;
+  if (list_) {
+    const int sel = static_cast<int>(SendMessageW(list_, LB_GETCURSEL, 0, 0));
+    if (sel >= 0 && sel < static_cast<int>(entries_.size())) {
+      user = entries_[static_cast<size_t>(sel)].user;
+    }
   }
-  EmptyClipboard();
-  const size_t bytes = (secret.size() + 1) * sizeof(wchar_t);
-  HGLOBAL mem = GlobalAlloc(GMEM_MOVEABLE, bytes);
-  if (!mem) {
-    CloseClipboard();
-    return;
+  if (user.empty() && edit_user_) {
+    wchar_t buf[512] = {};
+    GetWindowTextW(edit_user_, buf, 512);
+    user = buf;
   }
-  void* dst = GlobalLock(mem);
-  memcpy(dst, secret.c_str(), bytes);
-  GlobalUnlock(mem);
-  SetClipboardData(CF_UNICODETEXT, mem);
-  CloseClipboard();
-  clip_secret_ = secret;
-  if (clip_timer_) {
-    KillTimer(hwnd_, clip_timer_);
-  }
-  clip_timer_ = SetTimer(hwnd_, kClipTimer, 30000, nullptr);
-  MessageBoxW(hwnd_, L"密码已复制，30 秒后将尝试清空剪贴板。", L"保险库",
-              MB_OK | MB_ICONINFORMATION);
+  CopyFieldToClipboard(user, L"用户名已复制 · 30 秒后清空");
 }
 
 void VaultWindow::ClearClipboardIfOurs() {
@@ -659,6 +685,10 @@ LRESULT VaultWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
       }
       if (LOWORD(wparam) == kCopy) {
         CopyPassword();
+        return 0;
+      }
+      if (LOWORD(wparam) == kCopyUser) {
+        CopyUsername();
         return 0;
       }
       break;

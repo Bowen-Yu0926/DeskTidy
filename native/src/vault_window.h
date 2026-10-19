@@ -36,6 +36,8 @@ class VaultWindow {
   void CloudSync();
   void GeneratePassword();
   void CopyPassword();
+  void CopyUsername();
+  void CopyFieldToClipboard(const std::wstring& value, const wchar_t* tip);
   void ClearClipboardIfOurs();
 
   HWND hwnd_ = nullptr;

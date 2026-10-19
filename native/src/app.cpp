@@ -925,8 +925,11 @@ LRESULT CALLBACK App::TrayWndProc(HWND hwnd, UINT msg, WPARAM wparam,
         AppendMenuW(menu, MF_STRING, 6, Tr("minutes").c_str());
         AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
         AppendMenuW(menu, MF_STRING, 7, Tr("screenshot").c_str());
-        AppendMenuW(menu, MF_STRING, 8,
-                    IsScreenRecording() ? L"停止录屏" : Tr("record").c_str());
+        AppendMenuW(
+            menu, MF_STRING, 8,
+            IsScreenRecording()
+                ? (IsScreenRecordPaused() ? L"继续录屏" : L"停止录屏")
+                : Tr("record").c_str());
         AppendMenuW(menu, MF_STRING, 9, Tr("wallpaper").c_str());
         AppendMenuW(menu, MF_STRING, 10, Tr("updates").c_str());
         AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
@@ -988,7 +991,11 @@ LRESULT CALLBACK App::TrayWndProc(HWND hwnd, UINT msg, WPARAM wparam,
             self->StartRegionCapture();
             break;
           case 8:
-            StartScreenRecord(self->settings_.Hwnd());
+            if (IsScreenRecording() && IsScreenRecordPaused()) {
+              PauseScreenRecord(false);
+            } else {
+              StartScreenRecord(self->settings_.Hwnd());
+            }
             break;
           case 9:
             WallpaperMenu(self->settings_.Hwnd());

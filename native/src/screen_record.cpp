@@ -8,6 +8,7 @@
 
 #include <Shellapi.h>
 #include <ShlObj.h>
+#include <windowsx.h>
 
 #include <string>
 #include <vector>
@@ -20,6 +21,25 @@ HANDLE g_stdin_wr = nullptr;
 HWND g_badge = nullptr;
 std::wstring g_out_path;
 bool g_class_reg = false;
+bool g_paused = false;
+
+using NtSuspendFn = LONG(NTAPI*)(HANDLE);
+using NtResumeFn = LONG(NTAPI*)(HANDLE);
+
+bool SuspendProcess(HANDLE proc, bool pause) {
+  HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+  if (!ntdll) {
+    return false;
+  }
+  auto susp = reinterpret_cast<NtSuspendFn>(
+      GetProcAddress(ntdll, "NtSuspendProcess"));
+  auto resu =
+      reinterpret_cast<NtResumeFn>(GetProcAddress(ntdll, "NtResumeProcess"));
+  if (!susp || !resu) {
+    return false;
+  }
+  return (pause ? susp(proc) : resu(proc)) >= 0;
+}
 
 std::wstring ResolveOutDir(const AppPrefs& prefs) {
   if (!prefs.record_output_dir.empty()) {
@@ -44,23 +64,43 @@ void DestroyBadge() {
   }
 }
 
+void PaintBadge(HWND hwnd, HDC hdc) {
+  RECT rc{};
+  GetClientRect(hwnd, &rc);
+  const int mid = rc.right / 2;
+  RECT left{0, 0, mid - 1, rc.bottom};
+  RECT right{mid + 1, 0, rc.right, rc.bottom};
+  HBRUSH pause_br =
+      CreateSolidBrush(g_paused ? RGB(180, 140, 40) : RGB(40, 120, 80));
+  HBRUSH stop_br = CreateSolidBrush(RGB(180, 32, 32));
+  FillRect(hdc, &left, pause_br);
+  FillRect(hdc, &right, stop_br);
+  DeleteObject(pause_br);
+  DeleteObject(stop_br);
+  SetBkMode(hdc, TRANSPARENT);
+  SetTextColor(hdc, RGB(255, 255, 255));
+  DrawTextW(hdc, g_paused ? L"继续" : L"暂停", -1, &left,
+            DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+  DrawTextW(hdc, L"停止", -1, &right, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+}
+
 LRESULT CALLBACK BadgeProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
   switch (msg) {
-    case WM_LBUTTONUP:
-      StopScreenRecord();
+    case WM_LBUTTONUP: {
+      POINT pt{GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
+      RECT rc{};
+      GetClientRect(hwnd, &rc);
+      if (pt.x < rc.right / 2) {
+        PauseScreenRecord(!g_paused);
+      } else {
+        StopScreenRecord();
+      }
       return 0;
+    }
     case WM_PAINT: {
       PAINTSTRUCT ps{};
       HDC hdc = BeginPaint(hwnd, &ps);
-      RECT rc{};
-      GetClientRect(hwnd, &rc);
-      HBRUSH br = CreateSolidBrush(RGB(180, 32, 32));
-      FillRect(hdc, &rc, br);
-      DeleteObject(br);
-      SetBkMode(hdc, TRANSPARENT);
-      SetTextColor(hdc, RGB(255, 255, 255));
-      DrawTextW(hdc, L"● 录制中 · 点击停止", -1, &rc,
-                DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+      PaintBadge(hwnd, hdc);
       EndPaint(hwnd, &ps);
       return 0;
     }
@@ -187,20 +227,43 @@ bool StartRecording(HWND owner) {
   CloseHandle(pi.hThread);
   g_stdin_wr = wr;
   g_proc = pi.hProcess;
+  g_paused = false;
   ShowBadge(GetModuleHandleW(nullptr));
   return true;
 }
 
 }  // namespace
 
+bool IsScreenRecordPaused() { return g_paused && g_proc != nullptr; }
+
+void PauseScreenRecord(bool pause) {
+  if (!g_proc || !IsScreenRecording()) {
+    return;
+  }
+  if (pause == g_paused) {
+    return;
+  }
+  if (!SuspendProcess(g_proc, pause)) {
+    return;
+  }
+  g_paused = pause;
+  if (g_badge) {
+    InvalidateRect(g_badge, nullptr, TRUE);
+  }
+}
+
 bool IsScreenRecording() {
   if (!g_proc) {
     return false;
+  }
+  if (g_paused) {
+    return true;
   }
   const DWORD wait = WaitForSingleObject(g_proc, 0);
   if (wait != WAIT_TIMEOUT) {
     CloseHandle(g_proc);
     g_proc = nullptr;
+    g_paused = false;
     if (g_stdin_wr) {
       CloseHandle(g_stdin_wr);
       g_stdin_wr = nullptr;
@@ -218,6 +281,10 @@ bool IsScreenRecording() {
 }
 
 void StopScreenRecord() {
+  if (g_proc && g_paused) {
+    SuspendProcess(g_proc, false);
+    g_paused = false;
+  }
   if (g_proc) {
     if (g_stdin_wr) {
       DWORD written = 0;
@@ -237,6 +304,7 @@ void StopScreenRecord() {
     CloseHandle(g_stdin_wr);
     g_stdin_wr = nullptr;
   }
+  g_paused = false;
   DestroyBadge();
   if (!g_out_path.empty()) {
     const std::wstring msg = L"录屏已停止。\n" + g_out_path;
