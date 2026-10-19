@@ -1,11 +1,12 @@
 #include "notes_window.h"
 
+#include "desktop_shell.h"
+
 #include <ShlObj.h>
 
 #include <fstream>
 #include <sstream>
 #include <string>
-#include <vector>
 
 namespace {
 constexpr wchar_t kClassName[] = L"DeskTidyNativeNotes";
@@ -31,25 +32,27 @@ bool NotesWindow::Create(HINSTANCE instance) {
   wc.lpfnWndProc = NotesWindow::WndProc;
   wc.hInstance = instance;
   wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
-  wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
+  wc.hbrBackground = CreateSolidBrush(RGB(255, 244, 170));
   wc.lpszClassName = kClassName;
   RegisterClassExW(&wc);
 
+  const int sw = GetSystemMetrics(SM_CXSCREEN);
   hwnd_ = CreateWindowExW(
-      WS_EX_APPWINDOW, kClassName, L"DeskTidy Notes",
-      WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, 480, 420, nullptr,
-      nullptr, instance, this);
+      WS_EX_TOOLWINDOW | WS_EX_LAYERED, kClassName, L"便签",
+      WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_THICKFRAME, sw - 340, 120, 300,
+      260, nullptr, nullptr, instance, this);
   if (!hwnd_) {
     return false;
   }
+  SetLayeredWindowAttributes(hwnd_, 0, 245, LWA_ALPHA);
   SetWindowLongPtrW(hwnd_, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(this));
   edit_ = CreateWindowExW(
       WS_EX_CLIENTEDGE, L"EDIT", L"",
       WS_CHILD | WS_VISIBLE | WS_VSCROLL | ES_MULTILINE | ES_AUTOVSCROLL |
           ES_WANTRETURN,
-      8, 8, 450, 340, hwnd_,
+      6, 6, 280, 200, hwnd_,
       reinterpret_cast<HMENU>(static_cast<INT_PTR>(kEditId)), instance, nullptr);
-  HFONT font = CreateFontW(16, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+  HFONT font = CreateFontW(15, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
                            DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
                            CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
                            DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
@@ -70,8 +73,10 @@ void NotesWindow::Show() {
   if (!hwnd_) {
     return;
   }
-  ShowWindow(hwnd_, SW_SHOW);
-  SetForegroundWindow(hwnd_);
+  ShowWindow(hwnd_, SW_SHOWNOACTIVATE);
+  AttachOverlayToDesktop(hwnd_, true);
+  PlaceOverlayInDesktopBand(hwnd_, true);
+  RaiseOverlayInDesktopBand(hwnd_);
 }
 
 void NotesWindow::Hide() {
@@ -152,7 +157,7 @@ LRESULT NotesWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
       if (edit_) {
         RECT rc{};
         GetClientRect(hwnd_, &rc);
-        MoveWindow(edit_, 8, 8, rc.right - 16, rc.bottom - 16, TRUE);
+        MoveWindow(edit_, 6, 6, rc.right - 12, rc.bottom - 12, TRUE);
       }
       return 0;
     case WM_CLOSE:

@@ -18,6 +18,7 @@ constexpr int kCellW = 76;
 constexpr int kCellH = 86;
 constexpr int kIconSize = 32;
 constexpr int kDragThreshold = 6;
+constexpr int kEdge = 8;
 bool g_class_registered = false;
 }  // namespace
 
@@ -61,11 +62,12 @@ void FenceWindow::EnsureDropTarget() {
   if (!hwnd_ || drop_target_) {
     return;
   }
-  drop_target_ = new PathDropTarget([this](const std::vector<std::wstring>& paths) {
-    if (on_paths_dropped_) {
-      on_paths_dropped_(this, paths);
-    }
-  });
+  drop_target_ =
+      new PathDropTarget([this](const std::vector<std::wstring>& paths) {
+        if (on_paths_dropped_) {
+          on_paths_dropped_(this, paths);
+        }
+      });
   if (!RegisterPathDropTarget(hwnd_, drop_target_)) {
     drop_target_->Release();
     drop_target_ = nullptr;
@@ -93,6 +95,15 @@ void FenceWindow::ClearIcons() {
     }
   }
   cells_.clear();
+}
+
+const std::vector<DesktopItem> FenceWindow::ItemSnapshot() const {
+  std::vector<DesktopItem> out;
+  out.reserve(cells_.size());
+  for (const auto& c : cells_) {
+    out.push_back(c.item);
+  }
+  return out;
 }
 
 void FenceWindow::SetTitle(const std::wstring& title) {
@@ -151,6 +162,7 @@ void FenceWindow::SetItems(std::vector<DesktopItem> items) {
     cell.icon = LoadItemIcon(cell.item.path, kIconSize);
     cells_.push_back(std::move(cell));
   }
+  scroll_y_ = 0;
   LayoutCells();
   if (hwnd_) {
     InvalidateRect(hwnd_, nullptr, TRUE);
@@ -164,7 +176,7 @@ void FenceWindow::LayoutCells() {
   RECT rc{};
   GetClientRect(hwnd_, &rc);
   const int inner_l = rc.left + kPad;
-  const int inner_t = rc.top + kHeaderH;
+  const int inner_t = rc.top + kHeaderH - scroll_y_;
   const int inner_r = rc.right - kPad;
   const int cols = (std::max)(1, (inner_r - inner_l) / kCellW);
   for (size_t i = 0; i < cells_.size(); ++i) {
@@ -176,9 +188,35 @@ void FenceWindow::LayoutCells() {
     b.right = b.left + kCellW;
     b.bottom = b.top + kCellH;
   }
+  const int rows =
+      cells_.empty()
+          ? 0
+          : static_cast<int>((cells_.size() + static_cast<size_t>(cols) - 1) /
+                             static_cast<size_t>(cols));
+  content_h_ = rows * kCellH;
+  ClampScroll();
+}
+
+void FenceWindow::ClampScroll() {
+  RECT rc{};
+  if (!hwnd_) {
+    return;
+  }
+  GetClientRect(hwnd_, &rc);
+  const int view = (std::max)(0, static_cast<int>(rc.bottom) - kHeaderH - kPad);
+  const int max_scroll = (std::max)(0, content_h_ - view);
+  if (scroll_y_ < 0) {
+    scroll_y_ = 0;
+  }
+  if (scroll_y_ > max_scroll) {
+    scroll_y_ = max_scroll;
+  }
 }
 
 int FenceWindow::HitTestIcon(int x, int y) const {
+  if (y < kHeaderH) {
+    return -1;
+  }
   for (size_t i = 0; i < cells_.size(); ++i) {
     const RECT& b = cells_[i].bounds;
     if (x >= b.left && x < b.right && y >= b.top && y < b.bottom) {
@@ -188,12 +226,42 @@ int FenceWindow::HitTestIcon(int x, int y) const {
   return -1;
 }
 
+FenceWindow::Edge FenceWindow::HitTestEdge(int x, int y) const {
+  RECT rc{};
+  GetClientRect(hwnd_, &rc);
+  int e = 0;
+  if (x <= kEdge) {
+    e |= static_cast<int>(Edge::Left);
+  }
+  if (x >= rc.right - kEdge) {
+    e |= static_cast<int>(Edge::Right);
+  }
+  if (y <= kEdge) {
+    e |= static_cast<int>(Edge::Top);
+  }
+  if (y >= rc.bottom - kEdge) {
+    e |= static_cast<int>(Edge::Bottom);
+  }
+  return static_cast<Edge>(e);
+}
+
 void FenceWindow::OpenItem(int index) {
   if (index < 0 || index >= static_cast<int>(cells_.size())) {
     return;
   }
-  const auto& path = cells_[static_cast<size_t>(index)].item.path;
-  ShellExecuteW(nullptr, L"open", path.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+  ShellExecuteW(nullptr, L"open",
+                cells_[static_cast<size_t>(index)].item.path.c_str(), nullptr,
+                nullptr, SW_SHOWNORMAL);
+}
+
+void FenceWindow::RevealItem(int index) {
+  if (index < 0 || index >= static_cast<int>(cells_.size())) {
+    return;
+  }
+  const std::wstring arg =
+      L"/select,\"" + cells_[static_cast<size_t>(index)].item.path + L"\"";
+  ShellExecuteW(nullptr, L"open", L"explorer.exe", arg.c_str(), nullptr,
+                SW_SHOWNORMAL);
 }
 
 void FenceWindow::BeginIconDrag(int index) {
@@ -210,6 +278,48 @@ void FenceWindow::BeginIconDrag(int index) {
   }
 }
 
+void FenceWindow::ShowIconMenu(int index, POINT screen) {
+  HMENU menu = CreatePopupMenu();
+  AppendMenuW(menu, MF_STRING, 1, L"打开");
+  AppendMenuW(menu, MF_STRING, 2, L"在资源管理器中显示");
+  AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+  AppendMenuW(menu, MF_STRING, 3, L"取消钉选");
+  SetForegroundWindow(hwnd_);
+  const int cmd =
+      TrackPopupMenu(menu, TPM_RETURNCMD | TPM_NONOTIFY, screen.x, screen.y, 0,
+                     hwnd_, nullptr);
+  DestroyMenu(menu);
+  if (cmd == 1) {
+    OpenItem(index);
+  } else if (cmd == 2) {
+    RevealItem(index);
+  } else if (cmd == 3 && on_unpin_) {
+    on_unpin_(this, cells_[static_cast<size_t>(index)].item.path);
+  }
+}
+
+void FenceWindow::ShowFenceMenu(POINT screen) {
+  HMENU menu = CreatePopupMenu();
+  AppendMenuW(menu, MF_STRING, 10, L"重命名分区…");
+  AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+  AppendMenuW(menu, MF_STRING | (page_ == 0 ? MF_CHECKED : 0), 11,
+              L"放到第 1 页");
+  AppendMenuW(menu, MF_STRING | (page_ == 1 ? MF_CHECKED : 0), 12,
+              L"放到第 2 页");
+  SetForegroundWindow(hwnd_);
+  const int cmd =
+      TrackPopupMenu(menu, TPM_RETURNCMD | TPM_NONOTIFY, screen.x, screen.y, 0,
+                     hwnd_, nullptr);
+  DestroyMenu(menu);
+  if (cmd == 10 && on_rename_) {
+    on_rename_(this);
+  } else if (cmd == 11 && on_set_page_) {
+    on_set_page_(this, 0);
+  } else if (cmd == 12 && on_set_page_) {
+    on_set_page_(this, 1);
+  }
+}
+
 LRESULT CALLBACK FenceWindow::WndProc(HWND hwnd, UINT msg, WPARAM wparam,
                                       LPARAM lparam) {
   FenceWindow* self = nullptr;
@@ -219,7 +329,8 @@ LRESULT CALLBACK FenceWindow::WndProc(HWND hwnd, UINT msg, WPARAM wparam,
     SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(self));
     self->hwnd_ = hwnd;
   } else {
-    self = reinterpret_cast<FenceWindow*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+    self =
+        reinterpret_cast<FenceWindow*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
   }
   if (!self) {
     return DefWindowProcW(hwnd, msg, wparam, lparam);
@@ -240,8 +351,55 @@ LRESULT FenceWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
       LayoutCells();
       InvalidateRect(hwnd_, nullptr, TRUE);
       return 0;
+    case WM_MOUSEWHEEL: {
+      const int delta = GET_WHEEL_DELTA_WPARAM(wparam);
+      scroll_y_ -= delta / 2;
+      ClampScroll();
+      LayoutCells();
+      InvalidateRect(hwnd_, nullptr, TRUE);
+      return 0;
+    }
+    case WM_SETCURSOR: {
+      if (LOWORD(lparam) == HTCLIENT) {
+        POINT pt{};
+        GetCursorPos(&pt);
+        ScreenToClient(hwnd_, &pt);
+        const Edge e = HitTestEdge(pt.x, pt.y);
+        const int v = static_cast<int>(e);
+        if (v == (static_cast<int>(Edge::Left) | static_cast<int>(Edge::Top)) ||
+            v == (static_cast<int>(Edge::Right) |
+                 static_cast<int>(Edge::Bottom))) {
+          SetCursor(LoadCursor(nullptr, IDC_SIZENWSE));
+          return TRUE;
+        }
+        if (v == (static_cast<int>(Edge::Right) | static_cast<int>(Edge::Top)) ||
+            v == (static_cast<int>(Edge::Left) |
+                 static_cast<int>(Edge::Bottom))) {
+          SetCursor(LoadCursor(nullptr, IDC_SIZENESW));
+          return TRUE;
+        }
+        if (v & (static_cast<int>(Edge::Left) | static_cast<int>(Edge::Right))) {
+          SetCursor(LoadCursor(nullptr, IDC_SIZEWE));
+          return TRUE;
+        }
+        if (v & (static_cast<int>(Edge::Top) | static_cast<int>(Edge::Bottom))) {
+          SetCursor(LoadCursor(nullptr, IDC_SIZENS));
+          return TRUE;
+        }
+      }
+      break;
+    }
     case WM_LBUTTONDOWN: {
       press_client_ = {GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
+      const Edge edge = HitTestEdge(press_client_.x, press_client_.y);
+      if (edge != Edge::None) {
+        resizing_ = true;
+        resize_edge_ = edge;
+        GetWindowRect(hwnd_, &resize_start_rc_);
+        GetCursorPos(&resize_start_pt_);
+        SetCapture(hwnd_);
+        return 0;
+      }
       const int icon = HitTestIcon(press_client_.x, press_client_.y);
       if (icon >= 0) {
         dragging_ = false;
@@ -265,6 +423,46 @@ LRESULT FenceWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
       return 0;
     }
     case WM_MOUSEMOVE: {
+      if (resizing_ && (wparam & MK_LBUTTON)) {
+        POINT pt{};
+        GetCursorPos(&pt);
+        const int dx = pt.x - resize_start_pt_.x;
+        const int dy = pt.y - resize_start_pt_.y;
+        int l = resize_start_rc_.left;
+        int t = resize_start_rc_.top;
+        int r = resize_start_rc_.right;
+        int b = resize_start_rc_.bottom;
+        const int ev = static_cast<int>(resize_edge_);
+        if (ev & static_cast<int>(Edge::Left)) {
+          l += dx;
+        }
+        if (ev & static_cast<int>(Edge::Right)) {
+          r += dx;
+        }
+        if (ev & static_cast<int>(Edge::Top)) {
+          t += dy;
+        }
+        if (ev & static_cast<int>(Edge::Bottom)) {
+          b += dy;
+        }
+        if (r - l < 160) {
+          if (ev & static_cast<int>(Edge::Left)) {
+            l = r - 160;
+          } else {
+            r = l + 160;
+          }
+        }
+        if (b - t < 120) {
+          if (ev & static_cast<int>(Edge::Top)) {
+            t = b - 120;
+          } else {
+            b = t + 120;
+          }
+        }
+        SetWindowPos(hwnd_, nullptr, l, t, r - l, b - t,
+                     SWP_NOZORDER | SWP_NOACTIVATE);
+        return 0;
+      }
       if (icon_press_ && (wparam & MK_LBUTTON)) {
         const int x = GET_X_LPARAM(lparam);
         const int y = GET_Y_LPARAM(lparam);
@@ -288,6 +486,15 @@ LRESULT FenceWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
       const int x = GET_X_LPARAM(lparam);
       const int y = GET_Y_LPARAM(lparam);
       ReleaseCapture();
+      if (resizing_) {
+        resizing_ = false;
+        resize_edge_ = Edge::None;
+        AttachToDesktopLayer();
+        if (on_moved_) {
+          on_moved_(this);
+        }
+        return 0;
+      }
       if (icon_press_) {
         const int idx = icon_press_index_;
         icon_press_ = false;
@@ -306,6 +513,17 @@ LRESULT FenceWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
           }
         }
         return 0;
+      }
+      return 0;
+    }
+    case WM_RBUTTONUP: {
+      POINT pt{GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
+      const int icon = HitTestIcon(pt.x, pt.y);
+      ClientToScreen(hwnd_, &pt);
+      if (icon >= 0) {
+        ShowIconMenu(icon, pt);
+      } else {
+        ShowFenceMenu(pt);
       }
       return 0;
     }
@@ -351,8 +569,13 @@ void FenceWindow::Paint(HDC hdc) {
   RECT title_rc = rc;
   title_rc.top += 8;
   title_rc.bottom = title_rc.top + 24;
-  DrawTextW(hdc, title_.c_str(), -1, &title_rc,
+  wchar_t title_buf[256];
+  swprintf_s(title_buf, L"%s  · p%d", title_.c_str(), page_ + 1);
+  DrawTextW(hdc, title_buf, -1, &title_rc,
             DT_CENTER | DT_TOP | DT_SINGLELINE | DT_END_ELLIPSIS);
+
+  // Clip icon area below header.
+  IntersectClipRect(hdc, rc.left, kHeaderH, rc.right, rc.bottom);
 
   HFONT font = CreateFontW(12, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
                            DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
@@ -362,7 +585,7 @@ void FenceWindow::Paint(HDC hdc) {
 
   for (const auto& cell : cells_) {
     const RECT& b = cell.bounds;
-    if (b.bottom > rc.bottom - 4) {
+    if (b.bottom < kHeaderH || b.top > rc.bottom) {
       continue;
     }
     if (cell.icon) {

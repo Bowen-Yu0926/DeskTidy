@@ -3,6 +3,7 @@
 #include "desktop_items.h"
 #include "desktop_shell.h"
 #include "organize.h"
+#include "prompt_text.h"
 
 #include <CommCtrl.h>
 #include <Shellapi.h>
@@ -15,15 +16,16 @@ constexpr UINT kTrayMsg = WM_APP + 1;
 constexpr UINT kHotkeySettings = 1;
 constexpr UINT kHotkeyPage1 = 2;
 constexpr UINT kHotkeyPage2 = 3;
+constexpr UINT kHotkeyNotes = 4;
 constexpr UINT kTimerRestore = 40;
 constexpr UINT kTimerPet = 41;
+constexpr UINT kTimerWatch = 42;
 constexpr wchar_t kMsgClass[] = L"DeskTidyNativeMsg";
 }  // namespace
 
-bool App::SpawnFence(const FenceLayout& layout) {
-  auto fence = std::make_unique<FenceWindow>();
-  if (!fence->Create(instance_, layout)) {
-    return false;
+void App::WireFence(FenceWindow* fence) {
+  if (!fence) {
+    return;
   }
   fence->SetOnMoved([this](FenceWindow*) { PersistLayouts(); });
   fence->SetOnPathsDropped(
@@ -31,6 +33,38 @@ bool App::SpawnFence(const FenceLayout& layout) {
         OnPathsDropped(f, paths);
       });
   fence->SetOnDragDone([this](FenceWindow*) { RefreshDesktopIcons(); });
+  fence->SetOnUnpin([this](FenceWindow*, const std::wstring& path) {
+    UnpinPath(path);
+  });
+  fence->SetOnSetPage([this](FenceWindow* f, int page) {
+    if (!f) {
+      return;
+    }
+    f->SetPage(page);
+    PersistLayouts();
+    ApplyPageVisibility();
+    RefreshSettingsList();
+  });
+  fence->SetOnRename([this](FenceWindow* f) {
+    if (!f) {
+      return;
+    }
+    const auto name =
+        PromptText(settings_.Hwnd(), L"重命名分区", L"新标题：", f->Title());
+    if (!name.empty()) {
+      f->SetTitle(name);
+      PersistLayouts();
+      RefreshSettingsList();
+    }
+  });
+}
+
+bool App::SpawnFence(const FenceLayout& layout) {
+  auto fence = std::make_unique<FenceWindow>();
+  if (!fence->Create(instance_, layout)) {
+    return false;
+  }
+  WireFence(fence.get());
   fences_.push_back(std::move(fence));
   return true;
 }
@@ -59,6 +93,7 @@ bool App::Init(HINSTANCE instance) {
   RegisterHotKey(message_hwnd_, kHotkeySettings, MOD_CONTROL | MOD_SHIFT, 'S');
   RegisterHotKey(message_hwnd_, kHotkeyPage1, MOD_CONTROL | MOD_ALT, '1');
   RegisterHotKey(message_hwnd_, kHotkeyPage2, MOD_CONTROL | MOD_ALT, '2');
+  RegisterHotKey(message_hwnd_, kHotkeyNotes, MOD_CONTROL | MOD_SHIFT, 'N');
 
   if (!settings_.Create(instance)) {
     return false;
@@ -69,7 +104,14 @@ bool App::Init(HINSTANCE instance) {
       [this]() {
         SeatAllFencesUnderApps();
         settings_.Show();
-      });
+      },
+      [this](int index, const std::wstring& title) {
+        RenameFenceAt(index, title);
+      },
+      [this](int index, int page) { SetFencePageAt(index, page); },
+      [this]() { OrganizeVirtual(); }, [this]() { OrganizePhysical(); },
+      [this](bool on) { SetDockVisible(on); },
+      [this](bool on) { SetPetVisible(on); }, [this]() { EditRules(); });
 
   notes_.Create(instance);
   dock_.Create(instance);
@@ -82,6 +124,10 @@ bool App::Init(HINSTANCE instance) {
   dock_visible_ = state.dock_visible;
   pet_visible_ = state.pet_visible;
   pins_ = LoadPins();
+  rules_ = LoadRules();
+  if (!SaveRules(rules_)) {
+    // ensure file exists for "edit rules"
+  }
 
   for (const auto& layout : state.fences) {
     if (!SpawnFence(layout)) {
@@ -91,6 +137,7 @@ bool App::Init(HINSTANCE instance) {
   PersistLayouts();
   RefreshDesktopIcons();
   RefreshSettingsList();
+  settings_.SetToggles(dock_visible_, pet_visible_);
   ApplyPageVisibility();
 
   page_bar_.SetPage(current_page_);
@@ -98,10 +145,11 @@ bool App::Init(HINSTANCE instance) {
   dock_.SetVisible(dock_visible_);
   pet_.SetVisible(pet_visible_);
   RebuildDockItems();
+  desktop_watch_.Reset();
 
-  restore_timer_ =
-      SetTimer(message_hwnd_, kTimerRestore, 800, nullptr);
+  restore_timer_ = SetTimer(message_hwnd_, kTimerRestore, 800, nullptr);
   pet_timer_ = SetTimer(message_hwnd_, kTimerPet, 50, nullptr);
+  watch_timer_ = SetTimer(message_hwnd_, kTimerWatch, 2000, nullptr);
 
   CreateTrayIcon();
   return true;
@@ -119,17 +167,19 @@ int App::Run() {
 void App::Shutdown() {
   PersistLayouts();
   SavePins(pins_);
+  SaveRules(rules_);
   if (message_hwnd_) {
     KillTimer(message_hwnd_, kTimerRestore);
     KillTimer(message_hwnd_, kTimerPet);
-    restore_timer_ = 0;
-    pet_timer_ = 0;
+    KillTimer(message_hwnd_, kTimerWatch);
+    restore_timer_ = pet_timer_ = watch_timer_ = 0;
   }
   RemoveTrayIcon();
   if (message_hwnd_) {
     UnregisterHotKey(message_hwnd_, kHotkeySettings);
     UnregisterHotKey(message_hwnd_, kHotkeyPage1);
     UnregisterHotKey(message_hwnd_, kHotkeyPage2);
+    UnregisterHotKey(message_hwnd_, kHotkeyNotes);
     DestroyWindow(message_hwnd_);
     message_hwnd_ = nullptr;
   }
@@ -149,6 +199,7 @@ void App::Shutdown() {
 void App::OpenSettings() {
   SeatAllFencesUnderApps();
   RefreshSettingsList();
+  settings_.SetToggles(dock_visible_, pet_visible_);
   settings_.Show();
 }
 
@@ -170,6 +221,9 @@ void App::SeatAllFencesUnderApps() {
   }
   if (page_bar_.Hwnd()) {
     PlaceOverlayInDesktopBand(page_bar_.Hwnd(), true);
+  }
+  if (notes_.Hwnd() && notes_.IsOpen()) {
+    PlaceOverlayInDesktopBand(notes_.Hwnd(), true);
   }
 }
 
@@ -213,19 +267,19 @@ void App::OnPathsDropped(FenceWindow* fence,
   RefreshDesktopIcons();
 }
 
+void App::UnpinPath(const std::wstring& path) {
+  ClearPin(&pins_, path);
+  SavePins(pins_);
+  RefreshDesktopIcons();
+}
+
 void App::RefreshDesktopIcons() {
   const auto items = ScanDesktopItems();
   std::unordered_map<std::string, std::vector<DesktopItem>> by_fence;
   for (const auto& it : items) {
-    const std::string* pin = FindPin(pins_, it.path);
-    std::string target;
-    if (pin) {
-      target = *pin;
-    } else if (it.is_link) {
-      target = "system_software";
-    } else {
-      target = "system_common";
-    }
+    const std::string target =
+        ResolveFenceId(it.path, it.is_link, pins_, rules_, "system_software",
+                       "system_common");
     by_fence[target].push_back(it);
   }
 
@@ -245,26 +299,15 @@ void App::RefreshDesktopIcons() {
 
 void App::RebuildDockItems() {
   std::vector<DesktopItem> dock_items;
-  for (auto& fence : fences_) {
-    if (!fence) {
-      continue;
-    }
-    if (fence->Id() == "system_software" ||
-        fence->Id() == "system_software_side") {
-      // Pull from current software fence cells via rescan pins.
-      break;
-    }
-  }
   const auto items = ScanDesktopItems();
   for (const auto& it : items) {
     if (!it.is_link) {
       continue;
     }
-    const std::string* pin = FindPin(pins_, it.path);
-    if (pin && *pin != "system_software" && *pin != "system_software_side") {
-      continue;
-    }
-    if (!pin && !it.is_link) {
+    const std::string target =
+        ResolveFenceId(it.path, it.is_link, pins_, rules_, "system_software",
+                       "system_common");
+    if (target != "system_software" && target != "system_software_side") {
       continue;
     }
     dock_items.push_back(it);
@@ -309,7 +352,6 @@ void App::SetPage(int page) {
 }
 
 void App::RestoreDesktopChrome() {
-  // Win+D / show-desktop settle: re-attach + raise current page chrome.
   ApplyPageVisibility();
   for (auto& fence : fences_) {
     if (!fence || !fence->Hwnd() || fence->Page() != current_page_) {
@@ -328,6 +370,9 @@ void App::RestoreDesktopChrome() {
     pet_.AttachToDesktopLayer();
   }
   page_bar_.AttachToDesktopLayer();
+  if (notes_.IsOpen()) {
+    notes_.Show();
+  }
 }
 
 void App::OrganizeVirtual() {
@@ -337,8 +382,9 @@ void App::OrganizeVirtual() {
   SavePins(pins_);
   RefreshDesktopIcons();
   wchar_t buf[128];
-  swprintf_s(buf, L"Virtual organize: pinned %d items.", n);
-  MessageBoxW(nullptr, buf, L"DeskTidy Native", MB_OK | MB_ICONINFORMATION);
+  swprintf_s(buf, L"虚拟整理完成：写入 %d 条钉选。", n);
+  MessageBoxW(settings_.Hwnd(), buf, L"DeskTidy Native",
+              MB_OK | MB_ICONINFORMATION);
 }
 
 void App::OrganizePhysical() {
@@ -348,21 +394,36 @@ void App::OrganizePhysical() {
   SavePins(pins_);
   RefreshDesktopIcons();
   wchar_t buf[128];
-  swprintf_s(buf, L"Physical organize: moved %d items into Desktop\\DeskTidy.",
-             n);
-  MessageBoxW(nullptr, buf, L"DeskTidy Native", MB_OK | MB_ICONINFORMATION);
+  swprintf_s(buf, L"物理整理完成：移动 %d 个项目到 Desktop\\DeskTidy。", n);
+  MessageBoxW(settings_.Hwnd(), buf, L"DeskTidy Native",
+              MB_OK | MB_ICONINFORMATION);
 }
 
-void App::ToggleDock() {
-  dock_visible_ = !dock_visible_;
+void App::SetDockVisible(bool on) {
+  dock_visible_ = on;
   dock_.SetVisible(dock_visible_);
   PersistLayouts();
 }
 
-void App::TogglePet() {
-  pet_visible_ = !pet_visible_;
+void App::SetPetVisible(bool on) {
+  pet_visible_ = on;
   pet_.SetVisible(pet_visible_);
   PersistLayouts();
+}
+
+void App::ToggleDock() { SetDockVisible(!dock_visible_); }
+
+void App::TogglePet() { SetPetVisible(!pet_visible_); }
+
+void App::EditRules() {
+  SaveRules(rules_);
+  const std::wstring path = RuleFilePath();
+  ShellExecuteW(nullptr, L"open", L"notepad.exe", path.c_str(), nullptr,
+                SW_SHOWNORMAL);
+  MessageBoxW(settings_.Hwnd(),
+              L"已用记事本打开 rules.json。\n"
+              L"保存后点托盘「刷新桌面图标」或等待自动监视生效。",
+              L"扩展名规则", MB_OK | MB_ICONINFORMATION);
 }
 
 void App::AddFence() {
@@ -396,6 +457,25 @@ void App::RemoveFenceAt(int index) {
   RefreshSettingsList();
 }
 
+void App::RenameFenceAt(int index, const std::wstring& title) {
+  if (index < 0 || index >= static_cast<int>(fences_.size()) || title.empty()) {
+    return;
+  }
+  fences_[static_cast<size_t>(index)]->SetTitle(title);
+  PersistLayouts();
+  RefreshSettingsList();
+}
+
+void App::SetFencePageAt(int index, int page) {
+  if (index < 0 || index >= static_cast<int>(fences_.size())) {
+    return;
+  }
+  fences_[static_cast<size_t>(index)]->SetPage(page);
+  PersistLayouts();
+  ApplyPageVisibility();
+  RefreshSettingsList();
+}
+
 void App::CreateTrayIcon() {
   ZeroMemory(&nid_, sizeof(nid_));
   nid_.cbSize = sizeof(nid_);
@@ -404,7 +484,7 @@ void App::CreateTrayIcon() {
   nid_.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
   nid_.uCallbackMessage = kTrayMsg;
   nid_.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
-  wcsncpy_s(nid_.szTip, L"DeskTidy Native (C++)", _TRUNCATE);
+  wcsncpy_s(nid_.szTip, L"DeskTidy Native", _TRUNCATE);
   tray_added_ = Shell_NotifyIconW(NIM_ADD, &nid_) == TRUE;
 }
 
@@ -438,6 +518,13 @@ LRESULT CALLBACK App::TrayWndProc(HWND hwnd, UINT msg, WPARAM wparam,
         self->pet_.Tick();
         return 0;
       }
+      if (wparam == kTimerWatch) {
+        if (self->desktop_watch_.PollChanged()) {
+          self->rules_ = LoadRules();
+          self->RefreshDesktopIcons();
+        }
+        return 0;
+      }
       break;
     case kTrayMsg:
       if (lparam == WM_LBUTTONDBLCLK || lparam == WM_LBUTTONUP) {
@@ -448,21 +535,22 @@ LRESULT CALLBACK App::TrayWndProc(HWND hwnd, UINT msg, WPARAM wparam,
         POINT pt{};
         GetCursorPos(&pt);
         HMENU menu = CreatePopupMenu();
-        AppendMenuW(menu, MF_STRING, 1, L"Settings");
-        AppendMenuW(menu, MF_STRING, 2, L"Notes");
-        AppendMenuW(menu, MF_STRING, 3, L"Add fence");
-        AppendMenuW(menu, MF_STRING, 4, L"Refresh desktop icons");
+        AppendMenuW(menu, MF_STRING, 1, L"设置");
+        AppendMenuW(menu, MF_STRING, 2, L"便签  (Ctrl+Shift+N)");
+        AppendMenuW(menu, MF_STRING, 3, L"添加分区");
+        AppendMenuW(menu, MF_STRING, 4, L"刷新桌面图标");
         AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-        AppendMenuW(menu, MF_STRING, 5, L"Page 1  (Ctrl+Alt+1)");
-        AppendMenuW(menu, MF_STRING, 6, L"Page 2  (Ctrl+Alt+2)");
+        AppendMenuW(menu, MF_STRING, 5, L"第 1 页");
+        AppendMenuW(menu, MF_STRING, 6, L"第 2 页");
         AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-        AppendMenuW(menu, MF_STRING, 7, L"Organize (virtual pins)");
-        AppendMenuW(menu, MF_STRING, 8, L"Organize (move folders)");
-        AppendMenuW(menu, MF_STRING, 9, L"Toggle dock");
-        AppendMenuW(menu, MF_STRING, 10, L"Toggle pet");
-        AppendMenuW(menu, MF_STRING, 11, L"Seat / restore desktop chrome");
+        AppendMenuW(menu, MF_STRING, 7, L"虚拟整理");
+        AppendMenuW(menu, MF_STRING, 8, L"物理整理");
+        AppendMenuW(menu, MF_STRING, 9, L"编辑扩展名规则");
+        AppendMenuW(menu, MF_STRING, 10, L"切换 Dock");
+        AppendMenuW(menu, MF_STRING, 11, L"切换宠物");
+        AppendMenuW(menu, MF_STRING, 12, L"恢复桌面层");
         AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-        AppendMenuW(menu, MF_STRING, 12, L"Exit");
+        AppendMenuW(menu, MF_STRING, 13, L"退出");
         SetForegroundWindow(hwnd);
         const int cmd =
             TrackPopupMenu(menu, TPM_RETURNCMD | TPM_NONOTIFY, pt.x, pt.y, 0,
@@ -479,6 +567,7 @@ LRESULT CALLBACK App::TrayWndProc(HWND hwnd, UINT msg, WPARAM wparam,
             self->AddFence();
             break;
           case 4:
+            self->rules_ = LoadRules();
             self->RefreshDesktopIcons();
             break;
           case 5:
@@ -494,15 +583,18 @@ LRESULT CALLBACK App::TrayWndProc(HWND hwnd, UINT msg, WPARAM wparam,
             self->OrganizePhysical();
             break;
           case 9:
-            self->ToggleDock();
+            self->EditRules();
             break;
           case 10:
-            self->TogglePet();
+            self->ToggleDock();
             break;
           case 11:
-            self->RestoreDesktopChrome();
+            self->TogglePet();
             break;
           case 12:
+            self->RestoreDesktopChrome();
+            break;
+          case 13:
             PostQuitMessage(0);
             break;
           default:
@@ -522,6 +614,10 @@ LRESULT CALLBACK App::TrayWndProc(HWND hwnd, UINT msg, WPARAM wparam,
       }
       if (wparam == kHotkeyPage2) {
         self->SetPage(1);
+        return 0;
+      }
+      if (wparam == kHotkeyNotes) {
+        self->OpenNotes();
         return 0;
       }
       break;

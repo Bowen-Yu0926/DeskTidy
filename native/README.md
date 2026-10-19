@@ -1,35 +1,27 @@
 # DeskTidy Native (C++ greenfield)
 
-Greenfield rewrite toward a **Fences-class desktop layer**: native Win32
-overlay HWNDs owned by the SHELLDLL_DefView host, under normal APPWINDOWs
-(including the settings window).
+Fences-class desktop layer: DefView-owned overlays under normal APPWINDOWs.
 
-Python/PyQt on `main` remains the shipping product until cutover. See
+Python on `main` remains the shipping product until installer cutover. See
 `docs/cpp-greenfield.md`.
 
-## Features (native MVP)
+## Features
 
-- Multi-fence panels + LocalAppData layout / pins
-- Desktop icon grid (pin rules; default `.lnk` → 软件)
-- OLE drag-out / drop-in (shell `IDataObject` + `IDropTarget`)
-- Page switch (Ctrl+Alt+1/2 + page bar) + Win+D settle timer
-- Organize (virtual pins / move into `Desktop\DeskTidy`)
-- Dock, pet sprite, notes window
-- Settings APPWINDOW stays above desktop-band overlays
+- Multi-fence: drag, **resize**, **scroll**, context menus
+- Icon grid + OLE drag/drop (multi-file HDROP) + pin store
+- Extension rules (`rules.json`) + desktop folder watch
+- Pages (Ctrl+Alt+1/2) + Win+D settle
+- Organize (virtual pins / physical folders)
+- Dock, pet, sticky notes (Ctrl+Shift+N)
+- Settings: rename / page / toggles / edit rules
 
-## Build (MSVC + CMake)
+## Build / run
 
 ```bat
 cd native
 build.bat
+..\scripts\run_native.bat
+..\scripts\selftest_native.bat
 ```
 
-## Run
-
-```bat
-build\Release\desktidy_native.exe
-```
-
-- Tray / **Ctrl+Shift+S** — settings  
-- **Ctrl+Alt+1/2** — pages  
-- Drag icons between fences or to Explorer; drop files onto a fence to pin  
+Data: `%LOCALAPPDATA%\DeskTidyNative\`

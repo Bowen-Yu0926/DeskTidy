@@ -1,60 +1,49 @@
 # C++ greenfield (`feat/cpp-greenfield`)
 
 Route **A**: rewrite DeskTidy as a native Win32 app with a Fences-class
-desktop layer. Python/PyQt remains on `main` until a product cutover; this
-branch’s `native/` is the new shell + overlays host.
+desktop layer. Python/PyQt on `main` remains the shipping product until
+installer cutover; `native/` is the new host.
 
-## Native stages
+## Status
 
-| Stage | Status | Notes |
-|-------|--------|-------|
-| Desktop shell attach | done | DefView host, never overlay `HWND_TOP` |
-| Multi-fence + layout | done | LocalAppData `layout.json` |
-| Icon grid | done | Desktop scan; click to open |
-| OLE drag / pin rules | done | `DoDragDrop` + `IDropTarget`; `pins.json` |
-| Page switch / Win+D | done | Ctrl+Alt+1/2, page bar, settle timer |
-| Organize / dock / pet / notes | done (MVP) | Virtual+physical organize; dock; drawn pet; notes window |
-| Retire Python host | **deferred** | Keep shipping Python on `main` until parity/QA gate |
+| Capability | Status |
+|------------|--------|
+| DefView desktop band (never overlay `HWND_TOP`) | done |
+| Multi-fence + resize + scroll + context menus | done |
+| Icon grid + OLE drag/drop + multi-file HDROP | done |
+| Pin store + extension rules (`rules.json`) | done |
+| Pages + page bar + Win+D settle timer | done |
+| Desktop folder watch auto-refresh | done |
+| Organize virtual/physical | done |
+| Dock / pet / sticky notes | done |
+| Settings manager (rename/page/toggles/rules) | done |
+| Smoke: `scripts\selftest_native.bat` | done |
+| Installer primary = native / retire Python | **pending cutover** |
 
-## Build
+## Build / run
 
 ```bat
 cd native
 build.bat
+scripts\run_native.bat
+scripts\selftest_native.bat
 ```
 
-Requires Visual Studio 2022 Build Tools (C++) + CMake.
+Data: `%LOCALAPPDATA%\DeskTidyNative\` (`layout.json`, `pins.json`, `rules.json`, `notes.txt`).
 
-## Runtime map (`native/src`)
+## Hotkeys
 
-| Module | Role |
-|--------|------|
-| `desktop_shell.*` | DefView attach / band seat / DefView-adjacent raise |
-| `fence_window.*` | Fence panel, icon grid, OLE drop, icon drag-out |
-| `ole_drag.*` | Shell `IDataObject` drag + `PathDropTarget` |
-| `pin_store.*` | Path → fence pin persistence |
-| `layout.*` | Fences + `current_page` / dock / pet flags |
-| `page_bar.*` | Page 1/2 switcher in desktop band |
-| `organize.*` | Virtual pins + move into `Desktop\DeskTidy\…` |
-| `dock_window.*` | Bottom shortcut dock |
-| `pet_window.*` | Desktop-band pet sprite (drawn MVP) |
-| `notes_window.*` | Simple notes (`notes.txt`) |
-| `settings_window.*` | APPWINDOW manager (stays above fences) |
-| `app.*` / `main.cpp` | Tray, hotkeys, Win+D settle timer |
+| Hotkey | Action |
+|--------|--------|
+| Ctrl+Shift+S | Settings |
+| Ctrl+Shift+N | Sticky notes |
+| Ctrl+Alt+1 / 2 | Page switch |
 
-## Hotkeys / tray
+## Cutover (retire Python)
 
-- `Ctrl+Shift+S` — settings  
-- `Ctrl+Alt+1` / `Ctrl+Alt+2` — page switch  
-- Tray: notes, organize, toggle dock/pet, refresh, restore chrome  
+1. Daily-driver QA on Win10/11 (fences/OLE/pages/Win+D)  
+2. Point Inno `[Icons]` / startup at `desktidy_native.exe` (keep Python as fallback optional)  
+3. Port remaining product chrome only if still required (vault, recording, full pet assets…)  
+4. Then remove Python host from the default install path  
 
-## Retire Python (cutover checklist)
-
-Do **not** delete the Python host until all are true:
-
-1. Native covers fences + pages + OLE pin for daily use  
-2. Organize / dock / pet / notes meet product bar (assets, rules UI)  
-3. Installer ships `desktidy_native.exe` as primary entry  
-4. Selftests / smoke QA signed off on Win10/11  
-
-Until then: `main` = Python product; `feat/cpp-greenfield` = native growth branch.
+Until then: ship Python from `main`; grow native on this branch.
