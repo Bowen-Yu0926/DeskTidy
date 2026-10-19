@@ -3,6 +3,8 @@
 #include "autostart.h"
 #include "desktop_items.h"
 #include "desktop_shell.h"
+#include "first_run.h"
+#include "hotkey_help.h"
 #include "organize.h"
 #include "paths_util.h"
 #include "prompt_text.h"
@@ -178,6 +180,7 @@ bool App::Init(HINSTANCE instance) {
   watch_timer_ = SetTimer(message_hwnd_, kTimerWatch, 2000, nullptr);
 
   CreateTrayIcon();
+  MaybeShowFirstRun(settings_.Hwnd());
   return true;
 }
 
@@ -228,7 +231,33 @@ void App::Shutdown() {
   search_.Destroy();
   vault_.Destroy();
   settings_.Destroy();
+  for (auto& p : pins_img_) {
+    if (p) {
+      p->Destroy();
+    }
+  }
+  pins_img_.clear();
 }
+
+void App::StartRegionCapture() {
+  capture_.Cancel();
+  capture_.Begin(instance_, [this](const std::wstring& path, bool pin) {
+    if (pin) {
+      PinImage(path);
+    }
+  });
+}
+
+void App::PinImage(const std::wstring& path) {
+  auto img = std::make_unique<PinnedImage>();
+  if (!img->Create(instance_, path)) {
+    return;
+  }
+  img->Show();
+  pins_img_.push_back(std::move(img));
+}
+
+void App::ShowHotkeys() { ShowHotkeyHelp(settings_.Hwnd()); }
 
 void App::HandleCliAction(const std::wstring& action) {
   if (action == L"--settings") {
@@ -752,8 +781,10 @@ LRESULT CALLBACK App::TrayWndProc(HWND hwnd, UINT msg, WPARAM wparam,
                     MF_STRING | (IsNativeAutostartEnabled() ? MF_CHECKED : 0),
                     24, L"开机启动");
         AppendMenuW(menu, MF_STRING, 25, L"恢复桌面层");
+        AppendMenuW(menu, MF_STRING, 26, L"快捷键说明");
+        AppendMenuW(menu, MF_STRING, 27, L"全屏截图");
         AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-        AppendMenuW(menu, MF_STRING, 26, L"退出");
+        AppendMenuW(menu, MF_STRING, 28, L"退出");
         SetForegroundWindow(hwnd);
         const int cmd =
             TrackPopupMenu(menu, TPM_RETURNCMD | TPM_NONOTIFY, pt.x, pt.y, 0,
@@ -779,7 +810,7 @@ LRESULT CALLBACK App::TrayWndProc(HWND hwnd, UINT msg, WPARAM wparam,
             self->OpenMinutes();
             break;
           case 7:
-            CaptureRegionToPng(self->settings_.Hwnd());
+            self->StartRegionCapture();
             break;
           case 8:
             StartScreenRecord(self->settings_.Hwnd());
@@ -837,6 +868,12 @@ LRESULT CALLBACK App::TrayWndProc(HWND hwnd, UINT msg, WPARAM wparam,
             self->RestoreDesktopChrome();
             break;
           case 26:
+            self->ShowHotkeys();
+            break;
+          case 27:
+            CaptureRegionToPng(self->settings_.Hwnd());
+            break;
+          case 28:
             PostQuitMessage(0);
             break;
           default:
@@ -875,7 +912,7 @@ LRESULT CALLBACK App::TrayWndProc(HWND hwnd, UINT msg, WPARAM wparam,
         return 0;
       }
       if (wparam == kHotkeyShot) {
-        CaptureRegionToPng(self->settings_.Hwnd());
+        self->StartRegionCapture();
         return 0;
       }
       break;

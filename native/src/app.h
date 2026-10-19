@@ -1,5 +1,6 @@
 #pragma once
 
+#include "capture_overlay.h"
 #include "desktop_watch.h"
 #include "dock_window.h"
 #include "fence_window.h"
@@ -8,6 +9,7 @@
 #include "page_bar.h"
 #include "pet_window.h"
 #include "pin_store.h"
+#include "pinned_image.h"
 #include "public_host.h"
 #include "rule_store.h"
 #include "search_window.h"
@@ -60,6 +62,9 @@ class App {
   void RestoreLayoutSnapshot();
   void OpenMinutes();
   void RebuildPublicItems();
+  void StartRegionCapture();
+  void ShowHotkeys();
+  void PinImage(const std::wstring& path);
 
  private:
   static LRESULT CALLBACK TrayWndProc(HWND, UINT, WPARAM, LPARAM);
@@ -84,6 +89,8 @@ class App {
   PetWindow pet_;
   PageBar page_bar_;
   PublicHost public_host_;
+  CaptureOverlay capture_;
+  std::vector<std::unique_ptr<PinnedImage>> pins_img_;
   PinMap pins_;
   RuleMap rules_;
   DesktopWatch desktop_watch_;

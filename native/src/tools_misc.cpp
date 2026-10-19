@@ -1,10 +1,12 @@
 #include "tools_misc.h"
 
 #include "paths_util.h"
+#include "tool_paths.h"
 
 #include <Shellapi.h>
 #include <ShlObj.h>
 #include <commdlg.h>
+#include <objidl.h>
 #include <gdiplus.h>
 
 #include <vector>
@@ -74,12 +76,8 @@ bool PickAndSetWallpaper(HWND owner) {
 }
 
 bool CaptureRegionToPng(HWND owner) {
+  // Fallback fullscreen capture (region overlay is preferred via App).
   Gdi();
-  MessageBoxW(owner,
-              L"将捕获主显示器全屏到 Pictures\\DeskTidyNative。\n"
-              L"（框选版可后续增强）",
-              L"截图", MB_OK | MB_ICONINFORMATION);
-
   const int w = GetSystemMetrics(SM_CXSCREEN);
   const int h = GetSystemMetrics(SM_CYSCREEN);
   HDC screen = GetDC(nullptr);
@@ -92,9 +90,8 @@ bool CaptureRegionToPng(HWND owner) {
   std::wstring dir = NativeDataDir();
   if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Pictures, 0, nullptr, &pics)) &&
       pics) {
-    dir = pics;
+    dir = JoinPath(pics, L"DeskTidyNative");
     CoTaskMemFree(pics);
-    dir = JoinPath(dir, L"DeskTidyNative");
     CreateDirectoryW(dir.c_str(), nullptr);
   }
   wchar_t name[64];
@@ -115,33 +112,30 @@ bool CaptureRegionToPng(HWND owner) {
   DeleteDC(mem);
   ReleaseDC(nullptr, screen);
   if (ok) {
-    MessageBoxW(owner, path.c_str(), L"截图已保存", MB_OK | MB_ICONINFORMATION);
+    MessageBoxW(owner, path.c_str(), L"全屏截图已保存",
+                MB_OK | MB_ICONINFORMATION);
   }
   return ok;
 }
 
 bool StartScreenRecord(HWND owner) {
-  // Prefer bundled/local ffmpeg; otherwise open instructions.
-  wchar_t module[MAX_PATH] = {};
-  GetModuleFileNameW(nullptr, module, MAX_PATH);
-  std::wstring dir = module;
-  const size_t slash = dir.find_last_of(L'\\');
-  if (slash != std::wstring::npos) {
-    dir.resize(slash);
+  const std::wstring ff = FindFfmpegExe();
+  if (ff.empty()) {
+    MessageBoxW(owner,
+                L"未找到 ffmpeg。\n"
+                L"请安装到 PATH，或放到：\n"
+                L"  · 程序目录\\ffmpeg.exe\n"
+                L"  · 仓库 assets\\ffmpeg\\ffmpeg.exe",
+                L"录屏", MB_OK | MB_ICONWARNING);
+    return false;
   }
-  const std::wstring candidates[] = {
-      JoinPath(dir, L"ffmpeg.exe"),
-      JoinPath(dir, L"assets\\ffmpeg\\ffmpeg.exe"),
-      L"ffmpeg",
-  };
 
   PWSTR vids = nullptr;
   std::wstring out_dir = NativeDataDir();
   if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Videos, 0, nullptr, &vids)) &&
       vids) {
-    out_dir = vids;
+    out_dir = JoinPath(vids, L"DeskTidyNative");
     CoTaskMemFree(vids);
-    out_dir = JoinPath(out_dir, L"DeskTidyNative");
     CreateDirectoryW(out_dir.c_str(), nullptr);
   }
   wchar_t name[64];
@@ -151,29 +145,23 @@ bool StartScreenRecord(HWND owner) {
              st.wDay, st.wHour, st.wMinute, st.wSecond);
   const std::wstring out = JoinPath(out_dir, name);
 
-  for (const auto& ff : candidates) {
-    std::wstring cmd = L"\"" + ff +
-                       L"\" -y -f gdigrab -framerate 30 -i desktop -t 15 \"" +
-                       out + L"\"";
-    STARTUPINFOW si{};
-    si.cb = sizeof(si);
-    PROCESS_INFORMATION pi{};
-    std::vector<wchar_t> buf(cmd.begin(), cmd.end());
-    buf.push_back(L'\0');
-    if (CreateProcessW(nullptr, buf.data(), nullptr, nullptr, FALSE,
-                       CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
-      CloseHandle(pi.hThread);
-      CloseHandle(pi.hProcess);
-      MessageBoxW(owner,
-                  (L"已启动 15 秒桌面录制：\n" + out).c_str(), L"录屏",
-                  MB_OK | MB_ICONINFORMATION);
-      return true;
-    }
+  std::wstring cmd = L"\"" + ff +
+                     L"\" -y -f gdigrab -framerate 30 -i desktop -t 15 \"" +
+                     out + L"\"";
+  STARTUPINFOW si{};
+  si.cb = sizeof(si);
+  PROCESS_INFORMATION pi{};
+  std::vector<wchar_t> buf(cmd.begin(), cmd.end());
+  buf.push_back(L'\0');
+  if (CreateProcessW(nullptr, buf.data(), nullptr, nullptr, FALSE,
+                     CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    MessageBoxW(owner, (L"已启动 15 秒桌面录制：\n" + out).c_str(), L"录屏",
+                MB_OK | MB_ICONINFORMATION);
+    return true;
   }
-  MessageBoxW(owner,
-              L"未找到 ffmpeg。请安装 ffmpeg 或放入程序目录后重试。\n"
-              L"Python 版支持运行时下载；Native MVP 需本机 ffmpeg。",
-              L"录屏", MB_OK | MB_ICONWARNING);
+  MessageBoxW(owner, L"无法启动 ffmpeg。", L"录屏", MB_OK | MB_ICONWARNING);
   return false;
 }
 

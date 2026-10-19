@@ -1,38 +1,29 @@
 # C++ greenfield (`feat/cpp-greenfield`)
 
-Native Win32 host with Fences-class desktop layer. Feature surface below is
-**MVP-complete** relative to the Python product map (not pixel/behavior parity).
+Native Win32 host — feature MVP map vs Python product.
 
 ## Migration matrix
 
-| Python feature | Native status |
-|----------------|---------------|
-| Desktop fences + OLE pin | done |
-| Pages / Win+D settle | done |
-| Organize (virtual/physical) | done |
-| Extension rules | done |
-| Dock | done |
-| Sticky notes | done |
-| Pet (drawn) + drop→Recycle | done |
-| Public icon strip | done |
-| Layout snapshots | done |
-| Peek / toggle fences | done |
-| Todos | done |
-| File search | done |
-| Local vault (DPAPI) | done (not cloud ZK) |
-| Wallpaper picker | done |
-| Screenshot | done (fullscreen MVP) |
-| Screen record | done (needs local ffmpeg) |
-| Meeting minutes | done (notepad md) |
-| Shell background verbs | done |
-| Update check | done (open Releases) |
-| Autostart / single-instance / installer | done |
-| Cloud vault / byethost sync | **not ported** (local DPAPI instead) |
-| Full DeskNote editor / markdown WYSIWYG | **not ported** (notes + notepad) |
-| Pet asset pack / trash dissolve anim | **not ported** (drawn pet) |
-| Region screenshot / pinned image | **not ported** (fullscreen shot) |
-| fd-powered search / ffmpeg auto-fetch | **not ported** |
-| Full hotkey settings UI / i18n / first-run | **not ported** |
+| Feature | Native |
+|---------|--------|
+| Fences / OLE / pins / rules / pages | done |
+| Organize / dock / public strip | done |
+| Pet + drop→Recycle | done |
+| Notes / todos / minutes | done |
+| Snapshots / Peek / shell verbs | done |
+| Local DPAPI vault | done (not cloud ZK) |
+| Wallpaper | done |
+| **Region screenshot + pin to desktop** | done |
+| Fullscreen screenshot | done |
+| Record (ffmpeg discovery) | done |
+| Search (fd discovery + fallback) | done |
+| First-run tip | done |
+| Hotkey help | done |
+| Autostart / installer / single-instance | done |
+| Cloud vault sync | not ported |
+| DeskNote WYSIWYG | not ported |
+| Pet asset pack / dissolve anim | not ported |
+| Hotkey rebinding UI / i18n | not ported |
 
 ## Build
 
@@ -51,7 +42,7 @@ scripts\build_native_installer.bat
 | Ctrl+Shift+F | Toggle fences |
 | Ctrl+Space | Peek |
 | Ctrl+Alt+1/2 | Page |
-| Ctrl+Shift+1 | Screenshot |
+| Ctrl+Shift+1 | Region capture |
 | Ctrl+Alt+4 | Search |
 
-Data: `%LOCALAPPDATA%\DeskTidyNative\`
+Helpers: place `ffmpeg.exe` / `fd.exe` under `assets\ffmpeg\` / `assets\fd\` or PATH.

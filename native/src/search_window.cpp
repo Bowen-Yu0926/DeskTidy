@@ -1,9 +1,13 @@
 #include "search_window.h"
 
+#include "tool_paths.h"
+
 #include <ShlObj.h>
 #include <Shellapi.h>
 
+#include <cstdio>
 #include <string>
+#include <vector>
 
 namespace {
 constexpr wchar_t kClass[] = L"DeskTidyNativeSearch";
@@ -144,6 +148,77 @@ void SearchWindow::RunSearch() {
   if (needle[0] == L'\0') {
     return;
   }
+
+  // Prefer fd.exe when available.
+  const std::wstring fd = FindFdExe();
+  if (!fd.empty()) {
+    PWSTR profile = nullptr;
+    std::wstring root = L".";
+    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Profile, 0, nullptr, &profile)) &&
+        profile) {
+      root = profile;
+      CoTaskMemFree(profile);
+    }
+    std::wstring cmd = L"\"" + fd + L"\" -i -a --max-results 200 " + needle +
+                       L" \"" + root + L"\"";
+    SECURITY_ATTRIBUTES sa{sizeof(sa), nullptr, TRUE};
+    HANDLE rd = nullptr, wr = nullptr;
+    if (CreatePipe(&rd, &wr, &sa, 0)) {
+      SetHandleInformation(rd, HANDLE_FLAG_INHERIT, 0);
+      STARTUPINFOW si{};
+      si.cb = sizeof(si);
+      si.dwFlags = STARTF_USESTDHANDLES;
+      si.hStdOutput = wr;
+      si.hStdError = wr;
+      PROCESS_INFORMATION pi{};
+      std::vector<wchar_t> buf(cmd.begin(), cmd.end());
+      buf.push_back(L'\0');
+      if (CreateProcessW(nullptr, buf.data(), nullptr, nullptr, TRUE,
+                         CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
+        CloseHandle(wr);
+        wr = nullptr;
+        CloseHandle(pi.hThread);
+        std::string utf8;
+        char chunk[4096];
+        DWORD n = 0;
+        while (ReadFile(rd, chunk, sizeof(chunk), &n, nullptr) && n) {
+          utf8.append(chunk, chunk + n);
+        }
+        WaitForSingleObject(pi.hProcess, 15000);
+        CloseHandle(pi.hProcess);
+        size_t pos = 0;
+        while (pos < utf8.size()) {
+          size_t eol = utf8.find('\n', pos);
+          if (eol == std::string::npos) {
+            eol = utf8.size();
+          }
+          std::string line = utf8.substr(pos, eol - pos);
+          if (!line.empty() && line.back() == '\r') {
+            line.pop_back();
+          }
+          if (!line.empty()) {
+            const int wn =
+                MultiByteToWideChar(CP_UTF8, 0, line.c_str(), -1, nullptr, 0);
+            std::wstring wide(wn > 0 ? wn - 1 : 0, L'\0');
+            if (wn > 1) {
+              MultiByteToWideChar(CP_UTF8, 0, line.c_str(), -1, wide.data(), wn);
+            }
+            results_.push_back(wide);
+            SendMessageW(list_, LB_ADDSTRING, 0,
+                         reinterpret_cast<LPARAM>(wide.c_str()));
+          }
+          pos = eol + 1;
+        }
+        CloseHandle(rd);
+        return;
+      }
+      if (wr) {
+        CloseHandle(wr);
+      }
+      CloseHandle(rd);
+    }
+  }
+
   int budget = 200;
   PWSTR profile = nullptr;
   if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Profile, 0, nullptr, &profile)) &&

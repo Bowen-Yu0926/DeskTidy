@@ -32,6 +32,11 @@ add_executable(desktidy_native WIN32
   src/search_window.cpp
   src/vault_window.cpp
   src/tools_misc.cpp
+  src/tool_paths.cpp
+  src/capture_overlay.cpp
+  src/pinned_image.cpp
+  src/first_run.cpp
+  src/hotkey_help.cpp
   src/version.rc
 )
 
