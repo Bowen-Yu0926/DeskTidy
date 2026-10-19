@@ -4,6 +4,7 @@
 #include "display_geom.h"
 #include "paths_util.h"
 #include "prompt_text.h"
+#include "help_center.h"
 #include "screen_record.h"
 #include "tool_paths.h"
 #include "update_check.h"
@@ -330,22 +331,7 @@ void OpenCalculator() {
   }
 }
 
-void ShowAppHelp(HWND owner) {
-  MessageBoxW(
-      owner,
-      L"DeskTidy Native\n\n"
-      L"· 分区：拖放钉选、右键样式/换页\n"
-      L"· 整理：虚拟钉选 / 物理归档（可白名单）\n"
-      L"· 截图：区域钉桌面 / 全屏\n"
-      L"· 录屏：开关切换 + 角标停止，可配时长/目录\n"
-      L"· 保险库：本地 DPAPI + 可选云同步\n"
-      L"· 便签：RichEdit 粗斜体\n"
-      L"· 宠物：pets\\*.png 帧动画\n"
-      L"· 托盘：语言切换、快捷键改绑、快照\n\n"
-      L"数据目录：%LocalAppData%\\DeskTidyNative\\\n"
-      L"更新：GitHub Releases",
-      L"帮助", MB_OK | MB_ICONINFORMATION);
-}
+void ShowAppHelp(HWND owner) { ShowAppHelpCenter(owner); }
 
 void OpenUpdatePage() { CheckForUpdates(nullptr); }
 

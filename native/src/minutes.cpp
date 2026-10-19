@@ -6,9 +6,13 @@
 #include <ShlObj.h>
 #include <Shellapi.h>
 
+#include "prompt_text.h"
+
+#include <algorithm>
 #include <fstream>
 #include <sstream>
 #include <string>
+#include <vector>
 
 namespace {
 
@@ -62,23 +66,25 @@ int NextSerial(const std::wstring& folder, int year, int month, int day) {
   swprintf_s(prefix, L"%04d%02d%02d_", year, month, day);
   const size_t plen = wcslen(prefix);
   int max_n = 0;
-  const std::wstring pattern = JoinPath(folder, L"*.md");
-  WIN32_FIND_DATAW fd{};
-  HANDLE h = FindFirstFileW(pattern.c_str(), &fd);
-  if (h == INVALID_HANDLE_VALUE) {
-    return 1;
-  }
-  do {
-    if (_wcsnicmp(fd.cFileName, prefix, plen) != 0) {
+  const wchar_t* pats[] = {L"*.md", L"*.rtf"};
+  for (const wchar_t* pat : pats) {
+    WIN32_FIND_DATAW fd{};
+    HANDLE h = FindFirstFileW(JoinPath(folder, pat).c_str(), &fd);
+    if (h == INVALID_HANDLE_VALUE) {
       continue;
     }
-    const wchar_t* p = fd.cFileName + plen;
-    int n = _wtoi(p);
-    if (n > max_n) {
-      max_n = n;
-    }
-  } while (FindNextFileW(h, &fd));
-  FindClose(h);
+    do {
+      if (_wcsnicmp(fd.cFileName, prefix, plen) != 0) {
+        continue;
+      }
+      const wchar_t* p = fd.cFileName + plen;
+      int n = _wtoi(p);
+      if (n > max_n) {
+        max_n = n;
+      }
+    } while (FindNextFileW(h, &fd));
+    FindClose(h);
+  }
   return max_n + 1;
 }
 
@@ -141,4 +147,70 @@ std::wstring CreateAndOpenMinutes(HWND owner) {
 void OpenMinutesFolder(HWND owner) {
   const std::wstring folder = MinutesFolder(true);
   ShellExecuteW(owner, L"open", folder.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+}
+
+std::wstring CreateAndOpenMinutesRtf(HWND owner) {
+  const std::wstring folder = MinutesFolder(true);
+  SYSTEMTIME st{};
+  GetLocalTime(&st);
+  const int serial = NextSerial(folder, st.wYear, st.wMonth, st.wDay);
+  wchar_t name[64];
+  swprintf_s(name, L"%04d%02d%02d_%03d.rtf", st.wYear, st.wMonth, st.wDay,
+             serial);
+  const std::wstring path = JoinPath(folder, name);
+  {
+    char body[512];
+    sprintf_s(body,
+              "{\\rtf1\\ansi\\ansicpg936\\deff0{\\fonttbl{\\f0\\fnil\\fcharset134 "
+              "Microsoft YaHei;}}\\f0\\fs24 "
+              "\\b Meeting Minutes\\b0\\par\\par "
+              "Date: %04d-%02d-%02d\\par "
+              "No: %d\\par\\par "
+              "Attendees:\\par Agenda:\\par Decisions:\\par TODOs:\\par}",
+              st.wYear, st.wMonth, st.wDay, serial);
+    std::ofstream out(path, std::ios::binary);
+    out << body;
+  }
+  ShellExecuteW(owner, L"open", path.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+  return path;
+}
+
+bool OpenRecentMinutes(HWND owner) {
+  const std::wstring folder = MinutesFolder(true);
+  std::vector<std::wstring> files;
+  const wchar_t* pats[] = {L"*.md", L"*.rtf"};
+  for (const wchar_t* pat : pats) {
+    WIN32_FIND_DATAW fd{};
+    HANDLE h = FindFirstFileW(JoinPath(folder, pat).c_str(), &fd);
+    if (h == INVALID_HANDLE_VALUE) {
+      continue;
+    }
+    do {
+      if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
+        files.push_back(fd.cFileName);
+      }
+    } while (FindNextFileW(h, &fd));
+    FindClose(h);
+  }
+  std::sort(files.begin(), files.end());
+  std::reverse(files.begin(), files.end());
+  if (files.empty()) {
+    MessageBoxW(owner, L"还没有纪要文件。", L"会议纪要", MB_OK | MB_ICONINFORMATION);
+    return false;
+  }
+  std::wstring msg;
+  const size_t n = (std::min)(files.size(), size_t{20});
+  for (size_t i = 0; i < n; ++i) {
+    msg += std::to_wstring(i + 1) + L". " + files[i] + L"\n";
+  }
+  const std::wstring ans = PromptText(
+      owner, L"最近纪要",
+      (msg + L"\n打开编号：").c_str(), L"1");
+  const int idx = _wtoi(ans.c_str()) - 1;
+  if (idx < 0 || idx >= static_cast<int>(n)) {
+    return false;
+  }
+  const std::wstring path = JoinPath(folder, files[static_cast<size_t>(idx)]);
+  ShellExecuteW(owner, L"open", path.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+  return true;
 }

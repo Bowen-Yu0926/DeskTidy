@@ -57,6 +57,8 @@ add_executable(desktidy_native WIN32
   src/update_check.cpp
   src/shell_clipboard.cpp
   src/toast.cpp
+  src/help_center.cpp
+  src/native_cleanup.cpp
   src/version.rc
 )
 

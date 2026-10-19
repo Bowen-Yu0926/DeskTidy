@@ -12,6 +12,7 @@
 #include "screen_record.h"
 #include "toast.h"
 #include "minutes.h"
+#include "native_cleanup.h"
 #include "page_folders.h"
 #include "snapshot_ui.h"
 #include "whitelist.h"
@@ -420,13 +421,28 @@ void App::ReloadFencesFromState(const AppState& state) {
 void App::OpenMinutes() {
   const int choice = MessageBoxW(
       settings_.Hwnd(),
-      L"会议纪要：\n\n是 = 新建今日纪要\n否 = 打开纪要文件夹\n取消 = 设置文件夹",
+      L"会议纪要：\n\n"
+      L"是 = 新建 Markdown\n"
+      L"否 = 新建 RTF（可用 Word 打开）\n"
+      L"取消 = 更多…",
       L"会议纪要", MB_YESNOCANCEL | MB_ICONQUESTION);
   if (choice == IDYES) {
     CreateAndOpenMinutes(settings_.Hwnd());
-  } else if (choice == IDNO) {
+    return;
+  }
+  if (choice == IDNO) {
+    CreateAndOpenMinutesRtf(settings_.Hwnd());
+    return;
+  }
+  const int more = MessageBoxW(
+      settings_.Hwnd(),
+      L"更多：\n\n是 = 打开最近纪要\n否 = 打开文件夹\n取消 = 设置文件夹",
+      L"会议纪要", MB_YESNOCANCEL | MB_ICONQUESTION);
+  if (more == IDYES) {
+    OpenRecentMinutes(settings_.Hwnd());
+  } else if (more == IDNO) {
     OpenMinutesFolder(settings_.Hwnd());
-  } else if (choice == IDCANCEL) {
+  } else if (more == IDCANCEL) {
     ConfigureMinutesFolder(settings_.Hwnd());
   }
 }
@@ -893,6 +909,7 @@ LRESULT CALLBACK App::TrayWndProc(HWND hwnd, UINT msg, WPARAM wparam,
         AppendMenuW(menu, MF_STRING, 32, Tr("calculator").c_str());
         AppendMenuW(menu, MF_STRING, 33, Tr("page_folders").c_str());
         AppendMenuW(menu, MF_STRING, 34, Tr("help").c_str());
+        AppendMenuW(menu, MF_STRING, 35, L"卸载清理…");
         AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
         AppendMenuW(menu, MF_STRING, 29, Tr("exit").c_str());
         SetForegroundWindow(hwnd);
@@ -1003,6 +1020,9 @@ LRESULT CALLBACK App::TrayWndProc(HWND hwnd, UINT msg, WPARAM wparam,
             break;
           case 34:
             ShowAppHelp(self->settings_.Hwnd());
+            break;
+          case 35:
+            RunNativeCleanup(self->settings_.Hwnd());
             break;
           case 29:
             PostQuitMessage(0);
