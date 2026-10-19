@@ -6,6 +6,7 @@
 #include <vector>
 
 bool PickAndSetWallpaper(HWND owner);
+bool WallpaperMenu(HWND owner);  // pick / random from folder / restore previous
 bool CaptureRegionToPng(HWND owner);
 bool StartScreenRecord(HWND owner);
 void OpenUpdatePage();

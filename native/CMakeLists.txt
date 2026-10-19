@@ -38,6 +38,9 @@ add_executable(desktidy_native WIN32
   src/first_run.cpp
   src/hotkey_help.cpp
   src/hotkey_store.cpp
+  src/fence_style.cpp
+  src/whitelist.cpp
+  src/snapshot_ui.cpp
   src/version.rc
 )
 

@@ -19,6 +19,7 @@ class FenceWindow {
   using UnpinFn = std::function<void(FenceWindow*, const std::wstring& path)>;
   using PageFn = std::function<void(FenceWindow*, int page)>;
   using RenameFn = std::function<void(FenceWindow*)>;
+  using StyleFn = std::function<void(FenceWindow*)>;
 
   bool Create(HINSTANCE instance, const FenceLayout& layout);
   void Destroy();
@@ -28,6 +29,8 @@ class FenceWindow {
   int Page() const { return page_; }
   void SetPage(int page) { page_ = page; }
   void SetTitle(const std::wstring& title);
+  void SetStyleId(const std::string& style_id);
+  const std::string& StyleId() const { return style_id_; }
   FenceLayout CurrentLayout() const;
   void Show();
   void Hide();
@@ -38,6 +41,7 @@ class FenceWindow {
   void SetOnUnpin(UnpinFn fn) { on_unpin_ = std::move(fn); }
   void SetOnSetPage(PageFn fn) { on_set_page_ = std::move(fn); }
   void SetOnRename(RenameFn fn) { on_rename_ = std::move(fn); }
+  void SetOnStyleChanged(StyleFn fn) { on_style_changed_ = std::move(fn); }
 
   void SetItems(std::vector<DesktopItem> items);
   void ClearIcons();
@@ -70,6 +74,7 @@ class FenceWindow {
   void EnsureDropTarget();
   void ShowIconMenu(int index, POINT screen);
   void ShowFenceMenu(POINT screen);
+  void ApplyStyle();
   void ClampScroll();
 
   HWND hwnd_ = nullptr;
@@ -87,6 +92,10 @@ class FenceWindow {
   int content_h_ = 0;
   std::string id_;
   std::wstring title_;
+  std::string style_id_ = "charcoal";
+  COLORREF bg_ = RGB(42, 46, 53);
+  COLORREF accent_ = RGB(76, 141, 255);
+  COLORREF title_color_ = RGB(220, 224, 230);
   int page_ = 0;
   MovedFn on_moved_;
   PathsFn on_paths_dropped_;
@@ -94,6 +103,7 @@ class FenceWindow {
   UnpinFn on_unpin_;
   PageFn on_set_page_;
   RenameFn on_rename_;
+  StyleFn on_style_changed_;
   std::vector<Cell> cells_;
   PathDropTarget* drop_target_ = nullptr;
 };

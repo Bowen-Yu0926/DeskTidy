@@ -13,3 +13,5 @@ int OrganizeApplyDefaultPins(PinMap* pins, const std::vector<DesktopItem>& items
 
 // Physical organize: move unpinned desktop files into DeskTidy subfolders.
 int OrganizeMoveIntoFolders(const std::vector<DesktopItem>& items);
+// Count how many items would be moved (respects whitelist).
+int OrganizeCountPhysicalMoves(const std::vector<DesktopItem>& items);

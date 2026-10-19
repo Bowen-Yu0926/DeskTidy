@@ -243,6 +243,7 @@ AppState LoadAppState() {
     std::string id;
     std::string title;
     int x = 0, y = 0, w = 0, h = 0, page = 0;
+    std::string style_id;
     if (!FindString(obj, "id", &id)) {
       continue;
     }
@@ -256,6 +257,7 @@ AppState LoadAppState() {
     FindNumber(obj, "w", &w);
     FindNumber(obj, "h", &h);
     FindNumber(obj, "page", &page);
+    FindString(obj, "style", &style_id);
     if (w < 120) {
       w = 280;
     }
@@ -270,6 +272,7 @@ AppState LoadAppState() {
     fl.w = w;
     fl.h = h;
     fl.page = page;
+    fl.style_id = style_id.empty() ? "charcoal" : style_id;
     state.fences.push_back(fl);
   }
   if (state.fences.empty()) {
@@ -318,7 +321,9 @@ bool SaveAppState(const AppState& state) {
         << "\"y\":" << f.y << ","
         << "\"w\":" << f.w << ","
         << "\"h\":" << f.h << ","
-        << "\"page\":" << f.page << "}";
+        << "\"page\":" << f.page << ","
+        << "\"style\":\""
+        << EscapeJson(f.style_id.empty() ? "charcoal" : f.style_id) << "\"}";
     if (i + 1 < state.fences.size()) {
       out << ",";
     }

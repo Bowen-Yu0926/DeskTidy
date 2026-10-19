@@ -7,6 +7,8 @@
 #include "hotkey_help.h"
 #include "hotkey_store.h"
 #include "organize.h"
+#include "snapshot_ui.h"
+#include "whitelist.h"
 #include "paths_util.h"
 #include "prompt_text.h"
 #include "shell_verbs.h"
@@ -64,6 +66,7 @@ void App::WireFence(FenceWindow* fence) {
       RefreshSettingsList();
     }
   });
+  fence->SetOnStyleChanged([this](FenceWindow*) { PersistLayouts(); });
 }
 
 bool App::SpawnFence(const FenceLayout& layout) {
@@ -346,21 +349,12 @@ void App::SaveLayoutSnapshot() {
 }
 
 void App::RestoreLayoutSnapshot() {
-  const auto list = ListSnapshots();
-  if (list.empty()) {
-    MessageBoxW(settings_.Hwnd(), L"还没有快照。请先「保存布局快照」。",
-                L"布局快照", MB_OK | MB_ICONINFORMATION);
-    return;
-  }
-  const auto& last = list.back();
   AppState state;
-  if (!LoadSnapshot(last.path, &state)) {
-    MessageBoxW(settings_.Hwnd(), L"读取快照失败。", L"布局快照",
-                MB_OK | MB_ICONWARNING);
+  if (!ManageSnapshotsDialog(settings_.Hwnd(), &state)) {
     return;
   }
   ReloadFencesFromState(state);
-  MessageBoxW(settings_.Hwnd(), (L"已恢复：" + last.name).c_str(), L"布局快照",
+  MessageBoxW(settings_.Hwnd(), L"已恢复所选快照。", L"布局快照",
               MB_OK | MB_ICONINFORMATION);
 }
 
@@ -617,6 +611,16 @@ void App::OrganizeVirtual() {
 
 void App::OrganizePhysical() {
   const auto items = ScanDesktopItems();
+  const int will = OrganizeCountPhysicalMoves(items);
+  wchar_t ask[160];
+  swprintf_s(ask,
+             L"将把约 %d 个桌面项目移入 Desktop\\DeskTidy（白名单除外）。\n"
+             L"继续？",
+             will);
+  if (MessageBoxW(settings_.Hwnd(), ask, L"物理整理",
+                  MB_YESNO | MB_ICONWARNING) != IDYES) {
+    return;
+  }
   const int n = OrganizeMoveIntoFolders(items);
   pins_.clear();
   SavePins(pins_);
@@ -782,11 +786,11 @@ LRESULT CALLBACK App::TrayWndProc(HWND hwnd, UINT msg, WPARAM wparam,
         AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
         AppendMenuW(menu, MF_STRING, 7, L"截图");
         AppendMenuW(menu, MF_STRING, 8, L"录屏(15s)");
-        AppendMenuW(menu, MF_STRING, 9, L"设置壁纸");
+        AppendMenuW(menu, MF_STRING, 9, L"壁纸…");
         AppendMenuW(menu, MF_STRING, 10, L"检查更新");
         AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
         AppendMenuW(menu, MF_STRING, 11, L"保存布局快照");
-        AppendMenuW(menu, MF_STRING, 12, L"恢复最近快照");
+        AppendMenuW(menu, MF_STRING, 12, L"管理布局快照…");
         AppendMenuW(menu, MF_STRING, 13, L"Peek 显隐分区");
         AppendMenuW(menu, MF_STRING, 14, L"显示/隐藏分区");
         AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
@@ -795,6 +799,7 @@ LRESULT CALLBACK App::TrayWndProc(HWND hwnd, UINT msg, WPARAM wparam,
         AppendMenuW(menu, MF_STRING, 17, L"虚拟整理");
         AppendMenuW(menu, MF_STRING, 18, L"物理整理");
         AppendMenuW(menu, MF_STRING, 19, L"编辑规则");
+        AppendMenuW(menu, MF_STRING, 30, L"整理白名单…");
         AppendMenuW(menu, MF_STRING, 20, L"刷新图标");
         AppendMenuW(menu, MF_STRING, 21, L"添加分区");
         AppendMenuW(menu, MF_STRING, 22, L"切换 Dock");
@@ -839,7 +844,7 @@ LRESULT CALLBACK App::TrayWndProc(HWND hwnd, UINT msg, WPARAM wparam,
             StartScreenRecord(self->settings_.Hwnd());
             break;
           case 9:
-            PickAndSetWallpaper(self->settings_.Hwnd());
+            WallpaperMenu(self->settings_.Hwnd());
             break;
           case 10:
             OpenUpdatePage();
@@ -870,6 +875,9 @@ LRESULT CALLBACK App::TrayWndProc(HWND hwnd, UINT msg, WPARAM wparam,
             break;
           case 19:
             self->EditRules();
+            break;
+          case 30:
+            EditWhitelistDialog(self->settings_.Hwnd());
             break;
           case 20:
             self->rules_ = LoadRules();

@@ -1,5 +1,7 @@
 #include "organize.h"
 
+#include "whitelist.h"
+
 #include <Windows.h>
 #include <ShlObj.h>
 
@@ -34,12 +36,39 @@ int OrganizeApplyDefaultPins(PinMap* pins, const std::vector<DesktopItem>& items
   if (!pins) {
     return 0;
   }
+  const auto wl = LoadWhitelist();
   int n = 0;
   for (const auto& it : items) {
     if (FindPin(*pins, it.path)) {
       continue;
     }
+    if (IsWhitelisted(it.path, wl) || IsWhitelisted(it.name, wl)) {
+      continue;
+    }
     SetPin(pins, it.path, it.is_link ? software_id : common_id);
+    ++n;
+  }
+  return n;
+}
+
+int OrganizeCountPhysicalMoves(const std::vector<DesktopItem>& items) {
+  const std::wstring desktop = DesktopDir();
+  if (desktop.empty()) {
+    return 0;
+  }
+  const fs::path root = fs::path(desktop) / L"DeskTidy";
+  const auto wl = LoadWhitelist();
+  int n = 0;
+  for (const auto& it : items) {
+    if (!IsUnderDir(it.path, desktop)) {
+      continue;
+    }
+    if (IsUnderDir(it.path, root.wstring())) {
+      continue;
+    }
+    if (IsWhitelisted(it.path, wl) || IsWhitelisted(it.name, wl)) {
+      continue;
+    }
     ++n;
   }
   return n;
@@ -56,13 +85,16 @@ int OrganizeMoveIntoFolders(const std::vector<DesktopItem>& items) {
   std::error_code ec;
   fs::create_directories(links, ec);
   fs::create_directories(files, ec);
+  const auto wl = LoadWhitelist();
   int moved = 0;
   for (const auto& it : items) {
     if (!IsUnderDir(it.path, desktop)) {
       continue;
     }
-    // Skip items already inside DeskTidy folder.
     if (IsUnderDir(it.path, root.wstring())) {
+      continue;
+    }
+    if (IsWhitelisted(it.path, wl) || IsWhitelisted(it.name, wl)) {
       continue;
     }
     const fs::path src(it.path);

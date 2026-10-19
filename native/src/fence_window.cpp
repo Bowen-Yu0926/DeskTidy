@@ -1,6 +1,7 @@
 #include "fence_window.h"
 
 #include "desktop_shell.h"
+#include "fence_style.h"
 
 #include <Shellapi.h>
 #include <windowsx.h>
@@ -10,8 +11,6 @@
 
 namespace {
 constexpr wchar_t kClassName[] = L"DeskTidyNativeFence";
-constexpr COLORREF kPanelBg = RGB(32, 36, 44);
-constexpr COLORREF kPanelBorder = RGB(70, 78, 92);
 constexpr int kHeaderH = 36;
 constexpr int kPad = 10;
 constexpr int kCellW = 76;
@@ -22,10 +21,28 @@ constexpr int kEdge = 8;
 bool g_class_registered = false;
 }  // namespace
 
+void FenceWindow::ApplyStyle() {
+  const auto* preset = FenceStyleById(style_id_);
+  style_id_ = preset->id;
+  bg_ = preset->background;
+  accent_ = preset->accent;
+  title_color_ = preset->title;
+  if (hwnd_) {
+    SetLayeredWindowAttributes(hwnd_, 0, preset->alpha, LWA_ALPHA);
+    InvalidateRect(hwnd_, nullptr, TRUE);
+  }
+}
+
+void FenceWindow::SetStyleId(const std::string& style_id) {
+  style_id_ = NormalizeFenceStyleId(style_id);
+  ApplyStyle();
+}
+
 bool FenceWindow::Create(HINSTANCE instance, const FenceLayout& layout) {
   id_ = layout.id;
   title_ = layout.title;
   page_ = layout.page;
+  style_id_ = NormalizeFenceStyleId(layout.style_id);
 
   if (!g_class_registered) {
     WNDCLASSEXW wc{};
@@ -52,8 +69,8 @@ bool FenceWindow::Create(HINSTANCE instance, const FenceLayout& layout) {
     return false;
   }
 
-  SetLayeredWindowAttributes(hwnd_, 0, 235, LWA_ALPHA);
   SetWindowLongPtrW(hwnd_, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(this));
+  ApplyStyle();
   EnsureDropTarget();
   return true;
 }
@@ -119,6 +136,7 @@ FenceLayout FenceWindow::CurrentLayout() const {
   fl.id = id_;
   fl.title = title_;
   fl.page = page_;
+  fl.style_id = style_id_;
   if (hwnd_) {
     RECT rc{};
     GetWindowRect(hwnd_, &rc);
@@ -306,6 +324,15 @@ void FenceWindow::ShowFenceMenu(POINT screen) {
               L"放到第 1 页");
   AppendMenuW(menu, MF_STRING | (page_ == 1 ? MF_CHECKED : 0), 12,
               L"放到第 2 页");
+  AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+  HMENU styles = CreatePopupMenu();
+  const auto all = AllFenceStyles();
+  for (size_t i = 0; i < all.size(); ++i) {
+    const UINT flags =
+        MF_STRING | (style_id_ == all[i]->id ? MF_CHECKED : 0);
+    AppendMenuW(styles, flags, 100 + static_cast<UINT>(i), all[i]->name);
+  }
+  AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(styles), L"分区样式");
   SetForegroundWindow(hwnd_);
   const int cmd =
       TrackPopupMenu(menu, TPM_RETURNCMD | TPM_NONOTIFY, screen.x, screen.y, 0,
@@ -317,6 +344,11 @@ void FenceWindow::ShowFenceMenu(POINT screen) {
     on_set_page_(this, 0);
   } else if (cmd == 12 && on_set_page_) {
     on_set_page_(this, 1);
+  } else if (cmd >= 100 && cmd < 100 + static_cast<int>(all.size())) {
+    SetStyleId(all[static_cast<size_t>(cmd - 100)]->id);
+    if (on_style_changed_) {
+      on_style_changed_(this);
+    }
   }
 }
 
@@ -552,11 +584,11 @@ LRESULT FenceWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
 void FenceWindow::Paint(HDC hdc) {
   RECT rc{};
   GetClientRect(hwnd_, &rc);
-  HBRUSH bg = CreateSolidBrush(kPanelBg);
+  HBRUSH bg = CreateSolidBrush(bg_);
   FillRect(hdc, &rc, bg);
   DeleteObject(bg);
 
-  HPEN pen = CreatePen(PS_SOLID, 1, kPanelBorder);
+  HPEN pen = CreatePen(PS_SOLID, 1, accent_);
   HGDIOBJ old_pen = SelectObject(hdc, pen);
   HGDIOBJ old_brush = SelectObject(hdc, GetStockObject(NULL_BRUSH));
   RoundRect(hdc, rc.left, rc.top, rc.right, rc.bottom, 16, 16);
@@ -564,8 +596,18 @@ void FenceWindow::Paint(HDC hdc) {
   SelectObject(hdc, old_brush);
   DeleteObject(pen);
 
+  // Accent bar under title.
+  RECT bar = rc;
+  bar.top = kHeaderH - 3;
+  bar.bottom = kHeaderH - 1;
+  bar.left += 12;
+  bar.right -= 12;
+  HBRUSH accent_br = CreateSolidBrush(accent_);
+  FillRect(hdc, &bar, accent_br);
+  DeleteObject(accent_br);
+
   SetBkMode(hdc, TRANSPARENT);
-  SetTextColor(hdc, RGB(220, 224, 230));
+  SetTextColor(hdc, title_color_);
   RECT title_rc = rc;
   title_rc.top += 8;
   title_rc.bottom = title_rc.top + 24;
@@ -574,7 +616,6 @@ void FenceWindow::Paint(HDC hdc) {
   DrawTextW(hdc, title_buf, -1, &title_rc,
             DT_CENTER | DT_TOP | DT_SINGLELINE | DT_END_ELLIPSIS);
 
-  // Clip icon area below header.
   IntersectClipRect(hdc, rc.left, kHeaderH, rc.right, rc.bottom);
 
   HFONT font = CreateFontW(12, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,

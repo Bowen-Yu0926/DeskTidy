@@ -9,6 +9,8 @@
 #include <objidl.h>
 #include <gdiplus.h>
 
+#include <fstream>
+#include <sstream>
 #include <vector>
 
 #pragma comment(lib, "gdiplus.lib")
@@ -59,6 +61,99 @@ GdiplusOnce& Gdi() {
 
 }  // namespace
 
+namespace {
+
+std::wstring WallpaperCfgPath() {
+  return JoinPath(NativeDataDir(), L"wallpaper.json");
+}
+
+std::wstring ReadCfgField(const char* key) {
+  std::ifstream in(WallpaperCfgPath());
+  if (!in) {
+    return {};
+  }
+  std::ostringstream ss;
+  ss << in.rdbuf();
+  const std::string json = ss.str();
+  const std::string needle = std::string("\"") + key + "\"";
+  size_t p = json.find(needle);
+  if (p == std::string::npos) {
+    return {};
+  }
+  p = json.find('"', json.find(':', p) + 1);
+  if (p == std::string::npos) {
+    return {};
+  }
+  ++p;
+  std::string val;
+  while (p < json.size() && json[p] != '"') {
+    if (json[p] == '\\' && p + 1 < json.size()) {
+      ++p;
+    }
+    val.push_back(json[p++]);
+  }
+  return WidenUtf8(val);
+}
+
+void WriteCfg(const std::wstring& folder, const std::wstring& previous) {
+  std::ofstream out(WallpaperCfgPath(), std::ios::binary);
+  if (!out) {
+    return;
+  }
+  auto esc = [](const std::wstring& w) {
+    std::string s = NarrowUtf8(w);
+    std::string o;
+    for (char c : s) {
+      if (c == '\\' || c == '"') {
+        o.push_back('\\');
+      }
+      o.push_back(c);
+    }
+    return o;
+  };
+  out << "{\n  \"folder\":\"" << esc(folder) << "\",\n  \"previous\":\""
+      << esc(previous) << "\"\n}\n";
+}
+
+bool RememberAndSet(const std::wstring& path) {
+  wchar_t current[MAX_PATH] = {};
+  SystemParametersInfoW(SPI_GETDESKWALLPAPER, MAX_PATH, current, 0);
+  const std::wstring folder = ReadCfgField("folder");
+  std::wstring previous = current;
+  if (previous.empty()) {
+    previous = ReadCfgField("previous");
+  }
+  WriteCfg(folder, previous);
+  std::wstring mutable_path = path;
+  return SystemParametersInfoW(SPI_SETDESKWALLPAPER, 0, mutable_path.data(),
+                               SPIF_UPDATEINIFILE | SPIF_SENDWININICHANGE) != 0;
+}
+
+std::vector<std::wstring> ListImagesInFolder(const std::wstring& folder) {
+  std::vector<std::wstring> out;
+  if (folder.empty()) {
+    return out;
+  }
+  const wchar_t* exts[] = {L"*.jpg", L"*.jpeg", L"*.png", L"*.bmp"};
+  for (const wchar_t* ext : exts) {
+    const std::wstring pattern = JoinPath(folder, ext);
+    WIN32_FIND_DATAW fd{};
+    HANDLE h = FindFirstFileW(pattern.c_str(), &fd);
+    if (h == INVALID_HANDLE_VALUE) {
+      continue;
+    }
+    do {
+      if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
+        out.push_back(JoinPath(folder, fd.cFileName));
+      }
+    } while (FindNextFileW(h, &fd));
+    FindClose(h);
+  }
+  return out;
+}
+
+}  // namespace
+
 bool PickAndSetWallpaper(HWND owner) {
   wchar_t file[MAX_PATH] = {};
   OPENFILENAMEW ofn{};
@@ -71,8 +166,59 @@ bool PickAndSetWallpaper(HWND owner) {
   if (!GetOpenFileNameW(&ofn)) {
     return false;
   }
-  return SystemParametersInfoW(SPI_SETDESKWALLPAPER, 0, file,
-                               SPIF_UPDATEINIFILE | SPIF_SENDWININICHANGE) != 0;
+  // Remember folder from picked file.
+  std::wstring path = file;
+  const size_t slash = path.find_last_of(L"\\/");
+  if (slash != std::wstring::npos) {
+    WriteCfg(path.substr(0, slash), ReadCfgField("previous"));
+  }
+  return RememberAndSet(path);
+}
+
+bool WallpaperMenu(HWND owner) {
+  const int choice = MessageBoxW(
+      owner,
+      L"壁纸：\n\n是 = 选择图片\n否 = 从库目录随机\n取消 = 恢复上一张",
+      L"壁纸", MB_YESNOCANCEL | MB_ICONQUESTION);
+  if (choice == IDYES) {
+    return PickAndSetWallpaper(owner);
+  }
+  if (choice == IDCANCEL) {
+    const std::wstring prev = ReadCfgField("previous");
+    if (prev.empty()) {
+      MessageBoxW(owner, L"没有可恢复的上一张壁纸记录。", L"壁纸",
+                  MB_OK | MB_ICONINFORMATION);
+      return false;
+    }
+    std::wstring mutable_prev = prev;
+    return SystemParametersInfoW(SPI_SETDESKWALLPAPER, 0, mutable_prev.data(),
+                                 SPIF_UPDATEINIFILE | SPIF_SENDWININICHANGE) != 0;
+  }
+  // Random from folder
+  std::wstring folder = ReadCfgField("folder");
+  if (folder.empty()) {
+    BROWSEINFOW bi{};
+    bi.hwndOwner = owner;
+    bi.lpszTitle = L"选择壁纸库文件夹";
+    bi.ulFlags = BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE;
+    LPITEMIDLIST pidl = SHBrowseForFolderW(&bi);
+    if (!pidl) {
+      return false;
+    }
+    wchar_t path[MAX_PATH] = {};
+    SHGetPathFromIDListW(pidl, path);
+    CoTaskMemFree(pidl);
+    folder = path;
+    WriteCfg(folder, ReadCfgField("previous"));
+  }
+  auto images = ListImagesInFolder(folder);
+  if (images.empty()) {
+    MessageBoxW(owner, L"库目录中没有 jpg/png/bmp。", L"壁纸",
+                MB_OK | MB_ICONWARNING);
+    return false;
+  }
+  const size_t idx = static_cast<size_t>(GetTickCount()) % images.size();
+  return RememberAndSet(images[idx]);
 }
 
 bool CaptureRegionToPng(HWND owner) {

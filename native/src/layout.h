@@ -11,6 +11,7 @@ struct FenceLayout {
   int w = 280;
   int h = 360;
   int page = 0;
+  std::string style_id = "charcoal";
 };
 
 struct AppState {
