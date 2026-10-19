@@ -29,6 +29,9 @@ constexpr int kExport = 5008;
 constexpr int kImport = 5009;
 constexpr int kLogin = 5010;
 constexpr int kSync = 5011;
+constexpr int kGen = 5012;
+constexpr int kCopy = 5013;
+constexpr UINT_PTR kClipTimer = 70;
 
 std::wstring VaultPath() { return JoinPath(NativeDataDir(), L"vault.dpapi"); }
 
@@ -72,7 +75,7 @@ bool VaultWindow::Create(HINSTANCE instance) {
 
   hwnd_ = CreateWindowExW(WS_EX_APPWINDOW, kClass, L"账号保险库 (本地 DPAPI)",
                           WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, 560,
-                          480, nullptr, nullptr, instance, this);
+                          540, nullptr, nullptr, instance, this);
   if (!hwnd_) {
     return false;
   }
@@ -131,9 +134,17 @@ bool VaultWindow::Create(HINSTANCE instance) {
                 360, 100, 30, hwnd_,
                 reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSync)), instance,
                 nullptr);
+  CreateWindowW(L"BUTTON", L"生成密码", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 240,
+                360, 100, 30, hwnd_,
+                reinterpret_cast<HMENU>(static_cast<INT_PTR>(kGen)), instance,
+                nullptr);
+  CreateWindowW(L"BUTTON", L"复制密码", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 350,
+                360, 100, 30, hwnd_,
+                reinterpret_cast<HMENU>(static_cast<INT_PTR>(kCopy)), instance,
+                nullptr);
   CreateWindowW(L"STATIC",
-                L"本地 DPAPI。云同步走 DeskTidy 保险库 API（enc_ver=0，服务端加密）。",
-                WS_CHILD | WS_VISIBLE, 12, 400, 520, 40, hwnd_, nullptr,
+                L"复制后约 30 秒自动清空剪贴板。本地 DPAPI + 可选云同步。",
+                WS_CHILD | WS_VISIBLE, 12, 410, 520, 40, hwnd_, nullptr,
                 instance, nullptr);
   Load();
   RefreshList();
@@ -142,10 +153,96 @@ bool VaultWindow::Create(HINSTANCE instance) {
 
 void VaultWindow::Destroy() {
   Save();
+  ClearClipboardIfOurs();
   if (hwnd_) {
     DestroyWindow(hwnd_);
     hwnd_ = nullptr;
   }
+}
+
+void VaultWindow::GeneratePassword() {
+  constexpr wchar_t kAlpha[] =
+      L"ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789!@#$%&*";
+  constexpr int kLen = 16;
+  BYTE rnd[kLen]{};
+  HCRYPTPROV prov = 0;
+  if (!CryptAcquireContextW(&prov, nullptr, nullptr, PROV_RSA_FULL,
+                            CRYPT_VERIFYCONTEXT) ||
+      !CryptGenRandom(prov, kLen, rnd)) {
+    MessageBoxW(hwnd_, L"无法生成随机密码。", L"保险库", MB_OK | MB_ICONWARNING);
+    if (prov) {
+      CryptReleaseContext(prov, 0);
+    }
+    return;
+  }
+  CryptReleaseContext(prov, 0);
+  const size_t n = wcslen(kAlpha);
+  std::wstring pwd(kLen, L'0');
+  for (int i = 0; i < kLen; ++i) {
+    pwd[static_cast<size_t>(i)] = kAlpha[rnd[i] % n];
+  }
+  SetWindowTextW(edit_pass_, pwd.c_str());
+}
+
+void VaultWindow::CopyPassword() {
+  std::wstring secret;
+  if (list_) {
+    const int sel = static_cast<int>(SendMessageW(list_, LB_GETCURSEL, 0, 0));
+    if (sel >= 0 && sel < static_cast<int>(entries_.size())) {
+      secret = entries_[static_cast<size_t>(sel)].pass;
+    }
+  }
+  if (secret.empty() && edit_pass_) {
+    wchar_t buf[512] = {};
+    GetWindowTextW(edit_pass_, buf, 512);
+    secret = buf;
+  }
+  if (secret.empty() || !OpenClipboard(hwnd_)) {
+    return;
+  }
+  EmptyClipboard();
+  const size_t bytes = (secret.size() + 1) * sizeof(wchar_t);
+  HGLOBAL mem = GlobalAlloc(GMEM_MOVEABLE, bytes);
+  if (!mem) {
+    CloseClipboard();
+    return;
+  }
+  void* dst = GlobalLock(mem);
+  memcpy(dst, secret.c_str(), bytes);
+  GlobalUnlock(mem);
+  SetClipboardData(CF_UNICODETEXT, mem);
+  CloseClipboard();
+  clip_secret_ = secret;
+  if (clip_timer_) {
+    KillTimer(hwnd_, clip_timer_);
+  }
+  clip_timer_ = SetTimer(hwnd_, kClipTimer, 30000, nullptr);
+  MessageBoxW(hwnd_, L"密码已复制，30 秒后将尝试清空剪贴板。", L"保险库",
+              MB_OK | MB_ICONINFORMATION);
+}
+
+void VaultWindow::ClearClipboardIfOurs() {
+  if (clip_timer_ && hwnd_) {
+    KillTimer(hwnd_, clip_timer_);
+    clip_timer_ = 0;
+  }
+  if (clip_secret_.empty()) {
+    return;
+  }
+  if (OpenClipboard(hwnd_ ? hwnd_ : nullptr)) {
+    HANDLE data = GetClipboardData(CF_UNICODETEXT);
+    if (data) {
+      const wchar_t* text = static_cast<const wchar_t*>(GlobalLock(data));
+      if (text && clip_secret_ == text) {
+        GlobalUnlock(data);
+        EmptyClipboard();
+      } else if (text) {
+        GlobalUnlock(data);
+      }
+    }
+    CloseClipboard();
+  }
+  clip_secret_.clear();
 }
 
 void VaultWindow::Show() {
@@ -455,6 +552,20 @@ LRESULT VaultWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
       }
       if (LOWORD(wparam) == kSync) {
         CloudSync();
+        return 0;
+      }
+      if (LOWORD(wparam) == kGen) {
+        GeneratePassword();
+        return 0;
+      }
+      if (LOWORD(wparam) == kCopy) {
+        CopyPassword();
+        return 0;
+      }
+      break;
+    case WM_TIMER:
+      if (wparam == kClipTimer) {
+        ClearClipboardIfOurs();
         return 0;
       }
       break;

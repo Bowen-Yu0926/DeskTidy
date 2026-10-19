@@ -30,6 +30,8 @@ constexpr int kMenuItalic = 2107;
 constexpr int kMenuUnder = 2108;
 constexpr int kMenuLibrary = 2109;
 constexpr int kMenuPreview = 2110;
+constexpr int kMenuFind = 2111;
+constexpr int kMenuReplace = 2112;
 
 struct StreamCookie {
   std::string data;
@@ -97,6 +99,10 @@ bool NotesWindow::Create(HINSTANCE instance) {
   AppendMenuW(file, MF_SEPARATOR, 0, nullptr);
   AppendMenuW(file, MF_STRING, kMenuTpl, L"插入模板");
   AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(file), L"文件");
+  HMENU editm = CreatePopupMenu();
+  AppendMenuW(editm, MF_STRING, kMenuFind, L"查找…\tCtrl+F");
+  AppendMenuW(editm, MF_STRING, kMenuReplace, L"替换…\tCtrl+H");
+  AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(editm), L"编辑");
   HMENU view = CreatePopupMenu();
   AppendMenuW(view, MF_STRING, kMenuBigger, L"放大字体");
   AppendMenuW(view, MF_STRING, kMenuSmaller, L"缩小字体");
@@ -107,6 +113,7 @@ bool NotesWindow::Create(HINSTANCE instance) {
   AppendMenuW(fmt, MF_STRING, kMenuUnder, L"下划线");
   AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(fmt), L"格式");
   SetMenu(hwnd_, menu);
+  find_msg_ = RegisterWindowMessageW(FINDMSGSTRING);
 
   edit_ = CreateWindowExW(
       WS_EX_CLIENTEDGE, MSFTEDIT_CLASS, L"",
@@ -293,6 +300,95 @@ void NotesWindow::SaveAs() {
   Save();
 }
 
+void NotesWindow::ShowFind(bool replace) {
+  if (find_dlg_ && IsWindow(find_dlg_)) {
+    SetForegroundWindow(find_dlg_);
+    return;
+  }
+  ZeroMemory(&find_, sizeof(find_));
+  find_.lStructSize = sizeof(find_);
+  find_.hwndOwner = hwnd_;
+  find_.lpstrFindWhat = find_what_;
+  find_.wFindWhatLen = 256;
+  find_.lpstrReplaceWith = replace_with_;
+  find_.wReplaceWithLen = 256;
+  find_.Flags = FR_DOWN;
+  find_dlg_ = replace ? ReplaceTextW(&find_) : FindTextW(&find_);
+}
+
+void NotesWindow::HandleFindMsg(LPFINDREPLACEW fr) {
+  if (!fr || !edit_) {
+    return;
+  }
+  if (fr->Flags & FR_DIALOGTERM) {
+    find_dlg_ = nullptr;
+    return;
+  }
+  const bool down = (fr->Flags & FR_DOWN) != 0;
+  const bool match_case = (fr->Flags & FR_MATCHCASE) != 0;
+  const bool whole = (fr->Flags & FR_WHOLEWORD) != 0;
+  DWORD flags = FR_DOWN;
+  if (match_case) {
+    flags |= FR_MATCHCASE;
+  }
+  if (whole) {
+    flags |= FR_WHOLEWORD;
+  }
+
+  auto find_once = [&](bool search_down) -> bool {
+    FINDTEXTEXW ft{};
+    ft.chrg.cpMin = 0;
+    ft.chrg.cpMax = -1;
+    CHARRANGE sel{};
+    SendMessageW(edit_, EM_EXGETSEL, 0, reinterpret_cast<LPARAM>(&sel));
+    if (search_down) {
+      ft.chrg.cpMin = sel.cpMax;
+    } else {
+      flags &= ~FR_DOWN;
+      ft.chrg.cpMin = 0;
+      ft.chrg.cpMax = sel.cpMin;
+    }
+    ft.lpstrText = fr->lpstrFindWhat;
+    const LRESULT hit = SendMessageW(
+        edit_, EM_FINDTEXTEXW, flags | (search_down ? FR_DOWN : 0),
+        reinterpret_cast<LPARAM>(&ft));
+    if (hit < 0) {
+      return false;
+    }
+    SendMessageW(edit_, EM_EXSETSEL, 0, reinterpret_cast<LPARAM>(&ft.chrgText));
+    SendMessageW(edit_, EM_SCROLLCARET, 0, 0);
+    return true;
+  };
+
+  if (fr->Flags & FR_REPLACEALL) {
+    int n = 0;
+    CHARRANGE top{};
+    top.cpMin = 0;
+    top.cpMax = 0;
+    SendMessageW(edit_, EM_EXSETSEL, 0, reinterpret_cast<LPARAM>(&top));
+    while (find_once(true)) {
+      SendMessageW(edit_, EM_REPLACESEL, TRUE,
+                   reinterpret_cast<LPARAM>(fr->lpstrReplaceWith));
+      ++n;
+    }
+    wchar_t buf[64];
+    swprintf_s(buf, L"已替换 %d 处。", n);
+    MessageBoxW(hwnd_, buf, L"替换", MB_OK | MB_ICONINFORMATION);
+    return;
+  }
+  if (fr->Flags & FR_REPLACE) {
+    CHARRANGE sel{};
+    SendMessageW(edit_, EM_EXGETSEL, 0, reinterpret_cast<LPARAM>(&sel));
+    if (sel.cpMax > sel.cpMin) {
+      SendMessageW(edit_, EM_REPLACESEL, TRUE,
+                   reinterpret_cast<LPARAM>(fr->lpstrReplaceWith));
+    }
+  }
+  if (!find_once(down)) {
+    MessageBoxW(hwnd_, L"未找到。", L"查找", MB_OK | MB_ICONINFORMATION);
+  }
+}
+
 void NotesWindow::InsertTemplate() {
   if (!edit_) {
     return;
@@ -321,6 +417,10 @@ LRESULT CALLBACK NotesWindow::WndProc(HWND hwnd, UINT msg, WPARAM wparam,
 }
 
 LRESULT NotesWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
+  if (find_msg_ && msg == find_msg_) {
+    HandleFindMsg(reinterpret_cast<LPFINDREPLACEW>(lparam));
+    return 0;
+  }
   switch (msg) {
     case WM_COMMAND:
       switch (LOWORD(wparam)) {
@@ -335,6 +435,12 @@ LRESULT NotesWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
           return 0;
         case kMenuPreview:
           PreviewMarkdown();
+          return 0;
+        case kMenuFind:
+          ShowFind(false);
+          return 0;
+        case kMenuReplace:
+          ShowFind(true);
           return 0;
         case kMenuBigger:
           SetFontSize(font_pt_ + 2);

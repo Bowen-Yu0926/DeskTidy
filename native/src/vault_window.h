@@ -31,6 +31,9 @@ class VaultWindow {
   void ImportBackup();
   void CloudLogin();
   void CloudSync();
+  void GeneratePassword();
+  void CopyPassword();
+  void ClearClipboardIfOurs();
 
   HWND hwnd_ = nullptr;
   HWND list_ = nullptr;
@@ -39,4 +42,6 @@ class VaultWindow {
   HWND edit_pass_ = nullptr;
   HWND edit_url_ = nullptr;
   std::vector<Entry> entries_;
+  std::wstring clip_secret_;
+  UINT_PTR clip_timer_ = 0;
 };
