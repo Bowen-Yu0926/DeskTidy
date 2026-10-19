@@ -8,13 +8,18 @@
 #include "page_bar.h"
 #include "pet_window.h"
 #include "pin_store.h"
+#include "public_host.h"
 #include "rule_store.h"
+#include "search_window.h"
 #include "settings_window.h"
+#include "todo_window.h"
+#include "vault_window.h"
 
 #include <Windows.h>
 #include <shellapi.h>
 
 #include <memory>
+#include <string>
 #include <vector>
 
 class App {
@@ -22,9 +27,13 @@ class App {
   bool Init(HINSTANCE instance);
   int Run();
   void Shutdown();
+  void HandleCliAction(const std::wstring& action);
 
   void OpenSettings();
   void OpenNotes();
+  void OpenTodos();
+  void OpenSearch();
+  void OpenVault();
   void SeatAllFencesUnderApps();
   void PersistLayouts();
   void RefreshSettingsList();
@@ -45,6 +54,12 @@ class App {
   void RestoreDesktopChrome();
   void EditRules();
   void UnpinPath(const std::wstring& path);
+  void TogglePeek();
+  void ToggleFencesVisible();
+  void SaveLayoutSnapshot();
+  void RestoreLayoutSnapshot();
+  void OpenMinutes();
+  void RebuildPublicItems();
 
  private:
   static LRESULT CALLBACK TrayWndProc(HWND, UINT, WPARAM, LPARAM);
@@ -55,21 +70,29 @@ class App {
   void OnPathsDropped(FenceWindow* fence, const std::vector<std::wstring>& paths);
   void RebuildDockItems();
   void WireFence(FenceWindow* fence);
+  void ReloadFencesFromState(const AppState& state);
 
   HINSTANCE instance_ = nullptr;
   HWND message_hwnd_ = nullptr;
   std::vector<std::unique_ptr<FenceWindow>> fences_;
   SettingsWindow settings_;
   NotesWindow notes_;
+  TodoWindow todos_;
+  SearchWindow search_;
+  VaultWindow vault_;
   DockWindow dock_;
   PetWindow pet_;
   PageBar page_bar_;
+  PublicHost public_host_;
   PinMap pins_;
   RuleMap rules_;
   DesktopWatch desktop_watch_;
   int current_page_ = 0;
   bool dock_visible_ = true;
   bool pet_visible_ = true;
+  bool public_visible_ = true;
+  bool peek_hidden_ = false;
+  bool fences_hidden_ = false;
   NOTIFYICONDATAW nid_{};
   bool tray_added_ = false;
   UINT_PTR restore_timer_ = 0;

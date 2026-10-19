@@ -4,11 +4,17 @@
 #include "desktop_items.h"
 #include "desktop_shell.h"
 #include "organize.h"
+#include "paths_util.h"
 #include "prompt_text.h"
+#include "shell_verbs.h"
+#include "snapshot.h"
+#include "tools_misc.h"
 
 #include <CommCtrl.h>
 #include <Shellapi.h>
+#include <ShlObj.h>
 
+#include <fstream>
 #include <unordered_map>
 #include <utility>
 
@@ -18,6 +24,10 @@ constexpr UINT kHotkeySettings = 1;
 constexpr UINT kHotkeyPage1 = 2;
 constexpr UINT kHotkeyPage2 = 3;
 constexpr UINT kHotkeyNotes = 4;
+constexpr UINT kHotkeyPeek = 5;
+constexpr UINT kHotkeyFences = 6;
+constexpr UINT kHotkeySearch = 7;
+constexpr UINT kHotkeyShot = 8;
 constexpr UINT kTimerRestore = 40;
 constexpr UINT kTimerPet = 41;
 constexpr UINT kTimerWatch = 42;
@@ -95,6 +105,10 @@ bool App::Init(HINSTANCE instance) {
   RegisterHotKey(message_hwnd_, kHotkeyPage1, MOD_CONTROL | MOD_ALT, '1');
   RegisterHotKey(message_hwnd_, kHotkeyPage2, MOD_CONTROL | MOD_ALT, '2');
   RegisterHotKey(message_hwnd_, kHotkeyNotes, MOD_CONTROL | MOD_SHIFT, 'N');
+  RegisterHotKey(message_hwnd_, kHotkeyPeek, MOD_CONTROL, VK_SPACE);
+  RegisterHotKey(message_hwnd_, kHotkeyFences, MOD_CONTROL | MOD_SHIFT, 'F');
+  RegisterHotKey(message_hwnd_, kHotkeySearch, MOD_CONTROL | MOD_ALT, '4');
+  RegisterHotKey(message_hwnd_, kHotkeyShot, MOD_CONTROL | MOD_SHIFT, '1');
 
   if (!settings_.Create(instance)) {
     return false;
@@ -116,10 +130,19 @@ bool App::Init(HINSTANCE instance) {
       [this](bool on) { SetAutostart(on); });
 
   notes_.Create(instance);
+  todos_.Create(instance);
+  search_.Create(instance);
+  vault_.Create(instance);
   dock_.Create(instance);
   pet_.Create(instance);
+  pet_.SetOnTrash([this](const std::vector<std::wstring>& paths) {
+    if (SendPathsToRecycleBin(paths)) {
+      RefreshDesktopIcons();
+    }
+  });
   page_bar_.Create(instance);
   page_bar_.SetOnPage([this](int page) { SetPage(page); });
+  public_host_.Create(instance);
 
   const AppState state = LoadAppState();
   current_page_ = state.current_page;
@@ -127,9 +150,7 @@ bool App::Init(HINSTANCE instance) {
   pet_visible_ = state.pet_visible;
   pins_ = LoadPins();
   rules_ = LoadRules();
-  if (!SaveRules(rules_)) {
-    // ensure file exists for "edit rules"
-  }
+  SaveRules(rules_);
 
   for (const auto& layout : state.fences) {
     if (!SpawnFence(layout)) {
@@ -146,8 +167,11 @@ bool App::Init(HINSTANCE instance) {
   page_bar_.Show();
   dock_.SetVisible(dock_visible_);
   pet_.SetVisible(pet_visible_);
+  public_host_.SetVisible(public_visible_);
   RebuildDockItems();
+  RebuildPublicItems();
   desktop_watch_.Reset();
+  RegisterNativeShellVerbs();
 
   restore_timer_ = SetTimer(message_hwnd_, kTimerRestore, 800, nullptr);
   pet_timer_ = SetTimer(message_hwnd_, kTimerPet, 50, nullptr);
@@ -182,6 +206,10 @@ void App::Shutdown() {
     UnregisterHotKey(message_hwnd_, kHotkeyPage1);
     UnregisterHotKey(message_hwnd_, kHotkeyPage2);
     UnregisterHotKey(message_hwnd_, kHotkeyNotes);
+    UnregisterHotKey(message_hwnd_, kHotkeyPeek);
+    UnregisterHotKey(message_hwnd_, kHotkeyFences);
+    UnregisterHotKey(message_hwnd_, kHotkeySearch);
+    UnregisterHotKey(message_hwnd_, kHotkeyShot);
     DestroyWindow(message_hwnd_);
     message_hwnd_ = nullptr;
   }
@@ -192,10 +220,150 @@ void App::Shutdown() {
   }
   fences_.clear();
   page_bar_.Destroy();
+  public_host_.Destroy();
   dock_.Destroy();
   pet_.Destroy();
   notes_.Destroy();
+  todos_.Destroy();
+  search_.Destroy();
+  vault_.Destroy();
   settings_.Destroy();
+}
+
+void App::HandleCliAction(const std::wstring& action) {
+  if (action == L"--settings") {
+    OpenSettings();
+  } else if (action == L"--refresh") {
+    RefreshDesktopIcons();
+  } else if (action == L"--organize") {
+    OrganizeVirtual();
+  }
+}
+
+void App::OpenTodos() { todos_.Show(); }
+void App::OpenSearch() { search_.Show(); }
+void App::OpenVault() { vault_.Show(); }
+
+void App::TogglePeek() {
+  peek_hidden_ = !peek_hidden_;
+  if (peek_hidden_) {
+    for (auto& f : fences_) {
+      if (f) {
+        f->Hide();
+      }
+    }
+    dock_.Hide();
+    page_bar_.Hide();
+    public_host_.Hide();
+  } else {
+    ApplyPageVisibility();
+  }
+}
+
+void App::ToggleFencesVisible() {
+  fences_hidden_ = !fences_hidden_;
+  if (fences_hidden_) {
+    for (auto& f : fences_) {
+      if (f) {
+        f->Hide();
+      }
+    }
+  } else {
+    ApplyPageVisibility();
+  }
+}
+
+void App::SaveLayoutSnapshot() {
+  AppState state;
+  state.current_page = current_page_;
+  state.dock_visible = dock_visible_;
+  state.pet_visible = pet_visible_;
+  for (const auto& f : fences_) {
+    if (f) {
+      state.fences.push_back(f->CurrentLayout());
+    }
+  }
+  SYSTEMTIME st{};
+  GetLocalTime(&st);
+  wchar_t name[64];
+  swprintf_s(name, L"snap_%04d%02d%02d_%02d%02d%02d", st.wYear, st.wMonth,
+             st.wDay, st.wHour, st.wMinute, st.wSecond);
+  if (SaveSnapshot(state, name)) {
+    MessageBoxW(settings_.Hwnd(), (std::wstring(L"已保存快照：") + name).c_str(),
+                L"布局快照", MB_OK | MB_ICONINFORMATION);
+  }
+}
+
+void App::RestoreLayoutSnapshot() {
+  const auto list = ListSnapshots();
+  if (list.empty()) {
+    MessageBoxW(settings_.Hwnd(), L"还没有快照。请先「保存布局快照」。",
+                L"布局快照", MB_OK | MB_ICONINFORMATION);
+    return;
+  }
+  const auto& last = list.back();
+  AppState state;
+  if (!LoadSnapshot(last.path, &state)) {
+    MessageBoxW(settings_.Hwnd(), L"读取快照失败。", L"布局快照",
+                MB_OK | MB_ICONWARNING);
+    return;
+  }
+  ReloadFencesFromState(state);
+  MessageBoxW(settings_.Hwnd(), (L"已恢复：" + last.name).c_str(), L"布局快照",
+              MB_OK | MB_ICONINFORMATION);
+}
+
+void App::ReloadFencesFromState(const AppState& state) {
+  for (auto& f : fences_) {
+    if (f) {
+      f->Destroy();
+    }
+  }
+  fences_.clear();
+  current_page_ = state.current_page;
+  dock_visible_ = state.dock_visible;
+  pet_visible_ = state.pet_visible;
+  for (const auto& layout : state.fences) {
+    SpawnFence(layout);
+  }
+  PersistLayouts();
+  RefreshDesktopIcons();
+  RefreshSettingsList();
+  ApplyPageVisibility();
+  dock_.SetVisible(dock_visible_);
+  pet_.SetVisible(pet_visible_);
+}
+
+void App::OpenMinutes() {
+  const std::wstring path = JoinPath(NativeDataDir(), L"meeting_minutes.md");
+  if (GetFileAttributesW(path.c_str()) == INVALID_FILE_ATTRIBUTES) {
+    std::ofstream out(path, std::ios::binary);
+    out << "# 会议纪要\n\n- 日期：\n- 参与人：\n- 决议：\n";
+  }
+  ShellExecuteW(nullptr, L"open", L"notepad.exe", path.c_str(), nullptr,
+                SW_SHOWNORMAL);
+}
+
+void App::RebuildPublicItems() {
+  std::vector<DesktopItem> pub;
+  const auto items = ScanDesktopItems();
+  for (const auto& it : items) {
+    if (pub.size() >= 5) {
+      break;
+    }
+    if (it.is_link || it.name.find(L"此电脑") != std::wstring::npos ||
+        it.name.find(L"Computer") != std::wstring::npos ||
+        it.name.find(L"回收站") != std::wstring::npos ||
+        it.name.find(L"Recycle") != std::wstring::npos) {
+      pub.push_back(it);
+    }
+  }
+  if (pub.empty()) {
+    for (size_t i = 0; i < items.size() && pub.size() < 4; ++i) {
+      pub.push_back(items[i]);
+    }
+  }
+  public_host_.SetItems(std::move(pub));
 }
 
 void App::OpenSettings() {
@@ -297,6 +465,7 @@ void App::RefreshDesktopIcons() {
     }
   }
   RebuildDockItems();
+  RebuildPublicItems();
 }
 
 void App::RebuildDockItems() {
@@ -321,11 +490,14 @@ void App::RebuildDockItems() {
 }
 
 void App::ApplyPageVisibility() {
+  if (peek_hidden_) {
+    return;
+  }
   for (auto& fence : fences_) {
     if (!fence) {
       continue;
     }
-    if (fence->Page() == current_page_) {
+    if (!fences_hidden_ && fence->Page() == current_page_) {
       fence->Show();
     } else {
       fence->Hide();
@@ -338,6 +510,9 @@ void App::ApplyPageVisibility() {
   }
   if (pet_visible_) {
     pet_.Show();
+  }
+  if (public_visible_) {
+    public_host_.Show();
   }
 }
 
@@ -548,24 +723,37 @@ LRESULT CALLBACK App::TrayWndProc(HWND hwnd, UINT msg, WPARAM wparam,
         GetCursorPos(&pt);
         HMENU menu = CreatePopupMenu();
         AppendMenuW(menu, MF_STRING, 1, L"设置");
-        AppendMenuW(menu, MF_STRING, 2, L"便签  (Ctrl+Shift+N)");
-        AppendMenuW(menu, MF_STRING, 3, L"添加分区");
-        AppendMenuW(menu, MF_STRING, 4, L"刷新桌面图标");
+        AppendMenuW(menu, MF_STRING, 2, L"便签");
+        AppendMenuW(menu, MF_STRING, 3, L"待办");
+        AppendMenuW(menu, MF_STRING, 4, L"文件搜索");
+        AppendMenuW(menu, MF_STRING, 5, L"账号保险库");
+        AppendMenuW(menu, MF_STRING, 6, L"会议纪要");
         AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-        AppendMenuW(menu, MF_STRING, 5, L"第 1 页");
-        AppendMenuW(menu, MF_STRING, 6, L"第 2 页");
+        AppendMenuW(menu, MF_STRING, 7, L"截图");
+        AppendMenuW(menu, MF_STRING, 8, L"录屏(15s)");
+        AppendMenuW(menu, MF_STRING, 9, L"设置壁纸");
+        AppendMenuW(menu, MF_STRING, 10, L"检查更新");
         AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-        AppendMenuW(menu, MF_STRING, 7, L"虚拟整理");
-        AppendMenuW(menu, MF_STRING, 8, L"物理整理");
-        AppendMenuW(menu, MF_STRING, 9, L"编辑扩展名规则");
-        AppendMenuW(menu, MF_STRING, 10, L"切换 Dock");
-        AppendMenuW(menu, MF_STRING, 11, L"切换宠物");
+        AppendMenuW(menu, MF_STRING, 11, L"保存布局快照");
+        AppendMenuW(menu, MF_STRING, 12, L"恢复最近快照");
+        AppendMenuW(menu, MF_STRING, 13, L"Peek 显隐分区");
+        AppendMenuW(menu, MF_STRING, 14, L"显示/隐藏分区");
+        AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+        AppendMenuW(menu, MF_STRING, 15, L"第 1 页");
+        AppendMenuW(menu, MF_STRING, 16, L"第 2 页");
+        AppendMenuW(menu, MF_STRING, 17, L"虚拟整理");
+        AppendMenuW(menu, MF_STRING, 18, L"物理整理");
+        AppendMenuW(menu, MF_STRING, 19, L"编辑规则");
+        AppendMenuW(menu, MF_STRING, 20, L"刷新图标");
+        AppendMenuW(menu, MF_STRING, 21, L"添加分区");
+        AppendMenuW(menu, MF_STRING, 22, L"切换 Dock");
+        AppendMenuW(menu, MF_STRING, 23, L"切换宠物");
         AppendMenuW(menu,
                     MF_STRING | (IsNativeAutostartEnabled() ? MF_CHECKED : 0),
-                    12, L"开机启动");
-        AppendMenuW(menu, MF_STRING, 13, L"恢复桌面层");
+                    24, L"开机启动");
+        AppendMenuW(menu, MF_STRING, 25, L"恢复桌面层");
         AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-        AppendMenuW(menu, MF_STRING, 14, L"退出");
+        AppendMenuW(menu, MF_STRING, 26, L"退出");
         SetForegroundWindow(hwnd);
         const int cmd =
             TrackPopupMenu(menu, TPM_RETURNCMD | TPM_NONOTIFY, pt.x, pt.y, 0,
@@ -579,40 +767,76 @@ LRESULT CALLBACK App::TrayWndProc(HWND hwnd, UINT msg, WPARAM wparam,
             self->OpenNotes();
             break;
           case 3:
-            self->AddFence();
+            self->OpenTodos();
             break;
           case 4:
+            self->OpenSearch();
+            break;
+          case 5:
+            self->OpenVault();
+            break;
+          case 6:
+            self->OpenMinutes();
+            break;
+          case 7:
+            CaptureRegionToPng(self->settings_.Hwnd());
+            break;
+          case 8:
+            StartScreenRecord(self->settings_.Hwnd());
+            break;
+          case 9:
+            PickAndSetWallpaper(self->settings_.Hwnd());
+            break;
+          case 10:
+            OpenUpdatePage();
+            break;
+          case 11:
+            self->SaveLayoutSnapshot();
+            break;
+          case 12:
+            self->RestoreLayoutSnapshot();
+            break;
+          case 13:
+            self->TogglePeek();
+            break;
+          case 14:
+            self->ToggleFencesVisible();
+            break;
+          case 15:
+            self->SetPage(0);
+            break;
+          case 16:
+            self->SetPage(1);
+            break;
+          case 17:
+            self->OrganizeVirtual();
+            break;
+          case 18:
+            self->OrganizePhysical();
+            break;
+          case 19:
+            self->EditRules();
+            break;
+          case 20:
             self->rules_ = LoadRules();
             self->RefreshDesktopIcons();
             break;
-          case 5:
-            self->SetPage(0);
+          case 21:
+            self->AddFence();
             break;
-          case 6:
-            self->SetPage(1);
-            break;
-          case 7:
-            self->OrganizeVirtual();
-            break;
-          case 8:
-            self->OrganizePhysical();
-            break;
-          case 9:
-            self->EditRules();
-            break;
-          case 10:
+          case 22:
             self->ToggleDock();
             break;
-          case 11:
+          case 23:
             self->TogglePet();
             break;
-          case 12:
+          case 24:
             self->ToggleAutostart();
             break;
-          case 13:
+          case 25:
             self->RestoreDesktopChrome();
             break;
-          case 14:
+          case 26:
             PostQuitMessage(0);
             break;
           default:
@@ -636,6 +860,22 @@ LRESULT CALLBACK App::TrayWndProc(HWND hwnd, UINT msg, WPARAM wparam,
       }
       if (wparam == kHotkeyNotes) {
         self->OpenNotes();
+        return 0;
+      }
+      if (wparam == kHotkeyPeek) {
+        self->TogglePeek();
+        return 0;
+      }
+      if (wparam == kHotkeyFences) {
+        self->ToggleFencesVisible();
+        return 0;
+      }
+      if (wparam == kHotkeySearch) {
+        self->OpenSearch();
+        return 0;
+      }
+      if (wparam == kHotkeyShot) {
+        CaptureRegionToPng(self->settings_.Hwnd());
         return 0;
       }
       break;

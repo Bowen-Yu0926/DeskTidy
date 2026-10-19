@@ -33,13 +33,35 @@ bool PetWindow::Create(HINSTANCE instance) {
   }
   SetLayeredWindowAttributes(hwnd_, RGB(0, 0, 0), 0, LWA_COLORKEY);
   SetWindowLongPtrW(hwnd_, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(this));
+  EnsureDropTarget();
   return true;
+}
+
+void PetWindow::EnsureDropTarget() {
+  if (!hwnd_ || drop_target_) {
+    return;
+  }
+  drop_target_ =
+      new PathDropTarget([this](const std::vector<std::wstring>& paths) {
+        if (on_trash_) {
+          on_trash_(paths);
+        }
+      });
+  if (!RegisterPathDropTarget(hwnd_, drop_target_)) {
+    drop_target_->Release();
+    drop_target_ = nullptr;
+  }
 }
 
 void PetWindow::Destroy() {
   if (hwnd_) {
+    RevokePathDropTarget(hwnd_);
     DestroyWindow(hwnd_);
     hwnd_ = nullptr;
+  }
+  if (drop_target_) {
+    drop_target_->Release();
+    drop_target_ = nullptr;
   }
 }
 
@@ -139,6 +161,11 @@ LRESULT PetWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
       AttachToDesktopLayer();
       return 0;
     case WM_DESTROY:
+      if (drop_target_) {
+        RevokePathDropTarget(hwnd_);
+        drop_target_->Release();
+        drop_target_ = nullptr;
+      }
       hwnd_ = nullptr;
       return 0;
     default:
@@ -150,7 +177,6 @@ LRESULT PetWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
 void PetWindow::Paint(HDC hdc) {
   RECT rc{};
   GetClientRect(hwnd_, &rc);
-  // Color-key black background.
   HBRUSH clear = CreateSolidBrush(RGB(0, 0, 0));
   FillRect(hdc, &rc, clear);
   DeleteObject(clear);
@@ -165,7 +191,6 @@ void PetWindow::Paint(HDC hdc) {
   DeleteObject(body);
   DeleteObject(pen);
 
-  // Eyes
   HBRUSH eye = CreateSolidBrush(RGB(20, 20, 20));
   SelectObject(hdc, eye);
   Ellipse(hdc, 24, 28, 34, 38);

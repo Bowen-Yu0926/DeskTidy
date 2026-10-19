@@ -24,6 +24,14 @@ add_executable(desktidy_native WIN32
   src/prompt_text.cpp
   src/autostart.cpp
   src/instance_lock.cpp
+  src/paths_util.cpp
+  src/snapshot.cpp
+  src/shell_verbs.cpp
+  src/public_host.cpp
+  src/todo_window.cpp
+  src/search_window.cpp
+  src/vault_window.cpp
+  src/tools_misc.cpp
   src/version.rc
 )
 
@@ -31,6 +39,7 @@ target_include_directories(desktidy_native PRIVATE src)
 target_compile_definitions(desktidy_native PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
 target_link_libraries(desktidy_native PRIVATE
   user32 gdi32 shell32 ole32 oleaut32 uuid comctl32 advapi32
+  gdiplus comdlg32 crypt32
 )
 
 if(MSVC)

@@ -4,10 +4,39 @@
 #include <Windows.h>
 #include <ole2.h>
 
-int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
+#include <string>
+
+namespace {
+
+std::wstring FindCliAction(LPWSTR cmd) {
+  if (!cmd) {
+    return {};
+  }
+  // Simple scan for --settings / --refresh / --organize
+  const wchar_t* keys[] = {L"--settings", L"--refresh", L"--organize"};
+  for (const wchar_t* k : keys) {
+    if (wcsstr(cmd, k)) {
+      return k;
+    }
+  }
+  return {};
+}
+
+}  // namespace
+
+int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR cmd_line, int) {
+  const std::wstring action = FindCliAction(cmd_line);
+
   if (!AcquireNativeInstanceLock()) {
-    MessageBoxW(nullptr, L"DeskTidy Native 已在运行。", L"DeskTidy Native",
-                MB_OK | MB_ICONINFORMATION);
+    // Second instance: if CLI action, still show a tip; otherwise exit quietly.
+    if (!action.empty()) {
+      MessageBoxW(nullptr,
+                  L"DeskTidy Native 已在运行。请用托盘菜单执行该操作。",
+                  L"DeskTidy Native", MB_OK | MB_ICONINFORMATION);
+    } else {
+      MessageBoxW(nullptr, L"DeskTidy Native 已在运行。", L"DeskTidy Native",
+                  MB_OK | MB_ICONINFORMATION);
+    }
     return 0;
   }
 
@@ -24,6 +53,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     OleUninitialize();
     ReleaseNativeInstanceLock();
     return 1;
+  }
+
+  if (!action.empty()) {
+    app.HandleCliAction(action);
   }
 
   const int code = app.Run();
