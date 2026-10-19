@@ -47,17 +47,17 @@ bool SettingsWindow::Create(HINSTANCE instance) {
   RegisterClassExW(&wc);
 
   hwnd_ = CreateWindowExW(
-      WS_EX_APPWINDOW, kClassName, L"DeskTidy Native - 设置",
+      WS_EX_APPWINDOW, kClassName, L"DeskTidy 设置",
       WS_OVERLAPPEDWINDOW & ~WS_THICKFRAME & ~WS_MAXIMIZEBOX, CW_USEDEFAULT,
-      CW_USEDEFAULT, 540, 680, nullptr, nullptr, instance, this);
+      CW_USEDEFAULT, 560, 480, nullptr, nullptr, instance, this);
   if (!hwnd_) {
     return false;
   }
   SetWindowLongPtrW(hwnd_, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(this));
 
   tabs_ = CreateWindowExW(0, WC_TABCONTROLW, L"",
-                          WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS, 12, 8, 500,
-                          36, hwnd_,
+                          WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS, 12, 10, 520,
+                          32, hwnd_,
                           reinterpret_cast<HMENU>(static_cast<INT_PTR>(kTabs)),
                           instance, nullptr);
   TCITEMW ti{};
@@ -71,126 +71,128 @@ bool SettingsWindow::Create(HINSTANCE instance) {
 
   lbl_hint_ = CreateWindowW(
       L"STATIC",
-      L"桌面层分区（在应用窗口之下）· Ctrl+Shift+S 打开本窗口",
-      WS_CHILD | WS_VISIBLE, 20, 52, 480, 24, hwnd_, nullptr, instance, nullptr);
+      L"管理桌面分区。分区浮在壁纸之上、窗口之下。快捷键 Ctrl+Shift+S。",
+      WS_CHILD | WS_VISIBLE, 20, 52, 510, 20, hwnd_, nullptr, instance, nullptr);
 
-  lbl_list_ = CreateWindowW(L"STATIC", L"分区列表", WS_CHILD | WS_VISIBLE, 20, 80,
-                            100, 20, hwnd_, nullptr, instance, nullptr);
+  lbl_list_ = CreateWindowW(L"STATIC", L"分区列表（选中后可改标题/页面）",
+                            WS_CHILD | WS_VISIBLE, 20, 78, 320, 18, hwnd_,
+                            nullptr, instance, nullptr);
   list_ = CreateWindowExW(WS_EX_CLIENTEDGE, L"LISTBOX", L"",
                           WS_CHILD | WS_VISIBLE | LBS_NOTIFY | WS_VSCROLL, 20,
-                          102, 480, 150, hwnd_,
+                          100, 510, 168, hwnd_,
                           reinterpret_cast<HMENU>(static_cast<INT_PTR>(kListId)),
                           instance, nullptr);
 
-  lbl_title_ = CreateWindowW(L"STATIC", L"标题", WS_CHILD | WS_VISIBLE, 20, 266,
+  lbl_title_ = CreateWindowW(L"STATIC", L"标题", WS_CHILD | WS_VISIBLE, 20, 282,
                              40, 20, hwnd_, nullptr, instance, nullptr);
   edit_title_ = CreateWindowExW(
-      WS_EX_CLIENTEDGE, L"EDIT", L"", WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL, 70,
-      262, 220, 24, hwnd_,
+      WS_EX_CLIENTEDGE, L"EDIT", L"", WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL, 62,
+      278, 230, 26, hwnd_,
       reinterpret_cast<HMENU>(static_cast<INT_PTR>(kEditTitle)), instance,
       nullptr);
-  lbl_page_ = CreateWindowW(L"STATIC", L"页面", WS_CHILD | WS_VISIBLE, 310, 266,
+  lbl_page_ = CreateWindowW(L"STATIC", L"页面", WS_CHILD | WS_VISIBLE, 310, 282,
                             40, 20, hwnd_, nullptr, instance, nullptr);
   combo_page_ = CreateWindowW(
-      L"COMBOBOX", L"", WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST, 350, 262, 160,
+      L"COMBOBOX", L"", WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST, 352, 278, 178,
       240, hwnd_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kComboPage)),
       instance, nullptr);
   SetPageNames({L"第 1 页", L"第 2 页"});
 
   btn_apply_ = CreateWindowW(
       L"BUTTON", L"应用标题/页面", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 20,
-      300, 140, 28, hwnd_,
+      318, 120, 30, hwnd_,
       reinterpret_cast<HMENU>(static_cast<INT_PTR>(kBtnApply)), instance,
       nullptr);
   btn_add_ = CreateWindowW(L"BUTTON", L"框选添加",
-                           WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 170, 300, 100,
-                           28, hwnd_,
+                           WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 150, 318, 100,
+                           30, hwnd_,
                            reinterpret_cast<HMENU>(static_cast<INT_PTR>(kBtnAdd)),
                            instance, nullptr);
   btn_remove_ = CreateWindowW(
-      L"BUTTON", L"删除选中", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 280, 300,
-      100, 28, hwnd_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kBtnRemove)),
+      L"BUTTON", L"删除选中", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 260, 318,
+      100, 30, hwnd_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kBtnRemove)),
       instance, nullptr);
   btn_seat_ = CreateWindowW(L"BUTTON", L"沉底",
-                            WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 390, 300, 90,
-                            28, hwnd_,
+                            WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 370, 318, 80,
+                            30, hwnd_,
                             reinterpret_cast<HMENU>(static_cast<INT_PTR>(kBtnSeat)),
                             instance, nullptr);
 
   chk_dock_ = CreateWindowW(
-      L"BUTTON", L"显示 Dock", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 20, 350,
+      L"BUTTON", L"显示 Dock", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 20, 368,
       120, 24, hwnd_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kChkDock)),
       instance, nullptr);
   chk_pet_ = CreateWindowW(
-      L"BUTTON", L"显示宠物", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 150, 350,
+      L"BUTTON", L"显示宠物", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 150, 368,
       120, 24, hwnd_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kChkPet)),
       instance, nullptr);
   chk_autostart_ = CreateWindowW(
-      L"BUTTON", L"开机启动", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 280, 350,
+      L"BUTTON", L"开机启动", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 280, 368,
       120, 24, hwnd_,
       reinterpret_cast<HMENU>(static_cast<INT_PTR>(kChkAutostart)), instance,
       nullptr);
 
   btn_org_v_ = CreateWindowW(
-      L"BUTTON", L"虚拟整理(钉选)", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 20,
-      120, 160, 32, hwnd_,
+      L"BUTTON", L"虚拟整理（只钉选，不移动文件）",
+      WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 20, 60, 260, 34, hwnd_,
       reinterpret_cast<HMENU>(static_cast<INT_PTR>(kBtnOrgV)), instance,
       nullptr);
   btn_org_p_ = CreateWindowW(
-      L"BUTTON", L"物理整理(移文件夹)", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-      200, 120, 180, 32, hwnd_,
+      L"BUTTON", L"物理整理（移到文件夹）", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+      290, 60, 240, 34, hwnd_,
       reinterpret_cast<HMENU>(static_cast<INT_PTR>(kBtnOrgP)), instance,
       nullptr);
   btn_rules_ = CreateWindowW(
-      L"BUTTON", L"编辑扩展名规则…", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 20,
-      170, 160, 32, hwnd_,
+      L"BUTTON", L"扩展名 / 规则…", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 20,
+      110, 160, 32, hwnd_,
       reinterpret_cast<HMENU>(static_cast<INT_PTR>(kBtnRules)), instance,
       nullptr);
   btn_whitelist_ = CreateWindowW(
-      L"BUTTON", L"整理白名单…", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 200,
-      170, 160, 32, hwnd_,
+      L"BUTTON", L"整理白名单…", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 190,
+      110, 160, 32, hwnd_,
       reinterpret_cast<HMENU>(static_cast<INT_PTR>(kBtnWhitelist)), instance,
       nullptr);
+  btn_org_preview_ = CreateWindowW(
+      L"BUTTON", L"刷新预览", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 360, 110,
+      120, 32, hwnd_,
+      reinterpret_cast<HMENU>(static_cast<INT_PTR>(kBtnOrgPreview)), instance,
+      nullptr);
   chk_org_startup_ = CreateWindowW(
-      L"BUTTON", L"启动时自动整理（按规则钉选）",
-      WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 20, 220, 280, 24, hwnd_,
+      L"BUTTON", L"启动时自动虚拟整理",
+      WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 20, 158, 220, 24, hwnd_,
       reinterpret_cast<HMENU>(static_cast<INT_PTR>(kChkOrgStartup)), instance,
       nullptr);
   chk_org_watch_ = CreateWindowW(
-      L"BUTTON", L"监视新文件并自动钉选", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
-      20, 250, 280, 24, hwnd_,
+      L"BUTTON", L"监视桌面新文件并自动钉选",
+      WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 250, 158, 260, 24, hwnd_,
       reinterpret_cast<HMENU>(static_cast<INT_PTR>(kChkOrgWatch)), instance,
       nullptr);
   lbl_org_preview_ = CreateWindowW(
-      L"STATIC", L"待虚拟整理预览：", WS_CHILD | WS_VISIBLE, 20, 285, 200, 20,
-      hwnd_, nullptr, instance, nullptr);
+      L"STATIC", L"待钉选预览（虚拟整理将处理这些项）：", WS_CHILD | WS_VISIBLE,
+      20, 198, 360, 20, hwnd_, nullptr, instance, nullptr);
   list_org_preview_ = CreateWindowExW(
       WS_EX_CLIENTEDGE, L"LISTBOX", L"",
-      WS_CHILD | WS_VISIBLE | WS_VSCROLL | LBS_NOINTEGRALHEIGHT, 20, 310, 480,
-      140, hwnd_,
+      WS_CHILD | WS_VISIBLE | WS_VSCROLL | LBS_NOINTEGRALHEIGHT, 20, 222, 510,
+      180, hwnd_,
       reinterpret_cast<HMENU>(static_cast<INT_PTR>(kListOrgPreview)), instance,
-      nullptr);
-  btn_org_preview_ = CreateWindowW(
-      L"BUTTON", L"刷新预览", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 360, 250,
-      100, 28, hwnd_,
-      reinterpret_cast<HMENU>(static_cast<INT_PTR>(kBtnOrgPreview)), instance,
       nullptr);
 
   btn_folders_ = CreateWindowW(
-      L"BUTTON", L"分页文件夹…", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 20, 120,
-      160, 32, hwnd_,
+      L"BUTTON", L"分页文件夹…", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 20, 70,
+      160, 36, hwnd_,
       reinterpret_cast<HMENU>(static_cast<INT_PTR>(kBtnFolders)), instance,
       nullptr);
   btn_record_cfg_ = CreateWindowW(
-      L"BUTTON", L"录屏设置…", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 200, 120,
-      120, 32, hwnd_,
+      L"BUTTON", L"录屏设置…", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 200, 70,
+      140, 36, hwnd_,
       reinterpret_cast<HMENU>(static_cast<INT_PTR>(kBtnRecordCfg)), instance,
       nullptr);
   btn_help_ = CreateWindowW(
-      L"BUTTON", L"帮助", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 340, 120, 100,
-      32, hwnd_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kBtnHelp)),
+      L"BUTTON", L"使用帮助", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 360, 70,
+      140, 36, hwnd_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kBtnHelp)),
       instance, nullptr);
 
+  ApplyStyle(0, 0, 0);
   ShowTab(0);
   return true;
 }
@@ -239,18 +241,14 @@ void SettingsWindow::ShowTab(int index) {
 
 void SettingsWindow::ApplyStyle(COLORREF background, COLORREF accent,
                                 COLORREF title) {
-  bg_ = background;
-  accent_ = accent;
-  text_ = title;
-  if (brush_) {
-    DeleteObject(brush_);
-    brush_ = nullptr;
-  }
-  brush_ = CreateSolidBrush(bg_);
+  // Settings stays a light system dialog; fence theme must not paint it dark.
+  (void)background;
+  (void)accent;
+  (void)title;
+  brush_ = GetSysColorBrush(COLOR_WINDOW);
   if (hwnd_) {
     InvalidateRect(hwnd_, nullptr, TRUE);
   }
-  (void)accent_;
 }
 
 void SettingsWindow::Destroy() {
@@ -258,10 +256,8 @@ void SettingsWindow::Destroy() {
     DestroyWindow(hwnd_);
     hwnd_ = nullptr;
   }
-  if (brush_) {
-    DeleteObject(brush_);
-    brush_ = nullptr;
-  }
+  // System color brush — do not DeleteObject.
+  brush_ = nullptr;
 }
 
 void SettingsWindow::Show() {
@@ -428,16 +424,20 @@ LRESULT SettingsWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
           wchar_t buf[512] = {};
           SendMessageW(list_, LB_GETTEXT, sel, reinterpret_cast<LPARAM>(buf));
           const std::wstring full = buf;
-          const size_t p = full.find(L"  p");
-          SetWindowTextW(edit_title_,
-                         (p == std::wstring::npos ? full : full.substr(0, p))
-                             .c_str());
-          const size_t bracket = full.rfind(L"  [");
-          const size_t marker = full.rfind(
-              L"  p", bracket == std::wstring::npos ? std::wstring::npos
-                                                   : bracket);
+          size_t marker = full.rfind(L" · p");
+          if (marker == std::wstring::npos) {
+            marker = full.rfind(L"  p");
+          }
+          SetWindowTextW(
+              edit_title_,
+              (marker == std::wstring::npos ? full : full.substr(0, marker))
+                  .c_str());
           if (marker != std::wstring::npos && combo_page_) {
-            const int page = _wtoi(full.c_str() + marker + 3) - 1;
+            const wchar_t* num = full.c_str() + marker;
+            while (*num && (*num < L'0' || *num > L'9')) {
+              ++num;
+            }
+            const int page = _wtoi(num) - 1;
             if (page >= 0) {
               SendMessageW(combo_page_, CB_SETCURSEL, page, 0);
             }
@@ -539,16 +539,14 @@ LRESULT SettingsWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
       HDC hdc = reinterpret_cast<HDC>(wparam);
       RECT rc{};
       GetClientRect(hwnd_, &rc);
-      HBRUSH br = brush_ ? brush_ : reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
-      FillRect(hdc, &rc, br);
+      FillRect(hdc, &rc, GetSysColorBrush(COLOR_WINDOW));
       return 1;
     }
     case WM_CTLCOLORSTATIC: {
       HDC hdc = reinterpret_cast<HDC>(wparam);
-      SetTextColor(hdc, text_);
-      SetBkColor(hdc, bg_);
-      return reinterpret_cast<LRESULT>(brush_ ? brush_
-                                             : GetStockObject(NULL_BRUSH));
+      SetTextColor(hdc, GetSysColor(COLOR_WINDOWTEXT));
+      SetBkColor(hdc, GetSysColor(COLOR_WINDOW));
+      return reinterpret_cast<LRESULT>(GetSysColorBrush(COLOR_WINDOW));
     }
     case WM_CLOSE:
       Hide();

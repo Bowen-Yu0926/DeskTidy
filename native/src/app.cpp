@@ -771,10 +771,8 @@ void App::RefreshSettingsList() {
   names.reserve(fences_.size());
   for (const auto& fence : fences_) {
     if (fence) {
-      names.push_back(fence->Title() + L"  p" +
-                      std::to_wstring(fence->Page() + 1) + L"  [" +
-                      std::wstring(fence->Id().begin(), fence->Id().end()) +
-                      L"]");
+      names.push_back(fence->Title() + L" · p" +
+                      std::to_wstring(fence->Page() + 1));
     }
   }
   settings_.SetFenceNames(names);

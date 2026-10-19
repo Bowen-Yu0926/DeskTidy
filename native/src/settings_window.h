@@ -90,8 +90,5 @@ class SettingsWindow {
   VoidFn on_record_cfg_;
   VoidFn on_org_preview_;
   std::vector<std::wstring> page_names_;
-  COLORREF bg_ = RGB(32, 34, 40);
-  COLORREF accent_ = RGB(70, 130, 200);
-  COLORREF text_ = RGB(230, 230, 230);
-  HBRUSH brush_ = nullptr;
+  HBRUSH brush_ = nullptr;  // light dialog face
 };
