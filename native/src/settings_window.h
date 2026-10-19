@@ -31,7 +31,7 @@ class SettingsWindow {
                    VoidFn on_edit_rules, BoolFn on_autostart,
                    VoidFn on_whitelist = {}, VoidFn on_page_folders = {},
                    VoidFn on_help = {}, BoolFn on_org_startup = {},
-                   BoolFn on_org_watch = {});
+                   BoolFn on_org_watch = {}, VoidFn on_record_cfg = {});
 
  private:
   static LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
@@ -59,6 +59,7 @@ class SettingsWindow {
   HWND chk_org_startup_ = nullptr;
   HWND chk_org_watch_ = nullptr;
   HWND btn_folders_ = nullptr;
+  HWND btn_record_cfg_ = nullptr;
   HWND btn_help_ = nullptr;
   HWND lbl_title_ = nullptr;
   HWND lbl_page_ = nullptr;
@@ -79,4 +80,5 @@ class SettingsWindow {
   VoidFn on_help_;
   BoolFn on_org_startup_;
   BoolFn on_org_watch_;
+  VoidFn on_record_cfg_;
 };

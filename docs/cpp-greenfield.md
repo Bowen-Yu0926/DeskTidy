@@ -43,6 +43,7 @@ Native Win32 host — feature MVP map vs Python product.
 | Pet characters + walk/fall physics | done |
 | Auto-organize watch + startup pin | done |
 | Organize suppress (unpin grace) | done |
+| Record toggle + badge + duration/dir | done |
 | DeskNote Toast UI / WebView editor | not ported |
 | Full Shimeji climb/ledge physics | not ported |
 

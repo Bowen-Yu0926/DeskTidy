@@ -21,6 +21,7 @@ constexpr int kBtnFolders = 1009;
 constexpr int kBtnHelp = 1010;
 constexpr int kChkOrgStartup = 1011;
 constexpr int kChkOrgWatch = 1012;
+constexpr int kBtnRecordCfg = 1013;
 constexpr int kListId = 1100;
 constexpr int kEditTitle = 1101;
 constexpr int kComboPage = 1102;
@@ -166,8 +167,13 @@ bool SettingsWindow::Create(HINSTANCE instance) {
       160, 32, hwnd_,
       reinterpret_cast<HMENU>(static_cast<INT_PTR>(kBtnFolders)), instance,
       nullptr);
+  btn_record_cfg_ = CreateWindowW(
+      L"BUTTON", L"录屏设置…", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 200, 120,
+      120, 32, hwnd_,
+      reinterpret_cast<HMENU>(static_cast<INT_PTR>(kBtnRecordCfg)), instance,
+      nullptr);
   btn_help_ = CreateWindowW(
-      L"BUTTON", L"帮助", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 200, 120, 120,
+      L"BUTTON", L"帮助", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 340, 120, 100,
       32, hwnd_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kBtnHelp)),
       instance, nullptr);
 
@@ -207,6 +213,7 @@ void SettingsWindow::ShowTab(int index) {
   vis(chk_org_watch_, organize);
 
   vis(btn_folders_, tools);
+  vis(btn_record_cfg_, tools);
   vis(btn_help_, tools);
 }
 
@@ -279,7 +286,7 @@ void SettingsWindow::SetHandlers(VoidFn on_add, IndexFn on_remove, VoidFn on_sea
                                  VoidFn on_edit_rules, BoolFn on_autostart,
                                  VoidFn on_whitelist, VoidFn on_page_folders,
                                  VoidFn on_help, BoolFn on_org_startup,
-                                 BoolFn on_org_watch) {
+                                 BoolFn on_org_watch, VoidFn on_record_cfg) {
   on_add_ = std::move(on_add);
   on_remove_ = std::move(on_remove);
   on_seat_ = std::move(on_seat);
@@ -296,6 +303,7 @@ void SettingsWindow::SetHandlers(VoidFn on_add, IndexFn on_remove, VoidFn on_sea
   on_help_ = std::move(on_help);
   on_org_startup_ = std::move(on_org_startup);
   on_org_watch_ = std::move(on_org_watch);
+  on_record_cfg_ = std::move(on_record_cfg);
 }
 
 int SettingsWindow::SelectedIndex() const {
@@ -401,6 +409,10 @@ LRESULT SettingsWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
       }
       if (id == kBtnFolders && on_page_folders_) {
         on_page_folders_();
+        return 0;
+      }
+      if (id == kBtnRecordCfg && on_record_cfg_) {
+        on_record_cfg_();
         return 0;
       }
       if (id == kBtnHelp && on_help_) {

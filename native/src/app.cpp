@@ -9,6 +9,7 @@
 #include "i18n.h"
 #include "organize.h"
 #include "organize_suppress.h"
+#include "screen_record.h"
 #include "minutes.h"
 #include "page_folders.h"
 #include "snapshot_ui.h"
@@ -130,7 +131,8 @@ bool App::Init(HINSTANCE instance) {
       [this]() { OpenPageFolderMenu(settings_.Hwnd()); },
       [this]() { ShowAppHelp(settings_.Hwnd()); },
       [this](bool on) { SetOrganizeStartup(on); },
-      [this](bool on) { SetOrganizeWatch(on); });
+      [this](bool on) { SetOrganizeWatch(on); },
+      [this]() { ConfigureScreenRecord(settings_.Hwnd()); });
 
   notes_.Create(instance);
   todos_.Create(instance);
@@ -786,6 +788,8 @@ LRESULT CALLBACK App::TrayWndProc(HWND hwnd, UINT msg, WPARAM wparam,
       }
       if (wparam == kTimerPet) {
         self->pet_.Tick();
+        // Clear REC badge if ffmpeg exited (e.g. timed -t duration).
+        (void)IsScreenRecording();
         return 0;
       }
       if (wparam == kTimerWatch) {
@@ -817,7 +821,8 @@ LRESULT CALLBACK App::TrayWndProc(HWND hwnd, UINT msg, WPARAM wparam,
         AppendMenuW(menu, MF_STRING, 6, Tr("minutes").c_str());
         AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
         AppendMenuW(menu, MF_STRING, 7, Tr("screenshot").c_str());
-        AppendMenuW(menu, MF_STRING, 8, Tr("record").c_str());
+        AppendMenuW(menu, MF_STRING, 8,
+                    IsScreenRecording() ? L"停止录屏" : Tr("record").c_str());
         AppendMenuW(menu, MF_STRING, 9, Tr("wallpaper").c_str());
         AppendMenuW(menu, MF_STRING, 10, Tr("updates").c_str());
         AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);

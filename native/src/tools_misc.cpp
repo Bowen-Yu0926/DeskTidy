@@ -1,8 +1,10 @@
 #include "tools_misc.h"
 
+#include "app_prefs.h"
 #include "display_geom.h"
 #include "paths_util.h"
 #include "prompt_text.h"
+#include "screen_record.h"
 #include "tool_paths.h"
 
 #include <Shellapi.h>
@@ -266,82 +268,34 @@ bool CaptureRegionToPng(HWND owner) {
   return ok;
 }
 
-bool StartScreenRecord(HWND owner) {
-  const std::wstring ff = FindFfmpegExe();
-  if (ff.empty()) {
-    MessageBoxW(owner,
-                L"未找到 ffmpeg。\n"
-                L"请安装到 PATH，或放到：\n"
-                L"  · 程序目录\\ffmpeg.exe\n"
-                L"  · 仓库 assets\\ffmpeg\\ffmpeg.exe",
-                L"录屏", MB_OK | MB_ICONWARNING);
-    return false;
-  }
+bool StartScreenRecord(HWND owner) { return ToggleScreenRecord(owner); }
 
-  const auto mons = EnumMonitors();
-  int mon_index = -1;  // -1 = full virtual desktop
-  if (mons.size() > 1) {
-    std::wstring msg = L"选择录制目标：\n\n0. 整桌面（所有显示器）\n";
-    for (size_t i = 0; i < mons.size(); ++i) {
-      const auto& m = mons[i];
-      msg += std::to_wstring(i + 1) + L". " +
-             std::to_wstring(m.monitor.right - m.monitor.left) + L"x" +
-             std::to_wstring(m.monitor.bottom - m.monitor.top) +
-             (m.primary ? L" (主屏)" : L"") + L"\n";
-    }
-    msg += L"\n输入编号（默认 0）：";
-    const std::wstring ans = PromptText(owner, L"录屏", msg.c_str(), L"0");
-    if (!ans.empty()) {
-      if (ans == L"0") {
-        mon_index = -1;
-      } else {
-        mon_index = _wtoi(ans.c_str()) - 1;
-      }
+void ConfigureScreenRecord(HWND owner) {
+  AppPrefs prefs = LoadAppPrefs();
+  const std::wstring sec = PromptText(
+      owner, L"录屏时长",
+      L"自动停止秒数（0 = 手动点徽章停止）：",
+      std::to_wstring(prefs.record_seconds).c_str());
+  if (!sec.empty()) {
+    prefs.record_seconds = _wtoi(sec.c_str());
+    if (prefs.record_seconds < 0) {
+      prefs.record_seconds = 0;
     }
   }
-
-  PWSTR vids = nullptr;
-  std::wstring out_dir = NativeDataDir();
-  if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Videos, 0, nullptr, &vids)) &&
-      vids) {
-    out_dir = JoinPath(vids, L"DeskTidyNative");
-    CoTaskMemFree(vids);
-    CreateDirectoryW(out_dir.c_str(), nullptr);
+  const std::wstring dir = PromptText(
+      owner, L"录屏目录",
+      L"输出目录（留空 = Videos\\DeskTidyNative）：",
+      prefs.record_output_dir.c_str());
+  // Empty answer keeps previous; single space clears to default.
+  if (!dir.empty()) {
+    std::wstring trimmed = dir;
+    while (!trimmed.empty() && trimmed.back() == L' ') {
+      trimmed.pop_back();
+    }
+    prefs.record_output_dir = trimmed;
   }
-  wchar_t name[64];
-  SYSTEMTIME st{};
-  GetLocalTime(&st);
-  swprintf_s(name, L"rec_%04d%02d%02d_%02d%02d%02d.mp4", st.wYear, st.wMonth,
-             st.wDay, st.wHour, st.wMinute, st.wSecond);
-  const std::wstring out = JoinPath(out_dir, name);
-
-  std::wstring region;
-  if (mon_index >= 0 && mon_index < static_cast<int>(mons.size())) {
-    const RECT& r = mons[static_cast<size_t>(mon_index)].monitor;
-    wchar_t off[160];
-    swprintf_s(off, L" -offset_x %d -offset_y %d -video_size %dx%d", r.left,
-               r.top, r.right - r.left, r.bottom - r.top);
-    region = off;
-  }
-
-  std::wstring cmd = L"\"" + ff + L"\" -y -f gdigrab -framerate 30" + region +
-                     L" -i desktop -t 15 \"" + out + L"\"";
-  STARTUPINFOW si{};
-  si.cb = sizeof(si);
-  PROCESS_INFORMATION pi{};
-  std::vector<wchar_t> buf(cmd.begin(), cmd.end());
-  buf.push_back(L'\0');
-  if (CreateProcessW(nullptr, buf.data(), nullptr, nullptr, FALSE,
-                     CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
-    CloseHandle(pi.hThread);
-    CloseHandle(pi.hProcess);
-    MessageBoxW(owner,
-                (L"正在录制 15 秒…\n完成后文件：\n" + out).c_str(), L"录屏",
-                MB_OK | MB_ICONINFORMATION);
-    return true;
-  }
-  MessageBoxW(owner, L"无法启动 ffmpeg。", L"录屏", MB_OK | MB_ICONWARNING);
-  return false;
+  SaveAppPrefs(prefs);
+  MessageBoxW(owner, L"录屏设置已保存。", L"录屏", MB_OK | MB_ICONINFORMATION);
 }
 
 void OpenCalculator() {
@@ -359,7 +313,7 @@ void ShowAppHelp(HWND owner) {
       L"· 分区：拖放钉选、右键样式/换页\n"
       L"· 整理：虚拟钉选 / 物理归档（可白名单）\n"
       L"· 截图：区域钉桌面 / 全屏\n"
-      L"· 录屏：可选显示器，15 秒\n"
+      L"· 录屏：开关切换 + 角标停止，可配时长/目录\n"
       L"· 保险库：本地 DPAPI + 可选云同步\n"
       L"· 便签：RichEdit 粗斜体\n"
       L"· 宠物：pets\\*.png 帧动画\n"

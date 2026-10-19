@@ -52,6 +52,7 @@ add_executable(desktidy_native WIN32
   src/markdown_preview.cpp
   src/organize_suppress.cpp
   src/app_prefs.cpp
+  src/screen_record.cpp
   src/version.rc
 )
 
