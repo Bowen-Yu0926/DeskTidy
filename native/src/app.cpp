@@ -19,6 +19,7 @@
 #include "whitelist.h"
 #include "paths_util.h"
 #include "prompt_text.h"
+#include "cli_ipc.h"
 #include "fence_keys.h"
 #include "fence_style.h"
 #include "layout_editor.h"
@@ -117,8 +118,8 @@ bool App::Init(HINSTANCE instance) {
   RegisterClassExW(&wc);
 
   message_hwnd_ =
-      CreateWindowExW(0, kMsgClass, L"DeskTidyNative", 0, 0, 0, 0, 0,
-                      HWND_MESSAGE, nullptr, instance, this);
+      CreateWindowExW(0, kMsgClass, L"DeskTidyNative", WS_POPUP, 0, 0, 0, 0,
+                      nullptr, nullptr, instance, this);
   if (!message_hwnd_) {
     return false;
   }
@@ -173,6 +174,7 @@ bool App::Init(HINSTANCE instance) {
   page_bar_.SetOnPage([this](int page) { SetPage(page); });
   page_bar_.SetOnAddPage([this]() { AddPage(); });
   page_bar_.SetOnRemovePage([this]() { RemoveCurrentPage(); });
+  page_bar_.SetOnRenamePage([this]() { RenameCurrentPage(); });
   page_bar_.SetOnNotes([this]() { OpenNotes(); });
   page_bar_.SetOnSearch([this]() { OpenSearch(); });
   page_bar_.SetOnCapture([this]() { StartRegionCapture(); });
@@ -672,6 +674,26 @@ void App::RemoveCurrentPage() {
   ApplyPageVisibility();
   PersistLayouts();
   ShowToast(L"已删除当前页");
+}
+
+void App::RenameCurrentPage() {
+  if (page_names_.empty()) {
+    page_names_ = {L"第 1 页"};
+  }
+  if (current_page_ < 0 ||
+      current_page_ >= static_cast<int>(page_names_.size())) {
+    current_page_ = 0;
+  }
+  const std::wstring& current = page_names_[static_cast<size_t>(current_page_)];
+  const std::wstring name =
+      PromptText(settings_.Hwnd(), L"重命名页面", L"页面名称：", current);
+  if (name.empty()) {
+    return;
+  }
+  page_names_[static_cast<size_t>(current_page_)] = name;
+  SyncPageChrome();
+  PersistLayouts();
+  ShowToast(L"页面已重命名");
 }
 
 void App::OpenLayoutEditor() {
@@ -1335,6 +1357,16 @@ LRESULT CALLBACK App::TrayWndProc(HWND hwnd, UINT msg, WPARAM wparam,
     case WM_DISPLAYCHANGE:
       self->ReloadFencesFromState(LoadAppState());
       return 0;
+    case WM_COPYDATA: {
+      const auto* cds = reinterpret_cast<const COPYDATASTRUCT*>(lparam);
+      if (cds && cds->dwData == kCliActionMsg && cds->lpData &&
+          cds->cbData >= sizeof(wchar_t)) {
+        const auto* text = static_cast<const wchar_t*>(cds->lpData);
+        self->HandleCliAction(text);
+        return TRUE;
+      }
+      break;
+    }
     case WM_HOTKEY: {
       const int idx = static_cast<int>(wparam) - static_cast<int>(kHotkeyBase);
       if (idx >= 0 && idx < static_cast<int>(self->hotkeys_.size())) {

@@ -151,6 +151,16 @@ LRESULT PageBar::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
       }
       return 0;
     }
+    case WM_LBUTTONDBLCLK: {
+      const int hit = HitTest(GET_X_LPARAM(lparam));
+      if (hit >= 0 && hit < page_count_ && on_page_) {
+        on_page_(hit);
+        if (on_rename_page_) {
+          on_rename_page_();
+        }
+      }
+      return 0;
+    }
     case WM_DESTROY:
       hwnd_ = nullptr;
       return 0;

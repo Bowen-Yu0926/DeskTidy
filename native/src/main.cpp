@@ -1,4 +1,5 @@
 #include "app.h"
+#include "cli_ipc.h"
 #include "instance_lock.h"
 
 #include <Windows.h>
@@ -29,15 +30,11 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR cmd_line, int) {
   const std::wstring action = FindCliAction(cmd_line);
 
   if (!AcquireNativeInstanceLock()) {
-    // Second instance: if CLI action, still show a tip; otherwise exit quietly.
-    if (!action.empty()) {
-      MessageBoxW(nullptr,
-                  L"DeskTidy Native 已在运行。请用托盘菜单执行该操作。",
-                  L"DeskTidy Native", MB_OK | MB_ICONINFORMATION);
-    } else {
-      MessageBoxW(nullptr, L"DeskTidy Native 已在运行。", L"DeskTidy Native",
-                  MB_OK | MB_ICONINFORMATION);
+    if (!action.empty() && ForwardCliToRunningInstance(action)) {
+      return 0;
     }
+    MessageBoxW(nullptr, L"DeskTidy Native 已在运行。", L"DeskTidy Native",
+                MB_OK | MB_ICONINFORMATION);
     return 0;
   }
 

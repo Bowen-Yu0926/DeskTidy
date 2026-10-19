@@ -51,6 +51,7 @@ class App {
   void SetPage(int page);
   void AddPage();
   void RemoveCurrentPage();
+  void RenameCurrentPage();
   void OpenLayoutEditor();
   void CycleTheme();
   void SyncPageChrome();

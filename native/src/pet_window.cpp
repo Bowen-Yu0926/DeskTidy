@@ -2,6 +2,8 @@
 
 #include "desktop_shell.h"
 #include "display_geom.h"
+#include "pet_ledges.h"
+#include "toast.h"
 #include "paths_util.h"
 #include "tool_paths.h"
 
@@ -350,58 +352,54 @@ void PetWindow::StartClimb() {
   }
   RECT self{};
   GetWindowRect(hwnd_, &self);
-  struct Pick {
-    HWND skip;
-    RECT best{};
-    bool found = false;
-    int best_top = 0;
-  } pick;
-  pick.skip = hwnd_;
-  pick.best_top = self.top;
-  EnumWindows(
-      [](HWND hwnd, LPARAM lp) -> BOOL {
-        auto* p = reinterpret_cast<Pick*>(lp);
-        if (hwnd == p->skip || !IsWindowVisible(hwnd)) {
-          return TRUE;
-        }
-        wchar_t cls[64] = {};
-        GetClassNameW(hwnd, cls, 64);
-        if (wcsncmp(cls, L"DeskTidyNative", 14) == 0) {
-          return TRUE;
-        }
-        RECT rc{};
-        if (!GetWindowRect(hwnd, &rc)) {
-          return TRUE;
-        }
-        if (rc.bottom - rc.top < 40 || rc.right - rc.left < 80) {
-          return TRUE;
-        }
-        RECT self{};
-        GetWindowRect(p->skip, &self);
-        const bool overlap = rc.right > self.left && rc.left < self.right;
-        if (!overlap || rc.top >= self.top) {
-          return TRUE;
-        }
-        if (!p->found || rc.top > p->best_top) {
-          p->found = true;
-          p->best = rc;
-          p->best_top = rc.top;
-        }
-        return TRUE;
-      },
-      reinterpret_cast<LPARAM>(&pick));
-  if (!pick.found) {
+  const auto ledges = ListWindowLedges(hwnd_);
+  if (ledges.empty()) {
+    ShowToast(L"附近没有可攀的窗台");
     return;
   }
-  ledge_left_ = pick.best.left;
-  ledge_right_ = pick.best.right;
-  ledge_top_ = pick.best.top;
+  // Prefer a ledge above the pet and horizontally overlapping; else nearest.
+  const WindowLedge* pick = nullptr;
+  int best_score = 0x7fffffff;
+  for (const auto& L : ledges) {
+    if (L.y >= self.top) {
+      continue;
+    }
+    const int mid = self.left + (self.right - self.left) / 2;
+    const int lx = L.x;
+    const int rx = L.x + L.width;
+    int dx = 0;
+    if (mid < lx) {
+      dx = lx - mid;
+    } else if (mid > rx) {
+      dx = mid - rx;
+    }
+    const int dy = self.top - L.y;
+    const int score = dx * 2 + dy;
+    if (score < best_score) {
+      best_score = score;
+      pick = &L;
+    }
+  }
+  if (!pick) {
+    pick = &ledges.front();
+  }
+  ledge_left_ = pick->x;
+  ledge_right_ = pick->x + pick->width;
+  ledge_top_ = pick->y;
+  ledge_hwnd_ = pick->hwnd;
   climbing_ = true;
   on_ledge_ = false;
   walking_ = false;
   falling_ = false;
+  climb_cooldown_ = 40;
   pos_x_ = static_cast<float>(self.left);
   pos_y_ = static_cast<float>(self.top);
+  // Walk sideways toward the ledge while climbing.
+  if (pos_x_ < static_cast<float>(ledge_left_)) {
+    walk_dir_ = 1;
+  } else if (pos_x_ + 40 > static_cast<float>(ledge_right_)) {
+    walk_dir_ = -1;
+  }
 }
 
 void PetWindow::StartWalk() {
@@ -704,8 +702,19 @@ void PetWindow::Tick() {
   const int ww = sprite_w_ > 0 ? sprite_w_ : kSize;
   const int hh = sprite_h_ > 0 ? sprite_h_ : kSize;
 
+  if (climb_cooldown_ > 0) {
+    --climb_cooldown_;
+  }
+
   if (climbing_) {
     pos_y_ -= 3.f;
+    pos_x_ += 1.2f * static_cast<float>(walk_dir_);
+    if (pos_x_ < static_cast<float>(ledge_left_)) {
+      pos_x_ = static_cast<float>(ledge_left_);
+    }
+    if (pos_x_ + ww > static_cast<float>(ledge_right_)) {
+      pos_x_ = static_cast<float>(ledge_right_ - ww);
+    }
     if (pos_y_ <= static_cast<float>(ledge_top_ - hh)) {
       pos_y_ = static_cast<float>(ledge_top_ - hh);
       climbing_ = false;
@@ -720,13 +729,26 @@ void PetWindow::Tick() {
   }
 
   if (on_ledge_) {
+    if (ledge_hwnd_ && !IsWindow(ledge_hwnd_)) {
+      on_ledge_ = false;
+      climbing_ = false;
+      StartFall();
+      return;
+    }
+    if (ledge_hwnd_) {
+      RECT lr{};
+      if (GetWindowRect(ledge_hwnd_, &lr)) {
+        ledge_top_ = lr.top;
+        ledge_left_ = lr.left + 12;
+        ledge_right_ = lr.right - 12;
+      }
+    }
     pos_x_ += vel_x_;
-    if (pos_x_ < static_cast<float>(ledge_left_) ||
-        pos_x_ + ww > static_cast<float>(ledge_right_)) {
-      walk_dir_ = -walk_dir_;
-      vel_x_ = 2.2f * static_cast<float>(walk_dir_);
-      pos_x_ = (std::max)(static_cast<float>(ledge_left_),
-                          (std::min)(pos_x_, static_cast<float>(ledge_right_ - ww)));
+    if (pos_x_ < static_cast<float>(ledge_left_) - 4 ||
+        pos_x_ + ww > static_cast<float>(ledge_right_) + 4) {
+      on_ledge_ = false;
+      StartFall();
+      return;
     }
     pos_y_ = static_cast<float>(ledge_top_ - hh);
     SetWindowPos(hwnd_, nullptr, static_cast<int>(pos_x_),
@@ -762,6 +784,21 @@ void PetWindow::Tick() {
       vel_x_ = 2.5f * static_cast<float>(walk_dir_);
       pos_x_ = (std::max)(static_cast<float>(work.left),
                           (std::min)(pos_x_, static_cast<float>(work.right - ww)));
+    }
+    // Auto-climb when walking under a nearby ledge.
+    if (climb_cooldown_ == 0) {
+      const auto ledges = ListWindowLedges(hwnd_, 8);
+      const int mid = static_cast<int>(pos_x_) + ww / 2;
+      for (const auto& L : ledges) {
+        if (L.y >= base_y_ - 20) {
+          continue;
+        }
+        if (mid >= L.x && mid <= L.x + L.width && base_y_ - L.y < 220) {
+          StartClimb();
+          return;
+        }
+      }
+      climb_cooldown_ = 20;
     }
     bob_ = (bob_ + 1) % 40;
     const int dy = (bob_ < 20) ? (bob_ / 4) : ((40 - bob_) / 4);

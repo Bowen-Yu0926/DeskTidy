@@ -75,6 +75,8 @@ class PetWindow {
   int ledge_left_ = 0;
   int ledge_right_ = 0;
   int ledge_top_ = 0;
+  HWND ledge_hwnd_ = nullptr;
+  int climb_cooldown_ = 0;
   int walk_dir_ = 1;
   HWND buoy_ = nullptr;
 };

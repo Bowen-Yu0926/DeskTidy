@@ -85,7 +85,10 @@ Native Win32 host — feature MVP map vs Python product.
 | Pet climb/ledge + buoy bar | done |
 | Notes toast / MD export / pandoc / HTML paste / open-with | done |
 | DeskNote WebView editor | not ported (RichEdit + toast mode instead) |
-| Full Shimeji climb fidelity | partial (window-ledge climb) |
+| Shimeji window ledges (auto climb, fall off edge) | done |
+| Second-instance CLI forward | done |
+| Rename current page (double-click page bar) | done |
+| DeskNote WebView editor | not ported |
 
 ## Build
 

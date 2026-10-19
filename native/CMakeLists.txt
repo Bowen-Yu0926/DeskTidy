@@ -62,6 +62,8 @@ add_executable(desktidy_native WIN32
   src/native_cleanup.cpp
   src/fence_keys.cpp
   src/layout_editor.cpp
+  src/pet_ledges.cpp
+  src/cli_ipc.cpp
   src/version.rc
 )
 
