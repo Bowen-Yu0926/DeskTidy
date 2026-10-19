@@ -18,6 +18,13 @@ server/desktidy-vault/config.local.php
 dist/
 dist_staging/
 build/
+native/build/
+native/**/Release/
+native/**/Debug/
+native/**/*.user
+native/**/*.vcxproj*
+native/CMakeCache.txt
+native/CMakeFiles/
 *.spec.bak
 
 # Bundled FFmpeg is large and downloaded by scripts\prepare_ffmpeg_recording.py

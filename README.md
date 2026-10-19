@@ -26,6 +26,10 @@ pip install -r requirements.txt
 python main.py
 ```
 
+### C++ 绿场（实验）
+
+分支 `feat/cpp-greenfield` 在 `native/` 下用 Win32 重做 Fences 桌面层 MVP（分区挂 DefView、管理窗不被盖）。说明见 [docs/cpp-greenfield.md](docs/cpp-greenfield.md) 与 [native/README.md](native/README.md)。当前产品仍以 Python 版为准。
+
 ## 打包
 
 ```bash
