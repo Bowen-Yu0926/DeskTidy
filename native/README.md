@@ -4,14 +4,18 @@ Greenfield rewrite toward a **Fences-class desktop layer**: native Win32
 overlay HWNDs owned by the SHELLDLL_DefView host, under normal APPWINDOWs
 (including the settings window).
 
-This tree is independent of the Python/PyQt app. Product parity is staged;
-MVP scope:
+Python/PyQt on `main` remains the shipping product until cutover. See
+`docs/cpp-greenfield.md`.
 
-- Multiple dark fence panels (drag move, paint)
-- Layout persistence (`%LOCALAPPDATA%\\DeskTidyNative\\layout.json`)
-- Attach to DefView host (`GWLP_HWNDPARENT`)
-- DefView-adjacent Z-order only (never band-top / `HWND_TOP` for overlays)
-- Settings window (normal APPWINDOW): list / add / remove fences; stays above overlays
+## Features (native MVP)
+
+- Multi-fence panels + LocalAppData layout / pins
+- Desktop icon grid (pin rules; default `.lnk` → 软件)
+- OLE drag-out / drop-in (shell `IDataObject` + `IDropTarget`)
+- Page switch (Ctrl+Alt+1/2 + page bar) + Win+D settle timer
+- Organize (virtual pins / move into `Desktop\DeskTidy`)
+- Dock, pet sprite, notes window
+- Settings APPWINDOW stays above desktop-band overlays
 
 ## Build (MSVC + CMake)
 
@@ -20,20 +24,12 @@ cd native
 build.bat
 ```
 
-Or manually (x64 Native Tools Command Prompt for VS):
-
-```bat
-cmake -S . -B build -G "Visual Studio 17 2022" -A x64
-cmake --build build --config Release
-build\Release\desktidy_native.exe
-```
-
 ## Run
 
 ```bat
 build\Release\desktidy_native.exe
 ```
 
-- Fence appears on the desktop surface
-- Double-click the tray icon (or press **Ctrl+Shift+S** in MVP) to open Settings
-- Settings must remain clickable above the fence
+- Tray / **Ctrl+Shift+S** — settings  
+- **Ctrl+Alt+1/2** — pages  
+- Drag icons between fences or to Explorer; drop files onto a fence to pin  

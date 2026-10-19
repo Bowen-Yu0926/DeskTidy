@@ -27,8 +27,7 @@ std::wstring Widen(const std::string& s) {
   if (s.empty()) {
     return {};
   }
-  const int n =
-      MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, nullptr, 0);
+  const int n = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, nullptr, 0);
   std::wstring out(n > 0 ? n - 1 : 0, L'\0');
   if (n > 1) {
     MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, out.data(), n);
@@ -61,7 +60,6 @@ std::string EscapeJson(const std::string& s) {
   return out;
 }
 
-// Minimal extractor: "key": number  or "key": "string"
 bool FindNumber(const std::string& body, const char* key, int* out) {
   const std::string needle = std::string("\"") + key + "\"";
   size_t p = body.find(needle);
@@ -128,6 +126,31 @@ bool FindString(const std::string& body, const char* key, std::string* out) {
   return true;
 }
 
+bool FindBool(const std::string& body, const char* key, bool* out) {
+  const std::string needle = std::string("\"") + key + "\"";
+  size_t p = body.find(needle);
+  if (p == std::string::npos) {
+    return false;
+  }
+  p = body.find(':', p + needle.size());
+  if (p == std::string::npos) {
+    return false;
+  }
+  ++p;
+  while (p < body.size() && (body[p] == ' ' || body[p] == '\t')) {
+    ++p;
+  }
+  if (body.compare(p, 4, "true") == 0) {
+    *out = true;
+    return true;
+  }
+  if (body.compare(p, 5, "false") == 0) {
+    *out = false;
+    return true;
+  }
+  return false;
+}
+
 }  // namespace
 
 std::wstring LayoutFilePath() {
@@ -153,6 +176,7 @@ std::vector<FenceLayout> DefaultLayouts() {
   common.y = 40;
   common.w = 520;
   common.h = 300;
+  common.page = 0;
   out.push_back(common);
 
   FenceLayout soft;
@@ -162,7 +186,18 @@ std::vector<FenceLayout> DefaultLayouts() {
   soft.h = 360;
   soft.x = screen_w - soft.w - 40;
   soft.y = 40;
+  soft.page = 0;
   out.push_back(soft);
+
+  FenceLayout page2;
+  page2.id = "system_page2";
+  page2.title = L"第二页";
+  page2.x = 80;
+  page2.y = 80;
+  page2.w = 360;
+  page2.h = 280;
+  page2.page = 1;
+  out.push_back(page2);
   return out;
 }
 
@@ -174,20 +209,24 @@ std::string MakeFenceId() {
   return buf;
 }
 
-std::vector<FenceLayout> LoadLayouts() {
+AppState LoadAppState() {
+  AppState state;
   const std::wstring path = LayoutFilePath();
   std::ifstream in(path);
   if (!in) {
-    return DefaultLayouts();
+    state.fences = DefaultLayouts();
+    return state;
   }
   std::ostringstream ss;
   ss << in.rdbuf();
   const std::string json = ss.str();
-  if (json.find("\"fences\"") == std::string::npos) {
-    return DefaultLayouts();
+  FindNumber(json, "current_page", &state.current_page);
+  FindBool(json, "dock_visible", &state.dock_visible);
+  FindBool(json, "pet_visible", &state.pet_visible);
+  if (state.current_page < 0) {
+    state.current_page = 0;
   }
 
-  std::vector<FenceLayout> out;
   size_t pos = 0;
   while (true) {
     const size_t start = json.find('{', pos);
@@ -203,8 +242,12 @@ std::vector<FenceLayout> LoadLayouts() {
 
     std::string id;
     std::string title;
-    int x = 0, y = 0, w = 0, h = 0;
+    int x = 0, y = 0, w = 0, h = 0, page = 0;
     if (!FindString(obj, "id", &id)) {
+      continue;
+    }
+    // Skip root object fields mistaken as fences
+    if (id == "current_page" || id.empty()) {
       continue;
     }
     FindString(obj, "title", &title);
@@ -212,6 +255,7 @@ std::vector<FenceLayout> LoadLayouts() {
     FindNumber(obj, "y", &y);
     FindNumber(obj, "w", &w);
     FindNumber(obj, "h", &h);
+    FindNumber(obj, "page", &page);
     if (w < 120) {
       w = 280;
     }
@@ -225,35 +269,71 @@ std::vector<FenceLayout> LoadLayouts() {
     fl.y = y;
     fl.w = w;
     fl.h = h;
-    out.push_back(fl);
+    fl.page = page;
+    state.fences.push_back(fl);
   }
-  if (out.empty()) {
-    return DefaultLayouts();
+  if (state.fences.empty()) {
+    state.fences = DefaultLayouts();
+  } else {
+    bool has_page2 = false;
+    for (const auto& f : state.fences) {
+      if (f.page == 1 || f.id == "system_page2") {
+        has_page2 = true;
+        break;
+      }
+    }
+    if (!has_page2) {
+      FenceLayout page2;
+      page2.id = "system_page2";
+      page2.title = L"第二页";
+      page2.x = 80;
+      page2.y = 80;
+      page2.w = 360;
+      page2.h = 280;
+      page2.page = 1;
+      state.fences.push_back(page2);
+    }
   }
-  return out;
+  return state;
 }
 
-bool SaveLayouts(const std::vector<FenceLayout>& layouts) {
+bool SaveAppState(const AppState& state) {
   const std::wstring path = LayoutFilePath();
   std::ofstream out(path, std::ios::binary);
   if (!out) {
     return false;
   }
-  out << "{\n  \"fences\": [\n";
-  for (size_t i = 0; i < layouts.size(); ++i) {
-    const auto& f = layouts[i];
+  out << "{\n"
+      << "  \"current_page\":" << state.current_page << ",\n"
+      << "  \"dock_visible\":" << (state.dock_visible ? "true" : "false")
+      << ",\n"
+      << "  \"pet_visible\":" << (state.pet_visible ? "true" : "false") << ",\n"
+      << "  \"fences\": [\n";
+  for (size_t i = 0; i < state.fences.size(); ++i) {
+    const auto& f = state.fences[i];
     out << "    {"
         << "\"id\":\"" << EscapeJson(f.id) << "\","
         << "\"title\":\"" << EscapeJson(Narrow(f.title)) << "\","
         << "\"x\":" << f.x << ","
         << "\"y\":" << f.y << ","
         << "\"w\":" << f.w << ","
-        << "\"h\":" << f.h << "}";
-    if (i + 1 < layouts.size()) {
+        << "\"h\":" << f.h << ","
+        << "\"page\":" << f.page << "}";
+    if (i + 1 < state.fences.size()) {
       out << ",";
     }
     out << "\n";
   }
   out << "  ]\n}\n";
   return true;
+}
+
+std::vector<FenceLayout> LoadLayouts() {
+  return LoadAppState().fences;
+}
+
+bool SaveLayouts(const std::vector<FenceLayout>& layouts) {
+  AppState state = LoadAppState();
+  state.fences = layouts;
+  return SaveAppState(state);
 }

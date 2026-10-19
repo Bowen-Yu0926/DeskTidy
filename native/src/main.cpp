@@ -1,25 +1,25 @@
 #include "app.h"
 
 #include <Windows.h>
-#include <objbase.h>
+#include <ole2.h>
 
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
-  // COM for future shell/OLE work; MVP still benefits from STA.
-  HRESULT hr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
-  if (FAILED(hr) && hr != RPC_E_CHANGED_MODE) {
+  // OLE STA required for RegisterDragDrop / DoDragDrop.
+  const HRESULT hr = OleInitialize(nullptr);
+  if (FAILED(hr) && hr != S_FALSE && hr != OLE_E_WRONGCOMPOBJ) {
     return 1;
   }
 
   App app;
   if (!app.Init(instance)) {
-    MessageBoxW(nullptr, L"Failed to initialize DeskTidy Native MVP.",
+    MessageBoxW(nullptr, L"Failed to initialize DeskTidy Native.",
                 L"DeskTidy Native", MB_ICONERROR);
-    CoUninitialize();
+    OleUninitialize();
     return 1;
   }
 
   const int code = app.Run();
   app.Shutdown();
-  CoUninitialize();
+  OleUninitialize();
   return code;
 }

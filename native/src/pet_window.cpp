@@ -1,0 +1,174 @@
+#include "pet_window.h"
+
+#include "desktop_shell.h"
+
+#include <windowsx.h>
+
+namespace {
+constexpr wchar_t kClassName[] = L"DeskTidyNativePet";
+constexpr int kSize = 72;
+bool g_registered = false;
+}  // namespace
+
+bool PetWindow::Create(HINSTANCE instance) {
+  if (!g_registered) {
+    WNDCLASSEXW wc{};
+    wc.cbSize = sizeof(wc);
+    wc.lpfnWndProc = PetWindow::WndProc;
+    wc.hInstance = instance;
+    wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
+    wc.lpszClassName = kClassName;
+    RegisterClassExW(&wc);
+    g_registered = true;
+  }
+  const int sw = GetSystemMetrics(SM_CXSCREEN);
+  const int sh = GetSystemMetrics(SM_CYSCREEN);
+  base_y_ = sh - kSize - 120;
+  hwnd_ = CreateWindowExW(
+      WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_LAYERED, kClassName, L"Pet",
+      WS_POPUP, sw - kSize - 40, base_y_, kSize, kSize, nullptr, nullptr,
+      instance, this);
+  if (!hwnd_) {
+    return false;
+  }
+  SetLayeredWindowAttributes(hwnd_, RGB(0, 0, 0), 0, LWA_COLORKEY);
+  SetWindowLongPtrW(hwnd_, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(this));
+  return true;
+}
+
+void PetWindow::Destroy() {
+  if (hwnd_) {
+    DestroyWindow(hwnd_);
+    hwnd_ = nullptr;
+  }
+}
+
+void PetWindow::Show() {
+  if (!hwnd_) {
+    return;
+  }
+  ShowWindow(hwnd_, SW_SHOWNOACTIVATE);
+  AttachToDesktopLayer();
+}
+
+void PetWindow::Hide() {
+  if (hwnd_) {
+    ShowWindow(hwnd_, SW_HIDE);
+  }
+}
+
+void PetWindow::SetVisible(bool on) {
+  if (on) {
+    Show();
+  } else {
+    Hide();
+  }
+}
+
+void PetWindow::AttachToDesktopLayer() {
+  if (!hwnd_) {
+    return;
+  }
+  AttachOverlayToDesktop(hwnd_, true);
+  PlaceOverlayInDesktopBand(hwnd_, true);
+  RaiseOverlayInDesktopBand(hwnd_);
+}
+
+void PetWindow::Tick() {
+  if (!hwnd_ || !IsWindowVisible(hwnd_) || dragging_) {
+    return;
+  }
+  bob_ = (bob_ + 1) % 40;
+  const int dy = (bob_ < 20) ? (bob_ / 4) : ((40 - bob_) / 4);
+  RECT rc{};
+  GetWindowRect(hwnd_, &rc);
+  SetWindowPos(hwnd_, nullptr, rc.left, base_y_ - dy, 0, 0,
+               SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+}
+
+LRESULT CALLBACK PetWindow::WndProc(HWND hwnd, UINT msg, WPARAM wparam,
+                                    LPARAM lparam) {
+  PetWindow* self = nullptr;
+  if (msg == WM_NCCREATE) {
+    auto* cs = reinterpret_cast<CREATESTRUCTW*>(lparam);
+    self = static_cast<PetWindow*>(cs->lpCreateParams);
+    SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(self));
+    self->hwnd_ = hwnd;
+  } else {
+    self = reinterpret_cast<PetWindow*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+  }
+  if (!self) {
+    return DefWindowProcW(hwnd, msg, wparam, lparam);
+  }
+  return self->HandleMessage(msg, wparam, lparam);
+}
+
+LRESULT PetWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
+  switch (msg) {
+    case WM_PAINT: {
+      PAINTSTRUCT ps{};
+      HDC hdc = BeginPaint(hwnd_, &ps);
+      Paint(hdc);
+      EndPaint(hwnd_, &ps);
+      return 0;
+    }
+    case WM_LBUTTONDOWN: {
+      dragging_ = true;
+      POINT pt{GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
+      ClientToScreen(hwnd_, &pt);
+      RECT rc{};
+      GetWindowRect(hwnd_, &rc);
+      drag_offset_.x = pt.x - rc.left;
+      drag_offset_.y = pt.y - rc.top;
+      SetCapture(hwnd_);
+      return 0;
+    }
+    case WM_MOUSEMOVE:
+      if (dragging_ && (wparam & MK_LBUTTON)) {
+        POINT pt{};
+        GetCursorPos(&pt);
+        SetWindowPos(hwnd_, nullptr, pt.x - drag_offset_.x,
+                     pt.y - drag_offset_.y, 0, 0,
+                     SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+        base_y_ = pt.y - drag_offset_.y;
+      }
+      return 0;
+    case WM_LBUTTONUP:
+      dragging_ = false;
+      ReleaseCapture();
+      AttachToDesktopLayer();
+      return 0;
+    case WM_DESTROY:
+      hwnd_ = nullptr;
+      return 0;
+    default:
+      break;
+  }
+  return DefWindowProcW(hwnd_, msg, wparam, lparam);
+}
+
+void PetWindow::Paint(HDC hdc) {
+  RECT rc{};
+  GetClientRect(hwnd_, &rc);
+  // Color-key black background.
+  HBRUSH clear = CreateSolidBrush(RGB(0, 0, 0));
+  FillRect(hdc, &rc, clear);
+  DeleteObject(clear);
+
+  HBRUSH body = CreateSolidBrush(RGB(120, 200, 140));
+  HPEN pen = CreatePen(PS_SOLID, 2, RGB(40, 80, 50));
+  HGDIOBJ old_b = SelectObject(hdc, body);
+  HGDIOBJ old_p = SelectObject(hdc, pen);
+  Ellipse(hdc, 8, 10, rc.right - 8, rc.bottom - 6);
+  SelectObject(hdc, old_b);
+  SelectObject(hdc, old_p);
+  DeleteObject(body);
+  DeleteObject(pen);
+
+  // Eyes
+  HBRUSH eye = CreateSolidBrush(RGB(20, 20, 20));
+  SelectObject(hdc, eye);
+  Ellipse(hdc, 24, 28, 34, 38);
+  Ellipse(hdc, 40, 28, 50, 38);
+  DeleteObject(eye);
+}

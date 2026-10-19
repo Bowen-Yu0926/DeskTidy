@@ -6,6 +6,7 @@
 #include <windowsx.h>
 
 #include <algorithm>
+#include <cstdlib>
 
 namespace {
 constexpr wchar_t kClassName[] = L"DeskTidyNativeFence";
@@ -16,12 +17,14 @@ constexpr int kPad = 10;
 constexpr int kCellW = 76;
 constexpr int kCellH = 86;
 constexpr int kIconSize = 32;
+constexpr int kDragThreshold = 6;
 bool g_class_registered = false;
 }  // namespace
 
 bool FenceWindow::Create(HINSTANCE instance, const FenceLayout& layout) {
   id_ = layout.id;
   title_ = layout.title;
+  page_ = layout.page;
 
   if (!g_class_registered) {
     WNDCLASSEXW wc{};
@@ -40,9 +43,9 @@ bool FenceWindow::Create(HINSTANCE instance, const FenceLayout& layout) {
   }
 
   hwnd_ = CreateWindowExW(
-      WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_LAYERED, kClassName,
-      title_.c_str(), WS_POPUP, layout.x, layout.y, layout.w, layout.h, nullptr,
-      nullptr, instance, this);
+      WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_LAYERED | WS_EX_ACCEPTFILES,
+      kClassName, title_.c_str(), WS_POPUP, layout.x, layout.y, layout.w,
+      layout.h, nullptr, nullptr, instance, this);
 
   if (!hwnd_) {
     return false;
@@ -50,14 +53,35 @@ bool FenceWindow::Create(HINSTANCE instance, const FenceLayout& layout) {
 
   SetLayeredWindowAttributes(hwnd_, 0, 235, LWA_ALPHA);
   SetWindowLongPtrW(hwnd_, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(this));
+  EnsureDropTarget();
   return true;
+}
+
+void FenceWindow::EnsureDropTarget() {
+  if (!hwnd_ || drop_target_) {
+    return;
+  }
+  drop_target_ = new PathDropTarget([this](const std::vector<std::wstring>& paths) {
+    if (on_paths_dropped_) {
+      on_paths_dropped_(this, paths);
+    }
+  });
+  if (!RegisterPathDropTarget(hwnd_, drop_target_)) {
+    drop_target_->Release();
+    drop_target_ = nullptr;
+  }
 }
 
 void FenceWindow::Destroy() {
   ClearIcons();
   if (hwnd_) {
+    RevokePathDropTarget(hwnd_);
     DestroyWindow(hwnd_);
     hwnd_ = nullptr;
+  }
+  if (drop_target_) {
+    drop_target_->Release();
+    drop_target_ = nullptr;
   }
 }
 
@@ -83,6 +107,7 @@ FenceLayout FenceWindow::CurrentLayout() const {
   FenceLayout fl;
   fl.id = id_;
   fl.title = title_;
+  fl.page = page_;
   if (hwnd_) {
     RECT rc{};
     GetWindowRect(hwnd_, &rc);
@@ -100,6 +125,12 @@ void FenceWindow::Show() {
   }
   ShowWindow(hwnd_, SW_SHOWNOACTIVATE);
   AttachToDesktopLayer();
+}
+
+void FenceWindow::Hide() {
+  if (hwnd_) {
+    ShowWindow(hwnd_, SW_HIDE);
+  }
 }
 
 void FenceWindow::AttachToDesktopLayer() {
@@ -165,6 +196,20 @@ void FenceWindow::OpenItem(int index) {
   ShellExecuteW(nullptr, L"open", path.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
 }
 
+void FenceWindow::BeginIconDrag(int index) {
+  if (index < 0 || index >= static_cast<int>(cells_.size())) {
+    return;
+  }
+  const std::wstring path = cells_[static_cast<size_t>(index)].item.path;
+  icon_press_ = false;
+  icon_press_index_ = -1;
+  ReleaseCapture();
+  ShellDoDragFiles({path});
+  if (on_drag_done_) {
+    on_drag_done_(this);
+  }
+}
+
 LRESULT CALLBACK FenceWindow::WndProc(HWND hwnd, UINT msg, WPARAM wparam,
                                       LPARAM lparam) {
   FenceWindow* self = nullptr;
@@ -199,12 +244,15 @@ LRESULT FenceWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
       press_client_ = {GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
       const int icon = HitTestIcon(press_client_.x, press_client_.y);
       if (icon >= 0) {
-        // Icon press: wait for up / dblclk; don't start panel drag.
         dragging_ = false;
         drag_moved_ = false;
+        icon_press_ = true;
+        icon_press_index_ = icon;
         SetCapture(hwnd_);
         return 0;
       }
+      icon_press_ = false;
+      icon_press_index_ = -1;
       dragging_ = true;
       drag_moved_ = false;
       POINT pt = press_client_;
@@ -217,6 +265,15 @@ LRESULT FenceWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
       return 0;
     }
     case WM_MOUSEMOVE: {
+      if (icon_press_ && (wparam & MK_LBUTTON)) {
+        const int x = GET_X_LPARAM(lparam);
+        const int y = GET_Y_LPARAM(lparam);
+        if (abs(x - press_client_.x) >= kDragThreshold ||
+            abs(y - press_client_.y) >= kDragThreshold) {
+          BeginIconDrag(icon_press_index_);
+        }
+        return 0;
+      }
       if (!dragging_ || !(wparam & MK_LBUTTON)) {
         return 0;
       }
@@ -231,6 +288,15 @@ LRESULT FenceWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
       const int x = GET_X_LPARAM(lparam);
       const int y = GET_Y_LPARAM(lparam);
       ReleaseCapture();
+      if (icon_press_) {
+        const int idx = icon_press_index_;
+        icon_press_ = false;
+        icon_press_index_ = -1;
+        if (HitTestIcon(x, y) == idx) {
+          OpenItem(idx);
+        }
+        return 0;
+      }
       if (dragging_) {
         dragging_ = false;
         if (drag_moved_) {
@@ -240,10 +306,6 @@ LRESULT FenceWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
           }
         }
         return 0;
-      }
-      const int icon = HitTestIcon(x, y);
-      if (icon >= 0) {
-        OpenItem(icon);
       }
       return 0;
     }
@@ -256,6 +318,11 @@ LRESULT FenceWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
     }
     case WM_DESTROY:
       ClearIcons();
+      if (drop_target_) {
+        RevokePathDropTarget(hwnd_);
+        drop_target_->Release();
+        drop_target_ = nullptr;
+      }
       hwnd_ = nullptr;
       return 0;
     default:
@@ -296,7 +363,7 @@ void FenceWindow::Paint(HDC hdc) {
   for (const auto& cell : cells_) {
     const RECT& b = cell.bounds;
     if (b.bottom > rc.bottom - 4) {
-      continue;  // clipped by fence height for MVP
+      continue;
     }
     if (cell.icon) {
       const int ix = b.left + (kCellW - kIconSize) / 2;
