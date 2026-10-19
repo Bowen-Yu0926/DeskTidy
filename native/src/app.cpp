@@ -1,5 +1,6 @@
 #include "app.h"
 
+#include "desktop_items.h"
 #include "desktop_shell.h"
 
 #include <CommCtrl.h>
@@ -65,6 +66,7 @@ bool App::Init(HINSTANCE instance) {
     }
   }
   PersistLayouts();
+  RefreshDesktopIcons();
   RefreshSettingsList();
 
   CreateTrayIcon();
@@ -135,6 +137,42 @@ void App::RefreshSettingsList() {
     }
   }
   settings_.SetFenceNames(names);
+}
+
+void App::RefreshDesktopIcons() {
+  const auto items = ScanDesktopItems();
+  std::vector<DesktopItem> links;
+  std::vector<DesktopItem> other;
+  links.reserve(items.size());
+  other.reserve(items.size());
+  for (const auto& it : items) {
+    if (it.is_link) {
+      links.push_back(it);
+    } else {
+      other.push_back(it);
+    }
+  }
+
+  FenceWindow* software = nullptr;
+  FenceWindow* common = nullptr;
+  for (auto& fence : fences_) {
+    if (!fence) {
+      continue;
+    }
+    if (fence->Id() == "system_software" || fence->Id() == "system_software_side") {
+      software = fence.get();
+    } else if (fence->Id() == "system_common") {
+      common = fence.get();
+    }
+  }
+
+  if (software) {
+    software->SetItems(std::move(links));
+  }
+  if (common) {
+    common->SetItems(std::move(other));
+  }
+
 }
 
 void App::AddFence() {
@@ -210,9 +248,10 @@ LRESULT CALLBACK App::TrayWndProc(HWND hwnd, UINT msg, WPARAM wparam,
         HMENU menu = CreatePopupMenu();
         AppendMenuW(menu, MF_STRING, 1, L"Settings");
         AppendMenuW(menu, MF_STRING, 2, L"Add fence");
-        AppendMenuW(menu, MF_STRING, 3, L"Seat fences under apps");
+        AppendMenuW(menu, MF_STRING, 3, L"Refresh desktop icons");
+        AppendMenuW(menu, MF_STRING, 4, L"Seat fences under apps");
         AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-        AppendMenuW(menu, MF_STRING, 4, L"Exit");
+        AppendMenuW(menu, MF_STRING, 5, L"Exit");
         SetForegroundWindow(hwnd);
         const int cmd =
             TrackPopupMenu(menu, TPM_RETURNCMD | TPM_NONOTIFY, pt.x, pt.y, 0,
@@ -223,8 +262,10 @@ LRESULT CALLBACK App::TrayWndProc(HWND hwnd, UINT msg, WPARAM wparam,
         } else if (cmd == 2) {
           self->AddFence();
         } else if (cmd == 3) {
-          self->SeatAllFencesUnderApps();
+          self->RefreshDesktopIcons();
         } else if (cmd == 4) {
+          self->SeatAllFencesUnderApps();
+        } else if (cmd == 5) {
           PostQuitMessage(0);
         }
         return 0;

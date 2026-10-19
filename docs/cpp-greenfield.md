@@ -26,7 +26,8 @@ Requires Visual Studio 2022 Build Tools (C++) + CMake.
 ## Next stages
 
 1. ~~Multiple fences + layout persistence~~  
-2. Icon grid / shell drag (OLE)  
-3. Page switch / Win+D restore  
-4. Port organize rules, dock, pet, notes…  
-5. Retire Python host when parity is enough  
+2. ~~Icon grid (desktop scan; .lnk -> 软件, else -> 常用; click to open)~~  
+3. Shell drag (OLE) / pin rules  
+4. Page switch / Win+D restore  
+5. Port organize rules, dock, pet, notes…  
+6. Retire Python host when parity is enough  

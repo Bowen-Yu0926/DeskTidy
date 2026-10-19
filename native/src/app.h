@@ -20,6 +20,7 @@ class App {
   void SeatAllFencesUnderApps();
   void PersistLayouts();
   void RefreshSettingsList();
+  void RefreshDesktopIcons();
   void AddFence();
   void RemoveFenceAt(int index);
 
