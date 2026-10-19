@@ -96,6 +96,8 @@ Native Win32 host — feature MVP map vs Python product.
 | Pet page bubbles | done |
 | DeskNote outline / focus / typewriter | done |
 | Theme colors on page bar + settings | done |
+| DeskNote multi-tabs | done |
+| Pet grab / throw physics | done |
 
 ## Build
 

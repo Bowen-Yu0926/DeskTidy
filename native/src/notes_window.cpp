@@ -5,10 +5,13 @@
 #include "notes_library.h"
 #include "paths_util.h"
 
+#include <CommCtrl.h>
 #include <commdlg.h>
 #include <Richedit.h>
 #include <Shellapi.h>
 #include <ShlObj.h>
+
+#pragma comment(lib, "comctl32.lib")
 
 #include <algorithm>
 #include <cstring>
@@ -46,7 +49,10 @@ constexpr int kMenuExportHtml = 2122;
 constexpr int kMenuOutline = 2123;
 constexpr int kMenuFocus = 2124;
 constexpr int kMenuTypewriter = 2125;
+constexpr int kMenuNewTab = 2126;
+constexpr int kMenuCloseTab = 2127;
 constexpr int kOutlineId = 2002;
+constexpr int kTabsId = 2003;
 
 struct StreamCookie {
   std::string data;
@@ -79,11 +85,31 @@ void ApplyCharEffect(HWND edit, DWORD mask, DWORD effect, bool on) {
   cf.dwEffects = on ? effect : 0;
   SendMessageW(edit, EM_SETCHARFORMAT, SCF_SELECTION, reinterpret_cast<LPARAM>(&cf));
 }
+
+std::string EscapeJson(const std::string& s) {
+  std::string out;
+  out.reserve(s.size() + 8);
+  for (unsigned char c : s) {
+    if (c == '\\' || c == '"') {
+      out.push_back('\\');
+      out.push_back(static_cast<char>(c));
+    } else if (c < 0x20) {
+      char buf[8];
+      sprintf_s(buf, "\\u%04x", c);
+      out += buf;
+    } else {
+      out.push_back(static_cast<char>(c));
+    }
+  }
+  return out;
+}
 }  // namespace
 
 bool NotesWindow::Create(HINSTANCE instance) {
   path_ = JoinPath(NativeDataDir(), L"notes.rtf");
   LoadLibraryW(L"Msftedit.dll");
+  INITCOMMONCONTROLSEX icc{sizeof(icc), ICC_TAB_CLASSES};
+  InitCommonControlsEx(&icc);
 
   WNDCLASSEXW wc{};
   wc.cbSize = sizeof(wc);
@@ -107,6 +133,9 @@ bool NotesWindow::Create(HINSTANCE instance) {
 
   HMENU menu = CreateMenu();
   HMENU file = CreatePopupMenu();
+  AppendMenuW(file, MF_STRING, kMenuNewTab, L"新建标签\tCtrl+T");
+  AppendMenuW(file, MF_STRING, kMenuCloseTab, L"关闭标签\tCtrl+W");
+  AppendMenuW(file, MF_SEPARATOR, 0, nullptr);
   AppendMenuW(file, MF_STRING, kMenuSave, L"保存");
   AppendMenuW(file, MF_STRING, kMenuSaveAs, L"另存为…");
   AppendMenuW(file, MF_STRING, kMenuLibrary, L"笔记库…");
@@ -145,6 +174,11 @@ bool NotesWindow::Create(HINSTANCE instance) {
   SetMenu(hwnd_, menu);
   find_msg_ = RegisterWindowMessageW(FINDMSGSTRING);
 
+  tabs_ = CreateWindowExW(
+      0, WC_TABCONTROLW, L"", WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS, 0, 0, 300,
+      28, hwnd_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kTabsId)),
+      instance, nullptr);
+
   edit_ = CreateWindowExW(
       WS_EX_CLIENTEDGE, MSFTEDIT_CLASS, L"",
       WS_CHILD | WS_VISIBLE | WS_VSCROLL | ES_MULTILINE | ES_AUTOVSCROLL |
@@ -176,6 +210,13 @@ bool NotesWindow::Create(HINSTANCE instance) {
     ShowWindow(outline_list_, SW_HIDE);
   }
   web_.Create(hwnd_);
+  LoadTabSession();
+  if (tab_paths_.empty()) {
+    tab_paths_.push_back(path_);
+    tab_index_ = 0;
+  }
+  path_ = tab_paths_[static_cast<size_t>(tab_index_)];
+  RebuildTabControl();
   Load();
   LayoutClient();
   return true;
@@ -197,6 +238,7 @@ void NotesWindow::SetFontSize(int pt) {
 
 void NotesWindow::Destroy() {
   Save();
+  PersistTabs();
   web_.Destroy();
   if (font_) {
     DeleteObject(font_);
@@ -220,9 +262,201 @@ void NotesWindow::Show() {
 
 void NotesWindow::Hide() {
   Save();
+  PersistTabs();
   if (hwnd_) {
     ShowWindow(hwnd_, SW_HIDE);
   }
+}
+
+std::wstring NotesWindow::TabLabel(const std::wstring& path) const {
+  const size_t slash = path.find_last_of(L"\\/");
+  std::wstring name =
+      slash == std::wstring::npos ? path : path.substr(slash + 1);
+  if (name.empty()) {
+    name = L"未命名";
+  }
+  if (name.size() > 18) {
+    name = name.substr(0, 16) + L"…";
+  }
+  return name;
+}
+
+void NotesWindow::RebuildTabControl() {
+  if (!tabs_) {
+    return;
+  }
+  while (TabCtrl_GetItemCount(tabs_) > 0) {
+    TabCtrl_DeleteItem(tabs_, 0);
+  }
+  for (size_t i = 0; i < tab_paths_.size(); ++i) {
+    TCITEMW ti{};
+    ti.mask = TCIF_TEXT;
+    std::wstring label = TabLabel(tab_paths_[i]);
+    ti.pszText = label.data();
+    TabCtrl_InsertItem(tabs_, static_cast<int>(i), &ti);
+  }
+  if (tab_index_ < 0 ||
+      tab_index_ >= static_cast<int>(tab_paths_.size())) {
+    tab_index_ = 0;
+  }
+  TabCtrl_SetCurSel(tabs_, tab_index_);
+}
+
+void NotesWindow::PersistTabs() {
+  const std::wstring file = JoinPath(NativeDataDir(), L"notes_tabs.json");
+  std::ofstream out(file, std::ios::binary);
+  if (!out) {
+    return;
+  }
+  out << "{\n  \"current\": " << tab_index_ << ",\n  \"tabs\": [\n";
+  for (size_t i = 0; i < tab_paths_.size(); ++i) {
+    out << "    \"" << EscapeJson(NarrowUtf8(tab_paths_[i])) << "\"";
+    if (i + 1 < tab_paths_.size()) {
+      out << ",";
+    }
+    out << "\n";
+  }
+  out << "  ]\n}\n";
+}
+
+void NotesWindow::LoadTabSession() {
+  tab_paths_.clear();
+  tab_index_ = 0;
+  const std::wstring file = JoinPath(NativeDataDir(), L"notes_tabs.json");
+  std::ifstream in(file, std::ios::binary);
+  if (!in) {
+    return;
+  }
+  std::ostringstream ss;
+  ss << in.rdbuf();
+  const std::string json = ss.str();
+  size_t pos = 0;
+  while (true) {
+    const size_t q1 = json.find('"', pos);
+    if (q1 == std::string::npos) {
+      break;
+    }
+    // Prefer paths that look like absolute Windows paths inside the tabs array.
+    const size_t q2 = json.find('"', q1 + 1);
+    if (q2 == std::string::npos) {
+      break;
+    }
+    const std::string raw = json.substr(q1 + 1, q2 - q1 - 1);
+    pos = q2 + 1;
+    if (raw == "tabs" || raw == "current") {
+      continue;
+    }
+    std::string unescaped;
+    for (size_t i = 0; i < raw.size(); ++i) {
+      if (raw[i] == '\\' && i + 1 < raw.size()) {
+        unescaped.push_back(raw[++i]);
+      } else {
+        unescaped.push_back(raw[i]);
+      }
+    }
+    if (unescaped.size() >= 3 &&
+        ((unescaped[1] == ':' && (unescaped[2] == '\\' || unescaped[2] == '/')) ||
+         unescaped[0] == '\\')) {
+      tab_paths_.push_back(WidenUtf8(unescaped));
+    }
+  }
+  const size_t cur_key = json.find("\"current\"");
+  if (cur_key != std::string::npos) {
+    const size_t colon = json.find(':', cur_key);
+    if (colon != std::string::npos) {
+      tab_index_ = atoi(json.c_str() + colon + 1);
+    }
+  }
+  if (tab_paths_.empty()) {
+    tab_index_ = 0;
+  } else if (tab_index_ < 0 ||
+             tab_index_ >= static_cast<int>(tab_paths_.size())) {
+    tab_index_ = 0;
+  }
+}
+
+void NotesWindow::SwitchToTab(int index, bool save_current) {
+  if (index < 0 || index >= static_cast<int>(tab_paths_.size())) {
+    return;
+  }
+  if (save_current) {
+    Save();
+  }
+  SyncFromWysiwyg();
+  tab_index_ = index;
+  path_ = tab_paths_[static_cast<size_t>(index)];
+  if (tabs_) {
+    TabCtrl_SetCurSel(tabs_, tab_index_);
+  }
+  Load();
+  SetWindowTextW(hwnd_, (L"便签 · " + TabLabel(path_)).c_str());
+  if (outline_) {
+    RebuildOutline();
+  }
+  PersistTabs();
+}
+
+void NotesWindow::NewTab() {
+  if (tab_paths_.size() >= 12) {
+    MessageBoxW(hwnd_, L"最多 12 个标签。", L"便签", MB_OK | MB_ICONINFORMATION);
+    return;
+  }
+  Save();
+  SYSTEMTIME st{};
+  GetLocalTime(&st);
+  wchar_t name[64];
+  swprintf_s(name, L"note_%04d%02d%02d_%02d%02d%02d.md", st.wYear, st.wMonth,
+             st.wDay, st.wHour, st.wMinute, st.wSecond);
+  const std::wstring path = JoinPath(NotesLibraryDir(true), name);
+  {
+    std::ofstream out(path, std::ios::binary);
+    out << "";
+  }
+  tab_paths_.push_back(path);
+  RebuildTabControl();
+  SwitchToTab(static_cast<int>(tab_paths_.size()) - 1, false);
+}
+
+void NotesWindow::CloseTab() {
+  if (tab_paths_.size() <= 1) {
+    MessageBoxW(hwnd_, L"至少保留一个标签。", L"便签",
+                MB_OK | MB_ICONINFORMATION);
+    return;
+  }
+  Save();
+  tab_paths_.erase(tab_paths_.begin() + tab_index_);
+  if (tab_index_ >= static_cast<int>(tab_paths_.size())) {
+    tab_index_ = static_cast<int>(tab_paths_.size()) - 1;
+  }
+  RebuildTabControl();
+  SwitchToTab(tab_index_, false);
+}
+
+void NotesWindow::AdoptPath(const std::wstring& path) {
+  if (path.empty()) {
+    return;
+  }
+  for (size_t i = 0; i < tab_paths_.size(); ++i) {
+    if (_wcsicmp(tab_paths_[i].c_str(), path.c_str()) == 0) {
+      SwitchToTab(static_cast<int>(i), true);
+      return;
+    }
+  }
+  Save();
+  if (tab_paths_.empty()) {
+    tab_paths_.push_back(path);
+  } else if (tab_index_ >= 0 &&
+             tab_index_ < static_cast<int>(tab_paths_.size())) {
+    tab_paths_[static_cast<size_t>(tab_index_)] = path;
+  } else {
+    tab_paths_.push_back(path);
+    tab_index_ = static_cast<int>(tab_paths_.size()) - 1;
+  }
+  path_ = path;
+  RebuildTabControl();
+  Load();
+  SetWindowTextW(hwnd_, (L"便签 · " + TabLabel(path_)).c_str());
+  PersistTabs();
 }
 
 bool NotesWindow::IsOpen() const {
@@ -578,29 +812,23 @@ void NotesWindow::ToggleWysiwyg() {
 }
 
 void NotesWindow::SearchLibrary() {
-  Save();
   const std::wstring picked = SearchNotesInLibrary(hwnd_);
   if (picked.empty()) {
     return;
   }
-  path_ = picked;
-  Load();
-  SetWindowTextW(hwnd_, (L"便签 · " + path_).c_str());
+  AdoptPath(picked);
 }
 
 void NotesWindow::OpenLibrary() {
-  Save();
   const std::wstring picked = PickNoteFromLibrary(hwnd_);
   if (picked.empty()) {
     return;
   }
-  path_ = picked;
-  if (GetFileAttributesW(path_.c_str()) == INVALID_FILE_ATTRIBUTES) {
-    std::ofstream out(path_, std::ios::binary);
+  if (GetFileAttributesW(picked.c_str()) == INVALID_FILE_ATTRIBUTES) {
+    std::ofstream out(picked, std::ios::binary);
     out << "";
   }
-  Load();
-  SetWindowTextW(hwnd_, (L"便签 · " + path_).c_str());
+  AdoptPath(picked);
 }
 
 void NotesWindow::SaveAs() {
@@ -616,7 +844,7 @@ void NotesWindow::SaveAs() {
   if (!GetSaveFileNameW(&ofn)) {
     return;
   }
-  path_ = file;
+  AdoptPath(file);
   Save();
 }
 
@@ -637,13 +865,20 @@ void NotesWindow::LayoutClient() {
   }
   RECT rc{};
   GetClientRect(hwnd_, &rc);
-  int left = 6;
   int top = 6;
+  if (tabs_ && !toast_) {
+    MoveWindow(tabs_, 0, 0, rc.right, 28, TRUE);
+    ShowWindow(tabs_, SW_SHOW);
+    top = 32;
+  } else if (tabs_) {
+    ShowWindow(tabs_, SW_HIDE);
+  }
+  int left = 6;
   int right = rc.right - 6;
   int bottom = rc.bottom - 6;
   if (outline_ && outline_list_ && !wysiwyg_) {
     const int side = 150;
-    MoveWindow(outline_list_, 6, 6, side, bottom - top, TRUE);
+    MoveWindow(outline_list_, 6, top, side, bottom - top, TRUE);
     ShowWindow(outline_list_, SW_SHOW);
     left = 6 + side + 6;
   } else if (outline_list_) {
@@ -654,11 +889,16 @@ void NotesWindow::LayoutClient() {
         (std::max)(24, (static_cast<int>(rc.right) - 520) / 2);
     left = (std::max)(left, pad_x);
     right = static_cast<int>(rc.right) - pad_x;
-    top = (std::max)(top, 28);
+    top = (std::max)(top, top + 12);
     bottom = static_cast<int>(rc.bottom) - 28;
   }
   if (wysiwyg_) {
-    web_.Resize();
+    if (web_.Host()) {
+      MoveWindow(web_.Host(), left, top, (std::max)(40, right - left),
+                 (std::max)(40, bottom - top), TRUE);
+    } else {
+      web_.Resize();
+    }
   } else {
     MoveWindow(edit_, left, top, (std::max)(40, right - left),
                (std::max)(40, bottom - top), TRUE);
@@ -915,6 +1155,14 @@ LRESULT CALLBACK NotesWindow::EditProc(HWND hwnd, UINT msg, WPARAM wparam,
       self->ShowFind(true);
       return 0;
     }
+    if (ctrl && (wparam == 'T' || wparam == 't')) {
+      self->NewTab();
+      return 0;
+    }
+    if (ctrl && (wparam == 'W' || wparam == 'w')) {
+      self->CloseTab();
+      return 0;
+    }
   }
   LRESULT result = 0;
   if (self && self->edit_proc_) {
@@ -953,8 +1201,25 @@ LRESULT NotesWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
     return 0;
   }
   switch (msg) {
+    case WM_NOTIFY: {
+      const auto* hdr = reinterpret_cast<LPNMHDR>(lparam);
+      if (hdr && hdr->idFrom == kTabsId && hdr->code == TCN_SELCHANGE) {
+        const int sel = TabCtrl_GetCurSel(tabs_);
+        if (sel != tab_index_) {
+          SwitchToTab(sel, true);
+        }
+        return 0;
+      }
+      break;
+    }
     case WM_COMMAND:
       switch (LOWORD(wparam)) {
+        case kMenuNewTab:
+          NewTab();
+          return 0;
+        case kMenuCloseTab:
+          CloseTab();
+          return 0;
         case kMenuSave:
           Save();
           return 0;

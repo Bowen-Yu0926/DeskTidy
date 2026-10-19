@@ -6,6 +6,7 @@
 #include <commdlg.h>
 
 #include <string>
+#include <vector>
 
 class NotesWindow {
  public:
@@ -47,14 +48,25 @@ class NotesWindow {
   void ShowFind(bool replace);
   void HandleFindMsg(LPFINDREPLACEW fr);
   std::wstring CurrentPlainText() const;
+  void NewTab();
+  void CloseTab();
+  void SwitchToTab(int index, bool save_current);
+  void RebuildTabControl();
+  void PersistTabs();
+  void LoadTabSession();
+  std::wstring TabLabel(const std::wstring& path) const;
+  void AdoptPath(const std::wstring& path);
 
   HWND hwnd_ = nullptr;
+  HWND tabs_ = nullptr;
   HWND edit_ = nullptr;
   HWND outline_list_ = nullptr;
   HMENU menu_ = nullptr;
   HFONT font_ = nullptr;
   int font_pt_ = 15;
   std::wstring path_;
+  std::vector<std::wstring> tab_paths_;
+  int tab_index_ = 0;
   FINDREPLACEW find_{};
   wchar_t find_what_[256]{};
   wchar_t replace_with_[256]{};

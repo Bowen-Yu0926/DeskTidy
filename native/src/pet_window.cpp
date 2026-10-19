@@ -12,6 +12,7 @@
 #include <windowsx.h>
 
 #include <algorithm>
+#include <cmath>
 #include <fstream>
 #include <sstream>
 #include <string>
@@ -415,18 +416,34 @@ void PetWindow::StartWalk() {
   }
 }
 
-void PetWindow::StartFall() {
+void PetWindow::StartFall() { StartThrow(0.f, -2.f); }
+
+void PetWindow::StartThrow(float vx, float vy) {
   falling_ = true;
   walking_ = false;
-  vel_y_ = -2.f;
-  vel_x_ = 0.f;
+  climbing_ = false;
+  on_ledge_ = false;
+  vel_x_ = vx;
+  vel_y_ = vy;
   RECT rc{};
   GetWindowRect(hwnd_, &rc);
   pos_x_ = static_cast<float>(rc.left);
   pos_y_ = static_cast<float>(rc.top);
+  const RECT work = PrimaryWorkArea();
+  const int hh = sprite_h_ > 0 ? sprite_h_ : kSize;
+  base_y_ = work.bottom - hh - 120;
   if (std::find(pose_names_.begin(), pose_names_.end(), L"fall") !=
       pose_names_.end()) {
     SetPose(L"fall");
+  }
+}
+
+void PetWindow::PushDragSample(POINT screen) {
+  drag_samples_[drag_sample_i_].tick = GetTickCount();
+  drag_samples_[drag_sample_i_].pt = screen;
+  drag_sample_i_ = (drag_sample_i_ + 1) % 8;
+  if (drag_sample_n_ < 8) {
+    ++drag_sample_n_;
   }
 }
 
@@ -887,12 +904,22 @@ void PetWindow::Tick() {
 
   if (falling_) {
     vel_y_ += 0.55f;
+    vel_x_ *= 0.992f;
     pos_y_ += vel_y_;
     pos_x_ += vel_x_;
+    if (pos_x_ < static_cast<float>(work.left)) {
+      pos_x_ = static_cast<float>(work.left);
+      vel_x_ = -vel_x_ * 0.35f;
+    }
+    if (pos_x_ + static_cast<float>(ww) > static_cast<float>(work.right)) {
+      pos_x_ = static_cast<float>(work.right - ww);
+      vel_x_ = -vel_x_ * 0.35f;
+    }
     if (pos_y_ >= static_cast<float>(base_y_)) {
       pos_y_ = static_cast<float>(base_y_);
       falling_ = false;
       vel_y_ = 0.f;
+      vel_x_ = 0.f;
       if (std::find(pose_names_.begin(), pose_names_.end(), L"idle") !=
           pose_names_.end()) {
         SetPose(L"idle");
@@ -973,12 +1000,19 @@ LRESULT PetWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
     }
     case WM_LBUTTONDOWN: {
       dragging_ = true;
+      drag_sample_n_ = 0;
+      drag_sample_i_ = 0;
+      walking_ = false;
+      falling_ = false;
+      climbing_ = false;
+      on_ledge_ = false;
       POINT pt{GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
       ClientToScreen(hwnd_, &pt);
       RECT rc{};
       GetWindowRect(hwnd_, &rc);
       drag_offset_.x = pt.x - rc.left;
       drag_offset_.y = pt.y - rc.top;
+      PushDragSample(pt);
       SetCapture(hwnd_);
       return 0;
     }
@@ -989,23 +1023,56 @@ LRESULT PetWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
         SetWindowPos(hwnd_, nullptr, pt.x - drag_offset_.x,
                      pt.y - drag_offset_.y, 0, 0,
                      SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
-        base_y_ = pt.y - drag_offset_.y;
+        pos_x_ = static_cast<float>(pt.x - drag_offset_.x);
+        pos_y_ = static_cast<float>(pt.y - drag_offset_.y);
+        PushDragSample(pt);
         PlacePages();
       }
       return 0;
     case WM_LBUTTONUP: {
       dragging_ = false;
       ReleaseCapture();
+      POINT cur{};
+      GetCursorPos(&cur);
+      PushDragSample(cur);
+      float vx = 0.f;
+      float vy = 0.f;
+      if (drag_sample_n_ >= 2) {
+        const int last = (drag_sample_i_ + 7) % 8;
+        const int first =
+            drag_sample_n_ < 8
+                ? 0
+                : drag_sample_i_;
+        const DragSample& a = drag_samples_[first];
+        const DragSample& b = drag_samples_[last];
+        const DWORD dt = (b.tick >= a.tick) ? (b.tick - a.tick) : 1;
+        const float sec = (std::max)(0.016f, static_cast<float>(dt) / 1000.f);
+        // Convert px/s into approx px/tick (50ms timer).
+        vx = ((b.pt.x - a.pt.x) / sec) * 0.05f;
+        vy = ((b.pt.y - a.pt.y) / sec) * 0.05f;
+        vx = (std::max)(-42.f, (std::min)(42.f, vx));
+        vy = (std::max)(-42.f, (std::min)(42.f, vy));
+      }
       RECT rc{};
       GetWindowRect(hwnd_, &rc);
-      base_y_ = rc.top;
       pos_x_ = static_cast<float>(rc.left);
       pos_y_ = static_cast<float>(rc.top);
-      walking_ = false;
-      falling_ = false;
-      climbing_ = false;
-      on_ledge_ = false;
-      AttachToDesktopLayer();
+      const RECT work = PrimaryWorkArea();
+      const int hh = sprite_h_ > 0 ? sprite_h_ : kSize;
+      const int floor = work.bottom - hh - 120;
+      const float speed = std::sqrt(vx * vx + vy * vy);
+      if (speed >= 6.f || rc.top < floor - 24) {
+        if (speed < 6.f) {
+          vx = 0.f;
+          vy = 2.f;
+        }
+        StartThrow(vx, vy);
+      } else {
+        base_y_ = floor;
+        falling_ = false;
+        AttachToDesktopLayer();
+      }
+      PlacePages();
       return 0;
     }
     case WM_RBUTTONUP: {

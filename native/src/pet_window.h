@@ -41,7 +41,9 @@ class PetWindow {
   void ClearFrames();
   void ShowContextMenu(POINT screen);
   void StartFall();
+  void StartThrow(float vx, float vy);
   void StartWalk();
+  void PushDragSample(POINT screen);
   void CreateBuoy(HINSTANCE instance);
   void CreatePages(HINSTANCE instance);
   void PlacePages();
@@ -57,6 +59,13 @@ class PetWindow {
   int base_y_ = 0;
   bool dragging_ = false;
   POINT drag_offset_{};
+  struct DragSample {
+    DWORD tick = 0;
+    POINT pt{};
+  };
+  DragSample drag_samples_[8]{};
+  int drag_sample_n_ = 0;
+  int drag_sample_i_ = 0;
   PathDropTarget* drop_target_ = nullptr;
   TrashFn on_trash_;
   PageFn on_page_;
