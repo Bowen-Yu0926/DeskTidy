@@ -185,6 +185,8 @@ void FenceWindow::SetItems(std::vector<DesktopItem> items) {
     cells_.push_back(std::move(cell));
   }
   scroll_y_ = 0;
+  selected_.assign(cells_.size(), 0);
+  selection_anchor_ = -1;
   LayoutCells();
   if (hwnd_) {
     InvalidateRect(hwnd_, nullptr, TRUE);
@@ -329,28 +331,144 @@ void FenceWindow::ShowItemProperties(int index) {
   ShowShellPathProperties(hwnd_, cells_[static_cast<size_t>(index)].item.path);
 }
 
+void FenceWindow::ClearSelection() {
+  std::fill(selected_.begin(), selected_.end(), static_cast<char>(0));
+  if (hwnd_) {
+    InvalidateRect(hwnd_, nullptr, FALSE);
+  }
+}
+
+void FenceWindow::SelectOnly(int index) {
+  if (selected_.size() != cells_.size()) {
+    selected_.assign(cells_.size(), 0);
+  }
+  std::fill(selected_.begin(), selected_.end(), static_cast<char>(0));
+  if (index >= 0 && index < static_cast<int>(selected_.size())) {
+    selected_[static_cast<size_t>(index)] = 1;
+    selection_anchor_ = index;
+  }
+  if (hwnd_) {
+    InvalidateRect(hwnd_, nullptr, FALSE);
+  }
+}
+
+void FenceWindow::ToggleSelected(int index) {
+  if (selected_.size() != cells_.size()) {
+    selected_.assign(cells_.size(), 0);
+  }
+  if (index < 0 || index >= static_cast<int>(selected_.size())) {
+    return;
+  }
+  selected_[static_cast<size_t>(index)] =
+      selected_[static_cast<size_t>(index)] ? 0 : 1;
+  selection_anchor_ = index;
+  if (hwnd_) {
+    InvalidateRect(hwnd_, nullptr, FALSE);
+  }
+}
+
+void FenceWindow::SelectRange(int index) {
+  if (selected_.size() != cells_.size()) {
+    selected_.assign(cells_.size(), 0);
+  }
+  if (index < 0 || index >= static_cast<int>(selected_.size())) {
+    return;
+  }
+  int a = selection_anchor_;
+  if (a < 0 || a >= static_cast<int>(selected_.size())) {
+    a = index;
+  }
+  const int lo = (std::min)(a, index);
+  const int hi = (std::max)(a, index);
+  std::fill(selected_.begin(), selected_.end(), static_cast<char>(0));
+  for (int i = lo; i <= hi; ++i) {
+    selected_[static_cast<size_t>(i)] = 1;
+  }
+  if (hwnd_) {
+    InvalidateRect(hwnd_, nullptr, FALSE);
+  }
+}
+
+bool FenceWindow::IsSelected(int index) const {
+  return index >= 0 && index < static_cast<int>(selected_.size()) &&
+         selected_[static_cast<size_t>(index)] != 0;
+}
+
+std::vector<std::wstring> FenceWindow::SelectedPaths() const {
+  std::vector<std::wstring> paths;
+  const size_t n = (std::min)(selected_.size(), cells_.size());
+  for (size_t i = 0; i < n; ++i) {
+    if (selected_[i]) {
+      paths.push_back(cells_[i].item.path);
+    }
+  }
+  return paths;
+}
+
+void FenceWindow::ApplySelectionCommand(int cmd, int clicked) {
+  if (clicked < 0 || clicked >= static_cast<int>(cells_.size())) {
+    return;
+  }
+  std::vector<std::wstring> paths;
+  if (IsSelected(clicked)) {
+    paths = SelectedPaths();
+  }
+  if (paths.empty()) {
+    paths.push_back(cells_[static_cast<size_t>(clicked)].item.path);
+  }
+  if (cmd == 3) {
+    for (const auto& p : paths) {
+      if (on_unpin_) {
+        on_unpin_(this, p);
+      }
+    }
+    return;
+  }
+  if (cmd == 4 || cmd == 5) {
+    if (ClipboardSetFiles(hwnd_, paths, cmd == 5)) {
+      ShowToast(cmd == 5 ? L"已剪切到剪贴板" : L"已复制到剪贴板");
+      InvalidateRect(hwnd_, nullptr, FALSE);
+    }
+    return;
+  }
+  if (cmd == 6) {
+    std::wstring text;
+    for (size_t i = 0; i < paths.size(); ++i) {
+      if (i) {
+        text += L"\r\n";
+      }
+      text += paths[i];
+    }
+    CopyShellPathText(hwnd_, text);
+    return;
+  }
+  if (cmd == 9 && RecycleShellPaths(hwnd_, paths) == IconFsResult::Ok) {
+    for (const auto& p : paths) {
+      if (on_unpin_) {
+        on_unpin_(this, p);
+      }
+    }
+  }
+}
+
 void FenceWindow::ShowIconMenu(int index, POINT screen) {
   if (index < 0 || index >= static_cast<int>(cells_.size())) {
     return;
   }
-  const std::wstring path = cells_[static_cast<size_t>(index)].item.path;
+  if (!IsSelected(index)) {
+    SelectOnly(index);
+  }
   const int cmd = TrackIconShellMenu(hwnd_, screen, true);
   if (cmd == 1) {
     OpenItem(index);
   } else if (cmd == 2) {
     RevealItem(index);
-  } else if (cmd == 3 && on_unpin_) {
-    on_unpin_(this, path);
-  } else if (cmd == 4 || cmd == 5) {
-    CopyOrCutShellPath(hwnd_, path, cmd == 5);
-  } else if (cmd == 6) {
-    CopyShellPathText(hwnd_, path);
+  } else if (cmd == 3 || cmd == 4 || cmd == 5 || cmd == 6 || cmd == 9) {
+    ApplySelectionCommand(cmd, index);
   } else if (cmd == 7) {
     RenameItem(index);
   } else if (cmd == 8) {
     ShowItemProperties(index);
-  } else if (cmd == 9) {
-    RecycleItem(index);
   }
 }
 
@@ -591,12 +709,23 @@ LRESULT FenceWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
         icon_press_ = false;
         icon_press_index_ = -1;
         if (HitTestIcon(x, y) == idx) {
-          OpenItem(idx);
+          const bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+          const bool shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+          if (ctrl) {
+            ToggleSelected(idx);
+          } else if (shift) {
+            SelectRange(idx);
+          } else {
+            SelectOnly(idx);
+          }
         }
         return 0;
       }
       if (dragging_) {
         dragging_ = false;
+        if (!drag_moved_) {
+          ClearSelection();
+        }
         if (drag_moved_) {
           RECT rc{};
           GetWindowRect(hwnd_, &rc);
@@ -688,16 +817,32 @@ void FenceWindow::Paint(HDC hdc) {
                            DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
   HGDIOBJ old_font = SelectObject(hdc, font);
 
-  for (const auto& cell : cells_) {
+  for (size_t i = 0; i < cells_.size(); ++i) {
+    const auto& cell = cells_[i];
     const RECT& b = cell.bounds;
     if (b.bottom < kHeaderH || b.top > rc.bottom) {
       continue;
     }
+    if (i < selected_.size() && selected_[i]) {
+      HPEN sp = CreatePen(PS_SOLID, 2, accent_);
+      HGDIOBJ op = SelectObject(hdc, sp);
+      HGDIOBJ ob = SelectObject(hdc, GetStockObject(NULL_BRUSH));
+      RoundRect(hdc, b.left + 2, b.top + 1, b.right - 2, b.bottom - 2, 10, 10);
+      SelectObject(hdc, op);
+      SelectObject(hdc, ob);
+      DeleteObject(sp);
+    }
     if (cell.icon) {
       const int ix = b.left + (kCellW - kIconSize) / 2;
       const int iy = b.top + 4;
-      DrawIconEx(hdc, ix, iy, cell.icon, kIconSize, kIconSize, 0, nullptr,
-                 DI_NORMAL);
+      if (ClipboardPathIsCut(cell.item.path)) {
+        DrawStateW(hdc, nullptr, nullptr,
+                   reinterpret_cast<LPARAM>(cell.icon), 0, ix, iy, kIconSize,
+                   kIconSize, DST_ICON | DSS_DISABLED);
+      } else {
+        DrawIconEx(hdc, ix, iy, cell.icon, kIconSize, kIconSize, 0, nullptr,
+                   DI_NORMAL);
+      }
     }
     RECT label = b;
     label.top = b.top + 4 + kIconSize + 2;

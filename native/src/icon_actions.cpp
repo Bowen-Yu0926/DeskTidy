@@ -83,6 +83,39 @@ bool ShowShellPathProperties(HWND owner, const std::wstring& path) {
   return true;
 }
 
+IconFsResult RecycleShellPaths(HWND owner,
+                              const std::vector<std::wstring>& paths) {
+  if (paths.empty()) {
+    return IconFsResult::Cancelled;
+  }
+  if (paths.size() == 1) {
+    return RecycleShellPath(owner, paths[0]);
+  }
+  const std::wstring prompt =
+      L"将选中的 " + std::to_wstring(paths.size()) + L" 项移到回收站？";
+  if (MessageBoxW(owner, prompt.c_str(), L"删除", MB_YESNO | MB_ICONQUESTION) !=
+      IDYES) {
+    return IconFsResult::Cancelled;
+  }
+  std::wstring from;
+  for (const auto& p : paths) {
+    from += p;
+    from.push_back(L'\0');
+  }
+  from.push_back(L'\0');
+  SHFILEOPSTRUCTW op{};
+  op.hwnd = owner;
+  op.wFunc = FO_DELETE;
+  op.pFrom = from.c_str();
+  op.fFlags = FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_SILENT;
+  const int rc = SHFileOperationW(&op);
+  if (rc != 0 || op.fAnyOperationsAborted) {
+    ShowToast(L"未能移到回收站");
+    return IconFsResult::Failed;
+  }
+  return IconFsResult::Ok;
+}
+
 IconFsResult RecycleShellPath(HWND owner, const std::wstring& path) {
   if (MessageBoxW(owner, L"将此项移到回收站？", L"删除",
                   MB_YESNO | MB_ICONQUESTION) != IDYES) {

@@ -83,6 +83,13 @@ class FenceWindow {
   void RecycleItem(int index);
   void ShowItemProperties(int index);
   void ShowFenceMenu(POINT screen);
+  void SelectOnly(int index);
+  void ToggleSelected(int index);
+  void SelectRange(int index);
+  void ClearSelection();
+  bool IsSelected(int index) const;
+  std::vector<std::wstring> SelectedPaths() const;
+  void ApplySelectionCommand(int cmd, int clicked);
   void ApplyStyle();
   void ClampScroll();
 
@@ -115,5 +122,7 @@ class FenceWindow {
   RenameFn on_rename_;
   StyleFn on_style_changed_;
   std::vector<Cell> cells_;
+  std::vector<char> selected_;
+  int selection_anchor_ = -1;
   PathDropTarget* drop_target_ = nullptr;
 };

@@ -73,6 +73,39 @@ bool ClipboardGetFiles(std::vector<std::wstring>* paths) {
   return !paths->empty();
 }
 
+bool ClipboardPathIsCut(const std::wstring& path) {
+  static DWORD cached_seq = 0xFFFFFFFF;
+  static std::vector<std::wstring> cached;
+  const DWORD seq = GetClipboardSequenceNumber();
+  if (seq != cached_seq) {
+    cached_seq = seq;
+    cached.clear();
+    std::vector<std::wstring> files;
+    if (ClipboardGetFiles(&files) && OpenClipboard(nullptr)) {
+      const UINT fmt = PreferredDropEffectFormat();
+      HANDLE data = fmt ? GetClipboardData(fmt) : nullptr;
+      DWORD effect = DROPEFFECT_COPY;
+      if (data) {
+        auto* pe = static_cast<DWORD*>(GlobalLock(data));
+        if (pe) {
+          effect = *pe;
+          GlobalUnlock(data);
+        }
+      }
+      CloseClipboard();
+      if (effect == DROPEFFECT_MOVE) {
+        cached = std::move(files);
+      }
+    }
+  }
+  for (const auto& p : cached) {
+    if (_wcsicmp(p.c_str(), path.c_str()) == 0) {
+      return true;
+    }
+  }
+  return false;
+}
+
 bool ClipboardSetText(HWND owner, const std::wstring& text) {
   if (!OpenClipboard(owner)) {
     return false;
