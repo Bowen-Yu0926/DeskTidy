@@ -19,6 +19,7 @@ class VaultWindow {
     std::wstring user;
     std::wstring pass;
     std::wstring url;
+    std::wstring note;
   };
 
   static LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
@@ -27,6 +28,8 @@ class VaultWindow {
   void Save();
   void RefreshList();
   void AddFromFields();
+  void UpdateSelected();
+  Entry ReadFields() const;
   void ExportBackup();
   void ImportBackup();
   void CloudLogin();
@@ -41,6 +44,7 @@ class VaultWindow {
   HWND edit_user_ = nullptr;
   HWND edit_pass_ = nullptr;
   HWND edit_url_ = nullptr;
+  HWND edit_note_ = nullptr;
   std::vector<Entry> entries_;
   std::wstring clip_secret_;
   UINT_PTR clip_timer_ = 0;

@@ -31,6 +31,8 @@ constexpr int kLogin = 5010;
 constexpr int kSync = 5011;
 constexpr int kGen = 5012;
 constexpr int kCopy = 5013;
+constexpr int kUpdate = 5014;
+constexpr int kNote = 5015;
 constexpr UINT_PTR kClipTimer = 70;
 
 std::wstring VaultPath() { return JoinPath(NativeDataDir(), L"vault.dpapi"); }
@@ -75,7 +77,7 @@ bool VaultWindow::Create(HINSTANCE instance) {
 
   hwnd_ = CreateWindowExW(WS_EX_APPWINDOW, kClass, L"账号保险库 (本地 DPAPI)",
                           WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, 560,
-                          540, nullptr, nullptr, instance, this);
+                          600, nullptr, nullptr, instance, this);
   if (!hwnd_) {
     return false;
   }
@@ -110,41 +112,51 @@ bool VaultWindow::Create(HINSTANCE instance) {
       WS_EX_CLIENTEDGE, L"EDIT", L"", WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL, 320,
       268, 200, 24, hwnd_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kUrl)),
       instance, nullptr);
+  CreateWindowW(L"STATIC", L"备注", WS_CHILD | WS_VISIBLE, 12, 308, 40, 20, hwnd_,
+                nullptr, instance, nullptr);
+  edit_note_ = CreateWindowExW(
+      WS_EX_CLIENTEDGE, L"EDIT", L"", WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL, 60,
+      306, 460, 24, hwnd_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kNote)),
+      instance, nullptr);
   CreateWindowW(L"BUTTON", L"添加", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 12,
-                320, 100, 30, hwnd_,
+                344, 100, 30, hwnd_,
                 reinterpret_cast<HMENU>(static_cast<INT_PTR>(kAdd)), instance,
                 nullptr);
-  CreateWindowW(L"BUTTON", L"删除选中", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 120,
-                320, 100, 30, hwnd_,
+  CreateWindowW(L"BUTTON", L"保存选中", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 120,
+                344, 100, 30, hwnd_,
+                reinterpret_cast<HMENU>(static_cast<INT_PTR>(kUpdate)), instance,
+                nullptr);
+  CreateWindowW(L"BUTTON", L"删除选中", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 230,
+                344, 100, 30, hwnd_,
                 reinterpret_cast<HMENU>(static_cast<INT_PTR>(kDel)), instance,
                 nullptr);
-  CreateWindowW(L"BUTTON", L"导出备份", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 240,
-                320, 100, 30, hwnd_,
+  CreateWindowW(L"BUTTON", L"导出备份", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 340,
+                344, 90, 30, hwnd_,
                 reinterpret_cast<HMENU>(static_cast<INT_PTR>(kExport)), instance,
                 nullptr);
-  CreateWindowW(L"BUTTON", L"导入备份", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 350,
-                320, 100, 30, hwnd_,
+  CreateWindowW(L"BUTTON", L"导入备份", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 440,
+                344, 90, 30, hwnd_,
                 reinterpret_cast<HMENU>(static_cast<INT_PTR>(kImport)), instance,
                 nullptr);
   CreateWindowW(L"BUTTON", L"云登录", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 12,
-                360, 100, 30, hwnd_,
+                384, 100, 30, hwnd_,
                 reinterpret_cast<HMENU>(static_cast<INT_PTR>(kLogin)), instance,
                 nullptr);
   CreateWindowW(L"BUTTON", L"云同步", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 120,
-                360, 100, 30, hwnd_,
+                384, 100, 30, hwnd_,
                 reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSync)), instance,
                 nullptr);
   CreateWindowW(L"BUTTON", L"生成密码", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 240,
-                360, 100, 30, hwnd_,
+                384, 100, 30, hwnd_,
                 reinterpret_cast<HMENU>(static_cast<INT_PTR>(kGen)), instance,
                 nullptr);
   CreateWindowW(L"BUTTON", L"复制密码", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 350,
-                360, 100, 30, hwnd_,
+                384, 100, 30, hwnd_,
                 reinterpret_cast<HMENU>(static_cast<INT_PTR>(kCopy)), instance,
                 nullptr);
   CreateWindowW(L"STATIC",
-                L"复制后约 30 秒自动清空剪贴板。本地 DPAPI + 可选云同步。",
-                WS_CHILD | WS_VISIBLE, 12, 410, 520, 40, hwnd_, nullptr,
+                L"备注仅存本地。复制密码约 30 秒后清空剪贴板。云同步不含备注。",
+                WS_CHILD | WS_VISIBLE, 12, 430, 520, 40, hwnd_, nullptr,
                 instance, nullptr);
   Load();
   RefreshList();
@@ -267,21 +279,54 @@ void VaultWindow::RefreshList() {
   SendMessageW(list_, LB_RESETCONTENT, 0, 0);
   for (const auto& e : entries_) {
     std::wstring line = e.title + L"  <" + e.user + L">";
+    if (!e.note.empty()) {
+      line += L"  · " + e.note;
+    }
     SendMessageW(list_, LB_ADDSTRING, 0, reinterpret_cast<LPARAM>(line.c_str()));
   }
 }
 
-void VaultWindow::AddFromFields() {
+namespace {
+
+std::wstring StripTabs(std::wstring s) {
+  for (wchar_t& c : s) {
+    if (c == L'\t' || c == L'\r' || c == L'\n') {
+      c = L' ';
+    }
+  }
+  return s;
+}
+
+}  // namespace
+
+VaultWindow::Entry VaultWindow::ReadFields() const {
   Entry e;
-  wchar_t buf[512] = {};
-  GetWindowTextW(edit_title_, buf, 512);
-  e.title = buf;
-  GetWindowTextW(edit_user_, buf, 512);
-  e.user = buf;
-  GetWindowTextW(edit_pass_, buf, 512);
-  e.pass = buf;
-  GetWindowTextW(edit_url_, buf, 512);
-  e.url = buf;
+  wchar_t buf[1024] = {};
+  if (edit_title_) {
+    GetWindowTextW(edit_title_, buf, 1024);
+    e.title = StripTabs(buf);
+  }
+  if (edit_user_) {
+    GetWindowTextW(edit_user_, buf, 1024);
+    e.user = StripTabs(buf);
+  }
+  if (edit_pass_) {
+    GetWindowTextW(edit_pass_, buf, 1024);
+    e.pass = StripTabs(buf);
+  }
+  if (edit_url_) {
+    GetWindowTextW(edit_url_, buf, 1024);
+    e.url = StripTabs(buf);
+  }
+  if (edit_note_) {
+    GetWindowTextW(edit_note_, buf, 1024);
+    e.note = StripTabs(buf);
+  }
+  return e;
+}
+
+void VaultWindow::AddFromFields() {
+  Entry e = ReadFields();
   if (e.title.empty()) {
     return;
   }
@@ -290,15 +335,35 @@ void VaultWindow::AddFromFields() {
   SetWindowTextW(edit_user_, L"");
   SetWindowTextW(edit_pass_, L"");
   SetWindowTextW(edit_url_, L"");
+  SetWindowTextW(edit_note_, L"");
   Save();
   RefreshList();
+}
+
+void VaultWindow::UpdateSelected() {
+  if (!list_) {
+    return;
+  }
+  const int sel = static_cast<int>(SendMessageW(list_, LB_GETCURSEL, 0, 0));
+  if (sel < 0 || sel >= static_cast<int>(entries_.size())) {
+    return;
+  }
+  Entry e = ReadFields();
+  if (e.title.empty()) {
+    return;
+  }
+  entries_[static_cast<size_t>(sel)] = std::move(e);
+  Save();
+  RefreshList();
+  SendMessageW(list_, LB_SETCURSEL, sel, 0);
 }
 
 void VaultWindow::Save() {
   std::ostringstream ss;
   for (const auto& e : entries_) {
     ss << NarrowUtf8(e.title) << '\t' << NarrowUtf8(e.user) << '\t'
-       << NarrowUtf8(e.pass) << '\t' << NarrowUtf8(e.url) << '\n';
+       << NarrowUtf8(e.pass) << '\t' << NarrowUtf8(e.url) << '\t'
+       << NarrowUtf8(e.note) << '\n';
   }
   std::vector<BYTE> enc;
   if (!ProtectBlob(ss.str(), &enc)) {
@@ -342,6 +407,9 @@ void VaultWindow::Load() {
     next(&e.user);
     next(&e.pass);
     next(&e.url);
+    if (p0 < line.size()) {
+      next(&e.note);
+    }
     entries_.push_back(std::move(e));
   }
 }
@@ -454,6 +522,7 @@ void VaultWindow::CloudSync() {
                   MB_OK | MB_ICONWARNING);
       return;
     }
+    std::vector<Entry> previous = entries_;
     entries_.clear();
     for (const auto& c : remote) {
       Entry e;
@@ -461,6 +530,12 @@ void VaultWindow::CloudSync() {
       e.user = c.username;
       e.pass = c.password;
       e.url = c.url;
+      for (const auto& old : previous) {
+        if (old.title == e.title && old.user == e.user) {
+          e.note = old.note;
+          break;
+        }
+      }
       entries_.push_back(std::move(e));
     }
     Save();
@@ -480,6 +555,7 @@ void VaultWindow::CloudSync() {
                 MB_OK | MB_ICONWARNING);
     return;
   }
+  std::vector<Entry> previous = entries_;
   entries_.clear();
   for (const auto& c : remote) {
     Entry e;
@@ -487,6 +563,12 @@ void VaultWindow::CloudSync() {
     e.user = c.username;
     e.pass = c.password;
     e.url = c.url;
+    for (const auto& old : previous) {
+      if (old.title == e.title && old.user == e.user) {
+        e.note = old.note;
+        break;
+      }
+    }
     entries_.push_back(std::move(e));
   }
   Save();
@@ -524,8 +606,25 @@ void VaultWindow::ImportBackup() {
 LRESULT VaultWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
   switch (msg) {
     case WM_COMMAND:
+      if (LOWORD(wparam) == kList && HIWORD(wparam) == LBN_SELCHANGE && list_) {
+        const int sel =
+            static_cast<int>(SendMessageW(list_, LB_GETCURSEL, 0, 0));
+        if (sel >= 0 && sel < static_cast<int>(entries_.size())) {
+          const auto& e = entries_[static_cast<size_t>(sel)];
+          SetWindowTextW(edit_title_, e.title.c_str());
+          SetWindowTextW(edit_user_, e.user.c_str());
+          SetWindowTextW(edit_pass_, e.pass.c_str());
+          SetWindowTextW(edit_url_, e.url.c_str());
+          SetWindowTextW(edit_note_, e.note.c_str());
+        }
+        return 0;
+      }
       if (LOWORD(wparam) == kAdd) {
         AddFromFields();
+        return 0;
+      }
+      if (LOWORD(wparam) == kUpdate) {
+        UpdateSelected();
         return 0;
       }
       if (LOWORD(wparam) == kDel && list_) {
