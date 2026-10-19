@@ -30,3 +30,5 @@ bool SaveAppState(const AppState& state);
 std::vector<FenceLayout> LoadLayouts();
 bool SaveLayouts(const std::vector<FenceLayout>& layouts);
 std::string MakeFenceId();
+// Clamp / rescue fences that are off-screen or tiny. Returns how many changed.
+int HealFenceLayouts(std::vector<FenceLayout>* fences);

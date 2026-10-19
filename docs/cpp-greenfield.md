@@ -66,6 +66,7 @@ Native Win32 host — feature MVP map vs Python product.
 | Organize kind rules (kind:image/doc/…) | done |
 | Update check 6h cache | done |
 | Vault local note field | done |
+| Display change layout heal | done |
 | DeskNote Toast UI / WebView editor | not ported |
 | Full Shimeji climb/ledge physics | not ported |
 

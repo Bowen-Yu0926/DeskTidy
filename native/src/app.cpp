@@ -3,6 +3,7 @@
 #include "autostart.h"
 #include "desktop_items.h"
 #include "desktop_shell.h"
+#include "display_geom.h"
 #include "first_run.h"
 #include "hotkey_help.h"
 #include "hotkey_store.h"
@@ -160,6 +161,7 @@ bool App::Init(HINSTANCE instance) {
   public_host_.Create(instance);
 
   prefs_ = LoadAppPrefs();
+  display_fp_ = DisplayFingerprint();
 
   const AppState state = LoadAppState();
   current_page_ = state.current_page;
@@ -407,7 +409,9 @@ void App::ReloadFencesFromState(const AppState& state) {
   current_page_ = state.current_page;
   dock_visible_ = state.dock_visible;
   pet_visible_ = state.pet_visible;
-  for (const auto& layout : state.fences) {
+  AppState healed = state;
+  HealFenceLayouts(&healed.fences);
+  for (const auto& layout : healed.fences) {
     SpawnFence(layout);
   }
   PersistLayouts();
@@ -416,6 +420,47 @@ void App::ReloadFencesFromState(const AppState& state) {
   ApplyPageVisibility();
   dock_.SetVisible(dock_visible_);
   pet_.SetVisible(pet_visible_);
+}
+
+void App::HealLayoutsNow(bool toast) {
+  std::vector<FenceLayout> layouts;
+  layouts.reserve(fences_.size());
+  for (auto& f : fences_) {
+    if (f) {
+      layouts.push_back(f->CurrentLayout());
+    }
+  }
+  const int n = HealFenceLayouts(&layouts);
+  if (n <= 0) {
+    if (toast) {
+      ShowToast(L"布局正常，无需修复");
+    }
+    return;
+  }
+  for (size_t i = 0; i < fences_.size() && i < layouts.size(); ++i) {
+    if (!fences_[i]) {
+      continue;
+    }
+    SetWindowPos(fences_[i]->Hwnd(), nullptr, layouts[i].x, layouts[i].y,
+                 layouts[i].w, layouts[i].h,
+                 SWP_NOZORDER | SWP_NOACTIVATE);
+  }
+  PersistLayouts();
+  if (toast) {
+    ShowToast(L"已修复 " + std::to_wstring(n) + L" 个分区位置");
+  }
+}
+
+void App::OnDisplayTopologyMaybeChanged() {
+  const std::string fp = DisplayFingerprint();
+  if (FingerprintIsTransient(fp) || fp == display_fp_) {
+    return;
+  }
+  display_fp_ = fp;
+  // Prefer profiles from disk for the new topology, then heal leftovers.
+  AppState state = LoadAppState();
+  ReloadFencesFromState(state);
+  ShowToast(L"显示器变化：已按配置恢复分区");
 }
 
 void App::OpenMinutes() {
@@ -851,6 +896,7 @@ LRESULT CALLBACK App::TrayWndProc(HWND hwnd, UINT msg, WPARAM wparam,
         return 0;
       }
       if (wparam == kTimerWatch) {
+        self->OnDisplayTopologyMaybeChanged();
         if (self->desktop_watch_.PollChanged()) {
           self->rules_ = LoadRules();
           if (self->prefs_.auto_organize_watch) {
@@ -903,6 +949,7 @@ LRESULT CALLBACK App::TrayWndProc(HWND hwnd, UINT msg, WPARAM wparam,
                     MF_STRING | (IsNativeAutostartEnabled() ? MF_CHECKED : 0),
                     24, L"开机启动");
         AppendMenuW(menu, MF_STRING, 25, L"恢复桌面层");
+        AppendMenuW(menu, MF_STRING, 36, L"修复分区布局");
         AppendMenuW(menu, MF_STRING, 26, Tr("hotkey_help").c_str());
         AppendMenuW(menu, MF_STRING, 27, Tr("edit_hotkeys").c_str());
         AppendMenuW(menu, MF_STRING, 28, Tr("fullscreen_shot").c_str());
@@ -997,6 +1044,9 @@ LRESULT CALLBACK App::TrayWndProc(HWND hwnd, UINT msg, WPARAM wparam,
             break;
           case 25:
             self->RestoreDesktopChrome();
+            break;
+          case 36:
+            self->HealLayoutsNow(true);
             break;
           case 26:
             self->ShowHotkeys();

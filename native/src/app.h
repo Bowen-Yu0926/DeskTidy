@@ -84,6 +84,8 @@ class App {
   void RebuildDockItems();
   void WireFence(FenceWindow* fence);
   void ReloadFencesFromState(const AppState& state);
+  void HealLayoutsNow(bool toast);
+  void OnDisplayTopologyMaybeChanged();
   void DispatchHotkey(const std::string& id);
 
   HINSTANCE instance_ = nullptr;
@@ -106,6 +108,7 @@ class App {
   std::vector<HotkeyDef> hotkeys_;
   DesktopWatch desktop_watch_;
   AppPrefs prefs_;
+  std::string display_fp_;
   int current_page_ = 0;
   bool dock_visible_ = true;
   bool pet_visible_ = true;

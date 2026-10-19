@@ -381,6 +381,7 @@ AppState LoadAppState() {
       }
     }
   }
+  HealFenceLayouts(&state.fences);
   return state;
 }
 
@@ -505,4 +506,43 @@ bool SaveLayouts(const std::vector<FenceLayout>& layouts) {
   AppState state = LoadAppState();
   state.fences = layouts;
   return SaveAppState(state);
+}
+
+int HealFenceLayouts(std::vector<FenceLayout>* fences) {
+  if (!fences || fences->empty()) {
+    return 0;
+  }
+  const RECT virt = VirtualScreenRect();
+  const RECT primary = PrimaryWorkArea();
+  int changed = 0;
+  int cascade = 0;
+  for (auto& f : *fences) {
+    FenceLayout before = f;
+    if (f.w < 120) {
+      f.w = 260;
+    }
+    if (f.h < 100) {
+      f.h = 280;
+    }
+    RECT rc{f.x, f.y, f.x + f.w, f.y + f.h};
+    const bool mostly_off =
+        rc.right < virt.left + 40 || rc.bottom < virt.top + 40 ||
+        rc.left > virt.right - 40 || rc.top > virt.bottom - 40;
+    if (mostly_off) {
+      f.x = primary.left + 40 + cascade * 28;
+      f.y = primary.top + 40 + cascade * 28;
+      ++cascade;
+    } else {
+      ClampRectToWorkArea(&rc);
+      f.x = rc.left;
+      f.y = rc.top;
+      f.w = rc.right - rc.left;
+      f.h = rc.bottom - rc.top;
+    }
+    if (f.x != before.x || f.y != before.y || f.w != before.w ||
+        f.h != before.h) {
+      ++changed;
+    }
+  }
+  return changed;
 }
