@@ -4,6 +4,7 @@
 #include "settings_window.h"
 
 #include <Windows.h>
+#include <shellapi.h>
 
 class App {
  public:

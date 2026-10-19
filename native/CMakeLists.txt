@@ -17,5 +17,5 @@ target_compile_definitions(desktidy_native PRIVATE UNICODE _UNICODE WIN32_LEAN_A
 target_link_libraries(desktidy_native PRIVATE user32 gdi32 shell32 ole32 comctl32)
 
 if(MSVC)
-  target_compile_options(desktidy_native PRIVATE /W4 /permissive-)
+  target_compile_options(desktidy_native PRIVATE /W4 /permissive- /utf-8)
 endif()

@@ -3,7 +3,7 @@
 #include <Windows.h>
 
 // Fences desktop-layer shell helpers (native).
-// Overlays are owned by the DefView host and stay DefView-adjacent —
+// Overlays are owned by the DefView host and stay DefView-adjacent -
 // never HWND_TOP of the non-topmost app band.
 
 struct DefViewHost {

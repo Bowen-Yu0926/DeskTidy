@@ -32,7 +32,7 @@ bool App::Init(HINSTANCE instance) {
   SetWindowLongPtrW(message_hwnd_, GWLP_USERDATA,
                     reinterpret_cast<LONG_PTR>(this));
 
-  // Register Ctrl+Shift+S → settings (MVP; avoids hunting a tray).
+  // Register Ctrl+Shift+S -> settings (MVP; avoids hunting a tray).
   RegisterHotKey(message_hwnd_, kHotkeySettings, MOD_CONTROL | MOD_SHIFT, 'S');
 
   const int screen_w = GetSystemMetrics(SM_CXSCREEN);
@@ -78,6 +78,7 @@ void App::OpenSettings() {
   SeatFenceUnderApps();
   settings_.Show();
 }
+
 
 void App::SeatFenceUnderApps() {
   HWND hwnd = fence_.Hwnd();

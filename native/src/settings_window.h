@@ -4,7 +4,7 @@
 
 #include <functional>
 
-// Normal APPWINDOW — must stay above Fences-layer overlays.
+// Normal APPWINDOW - must stay above Fences-layer overlays.
 class SettingsWindow {
  public:
   using ShowSettingsFn = std::function<void()>;

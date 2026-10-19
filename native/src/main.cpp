@@ -1,6 +1,7 @@
 #include "app.h"
 
 #include <Windows.h>
+#include <objbase.h>
 
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
   // COM for future shell/OLE work; MVP still benefits from STA.

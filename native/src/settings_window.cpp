@@ -30,13 +30,14 @@ bool SettingsWindow::Create(HINSTANCE instance) {
                 L"Fences desktop-layer MVP\r\n\r\n"
                 L"This settings window is a normal APPWINDOW.\r\n"
                 L"The fence overlay must stay underneath it.\r\n\r\n"
-                L"If the fence covers this window, Z-order is wrong.",
-                WS_CHILD | WS_VISIBLE, 24, 24, 360, 120, hwnd_, nullptr,
+                L"If the fence covers this window, Z-order is wrong.\r\n"
+                L"(Hotkey: Ctrl+Shift+S)",
+                WS_CHILD | WS_VISIBLE, 24, 24, 360, 140, hwnd_, nullptr,
                 instance, nullptr);
 
   button_ = CreateWindowW(L"BUTTON", L"Bring settings to front",
                           WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 24, 160, 200,
-                          32, hwnd_, reinterpret_cast<HMENU>(kBtnReassert),
+                          32, hwnd_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kBtnReassert)),
                           instance, nullptr);
   return true;
 }
