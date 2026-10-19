@@ -1,6 +1,7 @@
 #include "notes_window.h"
 
 #include "desktop_shell.h"
+#include "markdown_preview.h"
 #include "notes_library.h"
 #include "paths_util.h"
 
@@ -28,6 +29,7 @@ constexpr int kMenuBold = 2106;
 constexpr int kMenuItalic = 2107;
 constexpr int kMenuUnder = 2108;
 constexpr int kMenuLibrary = 2109;
+constexpr int kMenuPreview = 2110;
 
 struct StreamCookie {
   std::string data;
@@ -91,6 +93,7 @@ bool NotesWindow::Create(HINSTANCE instance) {
   AppendMenuW(file, MF_STRING, kMenuSave, L"保存");
   AppendMenuW(file, MF_STRING, kMenuSaveAs, L"另存为…");
   AppendMenuW(file, MF_STRING, kMenuLibrary, L"笔记库…");
+  AppendMenuW(file, MF_STRING, kMenuPreview, L"Markdown 预览");
   AppendMenuW(file, MF_SEPARATOR, 0, nullptr);
   AppendMenuW(file, MF_STRING, kMenuTpl, L"插入模板");
   AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(file), L"文件");
@@ -231,6 +234,33 @@ void NotesWindow::Save() {
   out << NarrowUtf8(wide);
 }
 
+std::wstring NotesWindow::CurrentPlainText() const {
+  if (!edit_) {
+    return {};
+  }
+  const int len = GetWindowTextLengthW(edit_);
+  std::wstring wide(static_cast<size_t>(len) + 1, L'\0');
+  GetWindowTextW(edit_, wide.data(), len + 1);
+  wide.resize(static_cast<size_t>(len));
+  return wide;
+}
+
+void NotesWindow::PreviewMarkdown() {
+  Save();
+  const bool is_md =
+      path_.size() >= 3 &&
+      (_wcsicmp(path_.c_str() + path_.size() - 3, L".md") == 0 ||
+       _wcsicmp(path_.c_str() + path_.size() - 4, L".txt") == 0 ||
+       (path_.size() >= 4 &&
+        _wcsicmp(path_.c_str() + path_.size() - 4, L".markdown") == 0));
+  if (is_md && path_.find(L".rtf") == std::wstring::npos) {
+    if (PreviewMarkdownFile(hwnd_, path_)) {
+      return;
+    }
+  }
+  PreviewMarkdownText(hwnd_, CurrentPlainText(), L"便签预览");
+}
+
 void NotesWindow::OpenLibrary() {
   Save();
   const std::wstring picked = PickNoteFromLibrary(hwnd_);
@@ -302,6 +332,9 @@ LRESULT NotesWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
           return 0;
         case kMenuLibrary:
           OpenLibrary();
+          return 0;
+        case kMenuPreview:
+          PreviewMarkdown();
           return 0;
         case kMenuBigger:
           SetFontSize(font_pt_ + 2);

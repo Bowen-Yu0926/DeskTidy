@@ -8,7 +8,7 @@
 #include <string>
 #include <vector>
 
-// Desktop-band pet. Optional pet.png beside exe / data dir; else drawn sprite.
+// Desktop-band pet with optional character/pose packs and light physics.
 class PetWindow {
  public:
   using TrashFn = std::function<void(const std::vector<std::wstring>&)>;
@@ -31,9 +31,15 @@ class PetWindow {
   void TryLoadSprite();
   void LoadFramePack();
   void LoadPosePacks();
+  void LoadCharacters();
+  void SetCharacter(const std::wstring& character);
   void SetPose(const std::wstring& pose);
   void ClearFrames();
-  void ShowPoseMenu(POINT screen);
+  void ShowContextMenu(POINT screen);
+  void StartFall();
+  void StartWalk();
+  void PersistPrefs();
+  void LoadPrefs();
 
   HWND hwnd_ = nullptr;
   int bob_ = 0;
@@ -47,8 +53,18 @@ class PetWindow {
   int sprite_h_ = 0;
   std::vector<HBITMAP> frames_;
   int frame_i_ = 0;
-  int dissolve_ = 0;  // 0..255 blend toward next frame
+  int dissolve_ = 0;
+  std::wstring character_ = L"default";
   std::wstring pose_ = L"idle";
+  std::vector<std::wstring> character_ids_;
   std::vector<std::wstring> pose_names_;
   std::vector<std::vector<std::wstring>> pose_files_;
+  // Physics
+  float vel_x_ = 0.f;
+  float vel_y_ = 0.f;
+  float pos_x_ = 0.f;
+  float pos_y_ = 0.f;
+  bool falling_ = false;
+  bool walking_ = false;
+  int walk_dir_ = 1;
 };

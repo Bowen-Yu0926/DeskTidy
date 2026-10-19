@@ -49,6 +49,7 @@ add_executable(desktidy_native WIN32
   src/shell_icons.cpp
   src/page_folders.cpp
   src/notes_library.cpp
+  src/markdown_preview.cpp
   src/version.rc
 )
 

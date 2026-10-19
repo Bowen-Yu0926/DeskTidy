@@ -39,8 +39,10 @@ Native Win32 host — feature MVP map vs Python product.
 | Notes library (multi file under notes\) | done |
 | Pet pose packs (idle/walk/sleep RMB) | done |
 | Settings tabs (分区/整理/工具) | done |
-| DeskNote Toast UI / WebView markdown | not ported |
-| Full pet physics / character catalog | not ported |
+| Markdown preview (browser HTML) | done |
+| Pet characters + walk/fall physics | done |
+| DeskNote Toast UI / WebView editor | not ported |
+| Full Shimeji climb/ledge physics | not ported |
 
 ## Build
 

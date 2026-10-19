@@ -20,8 +20,10 @@ class NotesWindow {
   void Save();
   void SaveAs();
   void OpenLibrary();
+  void PreviewMarkdown();
   void SetFontSize(int pt);
   void InsertTemplate();
+  std::wstring CurrentPlainText() const;
 
   HWND hwnd_ = nullptr;
   HWND edit_ = nullptr;

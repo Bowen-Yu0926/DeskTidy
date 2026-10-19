@@ -10,6 +10,8 @@
 #include <windowsx.h>
 
 #include <algorithm>
+#include <fstream>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -65,6 +67,93 @@ void PetWindow::ClearFrames() {
   dissolve_ = 0;
 }
 
+void PetWindow::LoadPrefs() {
+  std::ifstream in(JoinPath(NativeDataDir(), L"pet.json"));
+  if (!in) {
+    return;
+  }
+  std::ostringstream ss;
+  ss << in.rdbuf();
+  const std::string json = ss.str();
+  auto field = [&](const char* key) -> std::string {
+    const std::string needle = std::string("\"") + key + "\"";
+    size_t p = json.find(needle);
+    if (p == std::string::npos) {
+      return {};
+    }
+    p = json.find('"', json.find(':', p) + 1);
+    if (p == std::string::npos) {
+      return {};
+    }
+    ++p;
+    std::string v;
+    while (p < json.size() && json[p] != '"') {
+      if (json[p] == '\\' && p + 1 < json.size()) {
+        ++p;
+      }
+      v.push_back(json[p++]);
+    }
+    return v;
+  };
+  const std::string ch = field("character");
+  const std::string pose = field("pose");
+  if (!ch.empty()) {
+    character_ = WidenUtf8(ch);
+  }
+  if (!pose.empty()) {
+    pose_ = WidenUtf8(pose);
+  }
+}
+
+void PetWindow::PersistPrefs() {
+  std::ofstream out(JoinPath(NativeDataDir(), L"pet.json"), std::ios::binary);
+  if (!out) {
+    return;
+  }
+  out << "{\n  \"character\":\"" << NarrowUtf8(character_) << "\",\n  \"pose\":\""
+      << NarrowUtf8(pose_) << "\"\n}\n";
+}
+
+void PetWindow::LoadCharacters() {
+  character_ids_.clear();
+  const std::wstring roots[] = {
+      JoinPath(NativeDataDir(), L"pets"),
+      JoinPath(ExeDir(), L"pets"),
+      JoinPath(ExeDir(), L"assets\\pets"),
+  };
+  for (const auto& root : roots) {
+    WIN32_FIND_DATAW fd{};
+    HANDLE h = FindFirstFileW(JoinPath(root, L"*").c_str(), &fd);
+    if (h == INVALID_HANDLE_VALUE) {
+      continue;
+    }
+    do {
+      if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
+        continue;
+      }
+      if (fd.cFileName[0] == L'.') {
+        continue;
+      }
+      // Character dirs contain pose subdirs or pngs; skip known pose names.
+      const std::wstring name = fd.cFileName;
+      if (name == L"idle" || name == L"walk" || name == L"sleep" ||
+          name == L"wait" || name == L"play" || name == L"fall" ||
+          name == L"hold" || name == L"trash") {
+        continue;
+      }
+      character_ids_.push_back(name);
+    } while (FindNextFileW(h, &fd));
+    FindClose(h);
+    if (!character_ids_.empty()) {
+      break;
+    }
+  }
+  if (character_ids_.empty()) {
+    character_ids_.push_back(L"default");
+  }
+  std::sort(character_ids_.begin(), character_ids_.end());
+}
+
 void PetWindow::LoadPosePacks() {
   pose_names_.clear();
   pose_files_.clear();
@@ -73,32 +162,79 @@ void PetWindow::LoadPosePacks() {
       JoinPath(ExeDir(), L"pets"),
       JoinPath(ExeDir(), L"assets\\pets"),
   };
-  const wchar_t* poses[] = {L"idle", L"walk", L"sleep", L"wait", L"play"};
-  for (const auto& root : roots) {
-    for (const wchar_t* pose : poses) {
-      const std::wstring dir = JoinPath(root, pose);
-      std::vector<std::wstring> files;
-      WIN32_FIND_DATAW fd{};
-      HANDLE h = FindFirstFileW(JoinPath(dir, L"*.png").c_str(), &fd);
-      if (h == INVALID_HANDLE_VALUE) {
-        continue;
+  const wchar_t* poses[] = {L"idle", L"walk", L"sleep", L"wait", L"play",
+                            L"fall"};
+  auto scan_pose_dir = [&](const std::wstring& dir, const wchar_t* pose) {
+    std::vector<std::wstring> files;
+    WIN32_FIND_DATAW fd{};
+    HANDLE h = FindFirstFileW(JoinPath(dir, L"*.png").c_str(), &fd);
+    if (h == INVALID_HANDLE_VALUE) {
+      return;
+    }
+    do {
+      if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
+        files.push_back(JoinPath(dir, fd.cFileName));
       }
-      do {
-        if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
-          files.push_back(JoinPath(dir, fd.cFileName));
+    } while (FindNextFileW(h, &fd));
+    FindClose(h);
+    if (!files.empty()) {
+      std::sort(files.begin(), files.end());
+      pose_names_.push_back(pose);
+      pose_files_.push_back(std::move(files));
+    }
+  };
+  for (const auto& root : roots) {
+    // Prefer pets/<character>/<pose>/
+    if (character_ != L"default") {
+      const std::wstring char_root = JoinPath(root, character_);
+      for (const wchar_t* pose : poses) {
+        scan_pose_dir(JoinPath(char_root, pose), pose);
+      }
+      // Also pets/<character>_idle.png style
+      if (pose_names_.empty()) {
+        for (const wchar_t* pose : poses) {
+          const std::wstring pattern =
+              JoinPath(root, character_ + L"_" + pose + L"*.png");
+          WIN32_FIND_DATAW fd{};
+          HANDLE h = FindFirstFileW(pattern.c_str(), &fd);
+          if (h == INVALID_HANDLE_VALUE) {
+            continue;
+          }
+          std::vector<std::wstring> files;
+          do {
+            if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
+              files.push_back(JoinPath(root, fd.cFileName));
+            }
+          } while (FindNextFileW(h, &fd));
+          FindClose(h);
+          if (!files.empty()) {
+            std::sort(files.begin(), files.end());
+            pose_names_.push_back(pose);
+            pose_files_.push_back(std::move(files));
+          }
         }
-      } while (FindNextFileW(h, &fd));
-      FindClose(h);
-      if (files.size() >= 1) {
-        std::sort(files.begin(), files.end());
-        pose_names_.push_back(pose);
-        pose_files_.push_back(std::move(files));
       }
     }
     if (!pose_names_.empty()) {
       break;
     }
+    // Flat pets/<pose>/
+    for (const wchar_t* pose : poses) {
+      scan_pose_dir(JoinPath(root, pose), pose);
+    }
+    if (!pose_names_.empty()) {
+      break;
+    }
   }
+}
+
+void PetWindow::SetCharacter(const std::wstring& character) {
+  character_ = character;
+  LoadPosePacks();
+  if (!pose_names_.empty()) {
+    SetPose(pose_names_[0]);
+  }
+  PersistPrefs();
 }
 
 void PetWindow::SetPose(const std::wstring& pose) {
@@ -143,6 +279,7 @@ void PetWindow::SetPose(const std::wstring& pose) {
     }
   }
   Gdiplus::GdiplusShutdown(token);
+  PersistPrefs();
   if (hwnd_) {
     SetWindowPos(hwnd_, nullptr, 0, 0, sprite_w_, sprite_h_,
                  SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
@@ -151,9 +288,28 @@ void PetWindow::SetPose(const std::wstring& pose) {
 }
 
 void PetWindow::LoadFramePack() {
+  LoadPrefs();
+  LoadCharacters();
+  bool known = false;
+  for (const auto& id : character_ids_) {
+    if (id == character_) {
+      known = true;
+      break;
+    }
+  }
+  if (!known && !character_ids_.empty()) {
+    character_ = character_ids_[0];
+  }
   LoadPosePacks();
   if (!pose_names_.empty()) {
-    SetPose(pose_names_[0]);
+    bool pose_ok = false;
+    for (const auto& p : pose_names_) {
+      if (p == pose_) {
+        pose_ok = true;
+        break;
+      }
+    }
+    SetPose(pose_ok ? pose_ : pose_names_[0]);
     return;
   }
   // Flat pets\*.png fallback (no pose subdirs).
@@ -188,23 +344,81 @@ void PetWindow::LoadFramePack() {
   SetPose(L"idle");
 }
 
-void PetWindow::ShowPoseMenu(POINT screen) {
-  if (pose_names_.empty()) {
-    return;
+void PetWindow::StartWalk() {
+  walking_ = true;
+  falling_ = false;
+  vel_x_ = 2.5f * static_cast<float>(walk_dir_);
+  vel_y_ = 0.f;
+  if (std::find(pose_names_.begin(), pose_names_.end(), L"walk") !=
+      pose_names_.end()) {
+    SetPose(L"walk");
   }
+}
+
+void PetWindow::StartFall() {
+  falling_ = true;
+  walking_ = false;
+  vel_y_ = -2.f;
+  vel_x_ = 0.f;
+  RECT rc{};
+  GetWindowRect(hwnd_, &rc);
+  pos_x_ = static_cast<float>(rc.left);
+  pos_y_ = static_cast<float>(rc.top);
+  if (std::find(pose_names_.begin(), pose_names_.end(), L"fall") !=
+      pose_names_.end()) {
+    SetPose(L"fall");
+  }
+}
+
+void PetWindow::ShowContextMenu(POINT screen) {
   HMENU menu = CreatePopupMenu();
+  HMENU poses = CreatePopupMenu();
   for (size_t i = 0; i < pose_names_.size(); ++i) {
     const UINT flags =
         MF_STRING | (pose_ == pose_names_[i] ? MF_CHECKED : 0);
-    AppendMenuW(menu, flags, static_cast<UINT>(i + 1), pose_names_[i].c_str());
+    AppendMenuW(poses, flags, static_cast<UINT>(100 + i),
+                pose_names_[i].c_str());
   }
+  if (!pose_names_.empty()) {
+    AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(poses), L"姿态");
+  }
+  HMENU chars = CreatePopupMenu();
+  for (size_t i = 0; i < character_ids_.size(); ++i) {
+    const UINT flags =
+        MF_STRING | (character_ == character_ids_[i] ? MF_CHECKED : 0);
+    AppendMenuW(chars, flags, static_cast<UINT>(200 + i),
+                character_ids_[i].c_str());
+  }
+  if (!character_ids_.empty()) {
+    AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(chars), L"角色");
+  }
+  AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+  AppendMenuW(menu, MF_STRING, 1, L"走走");
+  AppendMenuW(menu, MF_STRING, 2, L"跌落");
+  AppendMenuW(menu, MF_STRING, 3, L"待机");
   SetForegroundWindow(hwnd_);
   const int cmd =
       TrackPopupMenu(menu, TPM_RETURNCMD | TPM_NONOTIFY, screen.x, screen.y, 0,
                      hwnd_, nullptr);
   DestroyMenu(menu);
-  if (cmd >= 1 && cmd <= static_cast<int>(pose_names_.size())) {
-    SetPose(pose_names_[static_cast<size_t>(cmd - 1)]);
+  if (cmd == 1) {
+    StartWalk();
+  } else if (cmd == 2) {
+    StartFall();
+  } else if (cmd == 3) {
+    walking_ = false;
+    falling_ = false;
+    if (!pose_names_.empty()) {
+      SetPose(L"idle");
+    }
+  } else if (cmd >= 100 &&
+             cmd < 100 + static_cast<int>(pose_names_.size())) {
+    walking_ = false;
+    falling_ = false;
+    SetPose(pose_names_[static_cast<size_t>(cmd - 100)]);
+  } else if (cmd >= 200 &&
+             cmd < 200 + static_cast<int>(character_ids_.size())) {
+    SetCharacter(character_ids_[static_cast<size_t>(cmd - 200)]);
   }
 }
 
@@ -219,15 +433,19 @@ bool PetWindow::Create(HINSTANCE instance) {
     RegisterClassExW(&wc);
     g_registered = true;
   }
+  LoadPrefs();
   TryLoadSprite();
+  LoadCharacters();
   LoadFramePack();
   const int ww = (sprite_ || !frames_.empty()) ? sprite_w_ : kSize;
   const int hh = (sprite_ || !frames_.empty()) ? sprite_h_ : kSize;
   const RECT work = PrimaryWorkArea();
   base_y_ = work.bottom - hh - 120;
+  pos_x_ = static_cast<float>(work.right - ww - 40);
+  pos_y_ = static_cast<float>(base_y_);
   hwnd_ = CreateWindowExW(
       WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_LAYERED, kClassName, L"Pet",
-      WS_POPUP, work.right - ww - 40, base_y_, ww, hh, nullptr, nullptr,
+      WS_POPUP, static_cast<int>(pos_x_), base_y_, ww, hh, nullptr, nullptr,
       instance, this);
   if (!hwnd_) {
     return false;
@@ -318,12 +536,54 @@ void PetWindow::Tick() {
     }
     InvalidateRect(hwnd_, nullptr, FALSE);
   }
+
+  const RECT work = PrimaryWorkArea();
+  const int ww = sprite_w_ > 0 ? sprite_w_ : kSize;
+  const int hh = sprite_h_ > 0 ? sprite_h_ : kSize;
+
+  if (falling_) {
+    vel_y_ += 0.55f;
+    pos_y_ += vel_y_;
+    pos_x_ += vel_x_;
+    if (pos_y_ >= static_cast<float>(base_y_)) {
+      pos_y_ = static_cast<float>(base_y_);
+      falling_ = false;
+      vel_y_ = 0.f;
+      if (std::find(pose_names_.begin(), pose_names_.end(), L"idle") !=
+          pose_names_.end()) {
+        SetPose(L"idle");
+      }
+    }
+    SetWindowPos(hwnd_, nullptr, static_cast<int>(pos_x_),
+                 static_cast<int>(pos_y_), 0, 0,
+                 SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+    return;
+  }
+
+  if (walking_) {
+    pos_x_ += vel_x_;
+    if (pos_x_ < static_cast<float>(work.left) ||
+        pos_x_ + static_cast<float>(ww) > static_cast<float>(work.right)) {
+      walk_dir_ = -walk_dir_;
+      vel_x_ = 2.5f * static_cast<float>(walk_dir_);
+      pos_x_ = (std::max)(static_cast<float>(work.left),
+                          (std::min)(pos_x_, static_cast<float>(work.right - ww)));
+    }
+    bob_ = (bob_ + 1) % 40;
+    const int dy = (bob_ < 20) ? (bob_ / 4) : ((40 - bob_) / 4);
+    SetWindowPos(hwnd_, nullptr, static_cast<int>(pos_x_), base_y_ - dy, 0, 0,
+                 SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+    return;
+  }
+
   bob_ = (bob_ + 1) % 40;
   const int dy = (bob_ < 20) ? (bob_ / 4) : ((40 - bob_) / 4);
   RECT rc{};
   GetWindowRect(hwnd_, &rc);
+  pos_x_ = static_cast<float>(rc.left);
   SetWindowPos(hwnd_, nullptr, rc.left, base_y_ - dy, 0, 0,
                SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+  (void)hh;
 }
 
 LRESULT CALLBACK PetWindow::WndProc(HWND hwnd, UINT msg, WPARAM wparam,
@@ -373,15 +633,23 @@ LRESULT PetWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
         base_y_ = pt.y - drag_offset_.y;
       }
       return 0;
-    case WM_LBUTTONUP:
+    case WM_LBUTTONUP: {
       dragging_ = false;
       ReleaseCapture();
+      RECT rc{};
+      GetWindowRect(hwnd_, &rc);
+      base_y_ = rc.top;
+      pos_x_ = static_cast<float>(rc.left);
+      pos_y_ = static_cast<float>(rc.top);
+      walking_ = false;
+      falling_ = false;
       AttachToDesktopLayer();
       return 0;
+    }
     case WM_RBUTTONUP: {
       POINT pt{GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
       ClientToScreen(hwnd_, &pt);
-      ShowPoseMenu(pt);
+      ShowContextMenu(pt);
       return 0;
     }
     case WM_DESTROY:
