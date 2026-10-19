@@ -56,6 +56,8 @@ Native Win32 host — feature MVP map vs Python product.
 | Calculator open-or-focus | done |
 | Shell file clipboard (copy/cut CF_HDROP) | done |
 | Product toast tip | done |
+| Multi-step first-run guide | done |
+| Page bar quick tools (notes/search/shot) | done |
 | DeskNote Toast UI / WebView editor | not ported |
 | Full Shimeji climb/ledge physics | not ported |
 

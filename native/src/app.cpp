@@ -148,6 +148,9 @@ bool App::Init(HINSTANCE instance) {
   });
   page_bar_.Create(instance);
   page_bar_.SetOnPage([this](int page) { SetPage(page); });
+  page_bar_.SetOnNotes([this]() { OpenNotes(); });
+  page_bar_.SetOnSearch([this]() { OpenSearch(); });
+  page_bar_.SetOnCapture([this]() { StartRegionCapture(); });
   public_host_.Create(instance);
 
   prefs_ = LoadAppPrefs();
