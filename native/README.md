@@ -25,7 +25,17 @@ build.bat
 ..\scripts\build_native_installer.bat
 ```
 
-Installer output: `dist\DeskTidyNative_Setup_<version>.exe`  
-Data: `%LOCALAPPDATA%\DeskTidyNative\`
+Installer outputs:
 
-Also: single-instance lock, Startup-folder autostart toggle in settings/tray.
+- `dist\DeskTidyNative_Setup_<version>.exe` — native-only
+- Main `DeskTidy.iss` task **native** — ship beside Python/Qt
+
+Cutover:
+
+```bat
+..\scripts\switch_startup_native.bat
+..\scripts\switch_startup_python.bat
+```
+
+Data: `%LOCALAPPDATA%\DeskTidyNative\`  
+Also: single-instance lock; Startup toggle in settings/tray.

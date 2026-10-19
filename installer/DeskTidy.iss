@@ -52,7 +52,7 @@ VersionInfoProductName=DeskTidy
 VersionInfoProductVersion={#MyAppVersion}
 ; Close / terminate DeskTidy before replacing or removing files.
 CloseApplications=yes
-CloseApplicationsFilter=DeskTidy.exe,deskNote.exe
+CloseApplicationsFilter=DeskTidy.exe,deskNote.exe,desktidy_native.exe
 
 [Languages]
 Name: "chinesesimplified"; MessagesFile: "languages\ChineseSimplified.isl"
@@ -60,7 +60,9 @@ Name: "chinesesimplified"; MessagesFile: "languages\ChineseSimplified.isl"
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: checkedonce
 Name: "desknote"; Description: "创建 DeskNote 快捷方式（桌面 + 开始菜单）"; GroupDescription: "{cm:AdditionalIcons}"; Flags: checkedonce
-Name: "startup"; Description: "开机自动启动 {#MyAppName}"; GroupDescription: "启动选项:"; Flags: unchecked
+Name: "native"; Description: "安装 DeskTidy Native 桌面层 (C++ / Fences 架构)"; GroupDescription: "桌面层:"; Flags: checkedonce
+Name: "startup"; Description: "开机自动启动 {#MyAppName} (Python/Qt 完整版)"; GroupDescription: "启动选项:"; Flags: unchecked
+Name: "startupnative"; Description: "开机自动启动 DeskTidy Native（桌面层 cutover）"; GroupDescription: "启动选项:"; Flags: unchecked
 
 [Files]
 ; Onedir payload (DeskTidy.exe + deskNote.exe + Qt runtime).
@@ -69,15 +71,21 @@ Name: "startup"; Description: "开机自动启动 {#MyAppName}"; GroupDescriptio
 Source: "{#SourceDir}\dist\DeskTidy\*"; DestDir: "{app}"; Excludes: "logs\*,笔记\*,录屏\*,纪要\*,邮件\*"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#SourceDir}\assets\fd\fd.exe"; DestDir: "{app}\assets\fd"; Flags: ignoreversion nocompression
 Source: "{#SourceDir}\config\default_settings.json"; DestDir: "{app}\config"; Flags: ignoreversion onlyifdoesntexist
+; Optional C++ greenfield host (built by scripts\build_installer.bat / native\build.bat).
+Source: "{#SourceDir}\native\build\Release\desktidy_native.exe"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist; Tasks: native
+Source: "{#SourceDir}\docs\cpp-greenfield.md"; DestDir: "{app}\docs"; Flags: ignoreversion skipifsourcedoesntexist; Tasks: native
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
+Name: "{group}\DeskTidy Native"; Filename: "{app}\desktidy_native.exe"; Comment: "C++ 桌面层"; Tasks: native
 Name: "{group}\DeskNote"; Filename: "{app}\deskNote.exe"; IconFilename: "{app}\deskNote.exe"; Comment: "DeskNote 记事本"; Tasks: desknote
 Name: "{group}\卸载 {#MyAppName}"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
+Name: "{autodesktop}\DeskTidy Native"; Filename: "{app}\desktidy_native.exe"; Tasks: desktopicon and native
 Name: "{autodesktop}\DeskNote"; Filename: "{app}\deskNote.exe"; IconFilename: "{app}\deskNote.exe"; Comment: "DeskNote 记事本"; Tasks: desknote
 ; 使用启动文件夹快捷方式，避免写入 Run 注册表时被安全软件拦截（错误码 5）
 Name: "{userstartup}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: startup
+Name: "{userstartup}\DeskTidy Native"; Filename: "{app}\desktidy_native.exe"; Tasks: startupnative
 
 [Registry]
 ; Explorer desktop background menu (runtime-registered; purge on uninstall).
@@ -98,6 +106,7 @@ Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Explorer\StartupA
 ; Runtime-created Startup shortcuts (installer task + legacy desktop-guard cleanup).
 Type: files; Name: "{userstartup}\{#MyAppName}.lnk"
 Type: files; Name: "{userstartup}\{#MyAppName}-桌面守护.lnk"
+Type: files; Name: "{userstartup}\DeskTidy Native.lnk"
 Type: files; Name: "{userstartup}\Desktidy.lnk"
 Type: files; Name: "{userstartup}\Desktidy-桌面守护.lnk"
 ; Legacy Chinese product name shortcuts from older installs.

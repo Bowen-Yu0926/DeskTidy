@@ -1,41 +1,49 @@
 # C++ greenfield (`feat/cpp-greenfield`)
 
 Route **A**: rewrite DeskTidy as a native Win32 app with a Fences-class
-desktop layer. Python/PyQt on `main` remains the full-product install until
-you deliberately cut over.
+desktop layer. Python/PyQt remains the full-product host; native is the
+desktop-layer cutover track.
 
 ## Status
 
 | Capability | Status |
 |------------|--------|
-| DefView desktop band (never overlay `HWND_TOP`) | done |
-| Multi-fence + resize + scroll + context menus | done |
-| Icon grid + OLE drag/drop + multi-file HDROP | done |
-| Pin store + extension rules (`rules.json`) | done |
-| Pages + page bar + Win+D settle timer | done |
-| Desktop folder watch auto-refresh | done |
-| Organize virtual/physical | done |
-| Dock / pet / sticky notes | done |
-| Settings + autostart + single-instance | done |
-| Native standalone installer | done (`DeskTidyNative.iss`) |
-| Retire Python from default product install | **pending** (manual cutover) |
+| Native desktop layer (fences/OLE/pages/dock/pet/notes) | done |
+| Standalone native installer | done (`DeskTidyNative.iss`) |
+| Bundled into main `DeskTidy.iss` (task **native**) | done |
+| Startup switch scripts | done |
+| Retire Python host entirely | **pending** (explicit product decision) |
 
-## Build / run
+## Build / run / package
 
 ```bat
-cd native
-build.bat
-..\scripts\run_native.bat
-..\scripts\selftest_native.bat
-..\scripts\build_native_installer.bat
+native\build.bat
+scripts\run_native.bat
+scripts\selftest_native.bat
+scripts\build_native_installer.bat   :: dist\DeskTidyNative_Setup_*.exe
+scripts\build_installer.bat          :: also builds native unless DESKTIDY_SKIP_NATIVE=1
 ```
 
-Outputs:
+Cutover helpers:
 
-- `native\build\Release\desktidy_native.exe`
-- `dist\DeskTidyNative_Setup_<version>.exe` (native-only package)
+```bat
+scripts\switch_startup_native.bat    :: Startup folder -> desktidy_native.exe
+scripts\switch_startup_python.bat    :: Startup folder -> DeskTidy.exe
+```
 
-Data: `%LOCALAPPDATA%\DeskTidyNative\`
+## Installer tasks (main package)
+
+| Task | Meaning |
+|------|---------|
+| `native` | Ship `desktidy_native.exe` + Start Menu entry (checkedonce) |
+| `startup` | Autostart Python/Qt `DeskTidy.exe` |
+| `startupnative` | Autostart Native desktop layer |
+
+Do not enable both `startup` and `startupnative` unless you intentionally want both.
+
+## Data
+
+`%LOCALAPPDATA%\DeskTidyNative\` — `layout.json`, `pins.json`, `rules.json`, `notes.txt`
 
 ## Hotkeys
 
@@ -45,9 +53,8 @@ Data: `%LOCALAPPDATA%\DeskTidyNative\`
 | Ctrl+Shift+N | Sticky notes |
 | Ctrl+Alt+1 / 2 | Page switch |
 
-## Cutover notes
+## Remaining to fully retire Python
 
-1. Ship/test `DeskTidyNative_Setup_*.exe` beside the Python installer.  
-2. When daily use is OK, change product shortcuts/startup to native.  
-3. Keep Python package only for vault/recording/DeskNote until those are ported or dropped.  
-4. Do **not** delete the Python host from `main` until that decision is explicit.
+Vault / screen record / DeskNote full editor / pet asset packs / Explorer
+background verbs — still Python-only. Keep `DeskTidy.exe` until those are
+ported or consciously dropped.

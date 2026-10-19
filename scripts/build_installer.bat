@@ -37,6 +37,23 @@ if errorlevel 1 (
 )
 
 echo.
+echo [2b/4] Building DeskTidy Native (optional bundle)...
+if /I "%DESKTIDY_SKIP_NATIVE%"=="1" (
+    echo Skipping native build ^(DESKTIDY_SKIP_NATIVE=1^).
+) else (
+    if exist "native\build.bat" (
+        call native\build.bat
+        if errorlevel 1 (
+            echo WARNING: native build failed; installer will omit desktidy_native.exe if missing.
+        ) else (
+            echo Native exe ready for Inno task "native".
+        )
+    ) else (
+        echo No native\build.bat — skipping.
+    )
+)
+
+echo.
 echo [3/4] Looking for Inno Setup Compiler ...
 
 set ISCC=
