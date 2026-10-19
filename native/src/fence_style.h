@@ -10,8 +10,10 @@ struct FenceStylePreset {
   const wchar_t* name;
   COLORREF background;
   COLORREF accent;
-  COLORREF title;
-  BYTE alpha;  // 0-255 layered alpha
+  COLORREF title;   // title + caption ink
+  BYTE alpha;       // panel fill alpha 0-255 (wallpaper shows through)
+  int radius;       // corner radius (px @ 96 DPI)
+  bool light;       // light panel → dark ink / darker border
 };
 
 const FenceStylePreset* FenceStyleById(const std::string& id);

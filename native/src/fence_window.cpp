@@ -9,18 +9,24 @@
 
 #include <ShlObj.h>
 #include <Shellapi.h>
+#include <objidl.h>
+#include <gdiplus.h>
 #include <windowsx.h>
 
 #include <algorithm>
 #include <cstdlib>
+#include <cstring>
+#include <vector>
+
+#pragma comment(lib, "gdiplus.lib")
 
 namespace {
 constexpr wchar_t kClassName[] = L"DeskTidyNativeFence";
-constexpr int kHeaderH0 = 36;
+constexpr int kHeaderH0 = 32;
 constexpr int kPad0 = 10;
-constexpr int kCellW0 = 92;
-constexpr int kCellH0 = 104;
-constexpr int kIconSize0 = 48;
+constexpr int kCellW0 = 84;
+constexpr int kCellH0 = 96;
+constexpr int kIconSize0 = 40;  // match Python FenceIconItem.DEFAULT_ICON_SIZE
 constexpr int kDragThreshold = 6;
 constexpr int kEdge = 8;
 bool g_class_registered = false;
@@ -50,10 +56,104 @@ void FenceWindow::ApplyStyle() {
   bg_ = preset->background;
   accent_ = preset->accent;
   title_color_ = preset->title;
+  caption_color_ = preset->title;
+  panel_alpha_ = preset->alpha;
+  radius_ = preset->radius;
+  light_panel_ = preset->light;
   if (hwnd_) {
-    SetLayeredWindowAttributes(hwnd_, 0, preset->alpha, LWA_ALPHA);
-    InvalidateRect(hwnd_, nullptr, TRUE);
+    // Full window opacity: panel translucency is painted per-pixel so icons stay sharp.
+    SetLayeredWindowAttributes(hwnd_, 0, 255, LWA_ALPHA);
+    PresentLayered();
   }
+}
+
+void FenceWindow::PresentLayered() {
+  if (!hwnd_) {
+    return;
+  }
+  RECT wr{};
+  GetWindowRect(hwnd_, &wr);
+  const int w = (std::max)(1, static_cast<int>(wr.right - wr.left));
+  const int h = (std::max)(1, static_cast<int>(wr.bottom - wr.top));
+
+  static ULONG_PTR gdi_token = 0;
+  if (!gdi_token) {
+    Gdiplus::GdiplusStartupInput input;
+    Gdiplus::GdiplusStartup(&gdi_token, &input, nullptr);
+  }
+
+  BITMAPINFO bmi{};
+  bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+  bmi.bmiHeader.biWidth = w;
+  bmi.bmiHeader.biHeight = -h;
+  bmi.bmiHeader.biPlanes = 1;
+  bmi.bmiHeader.biBitCount = 32;
+  bmi.bmiHeader.biCompression = BI_RGB;
+  void* bits = nullptr;
+  HDC screen = GetDC(nullptr);
+  HDC mem = CreateCompatibleDC(screen);
+  HBITMAP dib = CreateDIBSection(screen, &bmi, DIB_RGB_COLORS, &bits, nullptr, 0);
+  if (!dib || !bits) {
+    if (dib) {
+      DeleteObject(dib);
+    }
+    DeleteDC(mem);
+    ReleaseDC(nullptr, screen);
+    return;
+  }
+  HGDIOBJ old = SelectObject(mem, dib);
+  std::memset(bits, 0, static_cast<size_t>(w) * static_cast<size_t>(h) * 4);
+
+  const int radius = (std::max)(0, S(hwnd_, radius_));
+  Gdiplus::Graphics g(mem);
+  g.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+  g.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHalf);
+  const BYTE a = panel_alpha_;
+  const BYTE pr = static_cast<BYTE>((a * GetRValue(bg_)) / 255);
+  const BYTE pg = static_cast<BYTE>((a * GetGValue(bg_)) / 255);
+  const BYTE pb = static_cast<BYTE>((a * GetBValue(bg_)) / 255);
+  Gdiplus::SolidBrush fill(Gdiplus::Color(a, pr, pg, pb));
+  Gdiplus::GraphicsPath path;
+  const int rr = radius * 2;
+  const int rw = (std::max)(1, w - 1);
+  const int rh = (std::max)(1, h - 1);
+  if (rr > 2 && rr < rw && rr < rh) {
+    path.AddArc(0, 0, rr, rr, 180, 90);
+    path.AddArc(rw - rr, 0, rr, rr, 270, 90);
+    path.AddArc(rw - rr, rh - rr, rr, rr, 0, 90);
+    path.AddArc(0, rh - rr, rr, rr, 90, 90);
+    path.CloseFigure();
+    g.FillPath(&fill, &path);
+  } else {
+    g.FillRectangle(&fill, 0, 0, rw, rh);
+  }
+  COLORREF border = light_panel_ ? RGB(15, 23, 42) : RGB(255, 255, 255);
+  const BYTE ba = light_panel_ ? 48 : 40;
+  Gdiplus::Pen edge(Gdiplus::Color(ba, GetRValue(border), GetGValue(border),
+                                   GetBValue(border)),
+                    1.0f);
+  if (rr > 2 && rr < rw && rr < rh) {
+    g.DrawPath(&edge, &path);
+  } else {
+    g.DrawRectangle(&edge, 0, 0, rw - 1, rh - 1);
+  }
+
+  Paint(mem);
+
+  POINT origin{wr.left, wr.top};
+  SIZE size{w, h};
+  POINT src{0, 0};
+  BLENDFUNCTION blend{};
+  blend.BlendOp = AC_SRC_OVER;
+  blend.SourceConstantAlpha = 255;
+  blend.AlphaFormat = AC_SRC_ALPHA;
+  UpdateLayeredWindow(hwnd_, screen, &origin, &size, mem, &src, 0, &blend,
+                      ULW_ALPHA);
+
+  SelectObject(mem, old);
+  DeleteObject(dib);
+  DeleteDC(mem);
+  ReleaseDC(nullptr, screen);
 }
 
 void FenceWindow::SetStyleId(const std::string& style_id) {
@@ -151,7 +251,7 @@ void FenceWindow::SetTitle(const std::wstring& title) {
   title_ = title;
   if (hwnd_) {
     SetWindowTextW(hwnd_, title_.c_str());
-    InvalidateRect(hwnd_, nullptr, TRUE);
+    PresentLayered();
   }
 }
 
@@ -179,6 +279,7 @@ void FenceWindow::Show() {
   }
   ShowWindow(hwnd_, SW_SHOWNOACTIVATE);
   AttachToDesktopLayer();
+  PresentLayered();
 }
 
 void FenceWindow::Hide() {
@@ -210,7 +311,7 @@ void FenceWindow::SetItems(std::vector<DesktopItem> items) {
   selection_anchor_ = -1;
   LayoutCells();
   if (hwnd_) {
-    InvalidateRect(hwnd_, nullptr, TRUE);
+    PresentLayered();
   }
 }
 
@@ -366,7 +467,7 @@ void FenceWindow::ShowItemProperties(int index) {
 void FenceWindow::ClearSelection() {
   std::fill(selected_.begin(), selected_.end(), static_cast<char>(0));
   if (hwnd_) {
-    InvalidateRect(hwnd_, nullptr, FALSE);
+    PresentLayered();
   }
 }
 
@@ -380,7 +481,7 @@ void FenceWindow::SelectOnly(int index) {
     selection_anchor_ = index;
   }
   if (hwnd_) {
-    InvalidateRect(hwnd_, nullptr, FALSE);
+    PresentLayered();
   }
 }
 
@@ -395,7 +496,7 @@ void FenceWindow::ToggleSelected(int index) {
       selected_[static_cast<size_t>(index)] ? 0 : 1;
   selection_anchor_ = index;
   if (hwnd_) {
-    InvalidateRect(hwnd_, nullptr, FALSE);
+    PresentLayered();
   }
 }
 
@@ -417,7 +518,7 @@ void FenceWindow::SelectRange(int index) {
     selected_[static_cast<size_t>(i)] = 1;
   }
   if (hwnd_) {
-    InvalidateRect(hwnd_, nullptr, FALSE);
+    PresentLayered();
   }
 }
 
@@ -459,7 +560,7 @@ void FenceWindow::ApplySelectionCommand(int cmd, int clicked) {
   if (cmd == 4 || cmd == 5) {
     if (ClipboardSetFiles(hwnd_, paths, cmd == 5)) {
       ShowToast(cmd == 5 ? L"已剪切到剪贴板" : L"已复制到剪贴板");
-      InvalidateRect(hwnd_, nullptr, FALSE);
+      PresentLayered();
     }
     return;
   }
@@ -520,7 +621,7 @@ void FenceWindow::CutSelection() {
   const auto paths = SelectedPaths();
   if (!paths.empty() && ClipboardSetFiles(hwnd_, paths, true)) {
     ShowToast(L"已剪切到剪贴板");
-    InvalidateRect(hwnd_, nullptr, FALSE);
+    PresentLayered();
   }
 }
 
@@ -547,7 +648,7 @@ void FenceWindow::SelectAll() {
   if (!cells_.empty()) {
     selection_anchor_ = 0;
   }
-  InvalidateRect(hwnd_, nullptr, FALSE);
+  PresentLayered();
 }
 
 namespace {
@@ -763,14 +864,16 @@ LRESULT FenceWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
   switch (msg) {
     case WM_PAINT: {
       PAINTSTRUCT ps{};
-      HDC hdc = BeginPaint(hwnd_, &ps);
-      Paint(hdc);
+      BeginPaint(hwnd_, &ps);
       EndPaint(hwnd_, &ps);
+      PresentLayered();
       return 0;
     }
+    case WM_ERASEBKGND:
+      return 1;
     case WM_SIZE:
       LayoutCells();
-      InvalidateRect(hwnd_, nullptr, TRUE);
+      PresentLayered();
       return 0;
     case WM_KEYDOWN:
       if (wparam == 'V' && (GetKeyState(VK_CONTROL) & 0x8000)) {
@@ -783,7 +886,7 @@ LRESULT FenceWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
       scroll_y_ -= delta / 2;
       ClampScroll();
       LayoutCells();
-      InvalidateRect(hwnd_, nullptr, TRUE);
+      PresentLayered();
       return 0;
     }
     case WM_SETCURSOR: {
@@ -901,7 +1004,7 @@ LRESULT FenceWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
       }
       if (rubber_ && (wparam & MK_LBUTTON)) {
         rubber_b_ = {GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
-        InvalidateRect(hwnd_, nullptr, FALSE);
+        PresentLayered();
         return 0;
       }
       if (icon_press_ && (wparam & MK_LBUTTON)) {
@@ -946,7 +1049,7 @@ LRESULT FenceWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
             selection_anchor_ = static_cast<int>(i);
           }
         }
-        InvalidateRect(hwnd_, nullptr, FALSE);
+        PresentLayered();
         return 0;
       }
       if (resizing_) {
@@ -1038,43 +1141,29 @@ LRESULT FenceWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
 void FenceWindow::Paint(HDC hdc) {
   RECT rc{};
   GetClientRect(hwnd_, &rc);
-  HBRUSH bg = CreateSolidBrush(bg_);
-  FillRect(hdc, &rc, bg);
-  DeleteObject(bg);
-
-  HPEN pen = CreatePen(PS_SOLID, 1, accent_);
-  HGDIOBJ old_pen = SelectObject(hdc, pen);
-  HGDIOBJ old_brush = SelectObject(hdc, GetStockObject(NULL_BRUSH));
-  RoundRect(hdc, rc.left, rc.top, rc.right, rc.bottom, 16, 16);
-  SelectObject(hdc, old_pen);
-  SelectObject(hdc, old_brush);
-  DeleteObject(pen);
 
   const int header = S(hwnd_, kHeaderH0);
   const int pad = S(hwnd_, kPad0);
   const int cell_w = S(hwnd_, kCellW0);
   const int icon = S(hwnd_, kIconSize0);
-  const int font_px = S(hwnd_, 13);
-
-  // Accent bar under title.
-  RECT bar = rc;
-  bar.top = header - 3;
-  bar.bottom = header - 1;
-  bar.left += 12;
-  bar.right -= 12;
-  HBRUSH accent_br = CreateSolidBrush(accent_);
-  FillRect(hdc, &bar, accent_br);
-  DeleteObject(accent_br);
+  const int font_px = S(hwnd_, 12);
+  const int title_px = S(hwnd_, 15);
 
   SetBkMode(hdc, TRANSPARENT);
   SetTextColor(hdc, title_color_);
+  HFONT title_font =
+      CreateFontW(-title_px, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
+                  DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                  CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE,
+                  L"Microsoft YaHei UI");
+  HGDIOBJ old_title = SelectObject(hdc, title_font);
   RECT title_rc = rc;
-  title_rc.top += S(hwnd_, 8);
-  title_rc.bottom = title_rc.top + S(hwnd_, 24);
-  wchar_t title_buf[256];
-  swprintf_s(title_buf, L"%s  · p%d", title_.c_str(), page_ + 1);
-  DrawTextW(hdc, title_buf, -1, &title_rc,
+  title_rc.top += S(hwnd_, 6);
+  title_rc.bottom = title_rc.top + title_px + 4;
+  DrawTextW(hdc, title_.c_str(), -1, &title_rc,
             DT_CENTER | DT_TOP | DT_SINGLELINE | DT_END_ELLIPSIS);
+  SelectObject(hdc, old_title);
+  DeleteObject(title_font);
 
   const int view = (std::max)(0, static_cast<int>(rc.bottom) - header - pad);
   if (content_h_ > view && view > 0) {
@@ -1098,8 +1187,9 @@ void FenceWindow::Paint(HDC hdc) {
   HFONT font = CreateFontW(-font_px, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
                            DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
                            CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
-                           DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+                           DEFAULT_PITCH | FF_DONTCARE, L"Microsoft YaHei UI");
   HGDIOBJ old_font = SelectObject(hdc, font);
+  SetTextColor(hdc, caption_color_);
 
   for (size_t i = 0; i < cells_.size(); ++i) {
     const auto& cell = cells_[i];

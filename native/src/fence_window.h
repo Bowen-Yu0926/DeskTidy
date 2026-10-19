@@ -85,6 +85,7 @@ class FenceWindow {
   static LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
   LRESULT HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam);
   void Paint(HDC hdc);
+  void PresentLayered();
   void LayoutCells();
   int HitTestIcon(int x, int y) const;
   Edge HitTestEdge(int x, int y) const;
@@ -125,7 +126,11 @@ class FenceWindow {
   std::string style_id_ = "charcoal";
   COLORREF bg_ = RGB(42, 46, 53);
   COLORREF accent_ = RGB(76, 141, 255);
-  COLORREF title_color_ = RGB(220, 224, 230);
+  COLORREF title_color_ = RGB(255, 255, 255);
+  COLORREF caption_color_ = RGB(255, 255, 255);
+  BYTE panel_alpha_ = 178;
+  int radius_ = 8;
+  bool light_panel_ = false;
   int page_ = 0;
   MovedFn on_moved_;
   PathsFn on_paths_dropped_;
