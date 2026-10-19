@@ -225,6 +225,16 @@ void App::DispatchHotkey(const std::string& id) {
     OpenSearch();
   } else if (id == "shot") {
     StartRegionCapture();
+  } else if (id == "fullscreen") {
+    CaptureRegionToPng(settings_.Hwnd());
+  } else if (id == "record") {
+    StartScreenRecord(settings_.Hwnd());
+  } else if (id == "organize") {
+    OrganizeVirtual(true);
+  } else if (id == "vault") {
+    OpenVault();
+  } else if (id == "todos") {
+    OpenTodos();
   }
 }
 
@@ -694,8 +704,10 @@ void App::EditRules() {
                 SW_SHOWNORMAL);
   MessageBoxW(settings_.Hwnd(),
               L"已用记事本打开 rules.json。\n"
+              L"键：扩展名（如 .pdf）或文件名通配（如 Invoice*、name:报告*.docx）。\n"
+              L"值：分区 id（如 system_common）。\n"
               L"保存后点托盘「刷新桌面图标」或等待自动监视生效。",
-              L"扩展名规则", MB_OK | MB_ICONINFORMATION);
+              L"整理规则", MB_OK | MB_ICONINFORMATION);
 }
 
 void App::AddFence() {

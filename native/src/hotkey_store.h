@@ -6,7 +6,8 @@
 #include <vector>
 
 struct HotkeyDef {
-  std::string id;  // settings, notes, peek, fences, page1, page2, search, shot
+  std::string id;  // settings, notes, peek, fences, page1/2, search, shot,
+                   // fullscreen, record, organize, vault, todos
   std::wstring label;
   UINT modifiers = 0;
   UINT vk = 0;

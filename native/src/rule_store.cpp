@@ -187,6 +187,51 @@ bool SaveRules(const RuleMap& rules) {
   return true;
 }
 
+namespace {
+
+std::wstring BaseNameOf(const std::wstring& path) {
+  const size_t slash = path.find_last_of(L"\\/");
+  if (slash == std::wstring::npos) {
+    return path;
+  }
+  return path.substr(slash + 1);
+}
+
+bool MatchNameGlob(const std::wstring& name, const std::wstring& pattern) {
+  if (pattern.empty()) {
+    return false;
+  }
+  if (pattern.find(L'*') == std::wstring::npos) {
+    return _wcsicmp(name.c_str(), pattern.c_str()) == 0;
+  }
+  const size_t star = pattern.find(L'*');
+  const std::wstring pre = pattern.substr(0, star);
+  const std::wstring suf = pattern.substr(star + 1);
+  if (name.size() < pre.size() + suf.size()) {
+    return false;
+  }
+  if (_wcsnicmp(name.c_str(), pre.c_str(), pre.size()) != 0) {
+    return false;
+  }
+  if (suf.empty()) {
+    return true;
+  }
+  return _wcsicmp(name.c_str() + (name.size() - suf.size()), suf.c_str()) == 0;
+}
+
+bool LooksLikeNamePattern(const std::wstring& key) {
+  if (key.rfind(L"name:", 0) == 0) {
+    return true;
+  }
+  if (key.find(L'*') != std::wstring::npos) {
+    return true;
+  }
+  // Pure extensions are ".pdf" / ".lnk" / "*", not name patterns.
+  return false;
+}
+
+}  // namespace
+
 std::string ResolveFenceId(const std::wstring& path, bool is_link,
                            const std::unordered_map<std::wstring, std::string>& pins,
                            const RuleMap& rules,
@@ -195,6 +240,19 @@ std::string ResolveFenceId(const std::wstring& path, bool is_link,
   const auto pit = pins.find(NormalizePinKey(path));
   if (pit != pins.end()) {
     return pit->second;
+  }
+  const std::wstring name = BaseNameOf(path);
+  for (const auto& kv : rules) {
+    if (!LooksLikeNamePattern(kv.first)) {
+      continue;
+    }
+    std::wstring pat = kv.first;
+    if (pat.rfind(L"name:", 0) == 0) {
+      pat = pat.substr(5);
+    }
+    if (MatchNameGlob(name, pat)) {
+      return kv.second;
+    }
   }
   const std::wstring ext = is_link ? L".lnk" : ExtOf(path);
   auto rit = rules.find(ext);

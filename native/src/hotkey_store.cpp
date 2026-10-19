@@ -157,6 +157,11 @@ std::vector<HotkeyDef> DefaultHotkeys() {
       {"page2", L"第 2 页", MOD_CONTROL | MOD_ALT, '2'},
       {"search", L"文件搜索", MOD_CONTROL | MOD_ALT, '4'},
       {"shot", L"区域截图", MOD_CONTROL | MOD_SHIFT, '1'},
+      {"fullscreen", L"全屏截图", MOD_CONTROL | MOD_SHIFT, '2'},
+      {"record", L"录屏开/关", MOD_CONTROL | MOD_SHIFT, 'R'},
+      {"organize", L"虚拟整理", MOD_CONTROL | MOD_SHIFT, 'O'},
+      {"vault", L"保险库", MOD_CONTROL | MOD_SHIFT, 'V'},
+      {"todos", L"待办", MOD_CONTROL | MOD_SHIFT, 'T'},
   };
 }
 

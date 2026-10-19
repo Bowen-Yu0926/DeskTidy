@@ -50,6 +50,9 @@ Native Win32 host — feature MVP map vs Python product.
 | Region capture click-to-window | done |
 | Notes library text search | done |
 | Vault password generate + clipboard clear | done |
+| Hotkeys: record / fullscreen / organize / vault / todos | done |
+| Snapshot preview before apply/delete | done |
+| Rules filename globs (`Invoice*` / `name:…`) | done |
 | DeskNote Toast UI / WebView editor | not ported |
 | Full Shimeji climb/ledge physics | not ported |
 
@@ -71,6 +74,11 @@ scripts\build_native_installer.bat
 | Ctrl+Space | Peek |
 | Ctrl+Alt+1/2 | Page |
 | Ctrl+Shift+1 | Region capture |
+| Ctrl+Shift+2 | Fullscreen capture |
+| Ctrl+Shift+R | Record toggle |
+| Ctrl+Shift+O | Virtual organize |
+| Ctrl+Shift+V | Vault |
+| Ctrl+Shift+T | Todos |
 | Ctrl+Alt+4 | Search |
 
 Config under `%LocalAppData%\DeskTidyNative\`: `layout.json`, `hotkeys.json`, `whitelist.json`, `wallpaper.json`, `minutes.json`, `todos.txt`, `app_prefs.json`, `snapshots\`.
