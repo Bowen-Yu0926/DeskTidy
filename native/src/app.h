@@ -87,6 +87,7 @@ class App {
   void RemoveTrayIcon();
   bool SpawnFence(const FenceLayout& layout);
   void ApplyPageVisibility();
+  void ApplyChromeTheme();
   void OnPathsDropped(FenceWindow* fence, const std::vector<std::wstring>& paths);
   void RebuildDockItems();
   void WireFence(FenceWindow* fence);

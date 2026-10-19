@@ -29,6 +29,13 @@ class NotesWindow {
   void ExportMarkdown();
   void ExportHtml();
   void FindAgain(bool down);
+  void ToggleOutline();
+  void RebuildOutline();
+  void JumpToOutline();
+  void ToggleFocus();
+  void ToggleTypewriter();
+  void CenterCaret();
+  void LayoutClient();
   void ExportWithPandoc();
   void OpenWithShell();
   void PasteHtmlAsMarkdown();
@@ -43,6 +50,8 @@ class NotesWindow {
 
   HWND hwnd_ = nullptr;
   HWND edit_ = nullptr;
+  HWND outline_list_ = nullptr;
+  HMENU menu_ = nullptr;
   HFONT font_ = nullptr;
   int font_pt_ = 15;
   std::wstring path_;
@@ -53,6 +62,9 @@ class NotesWindow {
   UINT find_msg_ = 0;
   bool toast_ = false;
   bool wysiwyg_ = false;
+  bool outline_ = false;
+  bool focus_ = false;
+  bool typewriter_ = false;
   NotesWebView web_;
   WNDPROC edit_proc_ = nullptr;
 };

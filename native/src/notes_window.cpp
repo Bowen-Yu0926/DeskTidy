@@ -43,6 +43,10 @@ constexpr int kMenuWysiwyg = 2119;
 constexpr int kMenuFindNext = 2120;
 constexpr int kMenuFindPrev = 2121;
 constexpr int kMenuExportHtml = 2122;
+constexpr int kMenuOutline = 2123;
+constexpr int kMenuFocus = 2124;
+constexpr int kMenuTypewriter = 2125;
+constexpr int kOutlineId = 2002;
 
 struct StreamCookie {
   std::string data;
@@ -127,12 +131,17 @@ bool NotesWindow::Create(HINSTANCE instance) {
   HMENU view = CreatePopupMenu();
   AppendMenuW(view, MF_STRING, kMenuBigger, L"放大字体");
   AppendMenuW(view, MF_STRING, kMenuSmaller, L"缩小字体");
+  AppendMenuW(view, MF_SEPARATOR, 0, nullptr);
+  AppendMenuW(view, MF_STRING, kMenuOutline, L"标题大纲");
+  AppendMenuW(view, MF_STRING, kMenuFocus, L"专注模式");
+  AppendMenuW(view, MF_STRING, kMenuTypewriter, L"打字机滚动");
   AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(view), L"视图");
   HMENU fmt = CreatePopupMenu();
   AppendMenuW(fmt, MF_STRING, kMenuBold, L"粗体");
   AppendMenuW(fmt, MF_STRING, kMenuItalic, L"斜体");
   AppendMenuW(fmt, MF_STRING, kMenuUnder, L"下划线");
   AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(fmt), L"格式");
+  menu_ = menu;
   SetMenu(hwnd_, menu);
   find_msg_ = RegisterWindowMessageW(FINDMSGSTRING);
 
@@ -158,8 +167,17 @@ bool NotesWindow::Create(HINSTANCE instance) {
       edit_, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(NotesWindow::EditProc)));
   SendMessageW(edit_, EM_SETBKGNDCOLOR, 0, RGB(255, 244, 170));
   SetFontSize(font_pt_);
+  outline_list_ = CreateWindowExW(
+      WS_EX_CLIENTEDGE, L"LISTBOX", L"",
+      WS_CHILD | WS_VSCROLL | LBS_NOTIFY | LBS_NOINTEGRALHEIGHT, 6, 6, 140, 220,
+      hwnd_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kOutlineId)), instance,
+      nullptr);
+  if (outline_list_) {
+    ShowWindow(outline_list_, SW_HIDE);
+  }
   web_.Create(hwnd_);
   Load();
+  LayoutClient();
   return true;
 }
 
@@ -556,6 +574,7 @@ void NotesWindow::ToggleWysiwyg() {
     }
     SetWindowTextW(hwnd_, toast_ ? L"便签条" : L"便签");
   }
+  LayoutClient();
 }
 
 void NotesWindow::SearchLibrary() {
@@ -610,6 +629,173 @@ void NotesWindow::FindAgain(bool down) {
   fr.Flags = (down ? FR_DOWN : 0) | (find_.Flags & (FR_MATCHCASE | FR_WHOLEWORD));
   fr.lpstrFindWhat = find_what_;
   HandleFindMsg(&fr);
+}
+
+void NotesWindow::LayoutClient() {
+  if (!hwnd_ || !edit_) {
+    return;
+  }
+  RECT rc{};
+  GetClientRect(hwnd_, &rc);
+  int left = 6;
+  int top = 6;
+  int right = rc.right - 6;
+  int bottom = rc.bottom - 6;
+  if (outline_ && outline_list_ && !wysiwyg_) {
+    const int side = 150;
+    MoveWindow(outline_list_, 6, 6, side, bottom - top, TRUE);
+    ShowWindow(outline_list_, SW_SHOW);
+    left = 6 + side + 6;
+  } else if (outline_list_) {
+    ShowWindow(outline_list_, SW_HIDE);
+  }
+  if (focus_ && !wysiwyg_) {
+    const int pad_x =
+        (std::max)(24, (static_cast<int>(rc.right) - 520) / 2);
+    left = (std::max)(left, pad_x);
+    right = static_cast<int>(rc.right) - pad_x;
+    top = (std::max)(top, 28);
+    bottom = static_cast<int>(rc.bottom) - 28;
+  }
+  if (wysiwyg_) {
+    web_.Resize();
+  } else {
+    MoveWindow(edit_, left, top, (std::max)(40, right - left),
+               (std::max)(40, bottom - top), TRUE);
+  }
+}
+
+void NotesWindow::RebuildOutline() {
+  if (!outline_list_ || !edit_) {
+    return;
+  }
+  SendMessageW(outline_list_, LB_RESETCONTENT, 0, 0);
+  const std::wstring text = CurrentPlainText();
+  int line = 0;
+  size_t i = 0;
+  while (i <= text.size()) {
+    size_t end = text.find(L'\n', i);
+    if (end == std::wstring::npos) {
+      end = text.size();
+    }
+    std::wstring raw = text.substr(i, end - i);
+    while (!raw.empty() && raw.back() == L'\r') {
+      raw.pop_back();
+    }
+    int level = 0;
+    while (level < 6 && level < static_cast<int>(raw.size()) &&
+           raw[static_cast<size_t>(level)] == L'#') {
+      ++level;
+    }
+    if (level > 0 && static_cast<size_t>(level) < raw.size() &&
+        raw[static_cast<size_t>(level)] == L' ') {
+      std::wstring title(level, L' ');
+      title += raw.substr(static_cast<size_t>(level + 1));
+      const int idx = static_cast<int>(SendMessageW(
+          outline_list_, LB_ADDSTRING, 0,
+          reinterpret_cast<LPARAM>(title.c_str())));
+      if (idx >= 0) {
+        SendMessageW(outline_list_, LB_SETITEMDATA, idx, line);
+      }
+    }
+    ++line;
+    if (end >= text.size()) {
+      break;
+    }
+    i = end + 1;
+  }
+}
+
+void NotesWindow::JumpToOutline() {
+  if (!outline_list_ || !edit_) {
+    return;
+  }
+  const int sel =
+      static_cast<int>(SendMessageW(outline_list_, LB_GETCURSEL, 0, 0));
+  if (sel < 0) {
+    return;
+  }
+  const int line = static_cast<int>(
+      SendMessageW(outline_list_, LB_GETITEMDATA, sel, 0));
+  const LRESULT index =
+      SendMessageW(edit_, EM_LINEINDEX, static_cast<WPARAM>(line), 0);
+  if (index < 0) {
+    return;
+  }
+  CHARRANGE cr{};
+  cr.cpMin = static_cast<LONG>(index);
+  cr.cpMax = static_cast<LONG>(index);
+  SendMessageW(edit_, EM_EXSETSEL, 0, reinterpret_cast<LPARAM>(&cr));
+  SendMessageW(edit_, EM_SCROLLCARET, 0, 0);
+  if (typewriter_) {
+    CenterCaret();
+  }
+  SetFocus(edit_);
+}
+
+void NotesWindow::ToggleOutline() {
+  outline_ = !outline_;
+  if (menu_) {
+    CheckMenuItem(menu_, kMenuOutline,
+                  MF_BYCOMMAND | (outline_ ? MF_CHECKED : MF_UNCHECKED));
+  }
+  if (outline_) {
+    RebuildOutline();
+  }
+  LayoutClient();
+}
+
+void NotesWindow::ToggleFocus() {
+  focus_ = !focus_;
+  if (menu_) {
+    CheckMenuItem(menu_, kMenuFocus,
+                  MF_BYCOMMAND | (focus_ ? MF_CHECKED : MF_UNCHECKED));
+  }
+  LayoutClient();
+}
+
+void NotesWindow::ToggleTypewriter() {
+  typewriter_ = !typewriter_;
+  if (menu_) {
+    CheckMenuItem(menu_, kMenuTypewriter,
+                  MF_BYCOMMAND | (typewriter_ ? MF_CHECKED : MF_UNCHECKED));
+  }
+  if (typewriter_) {
+    CenterCaret();
+  }
+}
+
+void NotesWindow::CenterCaret() {
+  if (!edit_) {
+    return;
+  }
+  CHARRANGE sel{};
+  SendMessageW(edit_, EM_EXGETSEL, 0, reinterpret_cast<LPARAM>(&sel));
+  const LRESULT line =
+      SendMessageW(edit_, EM_LINEFROMCHAR, static_cast<WPARAM>(sel.cpMin), 0);
+  RECT rc{};
+  GetClientRect(edit_, &rc);
+  TEXTMETRICW tm{};
+  HDC hdc = GetDC(edit_);
+  HFONT old = nullptr;
+  if (font_) {
+    old = static_cast<HFONT>(SelectObject(hdc, font_));
+  }
+  GetTextMetricsW(hdc, &tm);
+  if (old) {
+    SelectObject(hdc, old);
+  }
+  ReleaseDC(edit_, hdc);
+  const int visible =
+      (std::max)(1, (static_cast<int>(rc.bottom - rc.top)) /
+                        (std::max)(1, static_cast<int>(tm.tmHeight)));
+  const int first = static_cast<int>(
+      SendMessageW(edit_, EM_GETFIRSTVISIBLELINE, 0, 0));
+  const int target = static_cast<int>(line) - visible / 2;
+  const int delta = target - first;
+  if (delta != 0) {
+    SendMessageW(edit_, EM_LINESCROLL, 0, delta);
+  }
 }
 
 void NotesWindow::ShowFind(bool replace) {
@@ -730,10 +916,17 @@ LRESULT CALLBACK NotesWindow::EditProc(HWND hwnd, UINT msg, WPARAM wparam,
       return 0;
     }
   }
+  LRESULT result = 0;
   if (self && self->edit_proc_) {
-    return CallWindowProcW(self->edit_proc_, hwnd, msg, wparam, lparam);
+    result = CallWindowProcW(self->edit_proc_, hwnd, msg, wparam, lparam);
+  } else {
+    result = DefWindowProcW(hwnd, msg, wparam, lparam);
   }
-  return DefWindowProcW(hwnd, msg, wparam, lparam);
+  if (self && self->typewriter_ &&
+      (msg == WM_CHAR || msg == WM_KEYDOWN || msg == WM_KEYUP)) {
+    self->CenterCaret();
+  }
+  return result;
 }
 
 LRESULT CALLBACK NotesWindow::WndProc(HWND hwnd, UINT msg, WPARAM wparam,
@@ -818,6 +1011,15 @@ LRESULT NotesWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
             SetFontSize(font_pt_ - 2);
           }
           return 0;
+        case kMenuOutline:
+          ToggleOutline();
+          return 0;
+        case kMenuFocus:
+          ToggleFocus();
+          return 0;
+        case kMenuTypewriter:
+          ToggleTypewriter();
+          return 0;
         case kMenuTpl:
           InsertTemplate();
           return 0;
@@ -833,15 +1035,13 @@ LRESULT NotesWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
         default:
           break;
       }
+      if (LOWORD(wparam) == kOutlineId && HIWORD(wparam) == LBN_SELCHANGE) {
+        JumpToOutline();
+        return 0;
+      }
       break;
     case WM_SIZE:
-      if (wysiwyg_) {
-        web_.Resize();
-      } else if (edit_) {
-        RECT rc{};
-        GetClientRect(hwnd_, &rc);
-        MoveWindow(edit_, 6, 6, rc.right - 12, rc.bottom - 12, TRUE);
-      }
+      LayoutClient();
       return 0;
     case WM_CLOSE:
       SyncFromWysiwyg();

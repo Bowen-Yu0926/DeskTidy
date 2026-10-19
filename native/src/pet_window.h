@@ -12,6 +12,7 @@
 class PetWindow {
  public:
   using TrashFn = std::function<void(const std::vector<std::wstring>&)>;
+  using PageFn = std::function<void(int)>;
 
   bool Create(HINSTANCE instance);
   void Destroy();
@@ -23,6 +24,8 @@ class PetWindow {
   void Tick();
   void StartClimb();
   void SetOnTrash(TrashFn fn) { on_trash_ = std::move(fn); }
+  void SetOnPage(PageFn fn) { on_page_ = std::move(fn); }
+  void SetPages(const std::vector<std::wstring>& names, int current);
 
  private:
   static LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
@@ -40,8 +43,12 @@ class PetWindow {
   void StartFall();
   void StartWalk();
   void CreateBuoy(HINSTANCE instance);
+  void CreatePages(HINSTANCE instance);
+  void PlacePages();
   static LRESULT CALLBACK BuoyProc(HWND, UINT, WPARAM, LPARAM);
+  static LRESULT CALLBACK PagesProc(HWND, UINT, WPARAM, LPARAM);
   void PaintBuoy(HDC hdc);
+  void PaintPages(HDC hdc);
   void PersistPrefs();
   void LoadPrefs();
 
@@ -52,6 +59,9 @@ class PetWindow {
   POINT drag_offset_{};
   PathDropTarget* drop_target_ = nullptr;
   TrashFn on_trash_;
+  PageFn on_page_;
+  std::vector<std::wstring> page_names_;
+  int current_page_ = 0;
   HBITMAP sprite_ = nullptr;
   int sprite_w_ = 0;
   int sprite_h_ = 0;
@@ -79,4 +89,5 @@ class PetWindow {
   int climb_cooldown_ = 0;
   int walk_dir_ = 1;
   HWND buoy_ = nullptr;
+  HWND pages_ = nullptr;
 };

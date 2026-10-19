@@ -17,6 +17,7 @@ class PageBar {
   HWND Hwnd() const { return hwnd_; }
   void SetPage(int page);
   void SetPageCount(int count);
+  void ApplyStyle(COLORREF background, COLORREF accent, COLORREF title);
   void SetOnPage(PageFn fn) { on_page_ = std::move(fn); }
   void SetOnAddPage(VoidFn fn) { on_add_page_ = std::move(fn); }
   void SetOnRemovePage(VoidFn fn) { on_remove_page_ = std::move(fn); }
@@ -35,6 +36,9 @@ class PageBar {
   HWND hwnd_ = nullptr;
   int page_ = 0;
   int page_count_ = 2;
+  COLORREF bg_ = RGB(24, 26, 32);
+  COLORREF accent_ = RGB(70, 130, 200);
+  COLORREF title_ = RGB(230, 230, 230);
   PageFn on_page_;
   VoidFn on_add_page_;
   VoidFn on_remove_page_;

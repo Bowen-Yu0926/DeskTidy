@@ -68,6 +68,16 @@ void PageBar::SetPage(int page) {
   }
 }
 
+void PageBar::ApplyStyle(COLORREF background, COLORREF accent,
+                          COLORREF title) {
+  bg_ = background;
+  accent_ = accent;
+  title_ = title;
+  if (hwnd_) {
+    InvalidateRect(hwnd_, nullptr, FALSE);
+  }
+}
+
 void PageBar::SetPageCount(int count) {
   if (count < 1) {
     count = 1;
@@ -173,7 +183,7 @@ LRESULT PageBar::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
 void PageBar::Paint(HDC hdc) {
   RECT rc{};
   GetClientRect(hwnd_, &rc);
-  HBRUSH bg = CreateSolidBrush(RGB(24, 26, 32));
+  HBRUSH bg = CreateSolidBrush(bg_);
   FillRect(hdc, &rc, bg);
   DeleteObject(bg);
   SetBkMode(hdc, TRANSPARENT);
@@ -182,7 +192,7 @@ void PageBar::Paint(HDC hdc) {
   for (int i = 0; i < n; ++i) {
     RECT r{i * kSlot + 3, 4, (i + 1) * kSlot - 3, rc.bottom - 4};
     const bool on = i < page_count_ && page_ == i;
-    HBRUSH b = CreateSolidBrush(on ? RGB(70, 130, 200) : RGB(45, 50, 60));
+    HBRUSH b = CreateSolidBrush(on ? accent_ : RGB(45, 50, 60));
     FillRect(hdc, &r, b);
     DeleteObject(b);
     wchar_t label[8] = L"?";
@@ -199,7 +209,7 @@ void PageBar::Paint(HDC hdc) {
     } else {
       wcscpy_s(label, L"截");
     }
-    SetTextColor(hdc, RGB(230, 230, 230));
+    SetTextColor(hdc, title_);
     DrawTextW(hdc, label, -1, &r, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
   }
   (void)rc;

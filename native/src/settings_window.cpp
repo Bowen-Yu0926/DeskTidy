@@ -237,10 +237,30 @@ void SettingsWindow::ShowTab(int index) {
   vis(btn_help_, tools);
 }
 
+void SettingsWindow::ApplyStyle(COLORREF background, COLORREF accent,
+                                COLORREF title) {
+  bg_ = background;
+  accent_ = accent;
+  text_ = title;
+  if (brush_) {
+    DeleteObject(brush_);
+    brush_ = nullptr;
+  }
+  brush_ = CreateSolidBrush(bg_);
+  if (hwnd_) {
+    InvalidateRect(hwnd_, nullptr, TRUE);
+  }
+  (void)accent_;
+}
+
 void SettingsWindow::Destroy() {
   if (hwnd_) {
     DestroyWindow(hwnd_);
     hwnd_ = nullptr;
+  }
+  if (brush_) {
+    DeleteObject(brush_);
+    brush_ = nullptr;
   }
 }
 
@@ -514,6 +534,21 @@ LRESULT SettingsWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
         return 0;
       }
       break;
+    }
+    case WM_ERASEBKGND: {
+      HDC hdc = reinterpret_cast<HDC>(wparam);
+      RECT rc{};
+      GetClientRect(hwnd_, &rc);
+      HBRUSH br = brush_ ? brush_ : reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
+      FillRect(hdc, &rc, br);
+      return 1;
+    }
+    case WM_CTLCOLORSTATIC: {
+      HDC hdc = reinterpret_cast<HDC>(wparam);
+      SetTextColor(hdc, text_);
+      SetBkColor(hdc, bg_);
+      return reinterpret_cast<LRESULT>(brush_ ? brush_
+                                             : GetStockObject(NULL_BRUSH));
     }
     case WM_CLOSE:
       Hide();

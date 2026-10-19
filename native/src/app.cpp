@@ -170,6 +170,7 @@ bool App::Init(HINSTANCE instance) {
       RefreshDesktopIcons();
     }
   });
+  pet_.SetOnPage([this](int page) { SetPage(page); });
   page_bar_.Create(instance);
   page_bar_.SetOnPage([this](int page) { SetPage(page); });
   page_bar_.SetOnAddPage([this]() { AddPage(); });
@@ -624,6 +625,15 @@ void App::PersistLayouts() {
   SaveAppState(state);
 }
 
+void App::ApplyChromeTheme() {
+  const FenceStylePreset* style = FenceStyleById(prefs_.theme_id);
+  if (!style) {
+    style = &DefaultFenceStyle();
+  }
+  page_bar_.ApplyStyle(style->background, style->accent, style->title);
+  settings_.ApplyStyle(style->background, style->accent, style->title);
+}
+
 void App::SyncPageChrome() {
   if (page_names_.size() < 1) {
     page_names_ = {L"第 1 页", L"第 2 页"};
@@ -637,6 +647,8 @@ void App::SyncPageChrome() {
     }
   }
   settings_.SetPageNames(page_names_);
+  pet_.SetPages(page_names_, current_page_);
+  ApplyChromeTheme();
 }
 
 void App::AddPage() {
@@ -750,6 +762,7 @@ void App::CycleTheme() {
     }
   }
   PersistLayouts();
+  ApplyChromeTheme();
   ShowToast(std::wstring(L"主题：") + styles[idx]->name);
 }
 

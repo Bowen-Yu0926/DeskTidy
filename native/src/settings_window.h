@@ -24,6 +24,7 @@ class SettingsWindow {
 
   void SetFenceNames(const std::vector<std::wstring>& names);
   void SetPageNames(const std::vector<std::wstring>& names);
+  void ApplyStyle(COLORREF background, COLORREF accent, COLORREF title);
   void SetToggles(bool dock_on, bool pet_on, bool autostart_on);
   void SetOrganizePrefs(bool startup_on, bool watch_on);
   void SetOrganizePreview(const std::vector<std::wstring>& names);
@@ -89,4 +90,8 @@ class SettingsWindow {
   VoidFn on_record_cfg_;
   VoidFn on_org_preview_;
   std::vector<std::wstring> page_names_;
+  COLORREF bg_ = RGB(32, 34, 40);
+  COLORREF accent_ = RGB(70, 130, 200);
+  COLORREF text_ = RGB(230, 230, 230);
+  HBRUSH brush_ = nullptr;
 };

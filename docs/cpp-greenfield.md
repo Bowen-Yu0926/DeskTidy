@@ -93,6 +93,9 @@ Native Win32 host — feature MVP map vs Python product.
 | Layout editor shows every page | done |
 | Portal folder change refresh | done |
 | Record quality + microphone name | done |
+| Pet page bubbles | done |
+| DeskNote outline / focus / typewriter | done |
+| Theme colors on page bar + settings | done |
 
 ## Build
 

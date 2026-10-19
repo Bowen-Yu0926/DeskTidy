@@ -525,6 +525,7 @@ bool PetWindow::Create(HINSTANCE instance) {
   SetWindowLongPtrW(hwnd_, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(this));
   EnsureDropTarget();
   CreateBuoy(instance);
+  CreatePages(instance);
   return true;
 }
 
@@ -550,6 +551,115 @@ void PetWindow::CreateBuoy(HINSTANCE instance) {
   }
   SetLayeredWindowAttributes(buoy_, 0, 220, LWA_ALPHA);
   SetWindowLongPtrW(buoy_, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(this));
+}
+
+void PetWindow::SetPages(const std::vector<std::wstring>& names, int current) {
+  page_names_ = names;
+  current_page_ = current;
+  if (pages_) {
+    InvalidateRect(pages_, nullptr, FALSE);
+    PlacePages();
+  }
+}
+
+void PetWindow::CreatePages(HINSTANCE instance) {
+  static bool registered = false;
+  if (!registered) {
+    WNDCLASSEXW wc{};
+    wc.cbSize = sizeof(wc);
+    wc.lpfnWndProc = PetWindow::PagesProc;
+    wc.hInstance = instance;
+    wc.hCursor = LoadCursor(nullptr, IDC_HAND);
+    wc.lpszClassName = L"DeskTidyNativePetPages";
+    RegisterClassExW(&wc);
+    registered = true;
+  }
+  pages_ = CreateWindowExW(
+      WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_LAYERED,
+      L"DeskTidyNativePetPages", L"PetPages", WS_POPUP, 0, 0, 80, 26, nullptr,
+      nullptr, instance, this);
+  if (!pages_) {
+    return;
+  }
+  SetLayeredWindowAttributes(pages_, 0, 230, LWA_ALPHA);
+  SetWindowLongPtrW(pages_, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(this));
+}
+
+void PetWindow::PlacePages() {
+  if (!pages_ || !hwnd_) {
+    return;
+  }
+  if (!IsWindowVisible(hwnd_) || page_names_.empty()) {
+    ShowWindow(pages_, SW_HIDE);
+    return;
+  }
+  RECT rc{};
+  GetWindowRect(hwnd_, &rc);
+  const int n = (std::min)(static_cast<int>(page_names_.size()), 8);
+  const int w = n * 36 + 8;
+  const int h = 26;
+  SetWindowPos(pages_, nullptr, rc.left, rc.top - h - 6, w, h,
+               SWP_NOACTIVATE | SWP_NOZORDER | SWP_SHOWWINDOW);
+}
+
+void PetWindow::PaintPages(HDC hdc) {
+  RECT rc{};
+  GetClientRect(pages_, &rc);
+  HBRUSH bg = CreateSolidBrush(RGB(28, 32, 40));
+  FillRect(hdc, &rc, bg);
+  DeleteObject(bg);
+  SetBkMode(hdc, TRANSPARENT);
+  const int n = (std::min)(static_cast<int>(page_names_.size()), 8);
+  for (int i = 0; i < n; ++i) {
+    RECT r{i * 36 + 4, 3, (i + 1) * 36, rc.bottom - 3};
+    HBRUSH b = CreateSolidBrush(i == current_page_ ? RGB(70, 130, 200)
+                                                   : RGB(55, 70, 90));
+    FillRect(hdc, &r, b);
+    DeleteObject(b);
+    std::wstring label = std::to_wstring(i + 1);
+    if (static_cast<size_t>(i) < page_names_.size() &&
+        !page_names_[static_cast<size_t>(i)].empty()) {
+      label = page_names_[static_cast<size_t>(i)].substr(0, 2);
+    }
+    SetTextColor(hdc, RGB(240, 240, 240));
+    DrawTextW(hdc, label.c_str(), -1, &r,
+              DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+  }
+}
+
+LRESULT CALLBACK PetWindow::PagesProc(HWND hwnd, UINT msg, WPARAM wparam,
+                                      LPARAM lparam) {
+  auto* self =
+      reinterpret_cast<PetWindow*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+  if (msg == WM_NCCREATE) {
+    auto* cs = reinterpret_cast<CREATESTRUCTW*>(lparam);
+    SetWindowLongPtrW(hwnd, GWLP_USERDATA,
+                      reinterpret_cast<LONG_PTR>(cs->lpCreateParams));
+    return TRUE;
+  }
+  if (!self) {
+    return DefWindowProcW(hwnd, msg, wparam, lparam);
+  }
+  if (msg == WM_PAINT) {
+    PAINTSTRUCT ps{};
+    HDC hdc = BeginPaint(hwnd, &ps);
+    self->PaintPages(hdc);
+    EndPaint(hwnd, &ps);
+    return 0;
+  }
+  if (msg == WM_LBUTTONUP) {
+    const int index = GET_X_LPARAM(lparam) / 36;
+    if (index >= 0 && index < static_cast<int>(self->page_names_.size()) &&
+        self->on_page_) {
+      self->on_page_(index);
+    }
+    return 0;
+  }
+  if (msg == WM_DESTROY) {
+    self->pages_ = nullptr;
+    return 0;
+  }
+  return DefWindowProcW(hwnd, msg, wparam, lparam);
 }
 
 void PetWindow::PaintBuoy(HDC hdc) {
@@ -629,6 +739,10 @@ void PetWindow::Destroy() {
     DestroyWindow(buoy_);
     buoy_ = nullptr;
   }
+  if (pages_) {
+    DestroyWindow(pages_);
+    pages_ = nullptr;
+  }
   if (hwnd_) {
     RevokePathDropTarget(hwnd_);
     DestroyWindow(hwnd_);
@@ -657,6 +771,13 @@ void PetWindow::Show() {
     PlaceOverlayInDesktopBand(buoy_, true);
     RaiseOverlayInDesktopBand(buoy_);
   }
+  if (pages_) {
+    ShowWindow(pages_, SW_SHOWNOACTIVATE);
+    AttachOverlayToDesktop(pages_, true);
+    PlaceOverlayInDesktopBand(pages_, true);
+    RaiseOverlayInDesktopBand(pages_);
+    PlacePages();
+  }
 }
 
 void PetWindow::Hide() {
@@ -665,6 +786,9 @@ void PetWindow::Hide() {
   }
   if (buoy_) {
     ShowWindow(buoy_, SW_HIDE);
+  }
+  if (pages_) {
+    ShowWindow(pages_, SW_HIDE);
   }
 }
 
@@ -686,7 +810,11 @@ void PetWindow::AttachToDesktopLayer() {
 }
 
 void PetWindow::Tick() {
-  if (!hwnd_ || !IsWindowVisible(hwnd_) || dragging_) {
+  if (!hwnd_) {
+    return;
+  }
+  PlacePages();
+  if (!IsWindowVisible(hwnd_) || dragging_) {
     return;
   }
   if (frames_.size() >= 2) {
@@ -862,6 +990,7 @@ LRESULT PetWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
                      pt.y - drag_offset_.y, 0, 0,
                      SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
         base_y_ = pt.y - drag_offset_.y;
+        PlacePages();
       }
       return 0;
     case WM_LBUTTONUP: {
