@@ -292,11 +292,17 @@ void FenceWindow::BeginIconDrag(int index) {
   if (index < 0 || index >= static_cast<int>(cells_.size())) {
     return;
   }
-  const std::wstring path = cells_[static_cast<size_t>(index)].item.path;
+  std::vector<std::wstring> paths;
+  if (IsSelected(index)) {
+    paths = SelectedPaths();
+  }
+  if (paths.empty()) {
+    paths.push_back(cells_[static_cast<size_t>(index)].item.path);
+  }
   icon_press_ = false;
   icon_press_index_ = -1;
   ReleaseCapture();
-  ShellDoDragFiles({path});
+  ShellDoDragFiles(paths);
   if (on_drag_done_) {
     on_drag_done_(this);
   }
@@ -753,9 +759,15 @@ LRESULT FenceWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
       return 0;
     }
     case WM_LBUTTONDBLCLK: {
-      const int icon = HitTestIcon(GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam));
+      const int x = GET_X_LPARAM(lparam);
+      const int y = GET_Y_LPARAM(lparam);
+      const int icon = HitTestIcon(x, y);
       if (icon >= 0) {
         OpenItem(icon);
+        return 0;
+      }
+      if (y < kHeaderH && HitTestEdge(x, y) == Edge::None && on_rename_) {
+        on_rename_(this);
       }
       return 0;
     }
@@ -808,6 +820,23 @@ void FenceWindow::Paint(HDC hdc) {
   swprintf_s(title_buf, L"%s  · p%d", title_.c_str(), page_ + 1);
   DrawTextW(hdc, title_buf, -1, &title_rc,
             DT_CENTER | DT_TOP | DT_SINGLELINE | DT_END_ELLIPSIS);
+
+  const int view = (std::max)(0, static_cast<int>(rc.bottom) - kHeaderH - kPad);
+  if (content_h_ > view && view > 0) {
+    const int track_top = kHeaderH + 2;
+    const int track_h = (std::max)(8, static_cast<int>(rc.bottom) - track_top - 4);
+    const int thumb_h =
+        (std::max)(16, track_h * view / (std::max)(1, content_h_));
+    const int max_scroll = (std::max)(1, content_h_ - view);
+    int thumb_y = track_top + (track_h - thumb_h) * scroll_y_ / max_scroll;
+    if (thumb_y + thumb_h > track_top + track_h) {
+      thumb_y = track_top + track_h - thumb_h;
+    }
+    RECT thumb{rc.right - 7, thumb_y, rc.right - 3, thumb_y + thumb_h};
+    HBRUSH thumb_br = CreateSolidBrush(accent_);
+    FillRect(hdc, &thumb, thumb_br);
+    DeleteObject(thumb_br);
+  }
 
   IntersectClipRect(hdc, rc.left, kHeaderH, rc.right, rc.bottom);
 

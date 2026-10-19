@@ -75,6 +75,7 @@ Native Win32 host — feature MVP map vs Python product.
 | Fence icon rename / recycle / properties | done |
 | Dock / public / search icon shell menu | done |
 | Fence multi-select + cut ghost | done |
+| Fence multi-drag, scroll thumb, title rename | done |
 | DeskNote Toast UI / WebView editor | not ported |
 | Full Shimeji climb/ledge physics | not ported |
 
