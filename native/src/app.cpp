@@ -10,6 +10,7 @@
 #include "organize.h"
 #include "organize_suppress.h"
 #include "screen_record.h"
+#include "toast.h"
 #include "minutes.h"
 #include "page_folders.h"
 #include "snapshot_ui.h"
@@ -638,6 +639,9 @@ void App::OrganizeVirtual(bool quiet) {
   SavePins(pins_);
   RefreshDesktopIcons();
   if (quiet) {
+    if (n > 0) {
+      ShowToast(L"已自动钉选 " + std::to_wstring(n) + L" 项");
+    }
     return;
   }
   wchar_t buf[128];

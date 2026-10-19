@@ -300,6 +300,29 @@ void ConfigureScreenRecord(HWND owner) {
 }
 
 void OpenCalculator() {
+  HWND found = nullptr;
+  EnumWindows(
+      [](HWND hwnd, LPARAM lp) -> BOOL {
+        if (!IsWindowVisible(hwnd) || IsIconic(hwnd)) {
+          return TRUE;
+        }
+        wchar_t title[256] = {};
+        GetWindowTextW(hwnd, title, 256);
+        if (!title[0]) {
+          return TRUE;
+        }
+        if (wcsstr(title, L"计算器") || wcsstr(title, L"Calculator")) {
+          *reinterpret_cast<HWND*>(lp) = hwnd;
+          return FALSE;
+        }
+        return TRUE;
+      },
+      reinterpret_cast<LPARAM>(&found));
+  if (found) {
+    ShowWindow(found, SW_RESTORE);
+    SetForegroundWindow(found);
+    return;
+  }
   if (ShellExecuteW(nullptr, L"open", L"calc.exe", nullptr, nullptr,
                     SW_SHOWNORMAL) <= reinterpret_cast<HINSTANCE>(32)) {
     ShellExecuteW(nullptr, L"open", L"calculator:", nullptr, nullptr,

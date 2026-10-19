@@ -53,6 +53,9 @@ Native Win32 host — feature MVP map vs Python product.
 | Hotkeys: record / fullscreen / organize / vault / todos | done |
 | Snapshot preview before apply/delete | done |
 | Rules filename globs (`Invoice*` / `name:…`) | done |
+| Calculator open-or-focus | done |
+| Shell file clipboard (copy/cut CF_HDROP) | done |
+| Product toast tip | done |
 | DeskNote Toast UI / WebView editor | not ported |
 | Full Shimeji climb/ledge physics | not ported |
 

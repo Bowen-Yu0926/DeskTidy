@@ -55,6 +55,8 @@ add_executable(desktidy_native WIN32
   src/screen_record.cpp
   src/fence_region_overlay.cpp
   src/update_check.cpp
+  src/shell_clipboard.cpp
+  src/toast.cpp
   src/version.rc
 )
 

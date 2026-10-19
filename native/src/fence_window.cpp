@@ -3,6 +3,8 @@
 #include "desktop_shell.h"
 #include "display_geom.h"
 #include "fence_style.h"
+#include "shell_clipboard.h"
+#include "toast.h"
 
 #include <Shellapi.h>
 #include <windowsx.h>
@@ -302,6 +304,9 @@ void FenceWindow::ShowIconMenu(int index, POINT screen) {
   AppendMenuW(menu, MF_STRING, 1, L"打开");
   AppendMenuW(menu, MF_STRING, 2, L"在资源管理器中显示");
   AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+  AppendMenuW(menu, MF_STRING, 4, L"复制");
+  AppendMenuW(menu, MF_STRING, 5, L"剪切");
+  AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
   AppendMenuW(menu, MF_STRING, 3, L"取消钉选");
   SetForegroundWindow(hwnd_);
   const int cmd =
@@ -314,6 +319,12 @@ void FenceWindow::ShowIconMenu(int index, POINT screen) {
     RevealItem(index);
   } else if (cmd == 3 && on_unpin_) {
     on_unpin_(this, cells_[static_cast<size_t>(index)].item.path);
+  } else if ((cmd == 4 || cmd == 5) &&
+             index >= 0 && index < static_cast<int>(cells_.size())) {
+    const std::wstring& path = cells_[static_cast<size_t>(index)].item.path;
+    if (ClipboardSetFiles(hwnd_, {path}, cmd == 5)) {
+      ShowToast(cmd == 5 ? L"已剪切到剪贴板" : L"已复制到剪贴板");
+    }
   }
 }
 
