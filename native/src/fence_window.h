@@ -17,6 +17,8 @@ class FenceWindow {
       std::function<void(FenceWindow*, const std::vector<std::wstring>&)>;
   using DragDoneFn = std::function<void(FenceWindow*)>;
   using UnpinFn = std::function<void(FenceWindow*, const std::wstring& path)>;
+  using PathReplaceFn =
+      std::function<void(const std::wstring& from, const std::wstring& to)>;
   using PageFn = std::function<void(FenceWindow*, int page)>;
   using RenameFn = std::function<void(FenceWindow*)>;
   using StyleFn = std::function<void(FenceWindow*)>;
@@ -39,6 +41,9 @@ class FenceWindow {
   void SetOnPathsDropped(PathsFn fn) { on_paths_dropped_ = std::move(fn); }
   void SetOnDragDone(DragDoneFn fn) { on_drag_done_ = std::move(fn); }
   void SetOnUnpin(UnpinFn fn) { on_unpin_ = std::move(fn); }
+  void SetOnPathReplaced(PathReplaceFn fn) {
+    on_path_replaced_ = std::move(fn);
+  }
   void SetOnSetPage(PageFn fn) { on_set_page_ = std::move(fn); }
   void SetOnRename(RenameFn fn) { on_rename_ = std::move(fn); }
   void SetOnStyleChanged(StyleFn fn) { on_style_changed_ = std::move(fn); }
@@ -74,6 +79,9 @@ class FenceWindow {
   void BeginIconDrag(int index);
   void EnsureDropTarget();
   void ShowIconMenu(int index, POINT screen);
+  void RenameItem(int index);
+  void RecycleItem(int index);
+  void ShowItemProperties(int index);
   void ShowFenceMenu(POINT screen);
   void ApplyStyle();
   void ClampScroll();
@@ -102,6 +110,7 @@ class FenceWindow {
   PathsFn on_paths_dropped_;
   DragDoneFn on_drag_done_;
   UnpinFn on_unpin_;
+  PathReplaceFn on_path_replaced_;
   PageFn on_set_page_;
   RenameFn on_rename_;
   StyleFn on_style_changed_;

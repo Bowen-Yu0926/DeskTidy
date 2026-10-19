@@ -54,6 +54,17 @@ void App::WireFence(FenceWindow* fence) {
   fence->SetOnUnpin([this](FenceWindow*, const std::wstring& path) {
     UnpinPath(path);
   });
+  fence->SetOnPathReplaced(
+      [this](const std::wstring& from, const std::wstring& to) {
+        const std::string* id = FindPin(pins_, from);
+        const std::string fence_id = id ? *id : std::string();
+        ClearPin(&pins_, from);
+        if (!fence_id.empty()) {
+          SetPin(&pins_, to, fence_id);
+        }
+        SavePins(pins_);
+        RefreshDesktopIcons();
+      });
   fence->SetOnSetPage([this](FenceWindow* f, int page) {
     if (!f) {
       return;

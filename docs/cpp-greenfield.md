@@ -72,6 +72,7 @@ Native Win32 host — feature MVP map vs Python product.
 | Shell verbs + CLI (notes/search/shot/todos/peek) | done |
 | Todos clear completed | done |
 | Copy path (fence icon + tray data dir) | done |
+| Fence icon rename / recycle / properties | done |
 | DeskNote Toast UI / WebView editor | not ported |
 | Full Shimeji climb/ledge physics | not ported |
 
