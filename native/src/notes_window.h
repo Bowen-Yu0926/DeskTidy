@@ -1,5 +1,7 @@
 #pragma once
 
+#include "notes_webview.h"
+
 #include <Windows.h>
 #include <commdlg.h>
 
@@ -28,6 +30,8 @@ class NotesWindow {
   void OpenWithShell();
   void PasteHtmlAsMarkdown();
   void ToggleToast();
+  void ToggleWysiwyg();
+  void SyncFromWysiwyg();
   void SetFontSize(int pt);
   void InsertTemplate();
   void ShowFind(bool replace);
@@ -45,4 +49,6 @@ class NotesWindow {
   HWND find_dlg_ = nullptr;
   UINT find_msg_ = 0;
   bool toast_ = false;
+  bool wysiwyg_ = false;
+  NotesWebView web_;
 };

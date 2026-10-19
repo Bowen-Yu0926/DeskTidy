@@ -25,6 +25,11 @@ native/**/*.user
 native/**/*.vcxproj*
 native/CMakeCache.txt
 native/CMakeFiles/
+# Full WebView2 NuGet cache (slim headers + loader stay under third_party/)
+native/third_party/webview2.zip
+native/third_party/webview2.nupkg
+native/third_party/Microsoft.Web.WebView2/
+native/third_party/webview2/
 *.spec.bak
 
 # Bundled FFmpeg is large and downloaded by scripts\prepare_ffmpeg_recording.py

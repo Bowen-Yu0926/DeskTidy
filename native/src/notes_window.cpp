@@ -39,6 +39,7 @@ constexpr int kMenuPandoc = 2115;
 constexpr int kMenuOpenWith = 2116;
 constexpr int kMenuPasteHtml = 2117;
 constexpr int kMenuToast = 2118;
+constexpr int kMenuWysiwyg = 2119;
 
 struct StreamCookie {
   std::string data;
@@ -109,6 +110,7 @@ bool NotesWindow::Create(HINSTANCE instance) {
   AppendMenuW(file, MF_STRING, kMenuOpenWith, L"打开方式…");
   AppendMenuW(file, MF_STRING, kMenuPasteHtml, L"粘贴 HTML 为 Markdown");
   AppendMenuW(file, MF_STRING, kMenuToast, L"便签条模式");
+  AppendMenuW(file, MF_STRING, kMenuWysiwyg, L"Toast WYSIWYG 编辑器");
   AppendMenuW(file, MF_SEPARATOR, 0, nullptr);
   AppendMenuW(file, MF_STRING, kMenuTpl, L"插入模板");
   AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(file), L"文件");
@@ -148,6 +150,7 @@ bool NotesWindow::Create(HINSTANCE instance) {
   }
   SendMessageW(edit_, EM_SETBKGNDCOLOR, 0, RGB(255, 244, 170));
   SetFontSize(font_pt_);
+  web_.Create(hwnd_);
   Load();
   return true;
 }
@@ -168,6 +171,7 @@ void NotesWindow::SetFontSize(int pt) {
 
 void NotesWindow::Destroy() {
   Save();
+  web_.Destroy();
   if (font_) {
     DeleteObject(font_);
     font_ = nullptr;
@@ -230,7 +234,18 @@ void NotesWindow::Load() {
 }
 
 void NotesWindow::Save() {
+  SyncFromWysiwyg();
   if (!edit_) {
+    return;
+  }
+  if (path_.size() >= 3 &&
+      (_wcsicmp(path_.c_str() + path_.size() - 3, L".md") == 0 ||
+       (path_.size() >= 4 &&
+        _wcsicmp(path_.c_str() + path_.size() - 4, L".txt") == 0))) {
+    std::ofstream out(path_, std::ios::binary);
+    if (out) {
+      out << NarrowUtf8(CurrentPlainText());
+    }
     return;
   }
   StreamCookie cookie;
@@ -408,6 +423,57 @@ void NotesWindow::ToggleToast() {
   } else {
     SetWindowPos(hwnd_, HWND_NOTOPMOST, 80, 80, 320, 300, SWP_SHOWWINDOW);
     SetWindowTextW(hwnd_, L"便签");
+  }
+}
+
+void NotesWindow::SyncFromWysiwyg() {
+  if (!wysiwyg_ || !web_.Ready()) {
+    return;
+  }
+  const std::wstring md = web_.PullMarkdown();
+  if (edit_) {
+    SetWindowTextW(edit_, md.c_str());
+  }
+}
+
+void NotesWindow::ToggleWysiwyg() {
+  if (!web_.Available()) {
+    const DWORD start = GetTickCount();
+    MSG msg{};
+    while (!web_.Available() && GetTickCount() - start < 4000) {
+      while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
+        TranslateMessage(&msg);
+        DispatchMessageW(&msg);
+      }
+      Sleep(15);
+    }
+  }
+  if (!web_.Available()) {
+    MessageBoxW(hwnd_,
+                L"无法启动 WebView2。请安装 Microsoft Edge WebView2 Runtime，"
+                L"并确认 assets\\md_preview\\wysiwyg_native.html 存在。",
+                L"Toast 编辑器", MB_OK | MB_ICONWARNING);
+    return;
+  }
+  wysiwyg_ = !wysiwyg_;
+  if (wysiwyg_) {
+    const std::wstring text = CurrentPlainText();
+    web_.Show();
+    web_.Resize();
+    web_.SetMarkdown(text);
+    if (edit_) {
+      ShowWindow(edit_, SW_HIDE);
+    }
+    SetWindowTextW(hwnd_, L"便签 · Toast WYSIWYG");
+    SetWindowPos(hwnd_, nullptr, 0, 0, 720, 560,
+                 SWP_NOMOVE | SWP_NOZORDER | SWP_SHOWWINDOW);
+  } else {
+    SyncFromWysiwyg();
+    web_.Hide();
+    if (edit_) {
+      ShowWindow(edit_, SW_SHOW);
+    }
+    SetWindowTextW(hwnd_, toast_ ? L"便签条" : L"便签");
   }
 }
 
@@ -608,6 +674,9 @@ LRESULT NotesWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
         case kMenuToast:
           ToggleToast();
           return 0;
+        case kMenuWysiwyg:
+          ToggleWysiwyg();
+          return 0;
         case kMenuFind:
           ShowFind(false);
           return 0;
@@ -639,13 +708,16 @@ LRESULT NotesWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
       }
       break;
     case WM_SIZE:
-      if (edit_) {
+      if (wysiwyg_) {
+        web_.Resize();
+      } else if (edit_) {
         RECT rc{};
         GetClientRect(hwnd_, &rc);
         MoveWindow(edit_, 6, 6, rc.right - 12, rc.bottom - 12, TRUE);
       }
       return 0;
     case WM_CLOSE:
+      SyncFromWysiwyg();
       Hide();
       return 0;
     case WM_DESTROY:

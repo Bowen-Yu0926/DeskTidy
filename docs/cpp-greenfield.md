@@ -88,7 +88,7 @@ Native Win32 host — feature MVP map vs Python product.
 | Shimeji window ledges (auto climb, fall off edge) | done |
 | Second-instance CLI forward | done |
 | Rename current page (double-click page bar) | done |
-| DeskNote WebView editor | not ported |
+| DeskNote Toast UI WebView2 WYSIWYG | done |
 
 ## Build
 

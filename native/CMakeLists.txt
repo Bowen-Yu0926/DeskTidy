@@ -19,6 +19,7 @@ add_executable(desktidy_native WIN32
   src/dock_window.cpp
   src/pet_window.cpp
   src/notes_window.cpp
+  src/notes_webview.cpp
   src/page_bar.cpp
   src/desktop_watch.cpp
   src/prompt_text.cpp
@@ -67,11 +68,29 @@ add_executable(desktidy_native WIN32
   src/version.rc
 )
 
-target_include_directories(desktidy_native PRIVATE src)
+target_include_directories(desktidy_native PRIVATE
+  src
+  ${CMAKE_CURRENT_SOURCE_DIR}/third_party/webview2-include
+)
 target_compile_definitions(desktidy_native PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
 target_link_libraries(desktidy_native PRIVATE
   user32 gdi32 shell32 ole32 oleaut32 uuid comctl32 advapi32
   gdiplus comdlg32 crypt32 winhttp bcrypt msimg32 version
+  ${CMAKE_CURRENT_SOURCE_DIR}/third_party/webview2-x64/WebView2LoaderStatic.lib
+)
+
+add_custom_command(TARGET desktidy_native POST_BUILD
+  COMMAND ${CMAKE_COMMAND} -E make_directory
+          $<TARGET_FILE_DIR:desktidy_native>/assets/md_preview/vendor
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          ${CMAKE_CURRENT_SOURCE_DIR}/assets/md_preview/wysiwyg_native.html
+          $<TARGET_FILE_DIR:desktidy_native>/assets/md_preview/wysiwyg_native.html
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          ${CMAKE_CURRENT_SOURCE_DIR}/assets/md_preview/vendor/toastui-editor-all.min.js
+          $<TARGET_FILE_DIR:desktidy_native>/assets/md_preview/vendor/toastui-editor-all.min.js
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          ${CMAKE_CURRENT_SOURCE_DIR}/assets/md_preview/vendor/toastui-editor.min.css
+          $<TARGET_FILE_DIR:desktidy_native>/assets/md_preview/vendor/toastui-editor.min.css
 )
 
 if(MSVC)

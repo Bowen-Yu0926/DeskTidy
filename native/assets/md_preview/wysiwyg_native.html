@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>deskNote WYSIWYG</title>
+  <link rel="stylesheet" href="vendor/toastui-editor.min.css" />
+  <style>
+    html, body, #editor {
+      height: 100%;
+      margin: 0;
+      padding: 0;
+      background: #fff;
+    }
+    body.theme-dark, body.theme-dark #editor {
+      background: #1e1e1e;
+    }
+    .toastui-editor-defaultUI {
+      border: none !important;
+      height: 100% !important;
+    }
+  </style>
+  <script src="vendor/toastui-editor-all.min.js"></script>
+</head>
+<body>
+  <div id="editor"></div>
+  <script>
+(function () {
+  var editor = null;
+  var suppress = false;
+
+  function boot(md, theme) {
+    var el = document.getElementById("editor");
+    el.innerHTML = "";
+    var dark = String(theme || "").toLowerCase().indexOf("dark") >= 0;
+    document.body.classList.toggle("theme-dark", dark);
+    editor = new toastui.Editor({
+      el: el,
+      height: "100%",
+      initialEditType: "wysiwyg",
+      previewStyle: "vertical",
+      usageStatistics: false,
+      initialValue: md || "",
+      autofocus: true,
+    });
+    editor.on("change", function () {
+      if (suppress) return;
+      post({ type: "changed", md: editor.getMarkdown() });
+    });
+  }
+
+  function post(msg) {
+    if (window.chrome && chrome.webview && chrome.webview.postMessage) {
+      chrome.webview.postMessage(msg);
+    }
+  }
+
+  window.__desknoteWysiwygSet = function (md, theme) {
+    if (!editor) {
+      boot(md || "", theme || "");
+      return;
+    }
+    suppress = true;
+    try {
+      editor.setMarkdown(md || "", false);
+      var dark = String(theme || "").toLowerCase().indexOf("dark") >= 0;
+      document.body.classList.toggle("theme-dark", dark);
+    } finally {
+      setTimeout(function () { suppress = false; }, 50);
+    }
+  };
+
+  window.__desknoteWysiwygGet = function () {
+    return editor ? editor.getMarkdown() : "";
+  };
+
+  if (window.chrome && chrome.webview) {
+    chrome.webview.addEventListener("message", function (e) {
+      var msg = e.data || {};
+      if (msg.type === "set") {
+        window.__desknoteWysiwygSet(msg.md || "", msg.theme || "");
+      } else if (msg.type === "get") {
+        post({ type: "md", md: window.__desknoteWysiwygGet() });
+      } else if (msg.type === "insert") {
+        if (!editor) return;
+        if (typeof editor.insertText === "function") {
+          editor.insertText(msg.md || "");
+        } else {
+          editor.setMarkdown((editor.getMarkdown() || "") + (msg.md || ""), false);
+        }
+      }
+    });
+  }
+
+  function ready() {
+    post({ type: "ready" });
+  }
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", ready);
+  } else {
+    ready();
+  }
+})();
+  </script>
+</body>
+</html>
