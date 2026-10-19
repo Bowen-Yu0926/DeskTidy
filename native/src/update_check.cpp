@@ -1,9 +1,14 @@
 #include "update_check.h"
 
+#include "paths_util.h"
+
 #include <Shellapi.h>
 #include <winhttp.h>
 
 #include <algorithm>
+#include <cstdlib>
+#include <fstream>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -201,17 +206,75 @@ std::wstring NativeProductVersion() {
   return ver;
 }
 
-void CheckForUpdates(HWND owner) {
-  const std::wstring current = NativeProductVersion();
-  std::string body;
-  std::wstring err;
-  if (!HttpGetJson(&body, &err)) {
-    MessageBoxW(owner, (L"检查更新失败：\n" + err).c_str(), L"检查更新",
-                MB_OK | MB_ICONWARNING);
+ULONGLONG NowFileTime() {
+  FILETIME ft{};
+  GetSystemTimeAsFileTime(&ft);
+  ULARGE_INTEGER u{};
+  u.LowPart = ft.dwLowDateTime;
+  u.HighPart = ft.dwHighDateTime;
+  return u.QuadPart;
+}
+
+bool LoadUpdateCache(std::wstring* latest, std::wstring* html, bool* fresh) {
+  *fresh = false;
+  std::ifstream in(JoinPath(NativeDataDir(), L"update_check_cache.json"));
+  if (!in) {
+    return false;
+  }
+  std::ostringstream ss;
+  ss << in.rdbuf();
+  const std::string json = ss.str();
+  const std::string tag = JsonStringField(json, "tag");
+  const std::string url = JsonStringField(json, "html");
+  if (tag.empty()) {
+    return false;
+  }
+  *latest = Widen(tag);
+  *html = Widen(url);
+  const auto p = json.find("\"ticks\"");
+  if (p != std::string::npos) {
+    const auto c = json.find(':', p);
+    if (c != std::string::npos) {
+      const unsigned long long ticks = std::strtoull(json.c_str() + c + 1, nullptr, 10);
+      const unsigned long long ttl = 6ULL * 3600ULL * 10000000ULL;
+      *fresh = NowFileTime() < ticks + ttl;
+    }
+  }
+  return true;
+}
+
+void SaveUpdateCache(const std::wstring& latest, const std::wstring& html) {
+  std::ofstream out(JoinPath(NativeDataDir(), L"update_check_cache.json"),
+                    std::ios::binary);
+  if (!out) {
     return;
   }
-  const std::wstring latest = Widen(JsonStringField(body, "tag_name"));
-  const std::wstring html = Widen(JsonStringField(body, "html_url"));
+  out << "{\n  \"ticks\": " << NowFileTime() << ",\n  \"tag\": \""
+      << NarrowUtf8(latest) << "\",\n  \"html\": \"" << NarrowUtf8(html)
+      << "\"\n}\n";
+}
+
+void CheckForUpdates(HWND owner) {
+  const std::wstring current = NativeProductVersion();
+  std::wstring latest;
+  std::wstring html;
+  bool fresh = false;
+  if (LoadUpdateCache(&latest, &html, &fresh) && fresh && !latest.empty()) {
+    // Use cached release within 6 hours.
+  } else {
+    std::string body;
+    std::wstring err;
+    if (!HttpGetJson(&body, &err)) {
+      MessageBoxW(owner, (L"检查更新失败：\n" + err).c_str(), L"检查更新",
+                  MB_OK | MB_ICONWARNING);
+      return;
+    }
+    latest = Widen(JsonStringField(body, "tag_name"));
+    html = Widen(JsonStringField(body, "html_url"));
+    if (!latest.empty()) {
+      SaveUpdateCache(latest, html);
+    }
+  }
   if (latest.empty()) {
     MessageBoxW(owner, L"无法解析最新版本信息。", L"检查更新",
                 MB_OK | MB_ICONWARNING);

@@ -219,6 +219,50 @@ bool MatchNameGlob(const std::wstring& name, const std::wstring& pattern) {
   return _wcsicmp(name.c_str() + (name.size() - suf.size()), suf.c_str()) == 0;
 }
 
+bool ExtIn(const std::wstring& ext, const wchar_t* const* list) {
+  for (int i = 0; list[i]; ++i) {
+    if (_wcsicmp(ext.c_str(), list[i]) == 0) {
+      return true;
+    }
+  }
+  return false;
+}
+
+const wchar_t* KindOfExt(const std::wstring& ext) {
+  static const wchar_t* image[] = {L".png", L".jpg", L".jpeg", L".gif",
+                                   L".webp", L".bmp", L".ico", nullptr};
+  static const wchar_t* doc[] = {L".pdf", L".doc", L".docx", L".txt", L".md",
+                                 L".rtf", L".xls", L".xlsx", L".ppt", L".pptx",
+                                 nullptr};
+  static const wchar_t* archive[] = {L".zip", L".7z", L".rar", L".tar", L".gz",
+                                     nullptr};
+  static const wchar_t* video[] = {L".mp4", L".mkv", L".avi", L".mov", L".wmv",
+                                   nullptr};
+  static const wchar_t* audio[] = {L".mp3", L".wav", L".flac", L".aac", L".ogg",
+                                   nullptr};
+  static const wchar_t* code[] = {L".py",  L".js", L".ts", L".cpp", L".h",
+                                  L".cs",  L".java", L".go", L".rs", nullptr};
+  if (ExtIn(ext, image)) {
+    return L"image";
+  }
+  if (ExtIn(ext, doc)) {
+    return L"doc";
+  }
+  if (ExtIn(ext, archive)) {
+    return L"archive";
+  }
+  if (ExtIn(ext, video)) {
+    return L"video";
+  }
+  if (ExtIn(ext, audio)) {
+    return L"audio";
+  }
+  if (ExtIn(ext, code)) {
+    return L"code";
+  }
+  return nullptr;
+}
+
 bool LooksLikeNamePattern(const std::wstring& key) {
   if (key.rfind(L"name:", 0) == 0) {
     return true;
@@ -258,6 +302,13 @@ std::string ResolveFenceId(const std::wstring& path, bool is_link,
   auto rit = rules.find(ext);
   if (rit != rules.end()) {
     return rit->second;
+  }
+  if (const wchar_t* kind = KindOfExt(ext)) {
+    const std::wstring key = std::wstring(L"kind:") + kind;
+    auto kit = rules.find(key);
+    if (kit != rules.end()) {
+      return kit->second;
+    }
   }
   rit = rules.find(L"*");
   if (rit != rules.end()) {
