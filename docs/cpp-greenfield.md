@@ -12,21 +12,24 @@ Native Win32 host — feature MVP map vs Python product.
 | Dock / public strip | done |
 | Pet + drop→Recycle (+ optional `pet.png`) | done |
 | Notes (save / save-as / font / template) | done |
+| Todo checklist (`[x]` / `[ ]`) | done |
 | Snapshots list / apply / delete | done |
 | Peek / shell verbs | done |
 | Local DPAPI vault (+ export/import) | done (not cloud ZK) |
 | Wallpaper pick / library random / restore | done |
-| Region screenshot + pin to desktop | done |
+| Meeting minutes (dated `.md` + folder) | done |
+| Region screenshot + pin (virtual screen) | done |
 | Fullscreen screenshot | done |
 | Record (ffmpeg discovery) | done |
-| Search (fd discovery + fallback) | done |
+| Search (fd + open/reveal/Enter) | done |
+| Multi-monitor work-area clamp | done (basic) |
 | First-run tip | done |
 | Hotkey help + rebinding (`hotkeys.json`) | done |
 | Autostart / installer / single-instance | done |
 | Cloud vault sync | not ported |
 | DeskNote WYSIWYG | not ported |
 | Pet asset pack / dissolve anim | not ported |
-| Full i18n / multi-monitor profiles | not ported |
+| Full i18n / per-display layout profiles | not ported |
 
 ## Build
 
@@ -48,6 +51,6 @@ scripts\build_native_installer.bat
 | Ctrl+Shift+1 | Region capture |
 | Ctrl+Alt+4 | Search |
 
-Config under `%LocalAppData%\DeskTidyNative\`: `layout.json`, `hotkeys.json`, `whitelist.json`, `wallpaper.json`, `snapshots\`.
+Config under `%LocalAppData%\DeskTidyNative\`: `layout.json`, `hotkeys.json`, `whitelist.json`, `wallpaper.json`, `minutes.json`, `todos.txt`, `snapshots\`.
 
 Helpers: `ffmpeg.exe` / `fd.exe` under assets or PATH. Optional `pet.png` beside exe or in data dir.

@@ -1,6 +1,7 @@
 #include "fence_window.h"
 
 #include "desktop_shell.h"
+#include "display_geom.h"
 #include "fence_style.h"
 
 #include <Shellapi.h>
@@ -539,6 +540,11 @@ LRESULT FenceWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
       if (dragging_) {
         dragging_ = false;
         if (drag_moved_) {
+          RECT rc{};
+          GetWindowRect(hwnd_, &rc);
+          ClampRectToWorkArea(&rc);
+          SetWindowPos(hwnd_, nullptr, rc.left, rc.top, 0, 0,
+                       SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
           AttachToDesktopLayer();
           if (on_moved_) {
             on_moved_(this);

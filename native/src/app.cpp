@@ -7,6 +7,7 @@
 #include "hotkey_help.h"
 #include "hotkey_store.h"
 #include "organize.h"
+#include "minutes.h"
 #include "snapshot_ui.h"
 #include "whitelist.h"
 #include "paths_util.h"
@@ -380,13 +381,17 @@ void App::ReloadFencesFromState(const AppState& state) {
 }
 
 void App::OpenMinutes() {
-  const std::wstring path = JoinPath(NativeDataDir(), L"meeting_minutes.md");
-  if (GetFileAttributesW(path.c_str()) == INVALID_FILE_ATTRIBUTES) {
-    std::ofstream out(path, std::ios::binary);
-    out << "# 会议纪要\n\n- 日期：\n- 参与人：\n- 决议：\n";
+  const int choice = MessageBoxW(
+      settings_.Hwnd(),
+      L"会议纪要：\n\n是 = 新建今日纪要\n否 = 打开纪要文件夹\n取消 = 设置文件夹",
+      L"会议纪要", MB_YESNOCANCEL | MB_ICONQUESTION);
+  if (choice == IDYES) {
+    CreateAndOpenMinutes(settings_.Hwnd());
+  } else if (choice == IDNO) {
+    OpenMinutesFolder(settings_.Hwnd());
+  } else if (choice == IDCANCEL) {
+    ConfigureMinutesFolder(settings_.Hwnd());
   }
-  ShellExecuteW(nullptr, L"open", L"notepad.exe", path.c_str(), nullptr,
-                SW_SHOWNORMAL);
 }
 
 void App::RebuildPublicItems() {

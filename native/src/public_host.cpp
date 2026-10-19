@@ -1,6 +1,7 @@
 #include "public_host.h"
 
 #include "desktop_shell.h"
+#include "display_geom.h"
 
 #include <Shellapi.h>
 #include <windowsx.h>
@@ -25,10 +26,11 @@ bool PublicHost::Create(HINSTANCE instance) {
     RegisterClassExW(&wc);
     g_reg = true;
   }
-  const int sw = GetSystemMetrics(SM_CXSCREEN);
+  const RECT work = PrimaryWorkArea();
   hwnd_ = CreateWindowExW(
       WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_LAYERED, kClass, L"Public",
-      WS_POPUP, sw - 220, 20, 200, 56, nullptr, nullptr, instance, this);
+      WS_POPUP, work.right - 220, work.top + 20, 200, 56, nullptr, nullptr,
+      instance, this);
   if (!hwnd_) {
     return false;
   }

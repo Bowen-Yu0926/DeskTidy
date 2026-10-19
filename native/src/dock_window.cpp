@@ -1,6 +1,7 @@
 #include "dock_window.h"
 
 #include "desktop_shell.h"
+#include "display_geom.h"
 
 #include <Shellapi.h>
 #include <windowsx.h>
@@ -27,13 +28,13 @@ bool DockWindow::Create(HINSTANCE instance) {
     g_registered = true;
   }
 
-  const int sw = GetSystemMetrics(SM_CXSCREEN);
-  const int sh = GetSystemMetrics(SM_CYSCREEN);
+  const RECT work = PrimaryWorkArea();
   const int w = 420;
+  const int x = work.left + (work.right - work.left - w) / 2;
+  const int y = work.bottom - kH - 16;
   hwnd_ = CreateWindowExW(
       WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_LAYERED, kClassName, L"Dock",
-      WS_POPUP, (sw - w) / 2, sh - kH - 48, w, kH, nullptr, nullptr, instance,
-      this);
+      WS_POPUP, x, y, w, kH, nullptr, nullptr, instance, this);
   if (!hwnd_) {
     return false;
   }

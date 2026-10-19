@@ -1,5 +1,6 @@
 #include "capture_overlay.h"
 
+#include "display_geom.h"
 #include "paths_util.h"
 
 #include <ShlObj.h>
@@ -65,11 +66,11 @@ bool CaptureOverlay::Begin(HINSTANCE instance, DoneFn on_done) {
     RegisterClassExW(&wc);
     g_reg = true;
   }
-  const int w = GetSystemMetrics(SM_CXSCREEN);
-  const int h = GetSystemMetrics(SM_CYSCREEN);
+  const RECT vs = VirtualScreenRect();
   hwnd_ = CreateWindowExW(
       WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_LAYERED, kClass, L"Capture",
-      WS_POPUP, 0, 0, w, h, nullptr, nullptr, instance, this);
+      WS_POPUP, vs.left, vs.top, vs.right - vs.left, vs.bottom - vs.top, nullptr,
+      nullptr, instance, this);
   if (!hwnd_) {
     return false;
   }
@@ -98,11 +99,13 @@ bool CaptureOverlay::SaveSelection() {
   }
   const int cw = sel.right - sel.left;
   const int ch = sel.bottom - sel.top;
+  POINT origin{sel.left, sel.top};
+  ClientToScreen(hwnd_, &origin);
   HDC screen = GetDC(nullptr);
   HDC mem = CreateCompatibleDC(screen);
   HBITMAP bmp = CreateCompatibleBitmap(screen, cw, ch);
   HGDIOBJ old = SelectObject(mem, bmp);
-  BitBlt(mem, 0, 0, cw, ch, screen, sel.left, sel.top, SRCCOPY);
+  BitBlt(mem, 0, 0, cw, ch, screen, origin.x, origin.y, SRCCOPY);
 
   PWSTR pics = nullptr;
   std::wstring dir = NativeDataDir();

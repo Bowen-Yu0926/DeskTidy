@@ -41,6 +41,8 @@ add_executable(desktidy_native WIN32
   src/fence_style.cpp
   src/whitelist.cpp
   src/snapshot_ui.cpp
+  src/display_geom.cpp
+  src/minutes.cpp
   src/version.rc
 )
 

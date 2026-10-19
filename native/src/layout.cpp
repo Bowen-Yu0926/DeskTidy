@@ -1,5 +1,7 @@
 #include "layout.h"
 
+#include "display_geom.h"
+
 #include <Windows.h>
 #include <ShlObj.h>
 
@@ -167,13 +169,13 @@ std::wstring LayoutFilePath() {
 }
 
 std::vector<FenceLayout> DefaultLayouts() {
-  const int screen_w = GetSystemMetrics(SM_CXSCREEN);
+  const RECT work = PrimaryWorkArea();
   std::vector<FenceLayout> out;
   FenceLayout common;
   common.id = "system_common";
   common.title = L"常用";
-  common.x = 20;
-  common.y = 40;
+  common.x = work.left + 20;
+  common.y = work.top + 40;
   common.w = 520;
   common.h = 300;
   common.page = 0;
@@ -184,8 +186,8 @@ std::vector<FenceLayout> DefaultLayouts() {
   soft.title = L"软件";
   soft.w = 280;
   soft.h = 360;
-  soft.x = screen_w - soft.w - 40;
-  soft.y = 40;
+  soft.x = work.right - soft.w - 40;
+  soft.y = work.top + 40;
   soft.page = 0;
   out.push_back(soft);
 

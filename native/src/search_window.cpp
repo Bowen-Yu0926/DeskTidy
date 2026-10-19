@@ -4,6 +4,7 @@
 
 #include <ShlObj.h>
 #include <Shellapi.h>
+#include <windowsx.h>
 
 #include <cstdio>
 #include <string>
@@ -14,6 +15,22 @@ constexpr wchar_t kClass[] = L"DeskTidyNativeSearch";
 constexpr int kEdit = 4001;
 constexpr int kList = 4002;
 constexpr int kBtn = 4003;
+constexpr int kOpen = 4004;
+constexpr int kReveal = 4005;
+WNDPROC g_old_edit = nullptr;
+
+LRESULT CALLBACK EditSubclass(HWND hwnd, UINT msg, WPARAM wparam,
+                              LPARAM lparam) {
+  if (msg == WM_KEYDOWN && wparam == VK_RETURN) {
+    HWND parent = GetParent(hwnd);
+    if (parent) {
+      SendMessageW(parent, WM_COMMAND, MAKEWPARAM(kBtn, BN_CLICKED),
+                   reinterpret_cast<LPARAM>(hwnd));
+    }
+    return 0;
+  }
+  return CallWindowProcW(g_old_edit, hwnd, msg, wparam, lparam);
+}
 
 bool NameContains(const std::wstring& name, const std::wstring& needle) {
   if (needle.empty()) {
@@ -104,16 +121,54 @@ bool SearchWindow::Create(HINSTANCE instance) {
                           26, hwnd_,
                           reinterpret_cast<HMENU>(static_cast<INT_PTR>(kEdit)),
                           instance, nullptr);
-  btn_ = CreateWindowW(L"BUTTON", L"搜索", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+  btn_ = CreateWindowW(L"BUTTON", L"搜索", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON |
+                                               BS_DEFPUSHBUTTON,
                        500, 10, 100, 30, hwnd_,
                        reinterpret_cast<HMENU>(static_cast<INT_PTR>(kBtn)),
                        instance, nullptr);
   list_ = CreateWindowExW(WS_EX_CLIENTEDGE, L"LISTBOX", L"",
                           WS_CHILD | WS_VISIBLE | WS_VSCROLL | LBS_NOTIFY, 12, 50,
-                          590, 360, hwnd_,
+                          590, 320, hwnd_,
                           reinterpret_cast<HMENU>(static_cast<INT_PTR>(kList)),
                           instance, nullptr);
+  btn_open_ = CreateWindowW(
+      L"BUTTON", L"打开", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 12, 380, 100,
+      28, hwnd_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kOpen)), instance,
+      nullptr);
+  btn_reveal_ = CreateWindowW(
+      L"BUTTON", L"在资源管理器中显示", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+      122, 380, 160, 28, hwnd_,
+      reinterpret_cast<HMENU>(static_cast<INT_PTR>(kReveal)), instance, nullptr);
+  g_old_edit = reinterpret_cast<WNDPROC>(
+      SetWindowLongPtrW(edit_, GWLP_WNDPROC,
+                        reinterpret_cast<LONG_PTR>(EditSubclass)));
   return true;
+}
+
+int SearchWindow::SelectedIndex() const {
+  if (!list_) {
+    return -1;
+  }
+  return static_cast<int>(SendMessageW(list_, LB_GETCURSEL, 0, 0));
+}
+
+void SearchWindow::OpenSelected() {
+  const int sel = SelectedIndex();
+  if (sel >= 0 && sel < static_cast<int>(results_.size())) {
+    ShellExecuteW(nullptr, L"open", results_[static_cast<size_t>(sel)].c_str(),
+                  nullptr, nullptr, SW_SHOWNORMAL);
+  }
+}
+
+void SearchWindow::RevealSelected() {
+  const int sel = SelectedIndex();
+  if (sel < 0 || sel >= static_cast<int>(results_.size())) {
+    return;
+  }
+  const std::wstring arg =
+      L"/select,\"" + results_[static_cast<size_t>(sel)] + L"\"";
+  ShellExecuteW(nullptr, L"open", L"explorer.exe", arg.c_str(), nullptr,
+                SW_SHOWNORMAL);
 }
 
 void SearchWindow::Destroy() {
@@ -256,23 +311,62 @@ LRESULT SearchWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
         RunSearch();
         return 0;
       }
+      if (LOWORD(wparam) == kOpen) {
+        OpenSelected();
+        return 0;
+      }
+      if (LOWORD(wparam) == kReveal) {
+        RevealSelected();
+        return 0;
+      }
       if (LOWORD(wparam) == kList && HIWORD(wparam) == LBN_DBLCLK) {
-        const int sel =
-            static_cast<int>(SendMessageW(list_, LB_GETCURSEL, 0, 0));
-        if (sel >= 0 && sel < static_cast<int>(results_.size())) {
-          ShellExecuteW(nullptr, L"open", results_[sel].c_str(), nullptr,
-                        nullptr, SW_SHOWNORMAL);
+        OpenSelected();
+        return 0;
+      }
+      if (LOWORD(wparam) == kEdit && HIWORD(wparam) == EN_CHANGE) {
+        break;
+      }
+      break;
+    case WM_CONTEXTMENU:
+      if (reinterpret_cast<HWND>(wparam) == list_ ||
+          GetFocus() == list_) {
+        POINT pt{GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
+        if (pt.x == -1 && pt.y == -1) {
+          GetCursorPos(&pt);
+        }
+        HMENU menu = CreatePopupMenu();
+        AppendMenuW(menu, MF_STRING, 1, L"打开");
+        AppendMenuW(menu, MF_STRING, 2, L"在资源管理器中显示");
+        const int cmd = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_NONOTIFY, pt.x,
+                                       pt.y, 0, hwnd_, nullptr);
+        DestroyMenu(menu);
+        if (cmd == 1) {
+          OpenSelected();
+        } else if (cmd == 2) {
+          RevealSelected();
+        }
+        return 0;
+      }
+      break;
+    case WM_KEYDOWN:
+      if (wparam == VK_RETURN) {
+        if (GetFocus() == edit_) {
+          RunSearch();
+        } else {
+          OpenSelected();
         }
         return 0;
       }
       break;
     case WM_SIZE:
-      if (edit_ && list_ && btn_) {
+      if (edit_ && list_ && btn_ && btn_open_ && btn_reveal_) {
         RECT rc{};
         GetClientRect(hwnd_, &rc);
         MoveWindow(edit_, 12, 12, rc.right - 140, 26, TRUE);
         MoveWindow(btn_, rc.right - 116, 10, 100, 30, TRUE);
-        MoveWindow(list_, 12, 50, rc.right - 24, rc.bottom - 62, TRUE);
+        MoveWindow(list_, 12, 50, rc.right - 24, rc.bottom - 90, TRUE);
+        MoveWindow(btn_open_, 12, rc.bottom - 36, 100, 28, TRUE);
+        MoveWindow(btn_reveal_, 122, rc.bottom - 36, 160, 28, TRUE);
       }
       return 0;
     case WM_CLOSE:

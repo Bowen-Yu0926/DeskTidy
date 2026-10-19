@@ -1,6 +1,7 @@
 #include "pet_window.h"
 
 #include "desktop_shell.h"
+#include "display_geom.h"
 #include "paths_util.h"
 #include "tool_paths.h"
 
@@ -63,13 +64,12 @@ bool PetWindow::Create(HINSTANCE instance) {
   TryLoadSprite();
   const int ww = sprite_ ? sprite_w_ : kSize;
   const int hh = sprite_ ? sprite_h_ : kSize;
-  const int sw = GetSystemMetrics(SM_CXSCREEN);
-  const int sh = GetSystemMetrics(SM_CYSCREEN);
-  base_y_ = sh - hh - 120;
+  const RECT work = PrimaryWorkArea();
+  base_y_ = work.bottom - hh - 120;
   hwnd_ = CreateWindowExW(
       WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_LAYERED, kClassName, L"Pet",
-      WS_POPUP, sw - ww - 40, base_y_, ww, hh, nullptr, nullptr, instance,
-      this);
+      WS_POPUP, work.right - ww - 40, base_y_, ww, hh, nullptr, nullptr,
+      instance, this);
   if (!hwnd_) {
     return false;
   }

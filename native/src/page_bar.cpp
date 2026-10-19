@@ -1,6 +1,7 @@
 #include "page_bar.h"
 
 #include "desktop_shell.h"
+#include "display_geom.h"
 
 #include <windowsx.h>
 
@@ -22,12 +23,12 @@ bool PageBar::Create(HINSTANCE instance) {
     RegisterClassExW(&wc);
     g_registered = true;
   }
-  const int sw = GetSystemMetrics(SM_CXSCREEN);
-  const int sh = GetSystemMetrics(SM_CYSCREEN);
+  const RECT work = PrimaryWorkArea();
+  const int x = work.left + (work.right - work.left - kW) / 2;
+  const int y = work.bottom - kH - 4;
   hwnd_ = CreateWindowExW(
       WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_LAYERED, kClassName,
-      L"Pages", WS_POPUP, (sw - kW) / 2, sh - kH - 12, kW, kH, nullptr, nullptr,
-      instance, this);
+      L"Pages", WS_POPUP, x, y, kW, kH, nullptr, nullptr, instance, this);
   if (!hwnd_) {
     return false;
   }
