@@ -192,8 +192,19 @@ bool StartRecording(HWND owner) {
     dur = L" -t " + std::to_wstring(prefs.record_seconds);
   }
 
+  const int crf = prefs.record_quality == 0   ? 28
+                  : prefs.record_quality == 2 ? 18
+                                              : 23;
+  std::wstring audio_in;
+  std::wstring audio_out;
+  if (!prefs.record_mic.empty()) {
+    audio_in = L" -f dshow -i audio=\"" + prefs.record_mic + L"\"";
+    audio_out = L" -c:a aac -shortest";
+  }
   std::wstring cmd = L"\"" + ff + L"\" -y -f gdigrab -framerate 30" + region +
-                     L" -i desktop" + dur + L" \"" + g_out_path + L"\"";
+                     L" -i desktop" + audio_in + dur + L" -c:v libx264 -crf " +
+                     std::to_wstring(crf) + audio_out + L" \"" + g_out_path +
+                     L"\"";
 
   SECURITY_ATTRIBUTES sa{sizeof(sa), nullptr, TRUE};
   HANDLE rd = nullptr;

@@ -59,7 +59,7 @@ void PaintEditor(HWND hwnd, HDC hdc) {
   SetBkMode(hdc, TRANSPARENT);
   SetTextColor(hdc, RGB(220, 224, 230));
   RECT title{8, 8, rc.right - 8, 32};
-  DrawTextW(hdc, L"拖动色块调整分区。双击色块重命名。", -1, &title,
+  DrawTextW(hdc, L"全部页面。拖动色块调整分区，双击重命名。", -1, &title,
             DT_LEFT | DT_VCENTER | DT_SINGLELINE);
   const RECT canvas = CanvasRect(hwnd);
   HBRUSH desk = CreateSolidBrush(RGB(18, 20, 26));
@@ -75,19 +75,25 @@ void PaintEditor(HWND hwnd, HDC hdc) {
   const int ch = canvas.bottom - canvas.top;
   for (size_t i = 0; i < g_state->fences.size(); ++i) {
     const auto& f = g_state->fences[i];
-    if (f.page != g_state->current_page) {
-      continue;
-    }
     RECT r{canvas.left + (f.x - work.left) * cw / vw,
            canvas.top + (f.y - work.top) * ch / vh,
            canvas.left + (f.x + f.w - work.left) * cw / vw,
            canvas.top + (f.y + f.h - work.top) * ch / vh};
-    HBRUSH br = CreateSolidBrush(f.portal_path.empty() ? RGB(70, 110, 170)
-                                                       : RGB(40, 140, 90));
+    const int page = (std::max)(0, f.page);
+    const COLORREF fill =
+        f.portal_path.empty()
+            ? RGB(50 + (page * 37) % 120, 80 + (page * 19) % 80, 150)
+            : RGB(30, 120 + (page * 17) % 80, 70);
+    HBRUSH br = CreateSolidBrush(fill);
     FillRect(hdc, &r, br);
     DeleteObject(br);
+    std::wstring label = f.title;
+    if (static_cast<size_t>(f.page) < g_state->page_names.size()) {
+      label += L" · ";
+      label += g_state->page_names[static_cast<size_t>(f.page)];
+    }
     SetTextColor(hdc, RGB(255, 255, 255));
-    DrawTextW(hdc, f.title.c_str(), -1, &r,
+    DrawTextW(hdc, label.c_str(), -1, &r,
               DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
   }
 }
@@ -103,8 +109,7 @@ LRESULT CALLBACK EditorProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
     }
     case WM_LBUTTONDOWN: {
       const int hit = HitFence(hwnd, GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam));
-      if (hit >= 0 && g_state &&
-          g_state->fences[static_cast<size_t>(hit)].page == g_state->current_page) {
+      if (hit >= 0 && g_state) {
         g_drag = hit;
         g_grab = {GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
         SetCapture(hwnd);

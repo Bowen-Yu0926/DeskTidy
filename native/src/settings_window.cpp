@@ -92,12 +92,10 @@ bool SettingsWindow::Create(HINSTANCE instance) {
   lbl_page_ = CreateWindowW(L"STATIC", L"页面", WS_CHILD | WS_VISIBLE, 310, 266,
                             40, 20, hwnd_, nullptr, instance, nullptr);
   combo_page_ = CreateWindowW(
-      L"COMBOBOX", L"", WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST, 350, 262, 80,
-      120, hwnd_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kComboPage)),
+      L"COMBOBOX", L"", WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST, 350, 262, 160,
+      240, hwnd_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kComboPage)),
       instance, nullptr);
-  SendMessageW(combo_page_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"第1页"));
-  SendMessageW(combo_page_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"第2页"));
-  SendMessageW(combo_page_, CB_SETCURSEL, 0, 0);
+  SetPageNames({L"第 1 页", L"第 2 页"});
 
   btn_apply_ = CreateWindowW(
       L"BUTTON", L"应用标题/页面", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 20,
@@ -266,6 +264,26 @@ bool SettingsWindow::IsOpen() const {
   return hwnd_ && IsWindowVisible(hwnd_) && !IsIconic(hwnd_);
 }
 
+void SettingsWindow::SetPageNames(const std::vector<std::wstring>& names) {
+  page_names_ = names.empty() ? std::vector<std::wstring>{L"第 1 页", L"第 2 页"}
+                              : names;
+  if (!combo_page_) {
+    return;
+  }
+  const int prev =
+      static_cast<int>(SendMessageW(combo_page_, CB_GETCURSEL, 0, 0));
+  SendMessageW(combo_page_, CB_RESETCONTENT, 0, 0);
+  for (const auto& name : page_names_) {
+    SendMessageW(combo_page_, CB_ADDSTRING, 0,
+                 reinterpret_cast<LPARAM>(name.c_str()));
+  }
+  int sel = prev;
+  if (sel < 0 || sel >= static_cast<int>(page_names_.size())) {
+    sel = 0;
+  }
+  SendMessageW(combo_page_, CB_SETCURSEL, sel, 0);
+}
+
 void SettingsWindow::SetFenceNames(const std::vector<std::wstring>& names) {
   if (!list_) {
     return;
@@ -389,12 +407,21 @@ LRESULT SettingsWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
         if (sel >= 0 && edit_title_) {
           wchar_t buf[512] = {};
           SendMessageW(list_, LB_GETTEXT, sel, reinterpret_cast<LPARAM>(buf));
-          std::wstring s = buf;
-          const size_t p = s.find(L"  p");
-          if (p != std::wstring::npos) {
-            s.resize(p);
+          const std::wstring full = buf;
+          const size_t p = full.find(L"  p");
+          SetWindowTextW(edit_title_,
+                         (p == std::wstring::npos ? full : full.substr(0, p))
+                             .c_str());
+          const size_t bracket = full.rfind(L"  [");
+          const size_t marker = full.rfind(
+              L"  p", bracket == std::wstring::npos ? std::wstring::npos
+                                                   : bracket);
+          if (marker != std::wstring::npos && combo_page_) {
+            const int page = _wtoi(full.c_str() + marker + 3) - 1;
+            if (page >= 0) {
+              SendMessageW(combo_page_, CB_SETCURSEL, page, 0);
+            }
           }
-          SetWindowTextW(edit_title_, s.c_str());
         }
         return 0;
       }

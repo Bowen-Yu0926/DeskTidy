@@ -23,6 +23,7 @@ class SettingsWindow {
   bool IsOpen() const;
 
   void SetFenceNames(const std::vector<std::wstring>& names);
+  void SetPageNames(const std::vector<std::wstring>& names);
   void SetToggles(bool dock_on, bool pet_on, bool autostart_on);
   void SetOrganizePrefs(bool startup_on, bool watch_on);
   void SetOrganizePreview(const std::vector<std::wstring>& names);
@@ -87,4 +88,5 @@ class SettingsWindow {
   BoolFn on_org_watch_;
   VoidFn on_record_cfg_;
   VoidFn on_org_preview_;
+  std::vector<std::wstring> page_names_;
 };

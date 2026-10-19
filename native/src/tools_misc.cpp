@@ -296,6 +296,31 @@ void ConfigureScreenRecord(HWND owner) {
     }
     prefs.record_output_dir = trimmed;
   }
+  const wchar_t* quality_now = L"1";
+  if (prefs.record_quality == 0) {
+    quality_now = L"0";
+  } else if (prefs.record_quality == 2) {
+    quality_now = L"2";
+  }
+  const std::wstring quality = PromptText(
+      owner, L"录屏画质", L"画质：0 低，1 中，2 高：", quality_now);
+  if (!quality.empty()) {
+    prefs.record_quality = _wtoi(quality.c_str());
+    if (prefs.record_quality < 0 || prefs.record_quality > 2) {
+      prefs.record_quality = 1;
+    }
+  }
+  const std::wstring mic = PromptText(
+      owner, L"麦克风",
+      L"DirectShow 设备名（留空不录音，单个空格清除）：",
+      prefs.record_mic.c_str());
+  if (!mic.empty()) {
+    std::wstring trimmed = mic;
+    while (!trimmed.empty() && trimmed.back() == L' ') {
+      trimmed.pop_back();
+    }
+    prefs.record_mic = trimmed;
+  }
   SaveAppPrefs(prefs);
   MessageBoxW(owner, L"录屏设置已保存。", L"录屏", MB_OK | MB_ICONINFORMATION);
 }

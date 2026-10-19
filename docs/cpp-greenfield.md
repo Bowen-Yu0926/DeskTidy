@@ -84,11 +84,15 @@ Native Win32 host — feature MVP map vs Python product.
 | Update download/run installer | done |
 | Pet climb/ledge + buoy bar | done |
 | Notes toast / MD export / pandoc / HTML paste / open-with | done |
-| DeskNote WebView editor | not ported (RichEdit + toast mode instead) |
+| DeskNote find next/prev + HTML export | done |
 | Shimeji window ledges (auto climb, fall off edge) | done |
 | Second-instance CLI forward | done |
 | Rename current page (double-click page bar) | done |
 | DeskNote Toast UI WebView2 WYSIWYG | done |
+| Settings page list follows page names | done |
+| Layout editor shows every page | done |
+| Portal folder change refresh | done |
+| Record quality + microphone name | done |
 
 ## Build
 

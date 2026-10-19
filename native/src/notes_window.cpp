@@ -40,6 +40,9 @@ constexpr int kMenuOpenWith = 2116;
 constexpr int kMenuPasteHtml = 2117;
 constexpr int kMenuToast = 2118;
 constexpr int kMenuWysiwyg = 2119;
+constexpr int kMenuFindNext = 2120;
+constexpr int kMenuFindPrev = 2121;
+constexpr int kMenuExportHtml = 2122;
 
 struct StreamCookie {
   std::string data;
@@ -106,6 +109,7 @@ bool NotesWindow::Create(HINSTANCE instance) {
   AppendMenuW(file, MF_STRING, kMenuSearchLib, L"搜索笔记…");
   AppendMenuW(file, MF_STRING, kMenuPreview, L"Markdown 预览");
   AppendMenuW(file, MF_STRING, kMenuExportMd, L"导出 Markdown…");
+  AppendMenuW(file, MF_STRING, kMenuExportHtml, L"导出 HTML…");
   AppendMenuW(file, MF_STRING, kMenuPandoc, L"用 Pandoc 导出 DOCX");
   AppendMenuW(file, MF_STRING, kMenuOpenWith, L"打开方式…");
   AppendMenuW(file, MF_STRING, kMenuPasteHtml, L"粘贴 HTML 为 Markdown");
@@ -116,6 +120,8 @@ bool NotesWindow::Create(HINSTANCE instance) {
   AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(file), L"文件");
   HMENU editm = CreatePopupMenu();
   AppendMenuW(editm, MF_STRING, kMenuFind, L"查找…\tCtrl+F");
+  AppendMenuW(editm, MF_STRING, kMenuFindNext, L"查找下一个\tF3");
+  AppendMenuW(editm, MF_STRING, kMenuFindPrev, L"查找上一个\tShift+F3");
   AppendMenuW(editm, MF_STRING, kMenuReplace, L"替换…\tCtrl+H");
   AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(editm), L"编辑");
   HMENU view = CreatePopupMenu();
@@ -148,6 +154,8 @@ bool NotesWindow::Create(HINSTANCE instance) {
   if (!edit_) {
     return false;
   }
+  edit_proc_ = reinterpret_cast<WNDPROC>(SetWindowLongPtrW(
+      edit_, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(NotesWindow::EditProc)));
   SendMessageW(edit_, EM_SETBKGNDCOLOR, 0, RGB(255, 244, 170));
   SetFontSize(font_pt_);
   web_.Create(hwnd_);
@@ -294,6 +302,79 @@ void NotesWindow::PreviewMarkdown() {
     }
   }
   PreviewMarkdownText(hwnd_, CurrentPlainText(), L"便签预览");
+}
+
+void NotesWindow::ExportHtml() {
+  wchar_t file[MAX_PATH] = L"note.html";
+  OPENFILENAMEW ofn{};
+  ofn.lStructSize = sizeof(ofn);
+  ofn.hwndOwner = hwnd_;
+  ofn.lpstrFilter = L"HTML\0*.html\0";
+  ofn.lpstrFile = file;
+  ofn.nMaxFile = MAX_PATH;
+  ofn.Flags = OFN_OVERWRITEPROMPT;
+  ofn.lpstrDefExt = L"html";
+  if (!GetSaveFileNameW(&ofn)) {
+    return;
+  }
+  const std::wstring text = CurrentPlainText();
+  std::string body;
+  std::wstring line;
+  auto flush = [&](const std::wstring& raw) {
+    std::wstring src = raw;
+    while (!src.empty() && (src.back() == L'\r' || src.back() == L'\n')) {
+      src.pop_back();
+    }
+    int level = 0;
+    while (level < 3 && level < static_cast<int>(src.size()) &&
+           src[static_cast<size_t>(level)] == L'#') {
+      ++level;
+    }
+    std::wstring content = src;
+    if (level > 0 && static_cast<size_t>(level) < src.size() &&
+        src[static_cast<size_t>(level)] == L' ') {
+      content = src.substr(static_cast<size_t>(level + 1));
+    } else if (level > 0) {
+      level = 0;
+    }
+    std::string escaped;
+    const std::string utf = NarrowUtf8(content);
+    for (unsigned char c : utf) {
+      if (c == '<') {
+        escaped += "&lt;";
+      } else if (c == '>') {
+        escaped += "&gt;";
+      } else if (c == '&') {
+        escaped += "&amp;";
+      } else {
+        escaped.push_back(static_cast<char>(c));
+      }
+    }
+    if (level > 0) {
+      body += "<h" + std::to_string(level) + ">" + escaped + "</h" +
+              std::to_string(level) + ">\n";
+    } else if (escaped.empty()) {
+      body += "<br>\n";
+    } else {
+      body += "<p>" + escaped + "</p>\n";
+    }
+  };
+  for (wchar_t ch : text) {
+    if (ch == L'\n') {
+      flush(line);
+      line.clear();
+    } else {
+      line.push_back(ch);
+    }
+  }
+  flush(line);
+  std::ofstream out(file, std::ios::binary);
+  if (!out) {
+    return;
+  }
+  out << "<!DOCTYPE html><meta charset=\"utf-8\"><title>DeskTidy</title>\n"
+      << "<body style=\"font-family:sans-serif;max-width:42em;margin:2em auto\">\n"
+      << body << "</body>\n";
 }
 
 void NotesWindow::ExportMarkdown() {
@@ -520,6 +601,17 @@ void NotesWindow::SaveAs() {
   Save();
 }
 
+void NotesWindow::FindAgain(bool down) {
+  if (!edit_ || find_what_[0] == 0) {
+    ShowFind(false);
+    return;
+  }
+  FINDREPLACEW fr = find_;
+  fr.Flags = (down ? FR_DOWN : 0) | (find_.Flags & (FR_MATCHCASE | FR_WHOLEWORD));
+  fr.lpstrFindWhat = find_what_;
+  HandleFindMsg(&fr);
+}
+
 void NotesWindow::ShowFind(bool replace) {
   if (find_dlg_ && IsWindow(find_dlg_)) {
     SetForegroundWindow(find_dlg_);
@@ -618,6 +710,32 @@ void NotesWindow::InsertTemplate() {
   SendMessageW(edit_, EM_REPLACESEL, TRUE, reinterpret_cast<LPARAM>(tpl));
 }
 
+LRESULT CALLBACK NotesWindow::EditProc(HWND hwnd, UINT msg, WPARAM wparam,
+                                        LPARAM lparam) {
+  auto* self = reinterpret_cast<NotesWindow*>(
+      GetWindowLongPtrW(GetParent(hwnd), GWLP_USERDATA));
+  if (self && msg == WM_KEYDOWN) {
+    const bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+    const bool shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+    if (wparam == VK_F3) {
+      self->FindAgain(!shift);
+      return 0;
+    }
+    if (ctrl && (wparam == 'F' || wparam == 'f')) {
+      self->ShowFind(false);
+      return 0;
+    }
+    if (ctrl && (wparam == 'H' || wparam == 'h')) {
+      self->ShowFind(true);
+      return 0;
+    }
+  }
+  if (self && self->edit_proc_) {
+    return CallWindowProcW(self->edit_proc_, hwnd, msg, wparam, lparam);
+  }
+  return DefWindowProcW(hwnd, msg, wparam, lparam);
+}
+
 LRESULT CALLBACK NotesWindow::WndProc(HWND hwnd, UINT msg, WPARAM wparam,
                                       LPARAM lparam) {
   NotesWindow* self = nullptr;
@@ -662,6 +780,9 @@ LRESULT NotesWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
         case kMenuExportMd:
           ExportMarkdown();
           return 0;
+        case kMenuExportHtml:
+          ExportHtml();
+          return 0;
         case kMenuPandoc:
           ExportWithPandoc();
           return 0;
@@ -679,6 +800,12 @@ LRESULT NotesWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
           return 0;
         case kMenuFind:
           ShowFind(false);
+          return 0;
+        case kMenuFindNext:
+          FindAgain(true);
+          return 0;
+        case kMenuFindPrev:
+          FindAgain(false);
           return 0;
         case kMenuReplace:
           ShowFind(true);

@@ -18,6 +18,7 @@ class NotesWindow {
 
  private:
   static LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
+  static LRESULT CALLBACK EditProc(HWND, UINT, WPARAM, LPARAM);
   LRESULT HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam);
   void Load();
   void Save();
@@ -26,6 +27,8 @@ class NotesWindow {
   void SearchLibrary();
   void PreviewMarkdown();
   void ExportMarkdown();
+  void ExportHtml();
+  void FindAgain(bool down);
   void ExportWithPandoc();
   void OpenWithShell();
   void PasteHtmlAsMarkdown();
@@ -51,4 +54,5 @@ class NotesWindow {
   bool toast_ = false;
   bool wysiwyg_ = false;
   NotesWebView web_;
+  WNDPROC edit_proc_ = nullptr;
 };

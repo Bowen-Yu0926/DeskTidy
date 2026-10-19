@@ -636,6 +636,7 @@ void App::SyncPageChrome() {
       fence->SetPageNames(page_names_);
     }
   }
+  settings_.SetPageNames(page_names_);
 }
 
 void App::AddPage() {
@@ -1146,6 +1147,13 @@ LRESULT CALLBACK App::TrayWndProc(HWND hwnd, UINT msg, WPARAM wparam,
       }
       if (wparam == kTimerWatch) {
         self->OnDisplayTopologyMaybeChanged();
+        std::vector<std::wstring> portals;
+        for (const auto& fence : self->fences_) {
+          if (fence && !fence->PortalPath().empty()) {
+            portals.push_back(fence->PortalPath());
+          }
+        }
+        self->desktop_watch_.SetExtraFolders(portals);
         if (self->desktop_watch_.PollChanged()) {
           self->rules_ = LoadRules();
           if (self->prefs_.auto_organize_watch) {

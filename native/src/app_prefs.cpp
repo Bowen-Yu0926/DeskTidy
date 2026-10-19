@@ -105,9 +105,17 @@ AppPrefs LoadAppPrefs() {
   if (prefs.record_seconds < 0) {
     prefs.record_seconds = 0;
   }
+  prefs.record_quality = ParseIntField(json, "record_quality", 1);
+  if (prefs.record_quality < 0 || prefs.record_quality > 2) {
+    prefs.record_quality = 1;
+  }
   const std::string dir = ParseStringField(json, "record_output_dir");
   if (!dir.empty()) {
     prefs.record_output_dir = WidenUtf8(dir);
+  }
+  const std::string mic = ParseStringField(json, "record_mic");
+  if (!mic.empty()) {
+    prefs.record_mic = WidenUtf8(mic);
   }
   const std::string theme = ParseStringField(json, "theme_id");
   if (!theme.empty()) {
@@ -126,7 +134,10 @@ void SaveAppPrefs(const AppPrefs& prefs) {
       << ",\n  \"auto_organize_watch\": "
       << (prefs.auto_organize_watch ? "true" : "false")
       << ",\n  \"record_seconds\": " << prefs.record_seconds
+      << ",\n  \"record_quality\": " << prefs.record_quality
       << ",\n  \"record_output_dir\": \""
       << EscapeJson(NarrowUtf8(prefs.record_output_dir))
+      << "\",\n  \"record_mic\": \""
+      << EscapeJson(NarrowUtf8(prefs.record_mic))
       << "\",\n  \"theme_id\": \"" << EscapeJson(prefs.theme_id) << "\"\n}\n";
 }
