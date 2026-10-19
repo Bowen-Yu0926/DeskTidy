@@ -29,6 +29,8 @@ class VaultWindow {
   void AddFromFields();
   void ExportBackup();
   void ImportBackup();
+  void CloudLogin();
+  void CloudSync();
 
   HWND hwnd_ = nullptr;
   HWND list_ = nullptr;

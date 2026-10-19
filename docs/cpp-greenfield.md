@@ -26,10 +26,11 @@ Native Win32 host — feature MVP map vs Python product.
 | First-run tip | done |
 | Hotkey help + rebinding (`hotkeys.json`) | done |
 | Autostart / installer / single-instance | done |
-| Cloud vault sync | not ported |
-| DeskNote WYSIWYG | not ported |
-| Pet asset pack / dissolve anim | not ported |
-| Full i18n / per-display layout profiles | not ported |
+| Cloud vault sync (login + enc_ver=0 REST) | done |
+| DeskNote RichEdit (RTF bold/italic/underline) | done |
+| Pet PNG frame pack + dissolve | done |
+| UI language zh/en (`ui_lang.txt`) | done |
+| Per-display layout profiles | done |
 
 ## Build
 

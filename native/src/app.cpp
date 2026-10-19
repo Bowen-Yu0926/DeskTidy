@@ -6,6 +6,7 @@
 #include "first_run.h"
 #include "hotkey_help.h"
 #include "hotkey_store.h"
+#include "i18n.h"
 #include "organize.h"
 #include "minutes.h"
 #include "snapshot_ui.h"
@@ -82,6 +83,7 @@ bool App::SpawnFence(const FenceLayout& layout) {
 
 bool App::Init(HINSTANCE instance) {
   instance_ = instance;
+  LoadLanguage();
   INITCOMMONCONTROLSEX icc{sizeof(icc), ICC_STANDARD_CLASSES};
   InitCommonControlsEx(&icc);
 
@@ -782,42 +784,43 @@ LRESULT CALLBACK App::TrayWndProc(HWND hwnd, UINT msg, WPARAM wparam,
         POINT pt{};
         GetCursorPos(&pt);
         HMENU menu = CreatePopupMenu();
-        AppendMenuW(menu, MF_STRING, 1, L"设置");
-        AppendMenuW(menu, MF_STRING, 2, L"便签");
-        AppendMenuW(menu, MF_STRING, 3, L"待办");
-        AppendMenuW(menu, MF_STRING, 4, L"文件搜索");
-        AppendMenuW(menu, MF_STRING, 5, L"账号保险库");
-        AppendMenuW(menu, MF_STRING, 6, L"会议纪要");
+        AppendMenuW(menu, MF_STRING, 1, Tr("settings").c_str());
+        AppendMenuW(menu, MF_STRING, 2, Tr("notes").c_str());
+        AppendMenuW(menu, MF_STRING, 3, Tr("todos").c_str());
+        AppendMenuW(menu, MF_STRING, 4, Tr("search").c_str());
+        AppendMenuW(menu, MF_STRING, 5, Tr("vault").c_str());
+        AppendMenuW(menu, MF_STRING, 6, Tr("minutes").c_str());
         AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-        AppendMenuW(menu, MF_STRING, 7, L"截图");
-        AppendMenuW(menu, MF_STRING, 8, L"录屏(15s)");
-        AppendMenuW(menu, MF_STRING, 9, L"壁纸…");
-        AppendMenuW(menu, MF_STRING, 10, L"检查更新");
+        AppendMenuW(menu, MF_STRING, 7, Tr("screenshot").c_str());
+        AppendMenuW(menu, MF_STRING, 8, Tr("record").c_str());
+        AppendMenuW(menu, MF_STRING, 9, Tr("wallpaper").c_str());
+        AppendMenuW(menu, MF_STRING, 10, Tr("updates").c_str());
         AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-        AppendMenuW(menu, MF_STRING, 11, L"保存布局快照");
-        AppendMenuW(menu, MF_STRING, 12, L"管理布局快照…");
-        AppendMenuW(menu, MF_STRING, 13, L"Peek 显隐分区");
-        AppendMenuW(menu, MF_STRING, 14, L"显示/隐藏分区");
+        AppendMenuW(menu, MF_STRING, 11, Tr("save_snapshot").c_str());
+        AppendMenuW(menu, MF_STRING, 12, Tr("manage_snapshots").c_str());
+        AppendMenuW(menu, MF_STRING, 13, Tr("peek").c_str());
+        AppendMenuW(menu, MF_STRING, 14, Tr("toggle_fences").c_str());
         AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-        AppendMenuW(menu, MF_STRING, 15, L"第 1 页");
-        AppendMenuW(menu, MF_STRING, 16, L"第 2 页");
-        AppendMenuW(menu, MF_STRING, 17, L"虚拟整理");
-        AppendMenuW(menu, MF_STRING, 18, L"物理整理");
-        AppendMenuW(menu, MF_STRING, 19, L"编辑规则");
-        AppendMenuW(menu, MF_STRING, 30, L"整理白名单…");
-        AppendMenuW(menu, MF_STRING, 20, L"刷新图标");
-        AppendMenuW(menu, MF_STRING, 21, L"添加分区");
-        AppendMenuW(menu, MF_STRING, 22, L"切换 Dock");
-        AppendMenuW(menu, MF_STRING, 23, L"切换宠物");
+        AppendMenuW(menu, MF_STRING, 15, Tr("page1").c_str());
+        AppendMenuW(menu, MF_STRING, 16, Tr("page2").c_str());
+        AppendMenuW(menu, MF_STRING, 17, Tr("organize_virtual").c_str());
+        AppendMenuW(menu, MF_STRING, 18, Tr("organize_physical").c_str());
+        AppendMenuW(menu, MF_STRING, 19, Tr("edit_rules").c_str());
+        AppendMenuW(menu, MF_STRING, 30, Tr("whitelist").c_str());
+        AppendMenuW(menu, MF_STRING, 20, Tr("refresh_icons").c_str());
+        AppendMenuW(menu, MF_STRING, 21, Tr("add_fence").c_str());
+        AppendMenuW(menu, MF_STRING, 22, Tr("toggle_dock").c_str());
+        AppendMenuW(menu, MF_STRING, 23, Tr("toggle_pet").c_str());
         AppendMenuW(menu,
                     MF_STRING | (IsNativeAutostartEnabled() ? MF_CHECKED : 0),
                     24, L"开机启动");
         AppendMenuW(menu, MF_STRING, 25, L"恢复桌面层");
-        AppendMenuW(menu, MF_STRING, 26, L"快捷键说明");
-        AppendMenuW(menu, MF_STRING, 27, L"修改快捷键…");
-        AppendMenuW(menu, MF_STRING, 28, L"全屏截图");
+        AppendMenuW(menu, MF_STRING, 26, Tr("hotkey_help").c_str());
+        AppendMenuW(menu, MF_STRING, 27, Tr("edit_hotkeys").c_str());
+        AppendMenuW(menu, MF_STRING, 28, Tr("fullscreen_shot").c_str());
+        AppendMenuW(menu, MF_STRING, 31, Tr("language").c_str());
         AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-        AppendMenuW(menu, MF_STRING, 29, L"退出");
+        AppendMenuW(menu, MF_STRING, 29, Tr("exit").c_str());
         SetForegroundWindow(hwnd);
         const int cmd =
             TrackPopupMenu(menu, TPM_RETURNCMD | TPM_NONOTIFY, pt.x, pt.y, 0,
@@ -912,6 +915,12 @@ LRESULT CALLBACK App::TrayWndProc(HWND hwnd, UINT msg, WPARAM wparam,
           case 28:
             CaptureRegionToPng(self->settings_.Hwnd());
             break;
+          case 31:
+            ToggleLanguage();
+            MessageBoxW(self->settings_.Hwnd(),
+                        (std::wstring(L"Language: ") + WidenUtf8(CurrentLang())).c_str(),
+                        Tr("language").c_str(), MB_OK | MB_ICONINFORMATION);
+            break;
           case 29:
             PostQuitMessage(0);
             break;
@@ -921,6 +930,9 @@ LRESULT CALLBACK App::TrayWndProc(HWND hwnd, UINT msg, WPARAM wparam,
         return 0;
       }
       break;
+    case WM_DISPLAYCHANGE:
+      self->ReloadFencesFromState(LoadAppState());
+      return 0;
     case WM_HOTKEY: {
       const int idx = static_cast<int>(wparam) - static_cast<int>(kHotkeyBase);
       if (idx >= 0 && idx < static_cast<int>(self->hotkeys_.size())) {

@@ -4,8 +4,11 @@
 #include "paths_util.h"
 
 #include <commdlg.h>
+#include <Richedit.h>
 #include <ShlObj.h>
 
+#include <algorithm>
+#include <cstring>
 #include <fstream>
 #include <sstream>
 #include <string>
@@ -20,10 +23,46 @@ constexpr int kMenuSaveAs = 2102;
 constexpr int kMenuBigger = 2103;
 constexpr int kMenuSmaller = 2104;
 constexpr int kMenuTpl = 2105;
+constexpr int kMenuBold = 2106;
+constexpr int kMenuItalic = 2107;
+constexpr int kMenuUnder = 2108;
+
+struct StreamCookie {
+  std::string data;
+  size_t pos = 0;
+};
+
+DWORD CALLBACK StreamInCb(DWORD_PTR cookie, LPBYTE buf, LONG cb, LONG* pcb) {
+  auto* c = reinterpret_cast<StreamCookie*>(cookie);
+  const size_t left = c->data.size() - c->pos;
+  const LONG n = static_cast<LONG>((std::min)(left, static_cast<size_t>(cb)));
+  if (n > 0) {
+    memcpy(buf, c->data.data() + c->pos, static_cast<size_t>(n));
+  }
+  c->pos += static_cast<size_t>(n);
+  *pcb = n;
+  return 0;
+}
+
+DWORD CALLBACK StreamOutCb(DWORD_PTR cookie, LPBYTE buf, LONG cb, LONG* pcb) {
+  auto* c = reinterpret_cast<StreamCookie*>(cookie);
+  c->data.append(reinterpret_cast<char*>(buf), reinterpret_cast<char*>(buf) + cb);
+  *pcb = cb;
+  return 0;
+}
+
+void ApplyCharEffect(HWND edit, DWORD mask, DWORD effect, bool on) {
+  CHARFORMAT2W cf{};
+  cf.cbSize = sizeof(cf);
+  cf.dwMask = mask;
+  cf.dwEffects = on ? effect : 0;
+  SendMessageW(edit, EM_SETCHARFORMAT, SCF_SELECTION, reinterpret_cast<LPARAM>(&cf));
+}
 }  // namespace
 
 bool NotesWindow::Create(HINSTANCE instance) {
-  path_ = JoinPath(NativeDataDir(), L"notes.txt");
+  path_ = JoinPath(NativeDataDir(), L"notes.rtf");
+  LoadLibraryW(L"Msftedit.dll");
 
   WNDCLASSEXW wc{};
   wc.cbSize = sizeof(wc);
@@ -56,14 +95,32 @@ bool NotesWindow::Create(HINSTANCE instance) {
   AppendMenuW(view, MF_STRING, kMenuBigger, L"放大字体");
   AppendMenuW(view, MF_STRING, kMenuSmaller, L"缩小字体");
   AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(view), L"视图");
+  HMENU fmt = CreatePopupMenu();
+  AppendMenuW(fmt, MF_STRING, kMenuBold, L"粗体");
+  AppendMenuW(fmt, MF_STRING, kMenuItalic, L"斜体");
+  AppendMenuW(fmt, MF_STRING, kMenuUnder, L"下划线");
+  AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(fmt), L"格式");
   SetMenu(hwnd_, menu);
 
   edit_ = CreateWindowExW(
-      WS_EX_CLIENTEDGE, L"EDIT", L"",
+      WS_EX_CLIENTEDGE, MSFTEDIT_CLASS, L"",
       WS_CHILD | WS_VISIBLE | WS_VSCROLL | ES_MULTILINE | ES_AUTOVSCROLL |
-          ES_WANTRETURN,
+          ES_WANTRETURN | ES_SAVESEL,
       6, 6, 300, 220, hwnd_,
       reinterpret_cast<HMENU>(static_cast<INT_PTR>(kEditId)), instance, nullptr);
+  if (!edit_) {
+    edit_ = CreateWindowExW(
+        WS_EX_CLIENTEDGE, L"EDIT", L"",
+        WS_CHILD | WS_VISIBLE | WS_VSCROLL | ES_MULTILINE | ES_AUTOVSCROLL |
+            ES_WANTRETURN,
+        6, 6, 300, 220, hwnd_,
+        reinterpret_cast<HMENU>(static_cast<INT_PTR>(kEditId)), instance,
+        nullptr);
+  }
+  if (!edit_) {
+    return false;
+  }
+  SendMessageW(edit_, EM_SETBKGNDCOLOR, 0, RGB(255, 244, 170));
   SetFontSize(font_pt_);
   Load();
   return true;
@@ -122,25 +179,53 @@ void NotesWindow::Load() {
   }
   std::ifstream in(path_, std::ios::binary);
   if (!in) {
+    std::ifstream legacy(JoinPath(NativeDataDir(), L"notes.txt"), std::ios::binary);
+    if (!legacy) {
+      return;
+    }
+    std::ostringstream ss;
+    ss << legacy.rdbuf();
+    SetWindowTextW(edit_, WidenUtf8(ss.str()).c_str());
     return;
   }
   std::ostringstream ss;
   ss << in.rdbuf();
-  SetWindowTextW(edit_, WidenUtf8(ss.str()).c_str());
+  const std::string data = ss.str();
+  if (data.rfind("{\\rtf", 0) == 0) {
+    StreamCookie cookie;
+    cookie.data = data;
+    EDITSTREAM es{};
+    es.dwCookie = reinterpret_cast<DWORD_PTR>(&cookie);
+    es.pfnCallback = StreamInCb;
+    SendMessageW(edit_, EM_STREAMIN, SF_RTF, reinterpret_cast<LPARAM>(&es));
+  } else {
+    SetWindowTextW(edit_, WidenUtf8(data).c_str());
+  }
 }
 
 void NotesWindow::Save() {
   if (!edit_) {
     return;
   }
+  StreamCookie cookie;
+  EDITSTREAM es{};
+  es.dwCookie = reinterpret_cast<DWORD_PTR>(&cookie);
+  es.pfnCallback = StreamOutCb;
+  const LRESULT streamed =
+      SendMessageW(edit_, EM_STREAMOUT, SF_RTF, reinterpret_cast<LPARAM>(&es));
+  std::ofstream out(path_, std::ios::binary);
+  if (!out) {
+    return;
+  }
+  if (streamed && !cookie.data.empty()) {
+    out << cookie.data;
+    return;
+  }
   const int len = GetWindowTextLengthW(edit_);
   std::wstring wide(static_cast<size_t>(len) + 1, L'\0');
   GetWindowTextW(edit_, wide.data(), len + 1);
   wide.resize(static_cast<size_t>(len));
-  std::ofstream out(path_, std::ios::binary);
-  if (out) {
-    out << NarrowUtf8(wide);
-  }
+  out << NarrowUtf8(wide);
 }
 
 void NotesWindow::SaveAs() {
@@ -207,6 +292,15 @@ LRESULT NotesWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
           return 0;
         case kMenuTpl:
           InsertTemplate();
+          return 0;
+        case kMenuBold:
+          ApplyCharEffect(edit_, CFM_BOLD, CFE_BOLD, true);
+          return 0;
+        case kMenuItalic:
+          ApplyCharEffect(edit_, CFM_ITALIC, CFE_ITALIC, true);
+          return 0;
+        case kMenuUnder:
+          ApplyCharEffect(edit_, CFM_UNDERLINE, CFE_UNDERLINE, true);
           return 0;
         default:
           break;

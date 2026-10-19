@@ -1,6 +1,9 @@
 #include "vault_window.h"
 
+#include "i18n.h"
 #include "paths_util.h"
+#include "prompt_text.h"
+#include "vault_http.h"
 
 #include <commdlg.h>
 #include <wincrypt.h>
@@ -23,6 +26,8 @@ constexpr int kAdd = 5006;
 constexpr int kDel = 5007;
 constexpr int kExport = 5008;
 constexpr int kImport = 5009;
+constexpr int kLogin = 5010;
+constexpr int kSync = 5011;
 
 std::wstring VaultPath() { return JoinPath(NativeDataDir(), L"vault.dpapi"); }
 
@@ -117,9 +122,17 @@ bool VaultWindow::Create(HINSTANCE instance) {
                 320, 100, 30, hwnd_,
                 reinterpret_cast<HMENU>(static_cast<INT_PTR>(kImport)), instance,
                 nullptr);
+  CreateWindowW(L"BUTTON", L"云登录", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 12,
+                360, 100, 30, hwnd_,
+                reinterpret_cast<HMENU>(static_cast<INT_PTR>(kLogin)), instance,
+                nullptr);
+  CreateWindowW(L"BUTTON", L"云同步", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 120,
+                360, 100, 30, hwnd_,
+                reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSync)), instance,
+                nullptr);
   CreateWindowW(L"STATIC",
-                L"本地 DPAPI 加密。导出为当前用户可解密的备份文件（可换机需同账号）。",
-                WS_CHILD | WS_VISIBLE, 12, 370, 520, 40, hwnd_, nullptr,
+                L"本地 DPAPI。云同步走 DeskTidy 保险库 API（enc_ver=0，服务端加密）。",
+                WS_CHILD | WS_VISIBLE, 12, 400, 520, 40, hwnd_, nullptr,
                 instance, nullptr);
   Load();
   RefreshList();
@@ -271,6 +284,62 @@ void VaultWindow::ExportBackup() {
   }
 }
 
+void VaultWindow::CloudLogin() {
+  const std::wstring user =
+      PromptText(hwnd_, L"云保险库", L"登录名：", L"");
+  if (user.empty()) {
+    return;
+  }
+  const std::wstring pass =
+      PromptText(hwnd_, L"云保险库", L"密码：", L"");
+  if (pass.empty()) {
+    return;
+  }
+  if (VaultHttpLogin(user, pass)) {
+    MessageBoxW(hwnd_, Tr("cloud_sync_done").c_str(), Tr("vault").c_str(),
+                MB_OK | MB_ICONINFORMATION);
+  } else {
+    MessageBoxW(hwnd_, Tr("cloud_sync_fail").c_str(), Tr("vault").c_str(),
+                MB_OK | MB_ICONWARNING);
+  }
+}
+
+void VaultWindow::CloudSync() {
+  std::vector<VaultHttpCredential> remote;
+  for (const auto& e : entries_) {
+    VaultHttpCredential c;
+    c.title = e.title;
+    c.username = e.user;
+    c.password = e.pass;
+    c.url = e.url;
+    remote.push_back(std::move(c));
+  }
+  if (!VaultHttpPullMerge(&remote)) {
+    MessageBoxW(hwnd_, Tr("cloud_sync_fail").c_str(), Tr("vault").c_str(),
+                MB_OK | MB_ICONWARNING);
+    return;
+  }
+  entries_.clear();
+  for (const auto& c : remote) {
+    Entry e;
+    e.title = c.title;
+    e.user = c.username;
+    e.pass = c.password;
+    e.url = c.url;
+    entries_.push_back(std::move(e));
+  }
+  Save();
+  RefreshList();
+  std::vector<VaultHttpCredential> push = remote;
+  if (!VaultHttpPushAll(push)) {
+    MessageBoxW(hwnd_, Tr("cloud_sync_fail").c_str(), Tr("vault").c_str(),
+                MB_OK | MB_ICONWARNING);
+    return;
+  }
+  MessageBoxW(hwnd_, Tr("cloud_sync_done").c_str(), Tr("vault").c_str(),
+              MB_OK | MB_ICONINFORMATION);
+}
+
 void VaultWindow::ImportBackup() {
   wchar_t file[MAX_PATH] = {};
   OPENFILENAMEW ofn{};
@@ -315,6 +384,14 @@ LRESULT VaultWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
       }
       if (LOWORD(wparam) == kImport) {
         ImportBackup();
+        return 0;
+      }
+      if (LOWORD(wparam) == kLogin) {
+        CloudLogin();
+        return 0;
+      }
+      if (LOWORD(wparam) == kSync) {
+        CloudSync();
         return 0;
       }
       break;

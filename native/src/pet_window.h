@@ -29,6 +29,7 @@ class PetWindow {
   void Paint(HDC hdc);
   void EnsureDropTarget();
   void TryLoadSprite();
+  void LoadFramePack();
 
   HWND hwnd_ = nullptr;
   int bob_ = 0;
@@ -40,4 +41,7 @@ class PetWindow {
   HBITMAP sprite_ = nullptr;
   int sprite_w_ = 0;
   int sprite_h_ = 0;
+  std::vector<HBITMAP> frames_;
+  int frame_i_ = 0;
+  int dissolve_ = 0;  // 0..255 blend toward next frame
 };

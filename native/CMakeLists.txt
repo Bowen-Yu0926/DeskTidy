@@ -43,6 +43,8 @@ add_executable(desktidy_native WIN32
   src/snapshot_ui.cpp
   src/display_geom.cpp
   src/minutes.cpp
+  src/i18n.cpp
+  src/vault_http.cpp
   src/version.rc
 )
 
@@ -50,7 +52,7 @@ target_include_directories(desktidy_native PRIVATE src)
 target_compile_definitions(desktidy_native PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
 target_link_libraries(desktidy_native PRIVATE
   user32 gdi32 shell32 ole32 oleaut32 uuid comctl32 advapi32
-  gdiplus comdlg32 crypt32
+  gdiplus comdlg32 crypt32 winhttp bcrypt msimg32
 )
 
 if(MSVC)

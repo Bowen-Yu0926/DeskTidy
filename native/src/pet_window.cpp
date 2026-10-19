@@ -9,6 +9,10 @@
 #include <gdiplus.h>
 #include <windowsx.h>
 
+#include <algorithm>
+#include <string>
+#include <vector>
+
 #pragma comment(lib, "gdiplus.lib")
 
 namespace {
@@ -50,6 +54,65 @@ void PetWindow::TryLoadSprite() {
   Gdiplus::GdiplusShutdown(token);
 }
 
+void PetWindow::LoadFramePack() {
+  const std::wstring roots[] = {
+      JoinPath(NativeDataDir(), L"pets"),
+      JoinPath(ExeDir(), L"pets"),
+      JoinPath(ExeDir(), L"assets\\pets"),
+  };
+  std::vector<std::wstring> files;
+  for (const auto& root : roots) {
+    const std::wstring pattern = JoinPath(root, L"*.png");
+    WIN32_FIND_DATAW fd{};
+    HANDLE h = FindFirstFileW(pattern.c_str(), &fd);
+    if (h == INVALID_HANDLE_VALUE) {
+      continue;
+    }
+    do {
+      if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
+        files.push_back(JoinPath(root, fd.cFileName));
+      }
+    } while (FindNextFileW(h, &fd));
+    FindClose(h);
+    if (!files.empty()) {
+      break;
+    }
+  }
+  std::sort(files.begin(), files.end());
+  if (files.size() < 2) {
+    return;
+  }
+  Gdiplus::GdiplusStartupInput input;
+  ULONG_PTR token = 0;
+  Gdiplus::GdiplusStartup(&token, &input, nullptr);
+  for (const auto& path : files) {
+    if (frames_.size() >= 16) {
+      break;
+    }
+    Gdiplus::Bitmap src(path.c_str());
+    if (src.GetLastStatus() != Gdiplus::Ok) {
+      continue;
+    }
+    int w = static_cast<int>(src.GetWidth());
+    int h = static_cast<int>(src.GetHeight());
+    if (w > 128) {
+      h = h * 128 / w;
+      w = 128;
+    }
+    Gdiplus::Bitmap scaled(w, h);
+    Gdiplus::Graphics g(&scaled);
+    g.DrawImage(&src, 0, 0, w, h);
+    HBITMAP hb = nullptr;
+    scaled.GetHBITMAP(Gdiplus::Color(0, 0, 0, 0), &hb);
+    if (hb) {
+      frames_.push_back(hb);
+      sprite_w_ = w;
+      sprite_h_ = h;
+    }
+  }
+  Gdiplus::GdiplusShutdown(token);
+}
+
 bool PetWindow::Create(HINSTANCE instance) {
   if (!g_registered) {
     WNDCLASSEXW wc{};
@@ -62,8 +125,9 @@ bool PetWindow::Create(HINSTANCE instance) {
     g_registered = true;
   }
   TryLoadSprite();
-  const int ww = sprite_ ? sprite_w_ : kSize;
-  const int hh = sprite_ ? sprite_h_ : kSize;
+  LoadFramePack();
+  const int ww = (sprite_ || !frames_.empty()) ? sprite_w_ : kSize;
+  const int hh = (sprite_ || !frames_.empty()) ? sprite_h_ : kSize;
   const RECT work = PrimaryWorkArea();
   base_y_ = work.bottom - hh - 120;
   hwnd_ = CreateWindowExW(
@@ -73,7 +137,7 @@ bool PetWindow::Create(HINSTANCE instance) {
   if (!hwnd_) {
     return false;
   }
-  if (sprite_) {
+  if (sprite_ || !frames_.empty()) {
     SetLayeredWindowAttributes(hwnd_, 0, 255, LWA_ALPHA);
   } else {
     SetLayeredWindowAttributes(hwnd_, RGB(0, 0, 0), 0, LWA_COLORKEY);
@@ -113,6 +177,12 @@ void PetWindow::Destroy() {
     DeleteObject(sprite_);
     sprite_ = nullptr;
   }
+  for (auto* hb : frames_) {
+    if (hb) {
+      DeleteObject(hb);
+    }
+  }
+  frames_.clear();
 }
 
 void PetWindow::Show() {
@@ -149,6 +219,14 @@ void PetWindow::AttachToDesktopLayer() {
 void PetWindow::Tick() {
   if (!hwnd_ || !IsWindowVisible(hwnd_) || dragging_) {
     return;
+  }
+  if (frames_.size() >= 2) {
+    dissolve_ += 18;
+    if (dissolve_ >= 255) {
+      dissolve_ = 0;
+      frame_i_ = (frame_i_ + 1) % static_cast<int>(frames_.size());
+    }
+    InvalidateRect(hwnd_, nullptr, FALSE);
   }
   bob_ = (bob_ + 1) % 40;
   const int dy = (bob_ < 20) ? (bob_ / 4) : ((40 - bob_) / 4);
@@ -227,6 +305,26 @@ LRESULT PetWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
 void PetWindow::Paint(HDC hdc) {
   RECT rc{};
   GetClientRect(hwnd_, &rc);
+  if (frames_.size() >= 2) {
+    const int a = frame_i_;
+    const int b = (frame_i_ + 1) % static_cast<int>(frames_.size());
+    const int w = sprite_w_;
+    const int h = sprite_h_;
+    auto blit = [&](HBITMAP bmp, BYTE alpha) {
+      HDC mem = CreateCompatibleDC(hdc);
+      HGDIOBJ old = SelectObject(mem, bmp);
+      BLENDFUNCTION bf{};
+      bf.BlendOp = AC_SRC_OVER;
+      bf.SourceConstantAlpha = alpha;
+      AlphaBlend(hdc, 0, 0, w, h, mem, 0, 0, w, h, bf);
+      SelectObject(mem, old);
+      DeleteDC(mem);
+    };
+    blit(frames_[static_cast<size_t>(a)],
+         static_cast<BYTE>(255 - dissolve_));
+    blit(frames_[static_cast<size_t>(b)], static_cast<BYTE>(dissolve_));
+    return;
+  }
   if (sprite_) {
     HDC mem = CreateCompatibleDC(hdc);
     HGDIOBJ old = SelectObject(mem, sprite_);

@@ -19,6 +19,7 @@ struct AppState {
   int current_page = 0;
   bool dock_visible = true;
   bool pet_visible = true;
+  std::string last_display_fingerprint;
 };
 
 std::wstring LayoutFilePath();
