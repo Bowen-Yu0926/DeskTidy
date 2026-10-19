@@ -25,5 +25,5 @@ if errorlevel 1 exit /b 1
 echo.
 echo Built: build\Release\desktidy_native.exe
 echo Run:   build\Release\desktidy_native.exe
-echo Hotkey: Ctrl+Shift+S opens Settings
+echo Hotkeys: tray -^> modify chords / hotkeys.json
 exit /b 0

@@ -5,6 +5,7 @@
 #include "desktop_shell.h"
 #include "first_run.h"
 #include "hotkey_help.h"
+#include "hotkey_store.h"
 #include "organize.h"
 #include "paths_util.h"
 #include "prompt_text.h"
@@ -22,14 +23,7 @@
 
 namespace {
 constexpr UINT kTrayMsg = WM_APP + 1;
-constexpr UINT kHotkeySettings = 1;
-constexpr UINT kHotkeyPage1 = 2;
-constexpr UINT kHotkeyPage2 = 3;
-constexpr UINT kHotkeyNotes = 4;
-constexpr UINT kHotkeyPeek = 5;
-constexpr UINT kHotkeyFences = 6;
-constexpr UINT kHotkeySearch = 7;
-constexpr UINT kHotkeyShot = 8;
+constexpr UINT kHotkeyBase = 100;
 constexpr UINT kTimerRestore = 40;
 constexpr UINT kTimerPet = 41;
 constexpr UINT kTimerWatch = 42;
@@ -103,14 +97,8 @@ bool App::Init(HINSTANCE instance) {
   SetWindowLongPtrW(message_hwnd_, GWLP_USERDATA,
                     reinterpret_cast<LONG_PTR>(this));
 
-  RegisterHotKey(message_hwnd_, kHotkeySettings, MOD_CONTROL | MOD_SHIFT, 'S');
-  RegisterHotKey(message_hwnd_, kHotkeyPage1, MOD_CONTROL | MOD_ALT, '1');
-  RegisterHotKey(message_hwnd_, kHotkeyPage2, MOD_CONTROL | MOD_ALT, '2');
-  RegisterHotKey(message_hwnd_, kHotkeyNotes, MOD_CONTROL | MOD_SHIFT, 'N');
-  RegisterHotKey(message_hwnd_, kHotkeyPeek, MOD_CONTROL, VK_SPACE);
-  RegisterHotKey(message_hwnd_, kHotkeyFences, MOD_CONTROL | MOD_SHIFT, 'F');
-  RegisterHotKey(message_hwnd_, kHotkeySearch, MOD_CONTROL | MOD_ALT, '4');
-  RegisterHotKey(message_hwnd_, kHotkeyShot, MOD_CONTROL | MOD_SHIFT, '1');
+  hotkeys_ = LoadHotkeys();
+  SaveHotkeys(hotkeys_);
 
   if (!settings_.Create(instance)) {
     return false;
@@ -180,8 +168,47 @@ bool App::Init(HINSTANCE instance) {
   watch_timer_ = SetTimer(message_hwnd_, kTimerWatch, 2000, nullptr);
 
   CreateTrayIcon();
+  ReregisterHotkeys();
   MaybeShowFirstRun(settings_.Hwnd());
   return true;
+}
+
+void App::ReregisterHotkeys() {
+  if (!message_hwnd_) {
+    return;
+  }
+  for (size_t i = 0; i < 32; ++i) {
+    UnregisterHotKey(message_hwnd_, static_cast<int>(kHotkeyBase + i));
+  }
+  for (size_t i = 0; i < hotkeys_.size(); ++i) {
+    RegisterHotKey(message_hwnd_, static_cast<int>(kHotkeyBase + i),
+                   hotkeys_[i].modifiers, hotkeys_[i].vk);
+  }
+}
+
+void App::DispatchHotkey(const std::string& id) {
+  if (id == "settings") {
+    OpenSettings();
+  } else if (id == "notes") {
+    OpenNotes();
+  } else if (id == "peek") {
+    TogglePeek();
+  } else if (id == "fences") {
+    ToggleFencesVisible();
+  } else if (id == "page1") {
+    SetPage(0);
+  } else if (id == "page2") {
+    SetPage(1);
+  } else if (id == "search") {
+    OpenSearch();
+  } else if (id == "shot") {
+    StartRegionCapture();
+  }
+}
+
+void App::EditHotkeys() {
+  EditHotkeysDialog(settings_.Hwnd(), &hotkeys_);
+  ReregisterHotkeys();
 }
 
 int App::Run() {
@@ -205,14 +232,9 @@ void App::Shutdown() {
   }
   RemoveTrayIcon();
   if (message_hwnd_) {
-    UnregisterHotKey(message_hwnd_, kHotkeySettings);
-    UnregisterHotKey(message_hwnd_, kHotkeyPage1);
-    UnregisterHotKey(message_hwnd_, kHotkeyPage2);
-    UnregisterHotKey(message_hwnd_, kHotkeyNotes);
-    UnregisterHotKey(message_hwnd_, kHotkeyPeek);
-    UnregisterHotKey(message_hwnd_, kHotkeyFences);
-    UnregisterHotKey(message_hwnd_, kHotkeySearch);
-    UnregisterHotKey(message_hwnd_, kHotkeyShot);
+    for (size_t i = 0; i < 32; ++i) {
+      UnregisterHotKey(message_hwnd_, static_cast<int>(kHotkeyBase + i));
+    }
     DestroyWindow(message_hwnd_);
     message_hwnd_ = nullptr;
   }
@@ -782,9 +804,10 @@ LRESULT CALLBACK App::TrayWndProc(HWND hwnd, UINT msg, WPARAM wparam,
                     24, L"开机启动");
         AppendMenuW(menu, MF_STRING, 25, L"恢复桌面层");
         AppendMenuW(menu, MF_STRING, 26, L"快捷键说明");
-        AppendMenuW(menu, MF_STRING, 27, L"全屏截图");
+        AppendMenuW(menu, MF_STRING, 27, L"修改快捷键…");
+        AppendMenuW(menu, MF_STRING, 28, L"全屏截图");
         AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-        AppendMenuW(menu, MF_STRING, 28, L"退出");
+        AppendMenuW(menu, MF_STRING, 29, L"退出");
         SetForegroundWindow(hwnd);
         const int cmd =
             TrackPopupMenu(menu, TPM_RETURNCMD | TPM_NONOTIFY, pt.x, pt.y, 0,
@@ -871,9 +894,12 @@ LRESULT CALLBACK App::TrayWndProc(HWND hwnd, UINT msg, WPARAM wparam,
             self->ShowHotkeys();
             break;
           case 27:
-            CaptureRegionToPng(self->settings_.Hwnd());
+            self->EditHotkeys();
             break;
           case 28:
+            CaptureRegionToPng(self->settings_.Hwnd());
+            break;
+          case 29:
             PostQuitMessage(0);
             break;
           default:
@@ -882,40 +908,14 @@ LRESULT CALLBACK App::TrayWndProc(HWND hwnd, UINT msg, WPARAM wparam,
         return 0;
       }
       break;
-    case WM_HOTKEY:
-      if (wparam == kHotkeySettings) {
-        self->OpenSettings();
-        return 0;
-      }
-      if (wparam == kHotkeyPage1) {
-        self->SetPage(0);
-        return 0;
-      }
-      if (wparam == kHotkeyPage2) {
-        self->SetPage(1);
-        return 0;
-      }
-      if (wparam == kHotkeyNotes) {
-        self->OpenNotes();
-        return 0;
-      }
-      if (wparam == kHotkeyPeek) {
-        self->TogglePeek();
-        return 0;
-      }
-      if (wparam == kHotkeyFences) {
-        self->ToggleFencesVisible();
-        return 0;
-      }
-      if (wparam == kHotkeySearch) {
-        self->OpenSearch();
-        return 0;
-      }
-      if (wparam == kHotkeyShot) {
-        self->StartRegionCapture();
+    case WM_HOTKEY: {
+      const int idx = static_cast<int>(wparam) - static_cast<int>(kHotkeyBase);
+      if (idx >= 0 && idx < static_cast<int>(self->hotkeys_.size())) {
+        self->DispatchHotkey(self->hotkeys_[static_cast<size_t>(idx)].id);
         return 0;
       }
       break;
+    }
     case WM_DESTROY:
       PostQuitMessage(0);
       return 0;

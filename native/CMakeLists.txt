@@ -37,6 +37,7 @@ add_executable(desktidy_native WIN32
   src/pinned_image.cpp
   src/first_run.cpp
   src/hotkey_help.cpp
+  src/hotkey_store.cpp
   src/version.rc
 )
 

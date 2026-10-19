@@ -2,6 +2,7 @@
 
 #include "paths_util.h"
 
+#include <commdlg.h>
 #include <wincrypt.h>
 
 #include <fstream>
@@ -9,6 +10,7 @@
 #include <string>
 
 #pragma comment(lib, "crypt32.lib")
+#pragma comment(lib, "comdlg32.lib")
 
 namespace {
 constexpr wchar_t kClass[] = L"DeskTidyNativeVault";
@@ -19,6 +21,8 @@ constexpr int kPass = 5004;
 constexpr int kUrl = 5005;
 constexpr int kAdd = 5006;
 constexpr int kDel = 5007;
+constexpr int kExport = 5008;
+constexpr int kImport = 5009;
 
 std::wstring VaultPath() { return JoinPath(NativeDataDir(), L"vault.dpapi"); }
 
@@ -105,8 +109,16 @@ bool VaultWindow::Create(HINSTANCE instance) {
                 320, 100, 30, hwnd_,
                 reinterpret_cast<HMENU>(static_cast<INT_PTR>(kDel)), instance,
                 nullptr);
+  CreateWindowW(L"BUTTON", L"导出备份", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 240,
+                320, 100, 30, hwnd_,
+                reinterpret_cast<HMENU>(static_cast<INT_PTR>(kExport)), instance,
+                nullptr);
+  CreateWindowW(L"BUTTON", L"导入备份", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 350,
+                320, 100, 30, hwnd_,
+                reinterpret_cast<HMENU>(static_cast<INT_PTR>(kImport)), instance,
+                nullptr);
   CreateWindowW(L"STATIC",
-                L"本地 DPAPI 加密存储（当前 Windows 用户）。非云端零知识保险库。",
+                L"本地 DPAPI 加密。导出为当前用户可解密的备份文件（可换机需同账号）。",
                 WS_CHILD | WS_VISIBLE, 12, 370, 520, 40, hwnd_, nullptr,
                 instance, nullptr);
   Load();
@@ -241,6 +253,45 @@ LRESULT CALLBACK VaultWindow::WndProc(HWND hwnd, UINT msg, WPARAM wparam,
   return self->HandleMessage(msg, wparam, lparam);
 }
 
+void VaultWindow::ExportBackup() {
+  Save();
+  wchar_t file[MAX_PATH] = L"vault_backup.dpapi";
+  OPENFILENAMEW ofn{};
+  ofn.lStructSize = sizeof(ofn);
+  ofn.hwndOwner = hwnd_;
+  ofn.lpstrFile = file;
+  ofn.nMaxFile = MAX_PATH;
+  ofn.lpstrFilter = L"Vault backup\0*.dpapi\0All\0*.*\0";
+  ofn.Flags = OFN_OVERWRITEPROMPT;
+  if (!GetSaveFileNameW(&ofn)) {
+    return;
+  }
+  if (CopyFileW(VaultPath().c_str(), file, FALSE)) {
+    MessageBoxW(hwnd_, L"已导出。", L"保险库", MB_OK | MB_ICONINFORMATION);
+  }
+}
+
+void VaultWindow::ImportBackup() {
+  wchar_t file[MAX_PATH] = {};
+  OPENFILENAMEW ofn{};
+  ofn.lStructSize = sizeof(ofn);
+  ofn.hwndOwner = hwnd_;
+  ofn.lpstrFile = file;
+  ofn.nMaxFile = MAX_PATH;
+  ofn.lpstrFilter = L"Vault backup\0*.dpapi\0All\0*.*\0";
+  ofn.Flags = OFN_FILEMUSTEXIST;
+  if (!GetOpenFileNameW(&ofn)) {
+    return;
+  }
+  if (!CopyFileW(file, VaultPath().c_str(), FALSE)) {
+    MessageBoxW(hwnd_, L"导入失败。", L"保险库", MB_OK | MB_ICONWARNING);
+    return;
+  }
+  Load();
+  RefreshList();
+  MessageBoxW(hwnd_, L"已导入。", L"保险库", MB_OK | MB_ICONINFORMATION);
+}
+
 LRESULT VaultWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
   switch (msg) {
     case WM_COMMAND:
@@ -256,6 +307,14 @@ LRESULT VaultWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
           Save();
           RefreshList();
         }
+        return 0;
+      }
+      if (LOWORD(wparam) == kExport) {
+        ExportBackup();
+        return 0;
+      }
+      if (LOWORD(wparam) == kImport) {
+        ImportBackup();
         return 0;
       }
       break;

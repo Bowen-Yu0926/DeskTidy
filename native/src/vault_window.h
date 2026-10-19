@@ -27,6 +27,8 @@ class VaultWindow {
   void Save();
   void RefreshList();
   void AddFromFields();
+  void ExportBackup();
+  void ImportBackup();
 
   HWND hwnd_ = nullptr;
   HWND list_ = nullptr;

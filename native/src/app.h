@@ -4,6 +4,7 @@
 #include "desktop_watch.h"
 #include "dock_window.h"
 #include "fence_window.h"
+#include "hotkey_store.h"
 #include "layout.h"
 #include "notes_window.h"
 #include "page_bar.h"
@@ -64,7 +65,9 @@ class App {
   void RebuildPublicItems();
   void StartRegionCapture();
   void ShowHotkeys();
+  void EditHotkeys();
   void PinImage(const std::wstring& path);
+  void ReregisterHotkeys();
 
  private:
   static LRESULT CALLBACK TrayWndProc(HWND, UINT, WPARAM, LPARAM);
@@ -76,6 +79,7 @@ class App {
   void RebuildDockItems();
   void WireFence(FenceWindow* fence);
   void ReloadFencesFromState(const AppState& state);
+  void DispatchHotkey(const std::string& id);
 
   HINSTANCE instance_ = nullptr;
   HWND message_hwnd_ = nullptr;
@@ -93,6 +97,7 @@ class App {
   std::vector<std::unique_ptr<PinnedImage>> pins_img_;
   PinMap pins_;
   RuleMap rules_;
+  std::vector<HotkeyDef> hotkeys_;
   DesktopWatch desktop_watch_;
   int current_page_ = 0;
   bool dock_visible_ = true;

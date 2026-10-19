@@ -1,14 +1,53 @@
 #include "pet_window.h"
 
 #include "desktop_shell.h"
+#include "paths_util.h"
+#include "tool_paths.h"
 
+#include <objidl.h>
+#include <gdiplus.h>
 #include <windowsx.h>
+
+#pragma comment(lib, "gdiplus.lib")
 
 namespace {
 constexpr wchar_t kClassName[] = L"DeskTidyNativePet";
 constexpr int kSize = 72;
 bool g_registered = false;
 }  // namespace
+
+void PetWindow::TryLoadSprite() {
+  const std::wstring candidates[] = {
+      JoinPath(NativeDataDir(), L"pet.png"),
+      JoinPath(ExeDir(), L"pet.png"),
+      JoinPath(ExeDir(), L"assets\\pet.png"),
+  };
+  Gdiplus::GdiplusStartupInput input;
+  ULONG_PTR token = 0;
+  Gdiplus::GdiplusStartup(&token, &input, nullptr);
+  for (const auto& path : candidates) {
+    Gdiplus::Bitmap src(path.c_str());
+    if (src.GetLastStatus() != Gdiplus::Ok) {
+      continue;
+    }
+    sprite_w_ = static_cast<int>(src.GetWidth());
+    sprite_h_ = static_cast<int>(src.GetHeight());
+    if (sprite_w_ > 128) {
+      sprite_h_ = sprite_h_ * 128 / sprite_w_;
+      sprite_w_ = 128;
+    }
+    Gdiplus::Bitmap scaled(sprite_w_, sprite_h_);
+    Gdiplus::Graphics g(&scaled);
+    g.DrawImage(&src, 0, 0, sprite_w_, sprite_h_);
+    HBITMAP hb = nullptr;
+    scaled.GetHBITMAP(Gdiplus::Color(0, 0, 0, 0), &hb);
+    if (hb) {
+      sprite_ = hb;
+      break;
+    }
+  }
+  Gdiplus::GdiplusShutdown(token);
+}
 
 bool PetWindow::Create(HINSTANCE instance) {
   if (!g_registered) {
@@ -21,17 +60,24 @@ bool PetWindow::Create(HINSTANCE instance) {
     RegisterClassExW(&wc);
     g_registered = true;
   }
+  TryLoadSprite();
+  const int ww = sprite_ ? sprite_w_ : kSize;
+  const int hh = sprite_ ? sprite_h_ : kSize;
   const int sw = GetSystemMetrics(SM_CXSCREEN);
   const int sh = GetSystemMetrics(SM_CYSCREEN);
-  base_y_ = sh - kSize - 120;
+  base_y_ = sh - hh - 120;
   hwnd_ = CreateWindowExW(
       WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_LAYERED, kClassName, L"Pet",
-      WS_POPUP, sw - kSize - 40, base_y_, kSize, kSize, nullptr, nullptr,
-      instance, this);
+      WS_POPUP, sw - ww - 40, base_y_, ww, hh, nullptr, nullptr, instance,
+      this);
   if (!hwnd_) {
     return false;
   }
-  SetLayeredWindowAttributes(hwnd_, RGB(0, 0, 0), 0, LWA_COLORKEY);
+  if (sprite_) {
+    SetLayeredWindowAttributes(hwnd_, 0, 255, LWA_ALPHA);
+  } else {
+    SetLayeredWindowAttributes(hwnd_, RGB(0, 0, 0), 0, LWA_COLORKEY);
+  }
   SetWindowLongPtrW(hwnd_, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(this));
   EnsureDropTarget();
   return true;
@@ -62,6 +108,10 @@ void PetWindow::Destroy() {
   if (drop_target_) {
     drop_target_->Release();
     drop_target_ = nullptr;
+  }
+  if (sprite_) {
+    DeleteObject(sprite_);
+    sprite_ = nullptr;
   }
 }
 
@@ -177,6 +227,14 @@ LRESULT PetWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
 void PetWindow::Paint(HDC hdc) {
   RECT rc{};
   GetClientRect(hwnd_, &rc);
+  if (sprite_) {
+    HDC mem = CreateCompatibleDC(hdc);
+    HGDIOBJ old = SelectObject(mem, sprite_);
+    BitBlt(hdc, 0, 0, sprite_w_, sprite_h_, mem, 0, 0, SRCCOPY);
+    SelectObject(mem, old);
+    DeleteDC(mem);
+    return;
+  }
   HBRUSH clear = CreateSolidBrush(RGB(0, 0, 0));
   FillRect(hdc, &rc, clear);
   DeleteObject(clear);

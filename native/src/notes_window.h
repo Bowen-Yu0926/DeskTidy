@@ -18,7 +18,13 @@ class NotesWindow {
   LRESULT HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam);
   void Load();
   void Save();
+  void SaveAs();
+  void SetFontSize(int pt);
+  void InsertTemplate();
 
   HWND hwnd_ = nullptr;
   HWND edit_ = nullptr;
+  HFONT font_ = nullptr;
+  int font_pt_ = 15;
+  std::wstring path_;
 };
