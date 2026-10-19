@@ -26,11 +26,13 @@ class TodoWindow {
   void RefreshList();
   void AddItem();
   void RemoveSelected();
+  void ClearCompleted();
   void ToggleSelected();
 
   HWND hwnd_ = nullptr;
   HWND list_ = nullptr;
   HWND btn_add_ = nullptr;
   HWND btn_del_ = nullptr;
+  HWND btn_clear_ = nullptr;
   std::vector<Item> items_;
 };

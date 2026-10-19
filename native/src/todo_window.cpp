@@ -6,6 +6,7 @@
 
 #include <CommCtrl.h>
 
+#include <algorithm>
 #include <fstream>
 #include <sstream>
 #include <string>
@@ -17,6 +18,7 @@ constexpr wchar_t kClass[] = L"DeskTidyNativeTodo";
 constexpr int kList = 3001;
 constexpr int kAdd = 3002;
 constexpr int kDel = 3003;
+constexpr int kClear = 3004;
 
 std::wstring TodosPath() { return JoinPath(NativeDataDir(), L"todos.txt"); }
 }  // namespace
@@ -67,6 +69,10 @@ bool TodoWindow::Create(HINSTANCE instance) {
                     296, 80, 28, hwnd_,
                     reinterpret_cast<HMENU>(static_cast<INT_PTR>(kDel)),
                     instance, nullptr);
+  btn_clear_ = CreateWindowW(
+      L"BUTTON", L"清除已完成", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 186, 296,
+      100, 28, hwnd_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kClear)),
+      instance, nullptr);
   Load();
   RefreshList();
   return true;
@@ -198,6 +204,21 @@ void TodoWindow::RemoveSelected() {
   Save();
 }
 
+void TodoWindow::ClearCompleted() {
+  if (list_) {
+    const int n = ListView_GetItemCount(list_);
+    for (int i = 0; i < n && i < static_cast<int>(items_.size()); ++i) {
+      items_[static_cast<size_t>(i)].done =
+          ListView_GetCheckState(list_, i) != FALSE;
+    }
+  }
+  items_.erase(std::remove_if(items_.begin(), items_.end(),
+                              [](const Item& it) { return it.done; }),
+               items_.end());
+  RefreshList();
+  Save();
+}
+
 void TodoWindow::ToggleSelected() {
   if (!list_) {
     return;
@@ -240,6 +261,10 @@ LRESULT TodoWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
         RemoveSelected();
         return 0;
       }
+      if (LOWORD(wparam) == kClear) {
+        ClearCompleted();
+        return 0;
+      }
       break;
     case WM_NOTIFY: {
       const auto* hdr = reinterpret_cast<LPNMHDR>(lparam);
@@ -260,13 +285,14 @@ LRESULT TodoWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
       break;
     }
     case WM_SIZE:
-      if (list_ && btn_add_ && btn_del_) {
+      if (list_ && btn_add_ && btn_del_ && btn_clear_) {
         RECT rc{};
         GetClientRect(hwnd_, &rc);
         MoveWindow(list_, 6, 6, rc.right - 12, rc.bottom - 48, TRUE);
         ListView_SetColumnWidth(list_, 0, rc.right - 40);
-        MoveWindow(btn_add_, 6, rc.bottom - 36, 80, 28, TRUE);
-        MoveWindow(btn_del_, 96, rc.bottom - 36, 80, 28, TRUE);
+        MoveWindow(btn_add_, 6, rc.bottom - 36, 70, 28, TRUE);
+        MoveWindow(btn_del_, 82, rc.bottom - 36, 70, 28, TRUE);
+        MoveWindow(btn_clear_, 158, rc.bottom - 36, 100, 28, TRUE);
       }
       return 0;
     case WM_CLOSE:

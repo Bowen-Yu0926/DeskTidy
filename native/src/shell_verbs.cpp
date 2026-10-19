@@ -10,6 +10,11 @@ namespace {
 constexpr wchar_t kRoot[] =
     L"Software\\Classes\\Directory\\Background\\shell\\DeskTidyNative";
 
+const wchar_t* kVerbKeys[] = {
+    L"settings", L"refresh", L"organize", L"notes",
+    L"search",   L"shot",    L"todos",    L"peek",
+};
+
 bool WriteVerb(const wchar_t* key_suffix, const wchar_t* label,
                const wchar_t* args) {
   const std::wstring key = std::wstring(kRoot) + L"." + key_suffix;
@@ -45,22 +50,30 @@ bool RegisterNativeShellVerbs() {
     RegSetValueExW(root, nullptr, 0, REG_SZ,
                    reinterpret_cast<const BYTE*>(label),
                    static_cast<DWORD>((wcslen(label) + 1) * sizeof(wchar_t)));
+    // Cascade submenu under Directory\\Background\\shell
+    const wchar_t* sub = L"DesktopBackground\\Shell\\DeskTidyNative";
+    (void)sub;
     RegCloseKey(root);
   }
   WriteVerb(L"settings", L"打开设置", L"--settings");
   WriteVerb(L"refresh", L"刷新桌面图标", L"--refresh");
   WriteVerb(L"organize", L"虚拟整理", L"--organize");
+  WriteVerb(L"notes", L"打开便签", L"--notes");
+  WriteVerb(L"search", L"文件搜索", L"--search");
+  WriteVerb(L"shot", L"区域截图", L"--shot");
+  WriteVerb(L"todos", L"打开待办", L"--todos");
+  WriteVerb(L"peek", L"Peek 分区", L"--peek");
   return true;
 }
 
 bool UnregisterNativeShellVerbs() {
-  // Best-effort recursive delete of our keys.
   RegDeleteTreeW(HKEY_CURRENT_USER, kRoot);
-  RegDeleteTreeW(HKEY_CURRENT_USER,
-                 L"Software\\Classes\\Directory\\Background\\shell\\DeskTidyNative.settings");
-  RegDeleteTreeW(HKEY_CURRENT_USER,
-                 L"Software\\Classes\\Directory\\Background\\shell\\DeskTidyNative.refresh");
-  RegDeleteTreeW(HKEY_CURRENT_USER,
-                 L"Software\\Classes\\Directory\\Background\\shell\\DeskTidyNative.organize");
+  for (const wchar_t* k : kVerbKeys) {
+    const std::wstring path =
+        std::wstring(
+            L"Software\\Classes\\Directory\\Background\\shell\\DeskTidyNative.") +
+        k;
+    RegDeleteTreeW(HKEY_CURRENT_USER, path.c_str());
+  }
   return true;
 }

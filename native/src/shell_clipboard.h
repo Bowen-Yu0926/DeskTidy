@@ -9,3 +9,4 @@
 bool ClipboardSetFiles(HWND owner, const std::vector<std::wstring>& paths,
                        bool cut);
 bool ClipboardGetFiles(std::vector<std::wstring>* paths);
+bool ClipboardSetText(HWND owner, const std::wstring& text);

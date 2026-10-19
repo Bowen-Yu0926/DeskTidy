@@ -306,6 +306,7 @@ void FenceWindow::ShowIconMenu(int index, POINT screen) {
   AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
   AppendMenuW(menu, MF_STRING, 4, L"复制");
   AppendMenuW(menu, MF_STRING, 5, L"剪切");
+  AppendMenuW(menu, MF_STRING, 6, L"复制路径");
   AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
   AppendMenuW(menu, MF_STRING, 3, L"取消钉选");
   SetForegroundWindow(hwnd_);
@@ -324,6 +325,12 @@ void FenceWindow::ShowIconMenu(int index, POINT screen) {
     const std::wstring& path = cells_[static_cast<size_t>(index)].item.path;
     if (ClipboardSetFiles(hwnd_, {path}, cmd == 5)) {
       ShowToast(cmd == 5 ? L"已剪切到剪贴板" : L"已复制到剪贴板");
+    }
+  } else if (cmd == 6 && index >= 0 &&
+             index < static_cast<int>(cells_.size())) {
+    const std::wstring& path = cells_[static_cast<size_t>(index)].item.path;
+    if (ClipboardSetText(hwnd_, path)) {
+      ShowToast(L"路径已复制");
     }
   }
 }

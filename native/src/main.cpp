@@ -12,8 +12,9 @@ std::wstring FindCliAction(LPWSTR cmd) {
   if (!cmd) {
     return {};
   }
-  // Simple scan for --settings / --refresh / --organize
-  const wchar_t* keys[] = {L"--settings", L"--refresh", L"--organize"};
+  const wchar_t* keys[] = {L"--settings", L"--refresh", L"--organize",
+                           L"--notes",    L"--search",  L"--shot",
+                           L"--todos",    L"--peek"};
   for (const wchar_t* k : keys) {
     if (wcsstr(cmd, k)) {
       return k;

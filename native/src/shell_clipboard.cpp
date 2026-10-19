@@ -73,6 +73,30 @@ bool ClipboardGetFiles(std::vector<std::wstring>* paths) {
   return !paths->empty();
 }
 
+bool ClipboardSetText(HWND owner, const std::wstring& text) {
+  if (!OpenClipboard(owner)) {
+    return false;
+  }
+  EmptyClipboard();
+  const SIZE_T bytes = (text.size() + 1) * sizeof(wchar_t);
+  HGLOBAL mem = GlobalAlloc(GMEM_MOVEABLE, bytes);
+  if (!mem) {
+    CloseClipboard();
+    return false;
+  }
+  void* locked = GlobalLock(mem);
+  if (!locked) {
+    GlobalFree(mem);
+    CloseClipboard();
+    return false;
+  }
+  memcpy(locked, text.c_str(), bytes);
+  GlobalUnlock(mem);
+  SetClipboardData(CF_UNICODETEXT, mem);
+  CloseClipboard();
+  return true;
+}
+
 bool ClipboardSetFiles(HWND owner, const std::vector<std::wstring>& paths,
                        bool cut) {
   if (paths.empty() || !OpenClipboard(owner)) {

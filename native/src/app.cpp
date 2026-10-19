@@ -19,6 +19,7 @@
 #include "whitelist.h"
 #include "paths_util.h"
 #include "prompt_text.h"
+#include "shell_clipboard.h"
 #include "shell_verbs.h"
 #include "snapshot.h"
 #include "tools_misc.h"
@@ -331,7 +332,17 @@ void App::HandleCliAction(const std::wstring& action) {
   } else if (action == L"--refresh") {
     RefreshDesktopIcons();
   } else if (action == L"--organize") {
-    OrganizeVirtual();
+    OrganizeVirtual(true);
+  } else if (action == L"--notes") {
+    OpenNotes();
+  } else if (action == L"--search") {
+    OpenSearch();
+  } else if (action == L"--shot") {
+    StartRegionCapture();
+  } else if (action == L"--todos") {
+    OpenTodos();
+  } else if (action == L"--peek") {
+    TogglePeek();
   }
 }
 
@@ -961,6 +972,7 @@ LRESULT CALLBACK App::TrayWndProc(HWND hwnd, UINT msg, WPARAM wparam,
         AppendMenuW(menu, MF_STRING, 33, Tr("page_folders").c_str());
         AppendMenuW(menu, MF_STRING, 34, Tr("help").c_str());
         AppendMenuW(menu, MF_STRING, 35, L"卸载清理…");
+        AppendMenuW(menu, MF_STRING, 37, L"复制数据目录路径");
         AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
         AppendMenuW(menu, MF_STRING, 29, Tr("exit").c_str());
         SetForegroundWindow(hwnd);
@@ -1081,6 +1093,11 @@ LRESULT CALLBACK App::TrayWndProc(HWND hwnd, UINT msg, WPARAM wparam,
             break;
           case 35:
             RunNativeCleanup(self->settings_.Hwnd());
+            break;
+          case 37:
+            if (ClipboardSetText(hwnd, NativeDataDir())) {
+              ShowToast(L"数据目录路径已复制");
+            }
             break;
           case 29:
             PostQuitMessage(0);
