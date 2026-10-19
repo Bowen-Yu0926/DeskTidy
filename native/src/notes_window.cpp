@@ -1,6 +1,7 @@
 #include "notes_window.h"
 
 #include "desktop_shell.h"
+#include "notes_library.h"
 #include "paths_util.h"
 
 #include <commdlg.h>
@@ -26,6 +27,7 @@ constexpr int kMenuTpl = 2105;
 constexpr int kMenuBold = 2106;
 constexpr int kMenuItalic = 2107;
 constexpr int kMenuUnder = 2108;
+constexpr int kMenuLibrary = 2109;
 
 struct StreamCookie {
   std::string data;
@@ -88,6 +90,7 @@ bool NotesWindow::Create(HINSTANCE instance) {
   HMENU file = CreatePopupMenu();
   AppendMenuW(file, MF_STRING, kMenuSave, L"保存");
   AppendMenuW(file, MF_STRING, kMenuSaveAs, L"另存为…");
+  AppendMenuW(file, MF_STRING, kMenuLibrary, L"笔记库…");
   AppendMenuW(file, MF_SEPARATOR, 0, nullptr);
   AppendMenuW(file, MF_STRING, kMenuTpl, L"插入模板");
   AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(file), L"文件");
@@ -228,6 +231,21 @@ void NotesWindow::Save() {
   out << NarrowUtf8(wide);
 }
 
+void NotesWindow::OpenLibrary() {
+  Save();
+  const std::wstring picked = PickNoteFromLibrary(hwnd_);
+  if (picked.empty()) {
+    return;
+  }
+  path_ = picked;
+  if (GetFileAttributesW(path_.c_str()) == INVALID_FILE_ATTRIBUTES) {
+    std::ofstream out(path_, std::ios::binary);
+    out << "";
+  }
+  Load();
+  SetWindowTextW(hwnd_, (L"便签 · " + path_).c_str());
+}
+
 void NotesWindow::SaveAs() {
   wchar_t file[MAX_PATH] = {};
   wcsncpy_s(file, path_.c_str(), _TRUNCATE);
@@ -281,6 +299,9 @@ LRESULT NotesWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
           return 0;
         case kMenuSaveAs:
           SaveAs();
+          return 0;
+        case kMenuLibrary:
+          OpenLibrary();
           return 0;
         case kMenuBigger:
           SetFontSize(font_pt_ + 2);

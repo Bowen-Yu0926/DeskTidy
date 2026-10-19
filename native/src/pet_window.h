@@ -30,6 +30,10 @@ class PetWindow {
   void EnsureDropTarget();
   void TryLoadSprite();
   void LoadFramePack();
+  void LoadPosePacks();
+  void SetPose(const std::wstring& pose);
+  void ClearFrames();
+  void ShowPoseMenu(POINT screen);
 
   HWND hwnd_ = nullptr;
   int bob_ = 0;
@@ -44,4 +48,7 @@ class PetWindow {
   std::vector<HBITMAP> frames_;
   int frame_i_ = 0;
   int dissolve_ = 0;  // 0..255 blend toward next frame
+  std::wstring pose_ = L"idle";
+  std::vector<std::wstring> pose_names_;
+  std::vector<std::vector<std::wstring>> pose_files_;
 };

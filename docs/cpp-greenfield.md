@@ -35,10 +35,12 @@ Native Win32 host — feature MVP map vs Python product.
 | Record pick monitor | done |
 | Snapshot + shell icon positions | done |
 | Organize physical preview | done |
-| Vault ZK (enc_ver=1) | not ported |
-| DeskNote Toast UI / MD library | not ported |
-| Pet character state machine | not ported |
-| Full settings sidebar UI | not ported |
+| Vault ZK (enc_ver=1 PBKDF2+AES-GCM) | done |
+| Notes library (multi file under notes\) | done |
+| Pet pose packs (idle/walk/sleep RMB) | done |
+| Settings tabs (分区/整理/工具) | done |
+| DeskNote Toast UI / WebView markdown | not ported |
+| Full pet physics / character catalog | not ported |
 
 ## Build
 

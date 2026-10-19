@@ -19,6 +19,7 @@ class NotesWindow {
   void Load();
   void Save();
   void SaveAs();
+  void OpenLibrary();
   void SetFontSize(int pt);
   void InsertTemplate();
 

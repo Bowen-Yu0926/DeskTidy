@@ -1,6 +1,7 @@
 #include "vault_http.h"
 
 #include "paths_util.h"
+#include "vault_crypto.h"
 
 #include <Windows.h>
 #include <bcrypt.h>
@@ -704,6 +705,123 @@ bool VaultHttpPushAll(const std::vector<VaultHttpCredential>& entries) {
     }
   }
   return any_ok;
+}
+
+std::string MakeCredBodyZk(const std::wstring& title, const std::wstring& user,
+                           const std::wstring& pass, const std::wstring& url,
+                           const std::vector<BYTE>& key) {
+  std::ostringstream ss;
+  ss << "{\"title\":\"" << EscapeJson(NarrowUtf8(title)) << "\","
+     << "\"username\":\""
+     << EscapeJson(NarrowUtf8(VaultEncryptField(user, key))) << "\","
+     << "\"password\":\""
+     << EscapeJson(NarrowUtf8(VaultEncryptField(pass, key))) << "\","
+     << "\"url\":\"" << EscapeJson(NarrowUtf8(VaultEncryptField(url, key)))
+     << "\","
+     << "\"note\":\"\","
+     << "\"enc_ver\":1}";
+  return ss.str();
+}
+
+bool VaultHttpPushAllZk(const std::vector<VaultHttpCredential>& entries,
+                        const std::vector<BYTE>& key) {
+  Session s = LoadSession();
+  if (s.token.empty() || key.size() != kVaultKeyLen) {
+    return false;
+  }
+  VaultClient client(s.api_base);
+  client.SetToken(s.token);
+  bool any_ok = true;
+  for (const auto& e : entries) {
+    if (e.title.empty() && e.username.empty()) {
+      continue;
+    }
+    int existing_id = 0;
+    HttpResponse list_resp;
+    if (client.Request(L"GET", L"credentials", nullptr, true, &list_resp) &&
+        JsonOkTrue(list_resp.body)) {
+      for (const auto& r : ParseCredentialItems(list_resp.body)) {
+        if (_wcsicmp(r.title.c_str(), e.title.c_str()) == 0) {
+          existing_id = r.id;
+          break;
+        }
+      }
+    }
+    const std::string payload =
+        MakeCredBodyZk(e.title, e.username, e.password, e.url, key);
+    HttpResponse resp;
+    if (existing_id > 0) {
+      const std::wstring path =
+          L"credentials/" + std::to_wstring(existing_id);
+      if (!client.Request(L"PUT", path, &payload, true, &resp) ||
+          !JsonOkTrue(resp.body)) {
+        any_ok = false;
+      }
+    } else if (!client.Request(L"POST", L"credentials", &payload, true,
+                               &resp) ||
+               !JsonOkTrue(resp.body)) {
+      any_ok = false;
+    }
+  }
+  return any_ok;
+}
+
+bool VaultHttpPullMergeZk(std::vector<VaultHttpCredential>* entries,
+                          const std::vector<BYTE>& key) {
+  if (!entries || key.size() != kVaultKeyLen) {
+    return false;
+  }
+  auto remote = VaultHttpListCredentials();
+  if (remote.empty() && LoadSession().token.empty()) {
+    return false;
+  }
+  for (auto& r : remote) {
+    r.username = VaultDecryptField(r.username, key);
+    r.password = VaultDecryptField(r.password, key);
+    r.url = VaultDecryptField(r.url, key);
+  }
+  for (const auto& r : remote) {
+    bool found = false;
+    for (auto& local : *entries) {
+      if (_wcsicmp(MatchKey(local).c_str(), MatchKey(r).c_str()) == 0) {
+        local = r;
+        found = true;
+        break;
+      }
+    }
+    if (!found) {
+      entries->push_back(r);
+    }
+  }
+  return true;
+}
+
+bool VaultHttpEnsureMaster(const std::vector<BYTE>& key,
+                           std::string* salt_hex_inout) {
+  if (!salt_hex_inout || key.size() != kVaultKeyLen) {
+    return false;
+  }
+  Session s = LoadSession();
+  if (s.token.empty()) {
+    return false;
+  }
+  if (salt_hex_inout->empty()) {
+    *salt_hex_inout = VaultBytesToHex(VaultNewSalt(16));
+  }
+  const std::wstring key_check = VaultMakeKeyCheck(key);
+  std::ostringstream body;
+  body << "{\"kdf_salt\":\"" << EscapeJson(*salt_hex_inout) << "\","
+       << "\"kdf_iterations\":" << kVaultKdfIterations << ","
+       << "\"kdf_algo\":\"pbkdf2\","
+       << "\"key_check\":\"" << EscapeJson(NarrowUtf8(key_check)) << "\"}";
+  const std::string payload = body.str();
+  VaultClient client(s.api_base);
+  client.SetToken(s.token);
+  HttpResponse resp;
+  if (!client.Request(L"PUT", L"auth/master", &payload, true, &resp)) {
+    return false;
+  }
+  return JsonOkTrue(resp.body) || resp.status == 200;
 }
 
 bool VaultHttpPullMerge(std::vector<VaultHttpCredential>* entries) {

@@ -54,32 +54,64 @@ void PetWindow::TryLoadSprite() {
   Gdiplus::GdiplusShutdown(token);
 }
 
-void PetWindow::LoadFramePack() {
+void PetWindow::ClearFrames() {
+  for (auto* hb : frames_) {
+    if (hb) {
+      DeleteObject(hb);
+    }
+  }
+  frames_.clear();
+  frame_i_ = 0;
+  dissolve_ = 0;
+}
+
+void PetWindow::LoadPosePacks() {
+  pose_names_.clear();
+  pose_files_.clear();
   const std::wstring roots[] = {
       JoinPath(NativeDataDir(), L"pets"),
       JoinPath(ExeDir(), L"pets"),
       JoinPath(ExeDir(), L"assets\\pets"),
   };
-  std::vector<std::wstring> files;
+  const wchar_t* poses[] = {L"idle", L"walk", L"sleep", L"wait", L"play"};
   for (const auto& root : roots) {
-    const std::wstring pattern = JoinPath(root, L"*.png");
-    WIN32_FIND_DATAW fd{};
-    HANDLE h = FindFirstFileW(pattern.c_str(), &fd);
-    if (h == INVALID_HANDLE_VALUE) {
-      continue;
-    }
-    do {
-      if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
-        files.push_back(JoinPath(root, fd.cFileName));
+    for (const wchar_t* pose : poses) {
+      const std::wstring dir = JoinPath(root, pose);
+      std::vector<std::wstring> files;
+      WIN32_FIND_DATAW fd{};
+      HANDLE h = FindFirstFileW(JoinPath(dir, L"*.png").c_str(), &fd);
+      if (h == INVALID_HANDLE_VALUE) {
+        continue;
       }
-    } while (FindNextFileW(h, &fd));
-    FindClose(h);
-    if (!files.empty()) {
+      do {
+        if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
+          files.push_back(JoinPath(dir, fd.cFileName));
+        }
+      } while (FindNextFileW(h, &fd));
+      FindClose(h);
+      if (files.size() >= 1) {
+        std::sort(files.begin(), files.end());
+        pose_names_.push_back(pose);
+        pose_files_.push_back(std::move(files));
+      }
+    }
+    if (!pose_names_.empty()) {
       break;
     }
   }
-  std::sort(files.begin(), files.end());
-  if (files.size() < 2) {
+}
+
+void PetWindow::SetPose(const std::wstring& pose) {
+  pose_ = pose;
+  ClearFrames();
+  std::vector<std::wstring> files;
+  for (size_t i = 0; i < pose_names_.size(); ++i) {
+    if (pose_names_[i] == pose) {
+      files = pose_files_[i];
+      break;
+    }
+  }
+  if (files.empty()) {
     return;
   }
   Gdiplus::GdiplusStartupInput input;
@@ -111,6 +143,69 @@ void PetWindow::LoadFramePack() {
     }
   }
   Gdiplus::GdiplusShutdown(token);
+  if (hwnd_) {
+    SetWindowPos(hwnd_, nullptr, 0, 0, sprite_w_, sprite_h_,
+                 SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+    InvalidateRect(hwnd_, nullptr, TRUE);
+  }
+}
+
+void PetWindow::LoadFramePack() {
+  LoadPosePacks();
+  if (!pose_names_.empty()) {
+    SetPose(pose_names_[0]);
+    return;
+  }
+  // Flat pets\*.png fallback (no pose subdirs).
+  const std::wstring roots[] = {
+      JoinPath(NativeDataDir(), L"pets"),
+      JoinPath(ExeDir(), L"pets"),
+      JoinPath(ExeDir(), L"assets\\pets"),
+  };
+  std::vector<std::wstring> files;
+  for (const auto& root : roots) {
+    WIN32_FIND_DATAW fd{};
+    HANDLE h = FindFirstFileW(JoinPath(root, L"*.png").c_str(), &fd);
+    if (h == INVALID_HANDLE_VALUE) {
+      continue;
+    }
+    do {
+      if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
+        files.push_back(JoinPath(root, fd.cFileName));
+      }
+    } while (FindNextFileW(h, &fd));
+    FindClose(h);
+    if (!files.empty()) {
+      break;
+    }
+  }
+  std::sort(files.begin(), files.end());
+  if (files.size() < 2) {
+    return;
+  }
+  pose_files_ = {files};
+  pose_names_ = {L"idle"};
+  SetPose(L"idle");
+}
+
+void PetWindow::ShowPoseMenu(POINT screen) {
+  if (pose_names_.empty()) {
+    return;
+  }
+  HMENU menu = CreatePopupMenu();
+  for (size_t i = 0; i < pose_names_.size(); ++i) {
+    const UINT flags =
+        MF_STRING | (pose_ == pose_names_[i] ? MF_CHECKED : 0);
+    AppendMenuW(menu, flags, static_cast<UINT>(i + 1), pose_names_[i].c_str());
+  }
+  SetForegroundWindow(hwnd_);
+  const int cmd =
+      TrackPopupMenu(menu, TPM_RETURNCMD | TPM_NONOTIFY, screen.x, screen.y, 0,
+                     hwnd_, nullptr);
+  DestroyMenu(menu);
+  if (cmd >= 1 && cmd <= static_cast<int>(pose_names_.size())) {
+    SetPose(pose_names_[static_cast<size_t>(cmd - 1)]);
+  }
 }
 
 bool PetWindow::Create(HINSTANCE instance) {
@@ -177,12 +272,7 @@ void PetWindow::Destroy() {
     DeleteObject(sprite_);
     sprite_ = nullptr;
   }
-  for (auto* hb : frames_) {
-    if (hb) {
-      DeleteObject(hb);
-    }
-  }
-  frames_.clear();
+  ClearFrames();
 }
 
 void PetWindow::Show() {
@@ -288,6 +378,12 @@ LRESULT PetWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
       ReleaseCapture();
       AttachToDesktopLayer();
       return 0;
+    case WM_RBUTTONUP: {
+      POINT pt{GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
+      ClientToScreen(hwnd_, &pt);
+      ShowPoseMenu(pt);
+      return 0;
+    }
     case WM_DESTROY:
       if (drop_target_) {
         RevokePathDropTarget(hwnd_);

@@ -3,6 +3,7 @@
 #include "i18n.h"
 #include "paths_util.h"
 #include "prompt_text.h"
+#include "vault_crypto.h"
 #include "vault_http.h"
 
 #include <commdlg.h>
@@ -305,6 +306,14 @@ void VaultWindow::CloudLogin() {
 }
 
 void VaultWindow::CloudSync() {
+  const int mode = MessageBoxW(
+      hwnd_,
+      L"云同步模式：\n\n是 = 零知识 (enc_ver=1，需主密码)\n否 = 服务端加密 (enc_ver=0)\n取消 = 返回",
+      Tr("vault").c_str(), MB_YESNOCANCEL | MB_ICONQUESTION);
+  if (mode == IDCANCEL) {
+    return;
+  }
+
   std::vector<VaultHttpCredential> remote;
   for (const auto& e : entries_) {
     VaultHttpCredential c;
@@ -314,6 +323,61 @@ void VaultWindow::CloudSync() {
     c.url = e.url;
     remote.push_back(std::move(c));
   }
+
+  if (mode == IDYES) {
+    const std::wstring master =
+        PromptText(hwnd_, L"零知识保险库", L"主密码：", L"");
+    if (master.empty()) {
+      return;
+    }
+    std::string salt_hex;
+    {
+      std::ifstream in(JoinPath(NativeDataDir(), L"vault_zk_salt.txt"));
+      if (in) {
+        std::getline(in, salt_hex);
+      }
+    }
+    std::vector<BYTE> salt =
+        salt_hex.empty() ? VaultNewSalt(16) : VaultHexToBytes(salt_hex);
+    if (salt_hex.empty()) {
+      salt_hex = VaultBytesToHex(salt);
+      std::ofstream out(JoinPath(NativeDataDir(), L"vault_zk_salt.txt"),
+                        std::ios::binary);
+      out << salt_hex;
+    }
+    std::vector<BYTE> key;
+    if (!VaultDeriveKey(master, salt, &key)) {
+      MessageBoxW(hwnd_, L"派生密钥失败。", Tr("vault").c_str(),
+                  MB_OK | MB_ICONWARNING);
+      return;
+    }
+    VaultHttpEnsureMaster(key, &salt_hex);
+    if (!VaultHttpPullMergeZk(&remote, key)) {
+      MessageBoxW(hwnd_, Tr("cloud_sync_fail").c_str(), Tr("vault").c_str(),
+                  MB_OK | MB_ICONWARNING);
+      return;
+    }
+    entries_.clear();
+    for (const auto& c : remote) {
+      Entry e;
+      e.title = c.title;
+      e.user = c.username;
+      e.pass = c.password;
+      e.url = c.url;
+      entries_.push_back(std::move(e));
+    }
+    Save();
+    RefreshList();
+    if (!VaultHttpPushAllZk(remote, key)) {
+      MessageBoxW(hwnd_, Tr("cloud_sync_fail").c_str(), Tr("vault").c_str(),
+                  MB_OK | MB_ICONWARNING);
+      return;
+    }
+    MessageBoxW(hwnd_, L"零知识云同步完成。", Tr("vault").c_str(),
+                MB_OK | MB_ICONINFORMATION);
+    return;
+  }
+
   if (!VaultHttpPullMerge(&remote)) {
     MessageBoxW(hwnd_, Tr("cloud_sync_fail").c_str(), Tr("vault").c_str(),
                 MB_OK | MB_ICONWARNING);
@@ -330,8 +394,7 @@ void VaultWindow::CloudSync() {
   }
   Save();
   RefreshList();
-  std::vector<VaultHttpCredential> push = remote;
-  if (!VaultHttpPushAll(push)) {
+  if (!VaultHttpPushAll(remote)) {
     MessageBoxW(hwnd_, Tr("cloud_sync_fail").c_str(), Tr("vault").c_str(),
                 MB_OK | MB_ICONWARNING);
     return;

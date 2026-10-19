@@ -124,7 +124,10 @@ bool App::Init(HINSTANCE instance) {
       [this]() { OrganizeVirtual(); }, [this]() { OrganizePhysical(); },
       [this](bool on) { SetDockVisible(on); },
       [this](bool on) { SetPetVisible(on); }, [this]() { EditRules(); },
-      [this](bool on) { SetAutostart(on); });
+      [this](bool on) { SetAutostart(on); },
+      [this]() { EditWhitelistDialog(settings_.Hwnd()); },
+      [this]() { OpenPageFolderMenu(settings_.Hwnd()); },
+      [this]() { ShowAppHelp(settings_.Hwnd()); });
 
   notes_.Create(instance);
   todos_.Create(instance);

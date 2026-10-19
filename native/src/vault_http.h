@@ -1,5 +1,7 @@
 #pragma once
 
+#include <Windows.h>
+
 #include <string>
 #include <vector>
 
@@ -27,3 +29,12 @@ bool VaultHttpUpsertCredential(const std::wstring& title,
 bool VaultHttpPushAll(const std::vector<VaultHttpCredential>& entries);
 // Pull remote list and merge into *entries (remote wins on title+user clash).
 bool VaultHttpPullMerge(std::vector<VaultHttpCredential>* entries);
+
+// Zero-knowledge path: encrypt fields as enc_ver=1 before upload; decrypt on pull.
+bool VaultHttpPushAllZk(const std::vector<VaultHttpCredential>& entries,
+                        const std::vector<BYTE>& key);
+bool VaultHttpPullMergeZk(std::vector<VaultHttpCredential>* entries,
+                          const std::vector<BYTE>& key);
+// Ensure server has master KDF params (salt hex + key_check). Creates if missing.
+bool VaultHttpEnsureMaster(const std::vector<BYTE>& key,
+                           std::string* salt_hex_inout);
