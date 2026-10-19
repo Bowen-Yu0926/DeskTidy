@@ -19,6 +19,8 @@ constexpr int kBtnRules = 1007;
 constexpr int kBtnWhitelist = 1008;
 constexpr int kBtnFolders = 1009;
 constexpr int kBtnHelp = 1010;
+constexpr int kChkOrgStartup = 1011;
+constexpr int kChkOrgWatch = 1012;
 constexpr int kListId = 1100;
 constexpr int kEditTitle = 1101;
 constexpr int kComboPage = 1102;
@@ -148,6 +150,16 @@ bool SettingsWindow::Create(HINSTANCE instance) {
       170, 160, 32, hwnd_,
       reinterpret_cast<HMENU>(static_cast<INT_PTR>(kBtnWhitelist)), instance,
       nullptr);
+  chk_org_startup_ = CreateWindowW(
+      L"BUTTON", L"启动时自动整理（按规则钉选）",
+      WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 20, 220, 280, 24, hwnd_,
+      reinterpret_cast<HMENU>(static_cast<INT_PTR>(kChkOrgStartup)), instance,
+      nullptr);
+  chk_org_watch_ = CreateWindowW(
+      L"BUTTON", L"监视新文件并自动钉选", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
+      20, 250, 280, 24, hwnd_,
+      reinterpret_cast<HMENU>(static_cast<INT_PTR>(kChkOrgWatch)), instance,
+      nullptr);
 
   btn_folders_ = CreateWindowW(
       L"BUTTON", L"分页文件夹…", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 20, 120,
@@ -191,6 +203,8 @@ void SettingsWindow::ShowTab(int index) {
   vis(btn_org_p_, organize);
   vis(btn_rules_, organize);
   vis(btn_whitelist_, organize);
+  vis(chk_org_startup_, organize);
+  vis(chk_org_watch_, organize);
 
   vis(btn_folders_, tools);
   vis(btn_help_, tools);
@@ -247,13 +261,25 @@ void SettingsWindow::SetToggles(bool dock_on, bool pet_on, bool autostart_on) {
   }
 }
 
+void SettingsWindow::SetOrganizePrefs(bool startup_on, bool watch_on) {
+  if (chk_org_startup_) {
+    SendMessageW(chk_org_startup_, BM_SETCHECK,
+                 startup_on ? BST_CHECKED : BST_UNCHECKED, 0);
+  }
+  if (chk_org_watch_) {
+    SendMessageW(chk_org_watch_, BM_SETCHECK,
+                 watch_on ? BST_CHECKED : BST_UNCHECKED, 0);
+  }
+}
+
 void SettingsWindow::SetHandlers(VoidFn on_add, IndexFn on_remove, VoidFn on_seat,
                                  RenameFn on_rename, PageFn on_page,
                                  VoidFn on_org_virtual, VoidFn on_org_physical,
                                  BoolFn on_dock, BoolFn on_pet,
                                  VoidFn on_edit_rules, BoolFn on_autostart,
                                  VoidFn on_whitelist, VoidFn on_page_folders,
-                                 VoidFn on_help) {
+                                 VoidFn on_help, BoolFn on_org_startup,
+                                 BoolFn on_org_watch) {
   on_add_ = std::move(on_add);
   on_remove_ = std::move(on_remove);
   on_seat_ = std::move(on_seat);
@@ -268,6 +294,8 @@ void SettingsWindow::SetHandlers(VoidFn on_add, IndexFn on_remove, VoidFn on_sea
   on_whitelist_ = std::move(on_whitelist);
   on_page_folders_ = std::move(on_page_folders);
   on_help_ = std::move(on_help);
+  on_org_startup_ = std::move(on_org_startup);
+  on_org_watch_ = std::move(on_org_watch);
 }
 
 int SettingsWindow::SelectedIndex() const {
@@ -389,6 +417,16 @@ LRESULT SettingsWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
       }
       if (id == kChkAutostart && code == BN_CLICKED && on_autostart_) {
         on_autostart_(SendMessageW(chk_autostart_, BM_GETCHECK, 0, 0) ==
+                      BST_CHECKED);
+        return 0;
+      }
+      if (id == kChkOrgStartup && code == BN_CLICKED && on_org_startup_) {
+        on_org_startup_(SendMessageW(chk_org_startup_, BM_GETCHECK, 0, 0) ==
+                        BST_CHECKED);
+        return 0;
+      }
+      if (id == kChkOrgWatch && code == BN_CLICKED && on_org_watch_) {
+        on_org_watch_(SendMessageW(chk_org_watch_, BM_GETCHECK, 0, 0) ==
                       BST_CHECKED);
         return 0;
       }

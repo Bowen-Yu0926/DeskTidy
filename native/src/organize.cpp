@@ -1,5 +1,6 @@
 #include "organize.h"
 
+#include "organize_suppress.h"
 #include "whitelist.h"
 
 #include <Windows.h>
@@ -42,6 +43,9 @@ int OrganizeApplyDefaultPins(PinMap* pins, const std::vector<DesktopItem>& items
   int n = 0;
   for (const auto& it : items) {
     if (FindPin(*pins, it.path)) {
+      continue;
+    }
+    if (IsOrganizeSuppressed(it.path)) {
       continue;
     }
     if (IsWhitelisted(it.path, wl) || IsWhitelisted(it.name, wl)) {

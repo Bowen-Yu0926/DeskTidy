@@ -1,5 +1,6 @@
 #pragma once
 
+#include "app_prefs.h"
 #include "capture_overlay.h"
 #include "desktop_watch.h"
 #include "dock_window.h"
@@ -46,8 +47,10 @@ class App {
   void RenameFenceAt(int index, const std::wstring& title);
   void SetFencePageAt(int index, int page);
   void SetPage(int page);
-  void OrganizeVirtual();
+  void OrganizeVirtual(bool quiet = false);
   void OrganizePhysical();
+  void SetOrganizeStartup(bool on);
+  void SetOrganizeWatch(bool on);
   void SetDockVisible(bool on);
   void SetPetVisible(bool on);
   void ToggleDock();
@@ -99,6 +102,7 @@ class App {
   RuleMap rules_;
   std::vector<HotkeyDef> hotkeys_;
   DesktopWatch desktop_watch_;
+  AppPrefs prefs_;
   int current_page_ = 0;
   bool dock_visible_ = true;
   bool pet_visible_ = true;

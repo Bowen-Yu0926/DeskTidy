@@ -50,6 +50,8 @@ add_executable(desktidy_native WIN32
   src/page_folders.cpp
   src/notes_library.cpp
   src/markdown_preview.cpp
+  src/organize_suppress.cpp
+  src/app_prefs.cpp
   src/version.rc
 )
 

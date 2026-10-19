@@ -41,6 +41,8 @@ Native Win32 host — feature MVP map vs Python product.
 | Settings tabs (分区/整理/工具) | done |
 | Markdown preview (browser HTML) | done |
 | Pet characters + walk/fall physics | done |
+| Auto-organize watch + startup pin | done |
+| Organize suppress (unpin grace) | done |
 | DeskNote Toast UI / WebView editor | not ported |
 | Full Shimeji climb/ledge physics | not ported |
 
@@ -64,6 +66,6 @@ scripts\build_native_installer.bat
 | Ctrl+Shift+1 | Region capture |
 | Ctrl+Alt+4 | Search |
 
-Config under `%LocalAppData%\DeskTidyNative\`: `layout.json`, `hotkeys.json`, `whitelist.json`, `wallpaper.json`, `minutes.json`, `todos.txt`, `snapshots\`.
+Config under `%LocalAppData%\DeskTidyNative\`: `layout.json`, `hotkeys.json`, `whitelist.json`, `wallpaper.json`, `minutes.json`, `todos.txt`, `app_prefs.json`, `snapshots\`.
 
 Helpers: `ffmpeg.exe` / `fd.exe` under assets or PATH. Optional `pet.png` beside exe or in data dir.

@@ -24,12 +24,14 @@ class SettingsWindow {
 
   void SetFenceNames(const std::vector<std::wstring>& names);
   void SetToggles(bool dock_on, bool pet_on, bool autostart_on);
+  void SetOrganizePrefs(bool startup_on, bool watch_on);
   void SetHandlers(VoidFn on_add, IndexFn on_remove, VoidFn on_seat,
                    RenameFn on_rename, PageFn on_page, VoidFn on_org_virtual,
                    VoidFn on_org_physical, BoolFn on_dock, BoolFn on_pet,
                    VoidFn on_edit_rules, BoolFn on_autostart,
                    VoidFn on_whitelist = {}, VoidFn on_page_folders = {},
-                   VoidFn on_help = {});
+                   VoidFn on_help = {}, BoolFn on_org_startup = {},
+                   BoolFn on_org_watch = {});
 
  private:
   static LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
@@ -54,6 +56,8 @@ class SettingsWindow {
   HWND btn_org_p_ = nullptr;
   HWND btn_rules_ = nullptr;
   HWND btn_whitelist_ = nullptr;
+  HWND chk_org_startup_ = nullptr;
+  HWND chk_org_watch_ = nullptr;
   HWND btn_folders_ = nullptr;
   HWND btn_help_ = nullptr;
   HWND lbl_title_ = nullptr;
@@ -73,4 +77,6 @@ class SettingsWindow {
   VoidFn on_whitelist_;
   VoidFn on_page_folders_;
   VoidFn on_help_;
+  BoolFn on_org_startup_;
+  BoolFn on_org_watch_;
 };

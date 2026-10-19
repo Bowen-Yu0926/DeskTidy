@@ -8,6 +8,7 @@
 #include "hotkey_store.h"
 #include "i18n.h"
 #include "organize.h"
+#include "organize_suppress.h"
 #include "minutes.h"
 #include "page_folders.h"
 #include "snapshot_ui.h"
@@ -127,7 +128,9 @@ bool App::Init(HINSTANCE instance) {
       [this](bool on) { SetAutostart(on); },
       [this]() { EditWhitelistDialog(settings_.Hwnd()); },
       [this]() { OpenPageFolderMenu(settings_.Hwnd()); },
-      [this]() { ShowAppHelp(settings_.Hwnd()); });
+      [this]() { ShowAppHelp(settings_.Hwnd()); },
+      [this](bool on) { SetOrganizeStartup(on); },
+      [this](bool on) { SetOrganizeWatch(on); });
 
   notes_.Create(instance);
   todos_.Create(instance);
@@ -143,6 +146,8 @@ bool App::Init(HINSTANCE instance) {
   page_bar_.Create(instance);
   page_bar_.SetOnPage([this](int page) { SetPage(page); });
   public_host_.Create(instance);
+
+  prefs_ = LoadAppPrefs();
 
   const AppState state = LoadAppState();
   current_page_ = state.current_page;
@@ -161,6 +166,8 @@ bool App::Init(HINSTANCE instance) {
   RefreshDesktopIcons();
   RefreshSettingsList();
   settings_.SetToggles(dock_visible_, pet_visible_, IsNativeAutostartEnabled());
+  settings_.SetOrganizePrefs(prefs_.auto_organize_on_startup,
+                             prefs_.auto_organize_watch);
   ApplyPageVisibility();
 
   page_bar_.SetPage(current_page_);
@@ -180,6 +187,9 @@ bool App::Init(HINSTANCE instance) {
   CreateTrayIcon();
   ReregisterHotkeys();
   MaybeShowFirstRun(settings_.Hwnd());
+  if (prefs_.auto_organize_on_startup) {
+    OrganizeVirtual(true);
+  }
   return true;
 }
 
@@ -494,6 +504,7 @@ void App::OnPathsDropped(FenceWindow* fence,
 }
 
 void App::UnpinPath(const std::wstring& path) {
+  SuppressOrganizePath(path);
   ClearPin(&pins_, path);
   SavePins(pins_);
   RefreshDesktopIcons();
@@ -608,16 +619,29 @@ void App::RestoreDesktopChrome() {
   }
 }
 
-void App::OrganizeVirtual() {
+void App::OrganizeVirtual(bool quiet) {
   const auto items = ScanDesktopItems();
   const int n =
       OrganizeApplyDefaultPins(&pins_, items, "system_software", "system_common");
   SavePins(pins_);
   RefreshDesktopIcons();
+  if (quiet) {
+    return;
+  }
   wchar_t buf[128];
   swprintf_s(buf, L"虚拟整理完成：写入 %d 条钉选。", n);
   MessageBoxW(settings_.Hwnd(), buf, L"DeskTidy Native",
               MB_OK | MB_ICONINFORMATION);
+}
+
+void App::SetOrganizeStartup(bool on) {
+  prefs_.auto_organize_on_startup = on;
+  SaveAppPrefs(prefs_);
+}
+
+void App::SetOrganizeWatch(bool on) {
+  prefs_.auto_organize_watch = on;
+  SaveAppPrefs(prefs_);
 }
 
 void App::OrganizePhysical() {
@@ -767,7 +791,11 @@ LRESULT CALLBACK App::TrayWndProc(HWND hwnd, UINT msg, WPARAM wparam,
       if (wparam == kTimerWatch) {
         if (self->desktop_watch_.PollChanged()) {
           self->rules_ = LoadRules();
-          self->RefreshDesktopIcons();
+          if (self->prefs_.auto_organize_watch) {
+            self->OrganizeVirtual(true);
+          } else {
+            self->RefreshDesktopIcons();
+          }
         }
         return 0;
       }
