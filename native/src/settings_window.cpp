@@ -22,6 +22,8 @@ constexpr int kBtnHelp = 1010;
 constexpr int kChkOrgStartup = 1011;
 constexpr int kChkOrgWatch = 1012;
 constexpr int kBtnRecordCfg = 1013;
+constexpr int kBtnOrgPreview = 1014;
+constexpr int kListOrgPreview = 1110;
 constexpr int kListId = 1100;
 constexpr int kEditTitle = 1101;
 constexpr int kComboPage = 1102;
@@ -47,7 +49,7 @@ bool SettingsWindow::Create(HINSTANCE instance) {
   hwnd_ = CreateWindowExW(
       WS_EX_APPWINDOW, kClassName, L"DeskTidy Native - 设置",
       WS_OVERLAPPEDWINDOW & ~WS_THICKFRAME & ~WS_MAXIMIZEBOX, CW_USEDEFAULT,
-      CW_USEDEFAULT, 540, 600, nullptr, nullptr, instance, this);
+      CW_USEDEFAULT, 540, 680, nullptr, nullptr, instance, this);
   if (!hwnd_) {
     return false;
   }
@@ -161,6 +163,20 @@ bool SettingsWindow::Create(HINSTANCE instance) {
       20, 250, 280, 24, hwnd_,
       reinterpret_cast<HMENU>(static_cast<INT_PTR>(kChkOrgWatch)), instance,
       nullptr);
+  lbl_org_preview_ = CreateWindowW(
+      L"STATIC", L"待虚拟整理预览：", WS_CHILD | WS_VISIBLE, 20, 285, 200, 20,
+      hwnd_, nullptr, instance, nullptr);
+  list_org_preview_ = CreateWindowExW(
+      WS_EX_CLIENTEDGE, L"LISTBOX", L"",
+      WS_CHILD | WS_VISIBLE | WS_VSCROLL | LBS_NOINTEGRALHEIGHT, 20, 310, 480,
+      140, hwnd_,
+      reinterpret_cast<HMENU>(static_cast<INT_PTR>(kListOrgPreview)), instance,
+      nullptr);
+  btn_org_preview_ = CreateWindowW(
+      L"BUTTON", L"刷新预览", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 360, 250,
+      100, 28, hwnd_,
+      reinterpret_cast<HMENU>(static_cast<INT_PTR>(kBtnOrgPreview)), instance,
+      nullptr);
 
   btn_folders_ = CreateWindowW(
       L"BUTTON", L"分页文件夹…", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 20, 120,
@@ -211,6 +227,12 @@ void SettingsWindow::ShowTab(int index) {
   vis(btn_whitelist_, organize);
   vis(chk_org_startup_, organize);
   vis(chk_org_watch_, organize);
+  vis(lbl_org_preview_, organize);
+  vis(list_org_preview_, organize);
+  vis(btn_org_preview_, organize);
+  if (organize && on_org_preview_) {
+    on_org_preview_();
+  }
 
   vis(btn_folders_, tools);
   vis(btn_record_cfg_, tools);
@@ -279,6 +301,22 @@ void SettingsWindow::SetOrganizePrefs(bool startup_on, bool watch_on) {
   }
 }
 
+void SettingsWindow::SetOrganizePreview(const std::vector<std::wstring>& names) {
+  if (!list_org_preview_) {
+    return;
+  }
+  SendMessageW(list_org_preview_, LB_RESETCONTENT, 0, 0);
+  if (names.empty()) {
+    SendMessageW(list_org_preview_, LB_ADDSTRING, 0,
+                 reinterpret_cast<LPARAM>(L"（没有待钉选项）"));
+    return;
+  }
+  for (const auto& n : names) {
+    SendMessageW(list_org_preview_, LB_ADDSTRING, 0,
+                 reinterpret_cast<LPARAM>(n.c_str()));
+  }
+}
+
 void SettingsWindow::SetHandlers(VoidFn on_add, IndexFn on_remove, VoidFn on_seat,
                                  RenameFn on_rename, PageFn on_page,
                                  VoidFn on_org_virtual, VoidFn on_org_physical,
@@ -286,7 +324,8 @@ void SettingsWindow::SetHandlers(VoidFn on_add, IndexFn on_remove, VoidFn on_sea
                                  VoidFn on_edit_rules, BoolFn on_autostart,
                                  VoidFn on_whitelist, VoidFn on_page_folders,
                                  VoidFn on_help, BoolFn on_org_startup,
-                                 BoolFn on_org_watch, VoidFn on_record_cfg) {
+                                 BoolFn on_org_watch, VoidFn on_record_cfg,
+                                 VoidFn on_org_preview) {
   on_add_ = std::move(on_add);
   on_remove_ = std::move(on_remove);
   on_seat_ = std::move(on_seat);
@@ -304,6 +343,7 @@ void SettingsWindow::SetHandlers(VoidFn on_add, IndexFn on_remove, VoidFn on_sea
   on_org_startup_ = std::move(on_org_startup);
   on_org_watch_ = std::move(on_org_watch);
   on_record_cfg_ = std::move(on_record_cfg);
+  on_org_preview_ = std::move(on_org_preview);
 }
 
 int SettingsWindow::SelectedIndex() const {
@@ -409,6 +449,10 @@ LRESULT SettingsWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
       }
       if (id == kBtnFolders && on_page_folders_) {
         on_page_folders_();
+        return 0;
+      }
+      if (id == kBtnOrgPreview && on_org_preview_) {
+        on_org_preview_();
         return 0;
       }
       if (id == kBtnRecordCfg && on_record_cfg_) {

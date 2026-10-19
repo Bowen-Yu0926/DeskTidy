@@ -49,6 +49,30 @@ HGLOBAL MakeHdrop(const std::vector<std::wstring>& paths) {
 
 }  // namespace
 
+bool ClipboardGetFiles(std::vector<std::wstring>* paths) {
+  if (!paths || !OpenClipboard(nullptr)) {
+    return false;
+  }
+  paths->clear();
+  HANDLE data = GetClipboardData(CF_HDROP);
+  if (!data) {
+    CloseClipboard();
+    return false;
+  }
+  HDROP drop = static_cast<HDROP>(data);
+  const UINT n = DragQueryFileW(drop, 0xFFFFFFFF, nullptr, 0);
+  for (UINT i = 0; i < n; ++i) {
+    const UINT len = DragQueryFileW(drop, i, nullptr, 0);
+    std::wstring path(len, L'\0');
+    DragQueryFileW(drop, i, path.data(), len + 1);
+    if (!path.empty()) {
+      paths->push_back(std::move(path));
+    }
+  }
+  CloseClipboard();
+  return !paths->empty();
+}
+
 bool ClipboardSetFiles(HWND owner, const std::vector<std::wstring>& paths,
                        bool cut) {
   if (paths.empty() || !OpenClipboard(owner)) {

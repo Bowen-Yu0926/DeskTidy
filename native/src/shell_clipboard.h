@@ -8,3 +8,4 @@
 // Explorer-compatible CF_HDROP + Preferred DropEffect.
 bool ClipboardSetFiles(HWND owner, const std::vector<std::wstring>& paths,
                        bool cut);
+bool ClipboardGetFiles(std::vector<std::wstring>* paths);

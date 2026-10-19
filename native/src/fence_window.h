@@ -46,6 +46,7 @@ class FenceWindow {
   void SetItems(std::vector<DesktopItem> items);
   void ClearIcons();
   const std::vector<DesktopItem> ItemSnapshot() const;
+  void PasteClipboardFiles();
 
  private:
   struct Cell {

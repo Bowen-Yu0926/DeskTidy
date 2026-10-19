@@ -328,9 +328,22 @@ void FenceWindow::ShowIconMenu(int index, POINT screen) {
   }
 }
 
+void FenceWindow::PasteClipboardFiles() {
+  std::vector<std::wstring> paths;
+  if (!ClipboardGetFiles(&paths) || paths.empty()) {
+    ShowToast(L"剪贴板里没有文件");
+    return;
+  }
+  if (on_paths_dropped_) {
+    on_paths_dropped_(this, paths);
+    ShowToast(L"已粘贴 " + std::to_wstring(paths.size()) + L" 项");
+  }
+}
+
 void FenceWindow::ShowFenceMenu(POINT screen) {
   HMENU menu = CreatePopupMenu();
   AppendMenuW(menu, MF_STRING, 10, L"重命名分区…");
+  AppendMenuW(menu, MF_STRING, 13, L"粘贴文件");
   AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
   AppendMenuW(menu, MF_STRING | (page_ == 0 ? MF_CHECKED : 0), 11,
               L"放到第 1 页");
@@ -352,6 +365,8 @@ void FenceWindow::ShowFenceMenu(POINT screen) {
   DestroyMenu(menu);
   if (cmd == 10 && on_rename_) {
     on_rename_(this);
+  } else if (cmd == 13) {
+    PasteClipboardFiles();
   } else if (cmd == 11 && on_set_page_) {
     on_set_page_(this, 0);
   } else if (cmd == 12 && on_set_page_) {
@@ -395,6 +410,12 @@ LRESULT FenceWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
       LayoutCells();
       InvalidateRect(hwnd_, nullptr, TRUE);
       return 0;
+    case WM_KEYDOWN:
+      if (wparam == 'V' && (GetKeyState(VK_CONTROL) & 0x8000)) {
+        PasteClipboardFiles();
+        return 0;
+      }
+      break;
     case WM_MOUSEWHEEL: {
       const int delta = GET_WHEEL_DELTA_WPARAM(wparam);
       scroll_y_ -= delta / 2;

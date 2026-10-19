@@ -133,7 +133,12 @@ bool App::Init(HINSTANCE instance) {
       [this]() { ShowAppHelp(settings_.Hwnd()); },
       [this](bool on) { SetOrganizeStartup(on); },
       [this](bool on) { SetOrganizeWatch(on); },
-      [this]() { ConfigureScreenRecord(settings_.Hwnd()); });
+      [this]() { ConfigureScreenRecord(settings_.Hwnd()); },
+      [this]() {
+        const auto names =
+            OrganizePreviewVirtualPins(pins_, ScanDesktopItems());
+        settings_.SetOrganizePreview(names);
+      });
 
   notes_.Create(instance);
   todos_.Create(instance);
@@ -505,6 +510,8 @@ void App::RefreshSettingsList() {
     }
   }
   settings_.SetFenceNames(names);
+  settings_.SetOrganizePreview(
+      OrganizePreviewVirtualPins(pins_, ScanDesktopItems()));
 }
 
 void App::OnPathsDropped(FenceWindow* fence,
@@ -641,6 +648,8 @@ void App::OrganizeVirtual(bool quiet) {
       OrganizeApplyDefaultPins(&pins_, items, "system_software", "system_common");
   SavePins(pins_);
   RefreshDesktopIcons();
+  settings_.SetOrganizePreview(
+      OrganizePreviewVirtualPins(pins_, ScanDesktopItems()));
   if (quiet) {
     if (n > 0) {
       ShowToast(L"已自动钉选 " + std::to_wstring(n) + L" 项");

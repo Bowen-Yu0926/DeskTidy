@@ -80,6 +80,28 @@ int OrganizeCountPhysicalMoves(const std::vector<DesktopItem>& items) {
   return n;
 }
 
+std::vector<std::wstring> OrganizePreviewVirtualPins(
+    const PinMap& pins, const std::vector<DesktopItem>& items) {
+  std::vector<std::wstring> names;
+  const auto wl = LoadWhitelist();
+  for (const auto& it : items) {
+    if (FindPin(pins, it.path)) {
+      continue;
+    }
+    if (IsOrganizeSuppressed(it.path)) {
+      continue;
+    }
+    if (IsWhitelisted(it.path, wl) || IsWhitelisted(it.name, wl)) {
+      continue;
+    }
+    names.push_back(it.name.empty() ? it.path : it.name);
+    if (names.size() >= 80) {
+      break;
+    }
+  }
+  return names;
+}
+
 std::vector<std::wstring> OrganizePreviewPhysicalMoves(
     const std::vector<DesktopItem>& items) {
   std::vector<std::wstring> names;
