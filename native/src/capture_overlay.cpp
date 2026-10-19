@@ -94,6 +94,11 @@ bool CaptureOverlay::SaveSelection() {
   RECT sel{
       (std::min)(start_.x, end_.x), (std::min)(start_.y, end_.y),
       (std::max)(start_.x, end_.x), (std::max)(start_.y, end_.y)};
+  const int drag_w = sel.right - sel.left;
+  const int drag_h = sel.bottom - sel.top;
+  if (drag_w < 8 && drag_h < 8 && hover_ok_) {
+    sel = hover_;
+  }
   if (sel.right - sel.left < 4 || sel.bottom - sel.top < 4) {
     return false;
   }
@@ -101,6 +106,7 @@ bool CaptureOverlay::SaveSelection() {
   const int ch = sel.bottom - sel.top;
   POINT origin{sel.left, sel.top};
   ClientToScreen(hwnd_, &origin);
+  ShowWindow(hwnd_, SW_HIDE);
   HDC screen = GetDC(nullptr);
   HDC mem = CreateCompatibleDC(screen);
   HBITMAP bmp = CreateCompatibleBitmap(screen, cw, ch);
@@ -160,6 +166,51 @@ LRESULT CALLBACK CaptureOverlay::WndProc(HWND hwnd, UINT msg, WPARAM wparam,
   return self->HandleMessage(msg, wparam, lparam);
 }
 
+void CaptureOverlay::UpdateHover(POINT client) {
+  POINT screen = client;
+  ClientToScreen(hwnd_, &screen);
+  struct Pack {
+    HWND skip;
+    POINT pt;
+    HWND best;
+    LONG best_area;
+  } pack{hwnd_, screen, nullptr, 0x7fffffff};
+  EnumWindows(
+      [](HWND hwnd, LPARAM lp) -> BOOL {
+        auto* p = reinterpret_cast<Pack*>(lp);
+        if (hwnd == p->skip || !IsWindowVisible(hwnd) || IsIconic(hwnd)) {
+          return TRUE;
+        }
+        RECT wr{};
+        if (!GetWindowRect(hwnd, &wr) || !PtInRect(&wr, p->pt)) {
+          return TRUE;
+        }
+        const LONG area =
+            (wr.right - wr.left) * (wr.bottom - wr.top);
+        if (area < 64 * 64 || area >= p->best_area) {
+          return TRUE;
+        }
+        p->best = hwnd;
+        p->best_area = area;
+        return TRUE;
+      },
+      reinterpret_cast<LPARAM>(&pack));
+  hover_ok_ = false;
+  if (!pack.best) {
+    return;
+  }
+  RECT wr{};
+  if (!GetWindowRect(pack.best, &wr)) {
+    return;
+  }
+  POINT tl{wr.left, wr.top};
+  POINT br{wr.right, wr.bottom};
+  ScreenToClient(hwnd_, &tl);
+  ScreenToClient(hwnd_, &br);
+  hover_ = {tl.x, tl.y, br.x, br.y};
+  hover_ok_ = true;
+}
+
 LRESULT CaptureOverlay::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
   switch (msg) {
     case WM_PAINT: {
@@ -177,8 +228,10 @@ LRESULT CaptureOverlay::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
     case WM_MOUSEMOVE:
       if (dragging_) {
         end_ = {GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
-        InvalidateRect(hwnd_, nullptr, FALSE);
+      } else {
+        UpdateHover({GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)});
       }
+      InvalidateRect(hwnd_, nullptr, FALSE);
       return 0;
     case WM_LBUTTONUP:
       if (dragging_) {
@@ -210,11 +263,22 @@ void CaptureOverlay::Paint(HDC hdc) {
   HBRUSH dim = CreateSolidBrush(RGB(0, 0, 0));
   FillRect(hdc, &rc, dim);
   DeleteObject(dim);
-  if (!dragging_ && start_.x == end_.x) {
+  if (!dragging_) {
     SetBkMode(hdc, TRANSPARENT);
     SetTextColor(hdc, RGB(240, 240, 240));
-    DrawTextW(hdc, L"拖拽选择区域 · Esc/右键取消", -1, &rc,
-              DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    RECT hint = rc;
+    hint.top += 24;
+    hint.bottom = hint.top + 28;
+    DrawTextW(hdc, L"单击窗口截取 · 拖拽自由选区 · Esc 取消", -1, &hint,
+              DT_CENTER | DT_SINGLELINE);
+    if (hover_ok_) {
+      HPEN pen = CreatePen(PS_SOLID, 2, RGB(80, 180, 255));
+      HGDIOBJ old = SelectObject(hdc, pen);
+      SelectObject(hdc, GetStockObject(NULL_BRUSH));
+      Rectangle(hdc, hover_.left, hover_.top, hover_.right, hover_.bottom);
+      SelectObject(hdc, old);
+      DeleteObject(pen);
+    }
     return;
   }
   RECT sel{(std::min)(start_.x, end_.x), (std::min)(start_.y, end_.y),

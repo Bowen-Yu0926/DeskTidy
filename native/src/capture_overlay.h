@@ -18,11 +18,14 @@ class CaptureOverlay {
   LRESULT HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam);
   void Paint(HDC hdc);
   bool SaveSelection();
+  void UpdateHover(POINT client);
 
   HWND hwnd_ = nullptr;
   HINSTANCE instance_ = nullptr;
   bool dragging_ = false;
   POINT start_{};
   POINT end_{};
+  RECT hover_{};
+  bool hover_ok_ = false;
   DoneFn on_done_;
 };
