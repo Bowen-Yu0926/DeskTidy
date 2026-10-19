@@ -62,6 +62,7 @@ class App {
   void RestoreDesktopChrome();
   void EditRules();
   void UnpinPath(const std::wstring& path);
+  void RetargetPin(const std::wstring& from, const std::wstring& to);
   void TogglePeek();
   void ToggleFencesVisible();
   void SaveLayoutSnapshot();

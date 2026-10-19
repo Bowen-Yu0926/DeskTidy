@@ -1,5 +1,6 @@
 #include "search_window.h"
 
+#include "icon_actions.h"
 #include "tool_paths.h"
 
 #include <ShlObj.h>
@@ -334,16 +335,42 @@ LRESULT SearchWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
         if (pt.x == -1 && pt.y == -1) {
           GetCursorPos(&pt);
         }
-        HMENU menu = CreatePopupMenu();
-        AppendMenuW(menu, MF_STRING, 1, L"打开");
-        AppendMenuW(menu, MF_STRING, 2, L"在资源管理器中显示");
-        const int cmd = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_NONOTIFY, pt.x,
-                                       pt.y, 0, hwnd_, nullptr);
-        DestroyMenu(menu);
+        const int sel = SelectedIndex();
+        if (sel < 0 || sel >= static_cast<int>(results_.size())) {
+          return 0;
+        }
+        const std::wstring path = results_[static_cast<size_t>(sel)];
+        const int cmd = TrackIconShellMenu(hwnd_, pt, false);
         if (cmd == 1) {
           OpenSelected();
         } else if (cmd == 2) {
           RevealSelected();
+        } else if (cmd == 4 || cmd == 5) {
+          CopyOrCutShellPath(hwnd_, path, cmd == 5);
+        } else if (cmd == 6) {
+          CopyShellPathText(hwnd_, path);
+        } else if (cmd == 7) {
+          std::wstring dest;
+          if (RenameShellPath(hwnd_, path, &dest) == IconFsResult::Ok) {
+            results_[static_cast<size_t>(sel)] = dest;
+            SendMessageW(list_, LB_DELETESTRING, static_cast<WPARAM>(sel), 0);
+            SendMessageW(list_, LB_INSERTSTRING, static_cast<WPARAM>(sel),
+                         reinterpret_cast<LPARAM>(dest.c_str()));
+            SendMessageW(list_, LB_SETCURSEL, static_cast<WPARAM>(sel), 0);
+            if (on_path_replaced_) {
+              on_path_replaced_(path, dest);
+            }
+          }
+        } else if (cmd == 8) {
+          ShowShellPathProperties(hwnd_, path);
+        } else if (cmd == 9) {
+          if (RecycleShellPath(hwnd_, path) == IconFsResult::Ok) {
+            results_.erase(results_.begin() + sel);
+            SendMessageW(list_, LB_DELETESTRING, static_cast<WPARAM>(sel), 0);
+            if (on_removed_) {
+              on_removed_(path);
+            }
+          }
         }
         return 0;
       }

@@ -3,7 +3,7 @@
 #include "desktop_shell.h"
 #include "display_geom.h"
 #include "fence_style.h"
-#include "prompt_text.h"
+#include "icon_actions.h"
 #include "shell_clipboard.h"
 #include "toast.h"
 
@@ -305,29 +305,11 @@ void FenceWindow::RenameItem(int index) {
     return;
   }
   const std::wstring old_path = cells_[static_cast<size_t>(index)].item.path;
-  const size_t slash = old_path.find_last_of(L"\\/");
-  const std::wstring parent =
-      slash == std::wstring::npos ? L"" : old_path.substr(0, slash);
-  const std::wstring name =
-      slash == std::wstring::npos ? old_path : old_path.substr(slash + 1);
-  const std::wstring neu =
-      PromptText(hwnd_, L"重命名", L"新名称：", name);
-  if (neu.empty() || neu == name || neu.find_first_of(L"\\/:*?\"<>|") !=
-                                         std::wstring::npos) {
-    if (!neu.empty() && neu != name) {
-      ShowToast(L"名称包含非法字符");
-    }
-    return;
-  }
-  const std::wstring dest = parent.empty() ? neu : parent + L"\\" + neu;
-  if (!MoveFileW(old_path.c_str(), dest.c_str())) {
-    ShowToast(L"无法重命名，文件可能被占用");
-    return;
-  }
-  if (on_path_replaced_) {
+  std::wstring dest;
+  if (RenameShellPath(hwnd_, old_path, &dest) == IconFsResult::Ok &&
+      on_path_replaced_) {
     on_path_replaced_(old_path, dest);
   }
-  ShowToast(L"已重命名");
 }
 
 void FenceWindow::RecycleItem(int index) {
@@ -335,23 +317,7 @@ void FenceWindow::RecycleItem(int index) {
     return;
   }
   const std::wstring path = cells_[static_cast<size_t>(index)].item.path;
-  if (MessageBoxW(hwnd_, L"将此项移到回收站？", L"删除",
-                  MB_YESNO | MB_ICONQUESTION) != IDYES) {
-    return;
-  }
-  std::wstring from = path;
-  from.push_back(L'\0');
-  SHFILEOPSTRUCTW op{};
-  op.hwnd = hwnd_;
-  op.wFunc = FO_DELETE;
-  op.pFrom = from.c_str();
-  op.fFlags = FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_SILENT;
-  const int rc = SHFileOperationW(&op);
-  if (rc != 0 || op.fAnyOperationsAborted) {
-    ShowToast(L"未能移到回收站");
-    return;
-  }
-  if (on_unpin_) {
+  if (RecycleShellPath(hwnd_, path) == IconFsResult::Ok && on_unpin_) {
     on_unpin_(this, path);
   }
 }
@@ -360,55 +326,25 @@ void FenceWindow::ShowItemProperties(int index) {
   if (index < 0 || index >= static_cast<int>(cells_.size())) {
     return;
   }
-  const std::wstring& path = cells_[static_cast<size_t>(index)].item.path;
-  SHELLEXECUTEINFOW sei{};
-  sei.cbSize = sizeof(sei);
-  sei.fMask = SEE_MASK_INVOKEIDLIST;
-  sei.hwnd = hwnd_;
-  sei.lpVerb = L"properties";
-  sei.lpFile = path.c_str();
-  sei.nShow = SW_SHOW;
-  if (!ShellExecuteExW(&sei)) {
-    ShowToast(L"无法打开属性");
-  }
+  ShowShellPathProperties(hwnd_, cells_[static_cast<size_t>(index)].item.path);
 }
 
 void FenceWindow::ShowIconMenu(int index, POINT screen) {
-  HMENU menu = CreatePopupMenu();
-  AppendMenuW(menu, MF_STRING, 1, L"打开");
-  AppendMenuW(menu, MF_STRING, 2, L"在资源管理器中显示");
-  AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-  AppendMenuW(menu, MF_STRING, 4, L"复制");
-  AppendMenuW(menu, MF_STRING, 5, L"剪切");
-  AppendMenuW(menu, MF_STRING, 6, L"复制路径");
-  AppendMenuW(menu, MF_STRING, 7, L"重命名…");
-  AppendMenuW(menu, MF_STRING, 8, L"属性");
-  AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-  AppendMenuW(menu, MF_STRING, 9, L"删除");
-  AppendMenuW(menu, MF_STRING, 3, L"取消钉选");
-  SetForegroundWindow(hwnd_);
-  const int cmd =
-      TrackPopupMenu(menu, TPM_RETURNCMD | TPM_NONOTIFY, screen.x, screen.y, 0,
-                     hwnd_, nullptr);
-  DestroyMenu(menu);
+  if (index < 0 || index >= static_cast<int>(cells_.size())) {
+    return;
+  }
+  const std::wstring path = cells_[static_cast<size_t>(index)].item.path;
+  const int cmd = TrackIconShellMenu(hwnd_, screen, true);
   if (cmd == 1) {
     OpenItem(index);
   } else if (cmd == 2) {
     RevealItem(index);
   } else if (cmd == 3 && on_unpin_) {
-    on_unpin_(this, cells_[static_cast<size_t>(index)].item.path);
-  } else if ((cmd == 4 || cmd == 5) &&
-             index >= 0 && index < static_cast<int>(cells_.size())) {
-    const std::wstring& path = cells_[static_cast<size_t>(index)].item.path;
-    if (ClipboardSetFiles(hwnd_, {path}, cmd == 5)) {
-      ShowToast(cmd == 5 ? L"已剪切到剪贴板" : L"已复制到剪贴板");
-    }
-  } else if (cmd == 6 && index >= 0 &&
-             index < static_cast<int>(cells_.size())) {
-    const std::wstring& path = cells_[static_cast<size_t>(index)].item.path;
-    if (ClipboardSetText(hwnd_, path)) {
-      ShowToast(L"路径已复制");
-    }
+    on_unpin_(this, path);
+  } else if (cmd == 4 || cmd == 5) {
+    CopyOrCutShellPath(hwnd_, path, cmd == 5);
+  } else if (cmd == 6) {
+    CopyShellPathText(hwnd_, path);
   } else if (cmd == 7) {
     RenameItem(index);
   } else if (cmd == 8) {

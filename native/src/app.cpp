@@ -56,14 +56,7 @@ void App::WireFence(FenceWindow* fence) {
   });
   fence->SetOnPathReplaced(
       [this](const std::wstring& from, const std::wstring& to) {
-        const std::string* id = FindPin(pins_, from);
-        const std::string fence_id = id ? *id : std::string();
-        ClearPin(&pins_, from);
-        if (!fence_id.empty()) {
-          SetPin(&pins_, to, fence_id);
-        }
-        SavePins(pins_);
-        RefreshDesktopIcons();
+        RetargetPin(from, to);
       });
   fence->SetOnSetPage([this](FenceWindow* f, int page) {
     if (!f) {
@@ -171,6 +164,22 @@ bool App::Init(HINSTANCE instance) {
   page_bar_.SetOnSearch([this]() { OpenSearch(); });
   page_bar_.SetOnCapture([this]() { StartRegionCapture(); });
   public_host_.Create(instance);
+  dock_.SetOnPathReplaced(
+      [this](const std::wstring& from, const std::wstring& to) {
+        RetargetPin(from, to);
+      });
+  dock_.SetOnRemoved([this](const std::wstring& path) { UnpinPath(path); });
+  public_host_.SetOnPathReplaced(
+      [this](const std::wstring& from, const std::wstring& to) {
+        RetargetPin(from, to);
+      });
+  public_host_.SetOnRemoved(
+      [this](const std::wstring& path) { UnpinPath(path); });
+  search_.SetOnPathReplaced(
+      [this](const std::wstring& from, const std::wstring& to) {
+        RetargetPin(from, to);
+      });
+  search_.SetOnRemoved([this](const std::wstring& path) { UnpinPath(path); });
 
   prefs_ = LoadAppPrefs();
   display_fp_ = DisplayFingerprint();
@@ -612,6 +621,17 @@ void App::OnPathsDropped(FenceWindow* fence,
 void App::UnpinPath(const std::wstring& path) {
   SuppressOrganizePath(path);
   ClearPin(&pins_, path);
+  SavePins(pins_);
+  RefreshDesktopIcons();
+}
+
+void App::RetargetPin(const std::wstring& from, const std::wstring& to) {
+  const std::string* id = FindPin(pins_, from);
+  const std::string fence_id = id ? *id : std::string();
+  ClearPin(&pins_, from);
+  if (!fence_id.empty()) {
+    SetPin(&pins_, to, fence_id);
+  }
   SavePins(pins_);
   RefreshDesktopIcons();
 }

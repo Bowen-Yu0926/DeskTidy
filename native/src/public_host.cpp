@@ -2,6 +2,7 @@
 
 #include "desktop_shell.h"
 #include "display_geom.h"
+#include "icon_actions.h"
 
 #include <Shellapi.h>
 #include <windowsx.h>
@@ -115,6 +116,35 @@ void PublicHost::Layout() {
   }
 }
 
+void PublicHost::ShowSlotMenu(int index, POINT screen) {
+  if (index < 0 || index >= static_cast<int>(slots_.size())) {
+    return;
+  }
+  const std::wstring path = slots_[static_cast<size_t>(index)].item.path;
+  const int cmd = TrackIconShellMenu(hwnd_, screen, false);
+  if (cmd == 1) {
+    OpenShellPath(path);
+  } else if (cmd == 2) {
+    RevealShellPath(path);
+  } else if (cmd == 4 || cmd == 5) {
+    CopyOrCutShellPath(hwnd_, path, cmd == 5);
+  } else if (cmd == 6) {
+    CopyShellPathText(hwnd_, path);
+  } else if (cmd == 7) {
+    std::wstring dest;
+    if (RenameShellPath(hwnd_, path, &dest) == IconFsResult::Ok &&
+        on_path_replaced_) {
+      on_path_replaced_(path, dest);
+    }
+  } else if (cmd == 8) {
+    ShowShellPathProperties(hwnd_, path);
+  } else if (cmd == 9) {
+    if (RecycleShellPath(hwnd_, path) == IconFsResult::Ok && on_removed_) {
+      on_removed_(path);
+    }
+  }
+}
+
 int PublicHost::HitTest(int x, int y) const {
   for (size_t i = 0; i < slots_.size(); ++i) {
     const RECT& b = slots_[i].bounds;
@@ -154,8 +184,16 @@ LRESULT PublicHost::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
     case WM_LBUTTONUP: {
       const int hit = HitTest(GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam));
       if (hit >= 0) {
-        ShellExecuteW(nullptr, L"open", slots_[hit].item.path.c_str(), nullptr,
-                      nullptr, SW_SHOWNORMAL);
+        OpenShellPath(slots_[static_cast<size_t>(hit)].item.path);
+      }
+      return 0;
+    }
+    case WM_RBUTTONUP: {
+      const int hit = HitTest(GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam));
+      if (hit >= 0) {
+        POINT pt{};
+        GetCursorPos(&pt);
+        ShowSlotMenu(hit, pt);
       }
       return 0;
     }

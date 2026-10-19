@@ -4,6 +4,8 @@
 
 #include <Windows.h>
 
+#include <functional>
+#include <string>
 #include <vector>
 
 // Bottom-edge shortcut dock in the desktop band.
@@ -17,6 +19,13 @@ class DockWindow {
   HWND Hwnd() const { return hwnd_; }
   void SetItems(std::vector<DesktopItem> items);
   void AttachToDesktopLayer();
+  void SetOnPathReplaced(
+      std::function<void(const std::wstring&, const std::wstring&)> fn) {
+    on_path_replaced_ = std::move(fn);
+  }
+  void SetOnRemoved(std::function<void(const std::wstring&)> fn) {
+    on_removed_ = std::move(fn);
+  }
 
  private:
   struct Slot {
@@ -31,6 +40,10 @@ class DockWindow {
   void LayoutSlots();
   int HitTest(int x, int y) const;
 
+  void ShowSlotMenu(int index, POINT screen);
+
   HWND hwnd_ = nullptr;
   std::vector<Slot> slots_;
+  std::function<void(const std::wstring&, const std::wstring&)> on_path_replaced_;
+  std::function<void(const std::wstring&)> on_removed_;
 };

@@ -56,6 +56,7 @@ add_executable(desktidy_native WIN32
   src/fence_region_overlay.cpp
   src/update_check.cpp
   src/shell_clipboard.cpp
+  src/icon_actions.cpp
   src/toast.cpp
   src/help_center.cpp
   src/native_cleanup.cpp
