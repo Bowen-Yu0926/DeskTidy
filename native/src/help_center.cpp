@@ -1,61 +1,131 @@
 #include "help_center.h"
 
+#include "first_run.h"
+#include "i18n.h"
+#include "mist_webview.h"
 #include "paths_util.h"
+#include "tool_paths.h"
+#include "tools_misc.h"
 
 #include <Shellapi.h>
 
 #include <fstream>
+#include <sstream>
 #include <string>
 
 namespace {
 
-constexpr char kHelpHtml[] =
-    "<!DOCTYPE html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\">"
-    "<title>DeskTidy Native 帮助</title>"
-    "<style>body{font-family:Segoe UI,Microsoft YaHei,sans-serif;max-width:720px;"
-    "margin:32px auto;padding:0 20px;line-height:1.55;color:#1f2937}"
-    "h1{font-size:1.6rem}h2{font-size:1.15rem;margin-top:1.6em;border-bottom:1px solid #e5e7eb}"
-    "code{background:#f3f4f6;padding:1px 6px;border-radius:4px}"
-    "ul{padding-left:1.2em}</style></head><body>"
-    "<h1>DeskTidy Native</h1>"
-    "<p>桌面分区与工具的原生 Win32 主机。数据目录："
-    "<code>%LocalAppData%\\DeskTidyNative\\</code></p>"
-    "<h2>分区</h2><ul>"
-    "<li>拖动边角缩放；把桌面图标拖入即可钉选</li>"
-    "<li>设置 →「框选添加」拖出区域新建分区</li>"
-    "<li>右键：重命名、换页、样式；图标右键：打开 / 复制剪切 / 取消钉选</li>"
-    "<li>Ctrl+V 或右键「粘贴文件」从资源管理器剪贴板钉入</li>"
-    "</ul><h2>整理</h2><ul>"
-    "<li>虚拟整理：按规则写入钉选；物理整理：移入 Desktop\\DeskTidy</li>"
-    "<li>rules.json 支持扩展名与文件名通配（如 Invoice*）</li>"
-    "<li>可开启动自动整理与监视新文件；取消钉选有短暂抑制窗口</li>"
-    "</ul><h2>工具</h2><ul>"
-    "<li>区域截图：单击取窗或拖拽选区；全屏截图；录屏开/关与角标停止</li>"
-    "<li>便签：查找替换、笔记库搜索、Markdown 浏览器预览</li>"
-    "<li>保险库：DPAPI 本地存储、密码生成、复制 30 秒清空、云同步</li>"
-    "<li>底部页条：1/2 页 + 记/搜/截快捷入口</li>"
-    "</ul><h2>快捷键</h2><ul>"
-    "<li>Ctrl+Shift+S 设置 · N 便签 · F 分区 · O 整理 · V 保险库 · T 待办</li>"
-    "<li>Ctrl+Space Peek · Ctrl+Alt+1/2 换页 · Ctrl+Alt+4 搜索</li>"
-    "<li>Ctrl+Shift+1 区域截图 · 2 全屏 · R 录屏</li>"
-    "<li>托盘 →「修改快捷键」可改绑</li>"
-    "</ul><h2>更新</h2>"
-    "<p>托盘「检查更新」会对比 GitHub DeskTidy-Releases 最新版本。</p>"
-    "</body></html>";
+std::wstring FindHelpDocHtml() {
+  wchar_t mod[MAX_PATH] = {};
+  GetModuleFileNameW(nullptr, mod, MAX_PATH);
+  std::wstring dir = mod;
+  const size_t slash = dir.find_last_of(L"\\/");
+  if (slash != std::wstring::npos) {
+    dir.resize(slash);
+  }
+  const std::wstring candidates[] = {
+      JoinPath(dir, L"docs\\desktidy.html"),
+      JoinPath(dir, L"..\\docs\\desktidy.html"),
+      JoinPath(dir, L"..\\..\\docs\\desktidy.html"),
+      JoinPath(ExeDir(), L"docs\\desktidy.html"),
+  };
+  for (const auto& c : candidates) {
+    if (GetFileAttributesW(c.c_str()) != INVALID_FILE_ATTRIBUTES) {
+      return c;
+    }
+  }
+  return {};
+}
+
+// Read a whole file (UTF-8). Returns empty on failure.
+std::string ReadWholeFile(const std::wstring& path) {
+  std::ifstream in(path, std::ios::binary);
+  if (!in) {
+    return {};
+  }
+  std::ostringstream ss;
+  ss << in.rdbuf();
+  return ss.str();
+}
+
+// Inject the operations handbook chapters into the manual template (Python
+// help_content.py parity: sections, anchors and search box). The chapters asset
+// is generated at build time and copied next to the exe.
+void OpenHelpDocs(HWND owner) {
+  const std::wstring path = FindHelpDocHtml();
+  if (path.empty()) {
+    MessageBoxW(owner,
+                L"未找到帮助页模板（docs/desktidy.html）。请确认安装完整。",
+                L"无法打开帮助", MB_OK | MB_ICONWARNING);
+    return;
+  }
+  std::string html = ReadWholeFile(path);
+  const std::wstring chapters_path =
+      MistFindAssetHtml(L"dialogs\\help_manual_chapters.html");
+  if (!chapters_path.empty()) {
+    const std::string chapters = ReadWholeFile(chapters_path);
+    const std::string open_marker = "<!-- HELP_MANUAL -->";
+    const std::string close_marker = "<!-- /HELP_MANUAL -->";
+    const size_t open_pos = html.find(open_marker);
+    const size_t close_pos = html.find(close_marker);
+    if (!chapters.empty() && open_pos != std::string::npos &&
+        close_pos != std::string::npos && close_pos > open_pos) {
+      html = html.substr(0, open_pos) + chapters +
+             html.substr(close_pos + close_marker.size());
+    }
+  }
+  const std::wstring out = JoinPath(NativeDataDir(), L"DeskTidy_manual.html");
+  {
+    std::ofstream f(out, std::ios::binary);
+    if (f) {
+      f << html;
+    }
+  }
+  ShellExecuteW(owner, L"open", out.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+}
+
+void ReplayFirstRunGuide(HWND owner) {
+  const std::wstring marker = JoinPath(NativeDataDir(), L"firstrun.done");
+  DeleteFileW(marker.c_str());
+  MaybeShowFirstRun(owner);
+}
 
 }  // namespace
 
 void ShowAppHelpCenter(HWND owner) {
-  const std::wstring path = JoinPath(NativeDataDir(), L"help.html");
-  {
-    std::ofstream out(path, std::ios::binary);
-    if (out) {
-      out.write(kHelpHtml, sizeof(kHelpHtml) - 1);
-    }
-  }
-  if (GetFileAttributesW(path.c_str()) != INVALID_FILE_ATTRIBUTES) {
-    ShellExecuteW(owner, L"open", path.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+  MistWebDialog dlg;
+  dlg.owner = owner;
+  dlg.user_data_subdir = L"webview2-help";
+  dlg.html_path = MistFindAssetHtml(L"dialogs\\help.html");
+  if (dlg.html_path.empty()) {
+    MessageBoxW(owner, L"找不到 help.html", L"帮助", MB_OK | MB_ICONWARNING);
     return;
   }
-  MessageBoxW(owner, L"无法写入帮助文件。", L"帮助", MB_OK | MB_ICONWARNING);
+  dlg.build_state = []() { return std::wstring(L"{\"type\":\"state\"}"); };
+  dlg.on_message = [&](const std::wstring& json) -> bool {
+    const std::wstring type = MistJsonStringField(json, L"type");
+    if (type != L"action") {
+      return false;
+    }
+    const std::wstring id = MistJsonStringField(json, L"id");
+    if (id == L"ready") {
+      MistWebDialogPushState(&dlg);
+      return false;
+    }
+    if (id == L"open_docs") {
+      OpenHelpDocs(dlg.hwnd ? dlg.hwnd : owner);
+      return false;
+    }
+    if (id == L"guide") {
+      MistWebDialogClose(&dlg);
+      ReplayFirstRunGuide(owner);
+      return true;
+    }
+    if (id == L"updates") {
+      OpenUpdatePage(dlg.hwnd ? dlg.hwnd : owner);
+      return false;
+    }
+    return id == L"close";
+  };
+  MistWebDialogRun(&dlg, L"帮助", 560, 560);
 }

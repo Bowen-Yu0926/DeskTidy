@@ -10,3 +10,8 @@ std::wstring MarkdownToHtmlDocument(const std::wstring& md, const std::wstring& 
 bool PreviewMarkdownFile(HWND owner, const std::wstring& path);
 bool PreviewMarkdownText(HWND owner, const std::wstring& md,
                          const std::wstring& title = L"预览");
+
+// Convert an HTML fragment (e.g. clipboard "HTML Format") to Markdown.
+// Handles headings/lists/links/tables/bold/italic/code/images; falls back to
+// plain text by stripping remaining tags.
+std::wstring HtmlToMarkdown(const std::wstring& html);

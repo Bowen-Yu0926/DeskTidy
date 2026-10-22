@@ -4,9 +4,12 @@
 
 #include <Shellapi.h>
 
+#include <algorithm>
+#include <cstdlib>
 #include <fstream>
 #include <sstream>
 #include <string>
+#include <vector>
 
 namespace {
 
@@ -220,4 +223,402 @@ bool PreviewMarkdownFile(HWND owner, const std::wstring& path) {
     return false;
   }
   return PreviewMarkdownText(owner, WidenUtf8(raw), path);
+}
+
+namespace {
+
+std::wstring DecodeEntities(const std::wstring& s) {
+  std::wstring o;
+  o.reserve(s.size());
+  for (size_t i = 0; i < s.size(); ++i) {
+    if (s[i] != L'&') {
+      o.push_back(s[i]);
+      continue;
+    }
+    size_t semi = s.find(L';', i);
+    if (semi == std::wstring::npos || semi - i > 8) {
+      o.push_back(s[i]);
+      continue;
+    }
+    const std::wstring ent = s.substr(i + 1, semi - i - 1);
+    if (ent == L"amp") {
+      o.push_back(L'&');
+    } else if (ent == L"lt") {
+      o.push_back(L'<');
+    } else if (ent == L"gt") {
+      o.push_back(L'>');
+    } else if (ent == L"quot") {
+      o.push_back(L'"');
+    } else if (ent == L"apos" || ent == L"#39") {
+      o.push_back(L'\'');
+    } else if (ent == L"nbsp") {
+      o.push_back(L' ');
+    } else if (ent == L"#160") {
+      o.push_back(L' ');
+    } else if (!ent.empty() && ent[0] == L'#') {
+      const int cp = _wtoi(ent.c_str() + 1);
+      if (cp > 0 && cp <= 0x10FFFF) {
+        if (cp <= 0xFFFF) {
+          o.push_back(static_cast<wchar_t>(cp));
+        } else {
+          const int v = cp - 0x10000;
+          o.push_back(static_cast<wchar_t>(0xD800 + (v >> 10)));
+          o.push_back(static_cast<wchar_t>(0xDC00 + (v & 0x3FF)));
+        }
+      } else {
+        o.push_back(L'&');
+        o.append(ent);
+        o.push_back(L';');
+      }
+    } else {
+      o.push_back(L'&');
+      o.append(ent);
+      o.push_back(L';');
+    }
+    i = semi;
+  }
+  return o;
+}
+
+std::wstring LowerTag(const std::wstring& s) {
+  std::wstring r = s;
+  for (auto& c : r) {
+    if (c >= L'A' && c <= L'Z') {
+      c += (L'a' - L'A');
+    }
+  }
+  return r;
+}
+
+std::wstring AttrValue(const std::wstring& tag, const std::wstring& name) {
+  const std::wstring needle = name + L"=";
+  const std::wstring low = LowerTag(tag);
+  size_t p = low.find(needle);
+  if (p == std::wstring::npos) {
+    return {};
+  }
+  p += needle.size();
+  if (p >= tag.size()) {
+    return {};
+  }
+  const wchar_t q = tag[p];
+  if (q == L'"' || q == L'\'') {
+    const size_t end = tag.find(q, p + 1);
+    if (end == std::wstring::npos) {
+      return tag.substr(p + 1);
+    }
+    return tag.substr(p + 1, end - p - 1);
+  }
+  size_t end = p;
+  while (end < tag.size() && tag[end] != L' ' && tag[end] != L'\t' &&
+         tag[end] != L'>') {
+    ++end;
+  }
+  return tag.substr(p, end - p);
+}
+
+std::wstring InlineToMd(const std::wstring& text) {
+  // Converts inline tags (<strong>/<b>, <em>/<i>, <code>, <a>, <img>) to MD.
+  std::wstring out;
+  out.reserve(text.size());
+  std::wstring link_text, link_href;
+  std::wstring tag;
+  bool in_a = false;
+  for (size_t i = 0; i < text.size(); ++i) {
+    const wchar_t c = text[i];
+    if (c == L'<') {
+      size_t j = text.find(L'>', i);
+      if (j == std::wstring::npos) {
+        out.push_back(c);
+        continue;
+      }
+      tag = text.substr(i + 1, j - i - 1);
+      i = j;
+      const std::wstring low = LowerTag(tag);
+      const bool close = !tag.empty() && tag[0] == L'/';
+      const std::wstring name = close ? LowerTag(tag.substr(1)) : low;
+      // strip attributes from name for matching
+      size_t sp = name.find_first_of(L" \t");
+      const std::wstring base = name.substr(0, sp);
+      if (base == L"strong" || base == L"b") {
+        out += L"**";
+      } else if (base == L"em" || base == L"i") {
+        out += L"*";
+      } else if (base == L"code") {
+        out += L"`";
+      } else if (base == L"a") {
+        if (!close) {
+          in_a = true;
+          link_href = DecodeEntities(AttrValue(tag, L"href"));
+        } else {
+          if (!link_text.empty() && !link_href.empty()) {
+            out += L"[" + link_text + L"](" + link_href + L")";
+          } else {
+            out += link_text;
+          }
+          link_text.clear();
+          link_href.clear();
+          in_a = false;
+        }
+      } else if (base == L"img") {
+        const std::wstring src = DecodeEntities(AttrValue(tag, L"src"));
+        out += L"![](" + src + L")";
+      } else if (base == L"br") {
+        out += L"\n";
+      }
+      continue;
+    }
+    if (in_a) {
+      link_text.push_back(c);
+    } else {
+      out.push_back(c);
+    }
+  }
+  return out;
+}
+
+std::wstring TrimLine(const std::wstring& s) {
+  size_t a = 0, b = s.size();
+  while (a < b && (s[a] == L' ' || s[a] == L'\t' || s[a] == L'\r' ||
+                   s[a] == L'\n')) {
+    ++a;
+  }
+  while (b > a && (s[b - 1] == L' ' || s[b - 1] == L'\t' || s[b - 1] == L'\r' ||
+                   s[b - 1] == L'\n')) {
+    --b;
+  }
+  return s.substr(a, b - a);
+}
+
+std::wstring PlainOf(const std::wstring& s) {
+  // Strip all tags, decode entities, collapse whitespace runs.
+  std::wstring o;
+  bool in_tag = false;
+  for (size_t i = 0; i < s.size(); ++i) {
+    if (s[i] == L'<') {
+      in_tag = true;
+      continue;
+    }
+    if (in_tag) {
+      if (s[i] == L'>') {
+        in_tag = false;
+      }
+      continue;
+    }
+    o.push_back(s[i]);
+  }
+  return DecodeEntities(o);
+}
+
+}  // namespace
+
+std::wstring HtmlToMarkdown(const std::wstring& html) {
+  std::wstring md;
+  std::wstring text = html;
+
+  // Extract clipboard fragment if present.
+  const size_t sf = text.find(L"<!--StartFragment-->");
+  const size_t ef = text.find(L"<!--EndFragment-->");
+  if (sf != std::wstring::npos && ef != std::wstring::npos && ef > sf) {
+    text = text.substr(sf + 20, ef - (sf + 20));
+  }
+
+  std::wstring buf;
+  std::vector<std::wstring> table_rows;
+  bool in_table = false;
+  std::wstring cur_row;
+  std::vector<wchar_t> list_stack;   // 'u'/'o' per open list
+  std::vector<int> list_counter;     // ordered-list counters
+  bool quote_open = false;
+
+  auto flush_text = [&]() {
+    std::wstring t = TrimLine(buf);
+    if (t.empty()) {
+      buf.clear();
+      return;
+    }
+    const std::wstring line = InlineToMd(t);
+    if (list_stack.empty()) {
+      if (!md.empty() && md.back() != L'\n') {
+        md += L'\n';
+      }
+      md += (quote_open ? L"> " : L"") + line + L"\n\n";
+    }
+    buf.clear();
+  };
+
+  for (size_t i = 0; i < text.size();) {
+    const wchar_t c = text[i];
+    if (c == L'<') {
+      size_t j = text.find(L'>', i);
+      if (j == std::wstring::npos) {
+        buf.push_back(c);
+        ++i;
+        continue;
+      }
+      const std::wstring tag = text.substr(i + 1, j - i - 1);
+      i = j + 1;
+      const bool close = !tag.empty() && tag[0] == L'/';
+      std::wstring name = close ? tag.substr(1) : tag;
+      size_t sp = name.find_first_of(L" \t");
+      name = LowerTag(name.substr(0, sp));
+      if (name == L"br") {
+        buf += L"\n";
+      } else if (name == L"p") {
+        flush_text();
+      } else if (name == L"h1" || name == L"h2" || name == L"h3" ||
+                 name == L"h4" || name == L"h5" || name == L"h6") {
+        if (!close) {
+          flush_text();
+        } else {
+          const int level = name[1] - L'0';
+          const std::wstring t = TrimLine(buf);
+          buf.clear();
+          if (!t.empty()) {
+            md += std::wstring(static_cast<size_t>(level), L'#') + L" " +
+                  InlineToMd(t) + L"\n\n";
+          }
+        }
+      } else if (name == L"strong" || name == L"b" || name == L"em" ||
+                 name == L"i" || name == L"code" || name == L"a" ||
+                 name == L"img" || name == L"u" || name == L"s" ||
+                 name == L"del" || name == L"mark") {
+        if (name == L"a" || name == L"img") {
+          buf += L"<" + tag + L">";
+        } else if (name == L"u" || name == L"s" || name == L"del" ||
+                   name == L"mark") {
+          // No direct MD equivalent; keep text, drop tag.
+        } else {
+          buf += close ? L"</" + name + L">" : L"<" + name + L">";
+        }
+      } else if (name == L"ul" || name == L"ol") {
+        flush_text();
+        if (!close) {
+          list_stack.push_back(name == L"ol" ? L'o' : L'u');
+          list_counter.push_back(0);
+        } else if (!list_stack.empty()) {
+          list_stack.pop_back();
+          list_counter.pop_back();
+          if (list_stack.empty()) {
+            md += L"\n";
+          }
+        }
+      } else if (name == L"li") {
+        if (close) {
+          const std::wstring t = TrimLine(buf);
+          buf.clear();
+          if (!t.empty()) {
+            const size_t depth = list_stack.empty() ? 0 : list_stack.size() - 1;
+            std::wstring indent(depth * 2, L' ');
+            std::wstring marker = L"- ";
+            if (!list_stack.empty() && list_stack.back() == L'o') {
+              list_counter.back() += 1;
+              marker = std::to_wstring(list_counter.back()) + L". ";
+            }
+            md += indent + marker + InlineToMd(t) + L"\n";
+          }
+        }
+      } else if (name == L"table") {
+        if (!close) {
+          flush_text();
+          in_table = true;
+          table_rows.clear();
+          cur_row.clear();
+        } else {
+          in_table = false;
+          // Emit GFM table.
+          std::vector<std::vector<std::wstring>> rows;
+          for (const auto& r : table_rows) {
+            std::vector<std::wstring> cells;
+            std::wstring cell;
+            for (size_t k = 0; k < r.size(); ++k) {
+              if (r[k] == L'\t') {
+                cells.push_back(TrimLine(PlainOf(cell)));
+                cell.clear();
+              } else {
+                cell.push_back(r[k]);
+              }
+            }
+            cells.push_back(TrimLine(PlainOf(cell)));
+            rows.push_back(std::move(cells));
+          }
+          size_t cols = 0;
+          for (const auto& r : rows) {
+            cols = (std::max)(cols, r.size());
+          }
+          if (!rows.empty() && cols > 0) {
+            for (size_t r = 0; r < rows.size(); ++r) {
+              md += L"| ";
+              for (size_t k = 0; k < cols; ++k) {
+                if (k < rows[r].size()) {
+                  md += rows[r][k];
+                }
+                md += L" | ";
+              }
+              md += L"\n";
+              if (r == 0) {
+                md += L"| ";
+                for (size_t k = 0; k < cols; ++k) {
+                  md += L"--- | ";
+                }
+                md += L"\n";
+              }
+            }
+            md += L"\n";
+          }
+          table_rows.clear();
+        }
+      } else if (name == L"tr") {
+        if (close) {
+          table_rows.push_back(cur_row);
+          cur_row.clear();
+        }
+      } else if (name == L"th" || name == L"td") {
+        if (in_table && close) {
+          cur_row += TrimLine(buf);
+          cur_row += L'\t';
+          buf.clear();
+        }
+      } else if (name == L"pre") {
+        flush_text();
+        if (close) {
+          const std::wstring t = TrimLine(buf);
+          buf.clear();
+          if (!t.empty()) {
+            md += L"```\n" + PlainOf(t) + L"\n```\n\n";
+          }
+        }
+      } else if (name == L"blockquote") {
+        flush_text();
+        quote_open = !close;
+      } else if (name == L"div" || name == L"span" || name == L"section" ||
+                 name == L"article" || name == L"header" || name == L"footer" ||
+                 name == L"nav" || name == L"tbody" || name == L"thead" ||
+                 name == L"html" || name == L"body") {
+        // pass-through container
+      } else if (name == L"head" || name == L"style" || name == L"script" ||
+                 name == L"title" || name == L"meta" || name == L"link") {
+        // skip entirely (rare in fragments)
+      } else {
+        // Unknown tag: drop it (plain-text fallback keeps its text content).
+      }
+      continue;
+    }
+    if (c == L'&') {
+      const size_t semi = text.find(L';', i);
+      if (semi != std::wstring::npos && semi - i <= 8) {
+        buf += DecodeEntities(text.substr(i, semi - i + 1));
+        i = semi + 1;
+        continue;
+      }
+    }
+    buf.push_back(c);
+    ++i;
+  }
+  flush_text();
+  // Final newline normalization.
+  while (!md.empty() && (md.back() == L'\n' || md.back() == L'\r')) {
+    md.pop_back();
+  }
+  return md;
 }

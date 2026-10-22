@@ -3,6 +3,7 @@
 #include "paths_util.h"
 
 #include <objbase.h>
+#include <Shellapi.h>
 #ifndef interface
 #define interface struct
 #endif
@@ -76,12 +77,33 @@ std::wstring JsonStringField(const std::wstring& json, const wchar_t* key) {
   return v;
 }
 
+double JsonDoubleField(const std::wstring& json, const wchar_t* key,
+                       double fallback) {
+  const std::wstring needle = std::wstring(L"\"") + key + L"\"";
+  size_t p = json.find(needle);
+  if (p == std::wstring::npos) {
+    return fallback;
+  }
+  p = json.find(L':', p);
+  if (p == std::wstring::npos) {
+    return fallback;
+  }
+  ++p;
+  while (p < json.size() && (json[p] == L' ' || json[p] == L'\t')) {
+    ++p;
+  }
+  if (p >= json.size()) {
+    return fallback;
+  }
+  return _wtof(json.c_str() + p);
+}
+
 bool PathExists(const std::wstring& path) {
   const DWORD attr = GetFileAttributesW(path.c_str());
   return attr != INVALID_FILE_ATTRIBUTES;
 }
 
-std::wstring FindWysiwygHtml() {
+std::wstring FindAsset(const std::wstring& rel) {
   wchar_t mod[MAX_PATH] = {};
   GetModuleFileNameW(nullptr, mod, MAX_PATH);
   std::wstring dir = mod;
@@ -90,10 +112,10 @@ std::wstring FindWysiwygHtml() {
     dir.resize(slash);
   }
   const std::wstring candidates[] = {
-      dir + L"\\assets\\md_preview\\wysiwyg_native.html",
-      dir + L"\\..\\assets\\md_preview\\wysiwyg_native.html",
-      dir + L"\\..\\..\\assets\\md_preview\\wysiwyg_native.html",
-      JoinPath(NativeDataDir(), L"md_preview\\wysiwyg_native.html"),
+      dir + L"\\assets\\" + rel,
+      dir + L"\\..\\assets\\" + rel,
+      dir + L"\\..\\..\\assets\\" + rel,
+      JoinPath(NativeDataDir(), rel),
   };
   for (const auto& c : candidates) {
     if (PathExists(c)) {
@@ -102,6 +124,9 @@ std::wstring FindWysiwygHtml() {
   }
   return {};
 }
+
+std::wstring FindWysiwygHtml() { return FindAsset(L"md_preview\\wysiwyg_native.html"); }
+std::wstring FindViewerHtml() { return FindAsset(L"md_preview\\viewer_native.html"); }
 
 std::wstring FileUrlFromPath(const std::wstring& path) {
   std::wstring abs = path;
@@ -205,7 +230,8 @@ void NotesWebView::NavigateHome() {
   if (!web) {
     return;
   }
-  const std::wstring html = FindWysiwygHtml();
+  const std::wstring html =
+      kind_ == Kind::kViewer ? FindViewerHtml() : FindWysiwygHtml();
   if (html.empty()) {
     return;
   }
@@ -215,18 +241,35 @@ void NotesWebView::NavigateHome() {
 void NotesWebView::OnReady() {
   ready_ = true;
   if (!pending_set_.empty()) {
-    SetMarkdown(pending_set_);
+    if (kind_ == Kind::kViewer) {
+      SetPreview(pending_set_, pending_base_);
+    } else {
+      SetMarkdown(pending_set_);
+    }
     pending_set_.clear();
+    pending_base_.clear();
   }
 }
 
 void NotesWebView::OnWebMessage(const std::wstring& json) {
   const std::wstring type = JsonStringField(json, L"type");
-  if (type == L"ready") {
+  if (type == L"ready" || type == L"previewReady") {
     OnReady();
   } else if (type == L"md" || type == L"changed") {
     pending_md_ = JsonStringField(json, L"md");
     got_md_ = true;
+  } else if (type == L"scroll") {
+    scroll_ratio_ = JsonDoubleField(json, L"ratio", 0.0);
+    got_scroll_ = true;
+    if (on_scroll) {
+      on_scroll(scroll_ratio_);
+    }
+  } else if (type == L"openExternal") {
+    const std::wstring href = JsonStringField(json, L"href");
+    if (!href.empty()) {
+      ShellExecuteW(nullptr, L"open", href.c_str(), nullptr, nullptr,
+                    SW_SHOWNORMAL);
+    }
   }
 }
 
@@ -283,6 +326,119 @@ void NotesWebView::SetMarkdown(const std::wstring& md) {
   const std::wstring json = L"{\"type\":\"set\",\"theme\":\"light\",\"md\":\"" +
                             JsonEscape(md) + L"\"}";
   web->PostWebMessageAsJson(json.c_str());
+}
+
+void NotesWebView::SetPreview(const std::wstring& md,
+                              const std::wstring& base_dir) {
+  auto* web = static_cast<ICoreWebView2*>(webview_);
+  if (!web || !ready_) {
+    pending_set_ = md;
+    pending_base_ = base_dir;
+    return;
+  }
+  const std::wstring json =
+      L"{\"type\":\"set\",\"theme\":\"light\",\"baseUrl\":\"" +
+      JsonEscape(base_dir) + L"\",\"md\":\"" + JsonEscape(md) + L"\"}";
+  web->PostWebMessageAsJson(json.c_str());
+}
+
+void NotesWebView::SetScrollRatio(double ratio) {
+  auto* web = static_cast<ICoreWebView2*>(webview_);
+  if (!web || !ready_) {
+    return;
+  }
+  wchar_t buf[64];
+  swprintf_s(buf, L"{\"type\":\"scrollTo\",\"ratio\":%f}", ratio);
+  web->PostWebMessageAsJson(buf);
+}
+
+double NotesWebView::RequestScrollRatio(DWORD timeout_ms) {
+  auto* web = static_cast<ICoreWebView2*>(webview_);
+  if (!web || !ready_) {
+    return scroll_ratio_;
+  }
+  got_scroll_ = false;
+  web->PostWebMessageAsJson(L"{\"type\":\"getScroll\"}");
+  const DWORD start = GetTickCount();
+  MSG msg{};
+  while (!got_scroll_ && GetTickCount() - start < timeout_ms) {
+    while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
+      TranslateMessage(&msg);
+      DispatchMessageW(&msg);
+    }
+    Sleep(5);
+  }
+  return scroll_ratio_;
+}
+
+bool NotesWebView::PrintToPdf(const std::wstring& path, std::wstring* err) {
+  auto* web = static_cast<ICoreWebView2*>(webview_);
+  if (!web || !ready_) {
+    if (err) {
+      *err = L"预览未就绪";
+    }
+    return false;
+  }
+  ComPtr<ICoreWebView2_7> p7;
+  const HRESULT qi = web->QueryInterface(IID_ICoreWebView2_7, &p7);
+  if (FAILED(qi) || !p7) {
+    if (err) {
+      *err = L"当前 WebView2 运行时不支持 PDF 导出";
+    }
+    return false;
+  }
+  print_done_ = false;
+  print_ok_ = false;
+  const HRESULT hr = p7->PrintToPdf(
+      path.c_str(), nullptr,
+      Callback<ICoreWebView2PrintToPdfCompletedHandler>(
+          [this](HRESULT errorCode, BOOL result) -> HRESULT {
+            print_done_ = true;
+            print_ok_ = SUCCEEDED(errorCode) && result;
+            return S_OK;
+          })
+          .Get());
+  if (FAILED(hr)) {
+    if (err) {
+      *err = L"PrintToPdf 调用失败";
+    }
+    return false;
+  }
+  const DWORD start = GetTickCount();
+  MSG msg{};
+  while (!print_done_ && GetTickCount() - start < 30000) {
+    while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
+      TranslateMessage(&msg);
+      DispatchMessageW(&msg);
+    }
+    Sleep(10);
+  }
+  // Verify output file exists and is non-empty.
+  const DWORD attr = GetFileAttributesW(path.c_str());
+  if (attr == INVALID_FILE_ATTRIBUTES || (attr & FILE_ATTRIBUTE_DIRECTORY)) {
+    if (err) {
+      *err = L"导出文件未生成";
+    }
+    return false;
+  }
+  WIN32_FILE_ATTRIBUTE_DATA fad{};
+  if (GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &fad)) {
+    const ULONGLONG sz = (static_cast<ULONGLONG>(fad.nFileSizeHigh) << 32) |
+                         fad.nFileSizeLow;
+    if (sz == 0) {
+      if (err) {
+        *err = L"导出的 PDF 为空";
+      }
+      return false;
+    }
+  }
+  if (!print_ok_) {
+    if (err) {
+      *err = L"PDF 导出未完成";
+    }
+    return false;
+  }
+  return true;
 }
 
 std::wstring NotesWebView::PullMarkdown(DWORD timeout_ms) {

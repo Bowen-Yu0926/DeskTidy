@@ -1,0 +1,389 @@
+#include "mist_webview.h"
+
+#include "paths_util.h"
+
+#include <objbase.h>
+#ifndef interface
+#define interface struct
+#endif
+#include <WebView2.h>
+#include <wrl.h>
+
+#include <string>
+
+using Microsoft::WRL::Callback;
+using Microsoft::WRL::ComPtr;
+
+namespace {
+
+constexpr wchar_t kClass[] = L"DeskTidyNativeMistDialog";
+constexpr wchar_t kHostClass[] = L"DeskTidyNativeMistDialogHost";
+
+bool PathExists(const std::wstring& path) {
+  const DWORD attr = GetFileAttributesW(path.c_str());
+  return attr != INVALID_FILE_ATTRIBUTES;
+}
+
+std::wstring FileUrlFromPath(const std::wstring& path) {
+  std::wstring abs = path;
+  for (auto& c : abs) {
+    if (c == L'\\') {
+      c = L'/';
+    }
+  }
+  return L"file:///" + abs;
+}
+
+void ResizeWeb(MistWebDialog* dlg) {
+  if (!dlg || !dlg->hwnd || !dlg->host) {
+    return;
+  }
+  RECT rc{};
+  GetClientRect(dlg->hwnd, &rc);
+  MoveWindow(dlg->host, 0, 0, rc.right, rc.bottom, TRUE);
+  if (dlg->controller) {
+    RECT bounds{0, 0, rc.right, rc.bottom};
+    static_cast<ICoreWebView2Controller*>(dlg->controller)->put_Bounds(bounds);
+  }
+}
+
+void NavigateHome(MistWebDialog* dlg) {
+  if (!dlg || !dlg->webview || dlg->html_path.empty()) {
+    return;
+  }
+  static_cast<ICoreWebView2*>(dlg->webview)
+      ->Navigate(FileUrlFromPath(dlg->html_path).c_str());
+}
+
+void CreateWeb(MistWebDialog* dlg) {
+  if (!dlg || !dlg->hwnd || dlg->web_available || dlg->controller) {
+    return;
+  }
+  static bool host_reg = false;
+  if (!host_reg) {
+    WNDCLASSEXW wc{};
+    wc.cbSize = sizeof(wc);
+    wc.lpfnWndProc = DefWindowProcW;
+    wc.hInstance = GetModuleHandleW(nullptr);
+    wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+    wc.hbrBackground = CreateSolidBrush(RGB(0xF4, 0xF6, 0xF9));
+    wc.lpszClassName = kHostClass;
+    RegisterClassExW(&wc);
+    host_reg = true;
+  }
+  RECT rc{};
+  GetClientRect(dlg->hwnd, &rc);
+  dlg->host = CreateWindowExW(0, kHostClass, L"", WS_CHILD | WS_VISIBLE, 0, 0,
+                              rc.right, rc.bottom, dlg->hwnd, nullptr,
+                              GetModuleHandleW(nullptr), nullptr);
+  if (!dlg->host) {
+    return;
+  }
+
+  std::wstring user_data =
+      JoinPath(NativeDataDir(), dlg->user_data_subdir.empty()
+                                    ? L"webview2-mist"
+                                    : dlg->user_data_subdir);
+  CreateDirectoryW(user_data.c_str(), nullptr);
+
+  CreateCoreWebView2EnvironmentWithOptions(
+      nullptr, user_data.c_str(), nullptr,
+      Callback<ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler>(
+          [dlg](HRESULT result, ICoreWebView2Environment* env) -> HRESULT {
+            if (FAILED(result) || !env || !dlg->host) {
+              return S_OK;
+            }
+            env->CreateCoreWebView2Controller(
+                dlg->host,
+                Callback<
+                    ICoreWebView2CreateCoreWebView2ControllerCompletedHandler>(
+                    [dlg](HRESULT result2,
+                          ICoreWebView2Controller* controller) -> HRESULT {
+                      if (FAILED(result2) || !controller || !dlg) {
+                        return S_OK;
+                      }
+                      dlg->controller = controller;
+                      controller->AddRef();
+                      ICoreWebView2* web = nullptr;
+                      controller->get_CoreWebView2(&web);
+                      if (!web) {
+                        return S_OK;
+                      }
+                      dlg->webview = web;
+                      dlg->web_available = true;
+                      ResizeWeb(dlg);
+                      controller->put_IsVisible(TRUE);
+                      web->add_WebMessageReceived(
+                          Callback<ICoreWebView2WebMessageReceivedEventHandler>(
+                              [dlg](ICoreWebView2*,
+                                    ICoreWebView2WebMessageReceivedEventArgs*
+                                        args) -> HRESULT {
+                                LPWSTR raw = nullptr;
+                                if (SUCCEEDED(args->TryGetWebMessageAsString(
+                                        &raw)) &&
+                                    raw) {
+                                  if (dlg->on_message) {
+                                    if (dlg->on_message(raw)) {
+                                      MistWebDialogClose(dlg);
+                                    }
+                                  }
+                                  CoTaskMemFree(raw);
+                                }
+                                return S_OK;
+                              })
+                              .Get(),
+                          nullptr);
+                      web->add_NavigationCompleted(
+                          Callback<ICoreWebView2NavigationCompletedEventHandler>(
+                              [dlg](ICoreWebView2*,
+                                    ICoreWebView2NavigationCompletedEventArgs*
+                                        args) -> HRESULT {
+                                BOOL ok = FALSE;
+                                if (args) {
+                                  args->get_IsSuccess(&ok);
+                                }
+                                if (ok) {
+                                  dlg->web_ready = true;
+                                  MistWebDialogPushState(dlg);
+                                }
+                                return S_OK;
+                              })
+                              .Get(),
+                          nullptr);
+                      NavigateHome(dlg);
+                      return S_OK;
+                    })
+                    .Get());
+            return S_OK;
+          })
+          .Get());
+}
+
+void DestroyWeb(MistWebDialog* dlg) {
+  if (!dlg) {
+    return;
+  }
+  if (dlg->webview) {
+    static_cast<ICoreWebView2*>(dlg->webview)->Release();
+    dlg->webview = nullptr;
+  }
+  if (dlg->controller) {
+    static_cast<ICoreWebView2Controller*>(dlg->controller)->Close();
+    static_cast<ICoreWebView2Controller*>(dlg->controller)->Release();
+    dlg->controller = nullptr;
+  }
+  if (dlg->host) {
+    DestroyWindow(dlg->host);
+    dlg->host = nullptr;
+  }
+  dlg->web_available = false;
+  dlg->web_ready = false;
+}
+
+LRESULT CALLBACK MistWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
+  MistWebDialog* dlg =
+      reinterpret_cast<MistWebDialog*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+  switch (msg) {
+    case WM_CREATE: {
+      auto* cs = reinterpret_cast<CREATESTRUCTW*>(lparam);
+      dlg = static_cast<MistWebDialog*>(cs->lpCreateParams);
+      SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(dlg));
+      dlg->hwnd = hwnd;
+      // Defer WebView2 create off WM_CREATE — starting it inside another
+      // WebView2 message handler often never completes (blank dialog body).
+      PostMessageW(hwnd, WM_APP + 1, 0, 0);
+      return 0;
+    }
+    case WM_APP + 1:
+      if (dlg) {
+        CreateWeb(dlg);
+      }
+      return 0;
+    case WM_SIZE:
+      ResizeWeb(dlg);
+      return 0;
+    case WM_CLOSE:
+      DestroyWindow(hwnd);
+      return 0;
+    case WM_DESTROY:
+      DestroyWeb(dlg);
+      if (dlg) {
+        dlg->done = true;
+        dlg->hwnd = nullptr;
+      }
+      return 0;
+  }
+  return DefWindowProcW(hwnd, msg, wparam, lparam);
+}
+
+}  // namespace
+
+std::wstring MistJsonEscape(const std::wstring& s) {
+  std::wstring o;
+  o.reserve(s.size() + 8);
+  for (wchar_t c : s) {
+    switch (c) {
+      case L'\\':
+        o += L"\\\\";
+        break;
+      case L'"':
+        o += L"\\\"";
+        break;
+      case L'\n':
+        o += L"\\n";
+        break;
+      case L'\r':
+        o += L"\\r";
+        break;
+      case L'\t':
+        o += L"\\t";
+        break;
+      default:
+        o.push_back(c);
+        break;
+    }
+  }
+  return o;
+}
+
+std::wstring MistJsonStringField(const std::wstring& json, const wchar_t* key) {
+  const std::wstring needle = std::wstring(L"\"") + key + L"\"";
+  size_t p = json.find(needle);
+  if (p == std::wstring::npos) {
+    return {};
+  }
+  p = json.find(L'"', json.find(L':', p) + 1);
+  if (p == std::wstring::npos) {
+    return {};
+  }
+  ++p;
+  std::wstring v;
+  while (p < json.size() && json[p] != L'"') {
+    if (json[p] == L'\\' && p + 1 < json.size()) {
+      ++p;
+    }
+    v.push_back(json[p++]);
+  }
+  return v;
+}
+
+int MistJsonIntField(const std::wstring& json, const wchar_t* key, int fallback) {
+  const std::wstring needle = std::wstring(L"\"") + key + L"\"";
+  size_t p = json.find(needle);
+  if (p == std::wstring::npos) {
+    return fallback;
+  }
+  p = json.find(L':', p);
+  if (p == std::wstring::npos) {
+    return fallback;
+  }
+  ++p;
+  while (p < json.size() && (json[p] == L' ' || json[p] == L'\t')) {
+    ++p;
+  }
+  if (p >= json.size() ||
+      !(json[p] == L'-' || (json[p] >= L'0' && json[p] <= L'9'))) {
+    return fallback;
+  }
+  return _wtoi(json.c_str() + p);
+}
+
+std::wstring MistFindAssetHtml(const wchar_t* relative_under_assets) {
+  wchar_t mod[MAX_PATH] = {};
+  GetModuleFileNameW(nullptr, mod, MAX_PATH);
+  std::wstring dir = mod;
+  const size_t slash = dir.find_last_of(L"\\/");
+  if (slash != std::wstring::npos) {
+    dir.resize(slash);
+  }
+  const std::wstring rel = std::wstring(L"assets\\") + relative_under_assets;
+  const std::wstring candidates[] = {
+      dir + L"\\" + rel,
+      dir + L"\\..\\" + rel,
+      dir + L"\\..\\..\\" + rel,
+  };
+  for (const auto& c : candidates) {
+    if (PathExists(c)) {
+      return c;
+    }
+  }
+  return {};
+}
+
+void MistWebDialogPostJson(MistWebDialog* dlg, const std::wstring& json) {
+  if (!dlg || !dlg->webview || !dlg->web_ready || json.empty()) {
+    return;
+  }
+  auto* web = static_cast<ICoreWebView2*>(dlg->webview);
+  web->PostWebMessageAsString(json.c_str());
+  std::wstring script =
+      L"(function(){try{var m=" + json +
+      L";if(typeof window.applyState==='function'){window.applyState(m);}"
+      L"if(m&&m.type==='dir_picked'&&document.getElementById('dir')){"
+      L"document.getElementById('dir').value=m.path||'';}"
+      L"}catch(e){}})();";
+  web->ExecuteScript(script.c_str(), nullptr);
+}
+
+void MistWebDialogPushState(MistWebDialog* dlg) {
+  if (!dlg || !dlg->build_state) {
+    return;
+  }
+  MistWebDialogPostJson(dlg, dlg->build_state());
+}
+
+void MistWebDialogClose(MistWebDialog* dlg) {
+  if (dlg && dlg->hwnd) {
+    DestroyWindow(dlg->hwnd);
+  }
+}
+
+void MistWebDialogRun(MistWebDialog* dlg, const wchar_t* title, int width,
+                      int height) {
+  if (!dlg) {
+    return;
+  }
+  static bool registered = false;
+  if (!registered) {
+    WNDCLASSEXW wc{};
+    wc.cbSize = sizeof(wc);
+    wc.lpfnWndProc = MistWndProc;
+    wc.hInstance = GetModuleHandleW(nullptr);
+    wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+    wc.hbrBackground = CreateSolidBrush(RGB(0xEE, 0xF1, 0xF6));
+    wc.lpszClassName = kClass;
+    RegisterClassExW(&wc);
+    registered = true;
+  }
+
+  RECT work{};
+  SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0);
+  const int x = work.left + ((work.right - work.left) - width) / 2;
+  const int y = work.top + ((work.bottom - work.top) - height) / 3;
+
+  HWND hwnd = CreateWindowExW(
+      WS_EX_DLGMODALFRAME, kClass, title,
+      WS_CAPTION | WS_SYSMENU | WS_POPUP | WS_CLIPCHILDREN, x, y, width, height,
+      dlg->owner, nullptr, GetModuleHandleW(nullptr), dlg);
+  if (!hwnd) {
+    dlg->done = true;
+    return;
+  }
+  if (dlg->owner) {
+    EnableWindow(dlg->owner, FALSE);
+  }
+  ShowWindow(hwnd, SW_SHOW);
+  UpdateWindow(hwnd);
+
+  MSG msg{};
+  while (!dlg->done && GetMessageW(&msg, nullptr, 0, 0) > 0) {
+    if (!IsDialogMessageW(hwnd, &msg)) {
+      TranslateMessage(&msg);
+      DispatchMessageW(&msg);
+    }
+  }
+  if (dlg->owner) {
+    EnableWindow(dlg->owner, TRUE);
+    SetForegroundWindow(dlg->owner);
+  }
+}
