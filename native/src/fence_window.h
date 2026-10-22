@@ -1,6 +1,7 @@
 #pragma once
 
 #include "desktop_items.h"
+#include "display_geom.h"
 #include "layout.h"
 #include "ole_drag.h"
 
@@ -9,6 +10,12 @@
 #include <functional>
 #include <string>
 #include <vector>
+
+// Target fence for the "move to fence" submenu (id + display title).
+struct FenceMoveTarget {
+  std::string id;
+  std::wstring title;
+};
 
 class FenceWindow {
  public:
@@ -24,6 +31,31 @@ class FenceWindow {
   using StyleFn = std::function<void(FenceWindow*)>;
   using PortalFn =
       std::function<void(FenceWindow*, const std::wstring& path)>;
+  // Paste with clipboard effect: move = true for cut (Preferred DropEffect MOVE).
+  using PasteFn = std::function<void(FenceWindow*,
+                                     const std::vector<std::wstring>&, bool)>;
+  using QueryFencesFn = std::function<std::vector<FenceMoveTarget>()>;
+  using MoveToFenceFn = std::function<void(
+      FenceWindow*, const std::vector<std::wstring>&, const std::string&)>;
+  using MoveToPageFn =
+      std::function<void(FenceWindow*, const std::vector<std::wstring>&, int)>;
+  using WhitelistFn =
+      std::function<void(FenceWindow*, const std::vector<std::wstring>&, bool)>;
+  using OpenNotesFn =
+      std::function<void(FenceWindow*, const std::vector<std::wstring>&)>;
+  using DissolveFn = std::function<void(FenceWindow*)>;
+  using RefreshFn = std::function<void(FenceWindow*)>;
+  // Manual in-fence reorder (F2): full ordered path list after a drop.
+  using ReorderFn =
+      std::function<void(FenceWindow*, const std::vector<std::wstring>&)>;
+  // Drop-at with insertion index (F1): index < 0 means append.
+  using DropAtFn = std::function<void(FenceWindow*,
+                                      const std::vector<std::wstring>&, int)>;
+  // Per-fence icon zoom changed (F4): zoom_percent in [70, 160].
+  using ZoomFn = std::function<void(FenceWindow*, int zoom_percent)>;
+  // Fired when a fence finishes a move (drag-end); app snaps + resolves
+  // collisions + clamps + persists per-page geometry (H2/H3).
+  using GeometryMovedFn = std::function<void(FenceWindow*)>;
 
   bool Create(HINSTANCE instance, const FenceLayout& layout);
   void Destroy();
@@ -39,6 +71,7 @@ class FenceWindow {
   void Show();
   void Hide();
   void AttachToDesktopLayer();
+  void RefreshLayer();  // re-upload UpdateLayeredWindow pixels
   void SetOnMoved(MovedFn fn) { on_moved_ = std::move(fn); }
   void SetOnPathsDropped(PathsFn fn) { on_paths_dropped_ = std::move(fn); }
   void SetOnDragDone(DragDoneFn fn) { on_drag_done_ = std::move(fn); }
@@ -50,13 +83,68 @@ class FenceWindow {
   void SetOnRename(RenameFn fn) { on_rename_ = std::move(fn); }
   void SetOnStyleChanged(StyleFn fn) { on_style_changed_ = std::move(fn); }
   void SetOnPortal(PortalFn fn) { on_portal_ = std::move(fn); }
+  void SetOnPasted(PasteFn fn) { on_pasted_ = std::move(fn); }
+  void SetQueryFences(QueryFencesFn fn) { on_query_fences_ = std::move(fn); }
+  void SetOnMoveToFence(MoveToFenceFn fn) {
+    on_move_to_fence_ = std::move(fn);
+  }
+  void SetOnMoveToPage(MoveToPageFn fn) { on_move_to_page_ = std::move(fn); }
+  void SetOnWhitelist(WhitelistFn fn) { on_whitelist_ = std::move(fn); }
+  void SetOnOpenNotes(OpenNotesFn fn) { on_open_notes_ = std::move(fn); }
+  void SetOnDissolve(DissolveFn fn) { on_dissolve_ = std::move(fn); }
+  void SetOnRefresh(RefreshFn fn) { on_refresh_ = std::move(fn); }
+  void SetOnReorder(ReorderFn fn) { on_reorder_ = std::move(fn); }
+  void SetOnPathsDroppedAt(DropAtFn fn) { on_paths_dropped_at_ = std::move(fn); }
+  void SetOnZoomChanged(ZoomFn fn) { on_zoom_changed_ = std::move(fn); }
+  void SetOnGeometryMoved(GeometryMovedFn fn) {
+    on_geometry_moved_ = std::move(fn);
+  }
+  // Per-fence icon zoom percent (70..160). Persisted by app via layout field.
+  void SetIconZoom(int percent);
+  int IconZoom() const { return icon_zoom_percent_; }
+
+  // H1: manual pin order persistence.
+  void SetPinOrder(std::vector<std::wstring> order);
+  const std::vector<std::wstring>& PinOrder() const { return pin_order_; }
+  // Insert dropped paths at `at` (dedup existing occurrences); `at<0` appends.
+  void InsertPinOrder(const std::vector<std::wstring>& paths, int at);
+  // H3: per-page geometry / visibility.
+  void SetPageGeometry(int page, const FencePageGeometry& geo);
+  const std::map<int, FencePageGeometry>& PageGeometries() const {
+    return page_geometries_;
+  }
+  FencePageGeometry GeometryForPage(int page) const;
+  void ApplyPageGeometry(const FencePageGeometry& geo);
+  bool Visible() const { return visible_; }
+  void SetVisible(bool visible) { visible_ = visible; }
+  bool VisibleOnPage(int page) const;
+  void SetOrganizeKinds(std::vector<std::string> kinds);
+  const std::vector<std::string>& OrganizeKinds() const {
+    return organize_kinds_;
+  }
+  // H6: replace fixed grid constants with queried metrics.
+  void SetIconGrid(const IconGridMetrics& m);
+  // H5: rescale window rect + per-page geometry for a DPI change.
+  void ScaleGeometryForDpi(int old_dpi, int new_dpi);
 
   void SetItems(std::vector<DesktopItem> items);
   void ClearIcons();
   const std::vector<DesktopItem> ItemSnapshot() const;
+  void SetSortBy(const std::string& sort_by);
+  const std::string& SortBy() const { return sort_by_; }
+  void SetViewMode(const std::string& mode);
+  const std::string& ViewMode() const { return view_mode_; }
+  // -1 = inherit style preset; otherwise 0–255 panel alpha.
+  void SetOpacity(int opacity);
+  int Opacity() const { return opacity_override_; }
   void PasteClipboardFiles();
   void SetPortalPath(const std::wstring& path);
   const std::wstring& PortalPath() const { return portal_path_; }
+  bool IsCollapsed() const { return collapsed_; }
+  void SetCollapsed(bool collapsed);
+  void ToggleCollapsed();
+  bool IsPositionLocked() const { return position_locked_; }
+  void SetPositionLocked(bool locked);
   void SetPageNames(std::vector<std::wstring> names) {
     page_names_ = std::move(names);
   }
@@ -98,6 +186,8 @@ class FenceWindow {
   void RecycleItem(int index);
   void ShowItemProperties(int index);
   void ShowFenceMenu(POINT screen);
+  void ShowMoveToFenceMenu(POINT screen);
+  void ShowMoveToPageMenu(POINT screen);
   void SelectOnly(int index);
   void ToggleSelected(int index);
   void SelectRange(int index);
@@ -105,16 +195,50 @@ class FenceWindow {
   bool IsSelected(int index) const;
   std::vector<std::wstring> SelectedPaths() const;
   void ApplySelectionCommand(int cmd, int clicked);
+  void ApplyRubberBandSelection();
+  void NavigateSelection(int dx, int dy, bool extend);
+  void EnsureCellVisible(int index);
+  void OpenSelectedItems();
+  int GridColumnCount() const;
   void ApplyStyle();
   void ClampScroll();
+  void SortCells();
+  void EnsureTooltip();
+  void UpdateHoverTip(int index);
+  void HandleFenceHotkey(int vk, bool ctrl, bool shift);
+  // F2/F3: manual icon drag (reorder in fence / unpin when dropped outside).
+  void StartManualIconDrag(int index);
+  void UpdateManualIconDrag(int x, int y);
+  void FinishManualIconDrag(int x, int y);
+  int InsertIndexAt(int x, int y) const;
+  void CommitReorder(int insert_index);
+  void CommitDragOutUnpin();
+  // F4: icon zoom + geometry helpers.
+  int IconSizePx() const;
+  int CellWidthPx() const;
+  int CellHeightPx() const;
+  void RebuildIconsForZoom();
+  void ApplyZoomWheel(int delta);
+  // F7: scrollbar interaction.
+  bool ScrollbarVisible() const;
+  int HitTestScrollbar(int x, int y) const;  // 0 none, 1 thumb, 2 track
+  void ScrollbarPage(int dir);               // dir: -1 up, +1 down
+  // F8: style preview + revert.
+  void PreviewStyleId(const std::string& style_id);
+  void RevertStylePreview();
 
   HWND hwnd_ = nullptr;
+  HWND tip_ = nullptr;
+  int tip_index_ = -1;
   bool dragging_ = false;
   bool drag_moved_ = false;
   bool resizing_ = false;
   Edge resize_edge_ = Edge::None;
   bool icon_press_ = false;
   int icon_press_index_ = -1;
+  // Manual double-click fallback (in case class lacks CS_DBLCLKS).
+  int last_icon_click_ = -1;
+  DWORD last_icon_click_tick_ = 0;
   POINT drag_offset_{};
   POINT press_client_{};
   RECT resize_start_rc_{};
@@ -141,9 +265,36 @@ class FenceWindow {
   RenameFn on_rename_;
   StyleFn on_style_changed_;
   PortalFn on_portal_;
+  PasteFn on_pasted_;
+  QueryFencesFn on_query_fences_;
+  MoveToFenceFn on_move_to_fence_;
+  MoveToPageFn on_move_to_page_;
+  WhitelistFn on_whitelist_;
+  OpenNotesFn on_open_notes_;
+  DissolveFn on_dissolve_;
+  RefreshFn on_refresh_;
+  ReorderFn on_reorder_;
+  DropAtFn on_paths_dropped_at_;
+  ZoomFn on_zoom_changed_;
+  GeometryMovedFn on_geometry_moved_;
   std::wstring portal_path_;
+  bool collapsed_ = false;
+  bool position_locked_ = false;
+  int expanded_h_ = 360;
+  std::string sort_by_ = "name";
+  std::string view_mode_ = "grid";
+  int opacity_override_ = -1;
+  // H1: manual pin order (paths) mirrored to layout.pin_order.
+  std::vector<std::wstring> pin_order_;
+  // H3: top-level visibility + per-page geometry overrides.
+  bool visible_ = true;
+  std::vector<std::string> organize_kinds_;
+  std::map<int, FencePageGeometry> page_geometries_;
+  // H6: resolved icon grid metrics (replaces fixed 96/102/40).
+  IconGridMetrics grid_metrics_{};
   std::vector<std::wstring> page_names_;
   bool rubber_ = false;
+  bool rubber_additive_ = false;
   POINT rubber_a_{};
   POINT rubber_b_{};
   HWND rename_edit_ = nullptr;
@@ -153,4 +304,21 @@ class FenceWindow {
   std::vector<char> selected_;
   int selection_anchor_ = -1;
   PathDropTarget* drop_target_ = nullptr;
+  // F2/F3 manual icon drag state.
+  bool icon_dragging_ = false;
+  std::vector<std::wstring> drag_paths_;
+  std::vector<int> drag_indices_;
+  int drag_insert_ = -1;   // live insert indicator position
+  bool drag_left_ = false;  // pointer has left the client area
+  // F4 icon zoom.
+  int icon_zoom_percent_ = 100;
+  // F7 scrollbar drag state.
+  bool thumb_dragging_ = false;
+  int thumb_start_y_ = 0;
+  int thumb_start_scroll_ = 0;
+  // F8 style preview.
+  std::string preview_style_id_;
+  bool style_preview_active_ = false;
+  bool style_menu_open_ = false;
+  DWORD footer_zoom_hint_until_ = 0;
 };

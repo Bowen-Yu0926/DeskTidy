@@ -1,12 +1,15 @@
 #include "layout.h"
 
 #include "display_geom.h"
+#include "log.h"
+#include "paths_util.h"
 
 #include <Windows.h>
 #include <ShlObj.h>
 
 #include <algorithm>
 #include <cstdio>
+#include <cstdlib>
 #include <fstream>
 #include <sstream>
 
@@ -154,54 +157,151 @@ bool FindBool(const std::string& body, const char* key, bool* out) {
   return false;
 }
 
+// Extract a JSON array of strings, e.g. "organize_kinds":["icon","file"].
+bool FindStringArray(const std::string& body, const char* key,
+                     std::vector<std::string>* out) {
+  const std::string needle = std::string("\"") + key + "\"";
+  size_t p = body.find(needle);
+  if (p == std::string::npos) {
+    return false;
+  }
+  p = body.find('[', p + needle.size());
+  if (p == std::string::npos) {
+    return false;
+  }
+  const size_t end = body.find(']', p);
+  if (end == std::string::npos) {
+    return false;
+  }
+  size_t q = p + 1;
+  while (q < end) {
+    const size_t a = body.find('"', q);
+    if (a == std::string::npos || a >= end) {
+      break;
+    }
+    const size_t b = body.find('"', a + 1);
+    if (b == std::string::npos || b > end) {
+      break;
+    }
+    out->push_back(body.substr(a + 1, b - a - 1));
+    q = b + 1;
+  }
+  return true;
+}
+
 }  // namespace
 
 std::wstring LayoutFilePath() {
-  wchar_t* appdata = nullptr;
-  if (FAILED(SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, nullptr, &appdata)) ||
-      !appdata) {
-    return L"layout.json";
+  // U4 portable + single source of truth: route through NativeDataDir() so
+  // layout.json follows the resolved data root (portable.txt / --portable).
+  return JoinPath(NativeDataDir(), L"layout.json");
+}
+
+std::vector<std::wstring> DefaultPageNames() {
+  return {L"工作", L"文档"};
+}
+
+std::wstring NextPageName(size_t one_based_index) {
+  if (one_based_index == 0) {
+    one_based_index = 1;
   }
-  std::wstring dir = appdata;
-  CoTaskMemFree(appdata);
-  dir += L"\\DeskTidyNative";
-  CreateDirectoryW(dir.c_str(), nullptr);
-  return dir + L"\\layout.json";
+  return L"页" + std::to_wstring(one_based_index);
+}
+
+void NormalizePageNames(std::vector<std::wstring>* names) {
+  if (!names) {
+    return;
+  }
+  auto is_legacy = [](const std::wstring& n, int i) {
+    const std::wstring a = L"第 " + std::to_wstring(i + 1) + L" 页";
+    const std::wstring b = L"第" + std::to_wstring(i + 1) + L"页";
+    return n == a || n == b;
+  };
+  // Old native default pair → product names (Python 工作/文档).
+  if (names->size() >= 2 && is_legacy((*names)[0], 0) &&
+      is_legacy((*names)[1], 1)) {
+    (*names)[0] = L"工作";
+    (*names)[1] = L"文档";
+  }
+  if (names->empty()) {
+    *names = DefaultPageNames();
+  } else if (names->size() == 1) {
+    if (is_legacy((*names)[0], 0)) {
+      (*names)[0] = L"工作";
+    }
+    names->push_back(L"文档");
+  }
 }
 
 std::vector<FenceLayout> DefaultLayouts() {
+  // Match Python system_defaults: 工作页「常用」~2/3 +「其他」~1/3；文档页全宽「文档」。
   const RECT work = PrimaryWorkArea();
+  const int aw = (std::max)(320, static_cast<int>(work.right - work.left));
+  const int ah = (std::max)(240, static_cast<int>(work.bottom - work.top));
+  const int gap = (std::max)(4, aw * 4 / 1920);
+  const int row_h = (std::min)(ah / 2, (std::max)(280, ah * 400 / 1032));
+  const int left_w = (std::max)(160, (std::min)(aw * 2 / 3, aw - gap - 120));
+  const int right_w = (std::max)(120, aw - left_w - gap);
+
   std::vector<FenceLayout> out;
   FenceLayout common;
   common.id = "system_common";
   common.title = L"常用";
-  common.x = work.left + 20;
-  common.y = work.top + 40;
-  common.w = 520;
-  common.h = 300;
+  common.x = work.left;
+  common.y = work.top;
+  common.w = left_w;
+  common.h = row_h;
   common.page = 0;
+  common.organize_kinds = {"icon"};
   out.push_back(common);
 
-  FenceLayout soft;
-  soft.id = "system_software";
-  soft.title = L"软件";
-  soft.w = 280;
-  soft.h = 360;
-  soft.x = work.right - soft.w - 40;
-  soft.y = work.top + 40;
-  soft.page = 0;
-  out.push_back(soft);
+  FenceLayout side;
+  side.id = "system_software_side";
+  side.title = L"其他";
+  side.x = work.left + left_w + gap;
+  side.y = work.top;
+  side.w = right_w;
+  side.h = row_h;
+  side.page = 0;
+  out.push_back(side);
 
-  FenceLayout page2;
-  page2.id = "system_page2";
-  page2.title = L"第二页";
-  page2.x = 80;
-  page2.y = 80;
-  page2.w = 360;
-  page2.h = 280;
-  page2.page = 1;
-  out.push_back(page2);
+  FenceLayout docs;
+  docs.id = "system_docs";
+  docs.title = L"文档";
+  docs.x = work.left;
+  docs.y = work.top;
+  docs.w = aw;
+  docs.h = (std::min)(ah / 2, (std::max)(280, ah * 360 / 1032));
+  docs.page = 1;
+  docs.organize_kinds = {"file"};
+  out.push_back(docs);
   return out;
+}
+
+void MigrateLegacySystemFences(std::vector<FenceLayout>* fences) {
+  if (!fences) {
+    return;
+  }
+  for (auto& f : *fences) {
+    if (f.id == "system_software" || f.id == "system_software_side") {
+      f.id = "system_software_side";
+      if (f.title == L"软件" || f.title.empty()) {
+        f.title = L"其他";
+      }
+      f.page = 0;
+    } else if (f.id == "system_page2" || f.id == "system_docs") {
+      f.id = "system_docs";
+      if (f.title == L"第二页" || f.title.empty()) {
+        f.title = L"文档";
+      }
+      f.page = 1;
+    } else if (f.id == "system_common") {
+      if (f.title.empty()) {
+        f.title = L"常用";
+      }
+      f.page = 0;
+    }
+  }
 }
 
 std::string MakeFenceId() {
@@ -212,17 +312,49 @@ std::string MakeFenceId() {
   return buf;
 }
 
-AppState LoadAppState() {
+bool IsPageLocked(const AppState& state, int page) {
+  // System pages 0/1 are always locked (Python is_locked_page_id).
+  if (page == 0 || page == 1) {
+    return true;
+  }
+  if (page < 0 || page >= static_cast<int>(state.page_locked.size())) {
+    return false;
+  }
+  return state.page_locked[static_cast<size_t>(page)];
+}
+
+// Read a layout JSON, falling back to the .bak copy when the main file is
+// missing, empty, or truncated (no brace pair). Returns false only when both
+// copies are unusable.
+bool ReadLayoutJson(const std::wstring& path, std::string* out) {
+  for (const std::wstring& candidate : {path, path + L".bak"}) {
+    std::ifstream in(candidate, std::ios::binary);
+    if (!in) {
+      continue;
+    }
+    std::ostringstream ss;
+    ss << in.rdbuf();
+    const std::string s = ss.str();
+    if (s.find('{') != std::string::npos && s.find('}') != std::string::npos) {
+      *out = s;
+      return true;
+    }
+  }
+  return false;
+}
+
+AppState LoadAppStateFromPath(const std::wstring& path, bool inject_defaults) {
   AppState state;
-  const std::wstring path = LayoutFilePath();
-  std::ifstream in(path);
-  if (!in) {
-    state.fences = DefaultLayouts();
+  std::string json;
+  if (!ReadLayoutJson(path, &json)) {
+    // U2: corrupt/missing layout — log, then fall back to defaults. The next
+    // SaveAppState will rewrite a good file (the bad one is kept as .bak there).
+    LogLine(L"[layout] layout.json unreadable or truncated — using defaults");
+    if (inject_defaults) {
+      state.fences = DefaultLayouts();
+    }
     return state;
   }
-  std::ostringstream ss;
-  ss << in.rdbuf();
-  const std::string json = ss.str();
   FindNumber(json, "current_page", &state.current_page);
   FindBool(json, "dock_visible", &state.dock_visible);
   FindBool(json, "pet_visible", &state.pet_visible);
@@ -258,6 +390,9 @@ AppState LoadAppState() {
     if (FindString(obj, "fp", &fp) && !fp.empty()) {
       continue;  // display-profile rows applied below
     }
+    if (obj.find("\"pg\"") != std::string::npos) {
+      continue;  // per-page geometry rows applied below
+    }
     FindString(obj, "title", &title);
     FindNumber(obj, "x", &x);
     FindNumber(obj, "y", &y);
@@ -267,6 +402,20 @@ AppState LoadAppState() {
     FindString(obj, "style", &style_id);
     std::string portal;
     FindString(obj, "portal", &portal);
+    bool collapsed = false;
+    FindBool(obj, "collapsed", &collapsed);
+    bool position_locked = false;
+    FindBool(obj, "position_locked", &position_locked);
+    std::string sort_by;
+    FindString(obj, "sort_by", &sort_by);
+    std::string view_mode;
+    FindString(obj, "view_mode", &view_mode);
+    int opacity = -1;
+    FindNumber(obj, "opacity", &opacity);
+    bool visible = true;
+    FindBool(obj, "visible", &visible);
+    std::vector<std::string> organize_kinds;
+    FindStringArray(obj, "organize_kinds", &organize_kinds);
     if (w < 120) {
       w = 280;
     }
@@ -283,11 +432,31 @@ AppState LoadAppState() {
     fl.page = page;
     fl.style_id = style_id.empty() ? "charcoal" : style_id;
     fl.portal_path = Widen(portal);
+    fl.collapsed = collapsed;
+    fl.position_locked = position_locked;
+    fl.sort_by = sort_by.empty() ? "name" : sort_by;
+    fl.view_mode = (view_mode == "list") ? "list" : "grid";
+    if (opacity >= 0 && opacity <= 255) {
+      fl.opacity = opacity;
+    }
+    fl.visible = visible;
+    fl.organize_kinds = organize_kinds;
+    int icon_zoom = 100;
+    if (FindNumber(obj, "icon_zoom", &icon_zoom)) {
+      fl.icon_zoom = (std::min)(160, (std::max)(70, icon_zoom));
+    }
+    std::vector<std::string> pin_order;
+    FindStringArray(obj, "pin_order", &pin_order);
+    for (const auto& p : pin_order) {
+      fl.pin_order.push_back(Widen(p));
+    }
     state.fences.push_back(fl);
   }
   if (state.fences.empty()) {
-    state.fences = DefaultLayouts();
-  } else {
+    if (inject_defaults) {
+      state.fences = DefaultLayouts();
+    }
+  } else if (inject_defaults) {
     bool has_page2 = false;
     for (const auto& f : state.fences) {
       if (f.page == 1 || f.id == "system_page2") {
@@ -345,6 +514,60 @@ AppState LoadAppState() {
     profiles.push_back(row);
   }
 
+  // Per-page geometry rows (G3): {"pg":true,"id":...,"page":...,"x":...,...}.
+  struct PageGeoRow {
+    std::string id;
+    int page = 0;
+    int x = 0, y = 0, w = 0, h = 0;
+    bool visible = true;
+    bool collapsed = false;
+  };
+  std::vector<PageGeoRow> page_rows;
+  pos = 0;
+  while (true) {
+    const size_t start = json.find('{', pos);
+    if (start == std::string::npos) {
+      break;
+    }
+    const size_t end = json.find('}', start);
+    if (end == std::string::npos) {
+      break;
+    }
+    const std::string obj = json.substr(start, end - start + 1);
+    pos = end + 1;
+    if (obj.find("\"pg\"") == std::string::npos) {
+      continue;
+    }
+    PageGeoRow row;
+    if (!FindString(obj, "id", &row.id) || row.id.empty()) {
+      continue;
+    }
+    FindNumber(obj, "page", &row.page);
+    FindNumber(obj, "x", &row.x);
+    FindNumber(obj, "y", &row.y);
+    FindNumber(obj, "w", &row.w);
+    FindNumber(obj, "h", &row.h);
+    FindBool(obj, "visible", &row.visible);
+    FindBool(obj, "collapsed", &row.collapsed);
+    page_rows.push_back(row);
+  }
+  for (const auto& row : page_rows) {
+    for (auto& f : state.fences) {
+      if (f.id != row.id) {
+        continue;
+      }
+      FencePageGeometry geo;
+      geo.x = row.x;
+      geo.y = row.y;
+      geo.w = row.w;
+      geo.h = row.h;
+      geo.visible = row.visible;
+      geo.collapsed = row.collapsed;
+      f.page_geometries[row.page] = geo;
+      break;
+    }
+  }
+
   std::string last_fp;
   FindString(json, "last_display_fingerprint", &last_fp);
   state.last_display_fingerprint = last_fp;
@@ -369,14 +592,18 @@ AppState LoadAppState() {
       }
     }
     if (!any && !last_fp.empty() && last_fp != current) {
-      const RECT work = PrimaryWorkArea();
-      const int ww = (std::max)(1, static_cast<int>(work.right - work.left));
-      const int wh = (std::max)(1, static_cast<int>(work.bottom - work.top));
       for (auto& f : state.fences) {
         const auto* r = find_row(last_fp, f.id);
         if (!r || r->rw < 0) {
           continue;
         }
+        // U3: pick the target monitor from the stored absolute position so the
+        // fence lands on the matching screen (Python per-monitor work area),
+        // not the primary monitor.
+        POINT stored{r->x, r->y};
+        const RECT work = WorkAreaAtPoint(stored);
+        const int ww = (std::max)(1, static_cast<int>(work.right - work.left));
+        const int wh = (std::max)(1, static_cast<int>(work.bottom - work.top));
         f.x = work.left + r->rx * ww / 10000;
         f.y = work.top + r->ry * wh / 10000;
         f.w = (std::max)(160, r->rw * ww / 10000);
@@ -384,7 +611,9 @@ AppState LoadAppState() {
       }
     }
   }
-  HealFenceLayouts(&state.fences);
+  if (inject_defaults) {
+    HealFenceLayouts(&state.fences);
+  }
   const auto pages_key = json.find("\"pages\"");
   if (pages_key != std::string::npos) {
     const auto lb = json.find('[', pages_key);
@@ -412,8 +641,30 @@ AppState LoadAppState() {
       }
     }
   }
-  if (state.page_names.size() < 2) {
-    state.page_names = {L"第 1 页", L"第 2 页"};
+  // U7 page.locked: parse the per-page lock flags array (index = page id).
+  {
+    const auto lock_key = json.find("\"page_locked\"");
+    if (lock_key != std::string::npos) {
+      const auto lb = json.find('[', lock_key);
+      const auto rb = lb == std::string::npos ? std::string::npos
+                                              : json.find(']', lb);
+      if (lb != std::string::npos && rb != std::string::npos) {
+        for (size_t p = lb + 1; p < rb;) {
+          if (json.compare(p, 4, "true") == 0) {
+            state.page_locked.push_back(true);
+            p += 4;
+          } else if (json.compare(p, 5, "false") == 0) {
+            state.page_locked.push_back(false);
+            p += 5;
+          } else {
+            ++p;
+          }
+        }
+      }
+    }
+  }
+  if (inject_defaults) {
+    NormalizePageNames(&state.page_names);
   }
   int max_page = 0;
   for (const auto& f : state.fences) {
@@ -421,16 +672,23 @@ AppState LoadAppState() {
       max_page = f.page;
     }
   }
-  while (static_cast<int>(state.page_names.size()) <= max_page) {
-    state.page_names.push_back(L"第 " +
-                               std::to_wstring(state.page_names.size() + 1) +
-                               L" 页");
+  while (inject_defaults &&
+         static_cast<int>(state.page_names.size()) <= max_page) {
+    state.page_names.push_back(NextPageName(state.page_names.size() + 1));
   }
   if (state.current_page < 0 ||
-      state.current_page >= static_cast<int>(state.page_names.size())) {
+      (!state.page_names.empty() &&
+       state.current_page >= static_cast<int>(state.page_names.size()))) {
     state.current_page = 0;
   }
+  if (inject_defaults) {
+    MigrateLegacySystemFences(&state.fences);
+  }
   return state;
+}
+
+AppState LoadAppState() {
+  return LoadAppStateFromPath(LayoutFilePath(), true);
 }
 
 bool SaveAppState(const AppState& state) {
@@ -450,9 +708,6 @@ bool SaveAppState(const AppState& state) {
   };
   std::vector<Kept> kept;
   const std::string current = DisplayFingerprint();
-  const RECT work = PrimaryWorkArea();
-  const int ww = (std::max)(1, static_cast<int>(work.right - work.left));
-  const int wh = (std::max)(1, static_cast<int>(work.bottom - work.top));
 
   size_t pos = 0;
   while (!previous.empty()) {
@@ -467,7 +722,10 @@ bool SaveAppState(const AppState& state) {
     const std::string obj = previous.substr(start, end - start + 1);
     pos = end + 1;
     std::string fp, id;
-    if (!FindString(obj, "fp", &fp) || fp.empty() || fp == current) {
+    // U3: drop transient / stale fingerprints (Python purge_transient_display_profiles)
+    // so plug/unplug intermediates never survive as donor profiles.
+    if (!FindString(obj, "fp", &fp) || fp.empty() || fp == current ||
+        FingerprintIsTransient(fp)) {
       continue;
     }
     if (!FindString(obj, "id", &id)) {
@@ -487,10 +745,7 @@ bool SaveAppState(const AppState& state) {
     kept.push_back(k);
   }
 
-  std::ofstream out(path, std::ios::binary);
-  if (!out) {
-    return false;
-  }
+  std::ostringstream out;
   const std::string fp_out =
       FingerprintIsTransient(current) ? state.last_display_fingerprint : current;
   out << "{\n"
@@ -501,14 +756,24 @@ bool SaveAppState(const AppState& state) {
       << "  \"last_display_fingerprint\":\"" << EscapeJson(fp_out) << "\",\n"
       << "  \"pages\": [";
   std::vector<std::wstring> pages = state.page_names;
-  if (pages.size() < 2) {
-    pages = {L"第 1 页", L"第 2 页"};
-  }
+  NormalizePageNames(&pages);
   for (size_t i = 0; i < pages.size(); ++i) {
     if (i) {
       out << ", ";
     }
     out << "\"" << EscapeJson(Narrow(pages[i])) << "\"";
+  }
+  out << "],\n  \"page_locked\": [";
+  for (size_t i = 0; i < pages.size(); ++i) {
+    if (i) {
+      out << ", ";
+    }
+    // U7: system pages 0/1 always locked; others persist their flag.
+    bool locked = (i == 0 || i == 1);
+    if (!locked && i < state.page_locked.size()) {
+      locked = state.page_locked[i];
+    }
+    out << (locked ? "true" : "false");
   }
   out << "],\n  \"fences\": [\n";
   for (size_t i = 0; i < state.fences.size(); ++i) {
@@ -523,7 +788,33 @@ bool SaveAppState(const AppState& state) {
         << "\"page\":" << f.page << ","
         << "\"style\":\""
         << EscapeJson(f.style_id.empty() ? "charcoal" : f.style_id) << "\","
-        << "\"portal\":\"" << EscapeJson(Narrow(f.portal_path)) << "\"}";
+        << "\"portal\":\"" << EscapeJson(Narrow(f.portal_path)) << "\","
+        << "\"collapsed\":" << (f.collapsed ? "true" : "false") << ","
+        << "\"position_locked\":"
+        << (f.position_locked ? "true" : "false") << ","
+        << "\"sort_by\":\""
+        << EscapeJson(f.sort_by.empty() ? "name" : f.sort_by) << "\","
+        << "\"view_mode\":\""
+        << EscapeJson(f.view_mode == "list" ? "list" : "grid") << "\","
+        << "\"visible\":" << (f.visible ? "true" : "false") << ","
+        << "\"opacity\":" << f.opacity << ","
+        << "\"organize_kinds\":[";
+    for (size_t k = 0; k < f.organize_kinds.size(); ++k) {
+      if (k) {
+        out << ",";
+      }
+      out << "\"" << EscapeJson(f.organize_kinds[k]) << "\"";
+    }
+    out << "],"
+        << "\"icon_zoom\":" << f.icon_zoom << ","
+        << "\"pin_order\":[";
+    for (size_t k = 0; k < f.pin_order.size(); ++k) {
+      if (k) {
+        out << ",";
+      }
+      out << "\"" << EscapeJson(Narrow(f.pin_order[k])) << "\"";
+    }
+    out << "]}";
     if (i + 1 < state.fences.size()) {
       out << ",";
     }
@@ -547,14 +838,73 @@ bool SaveAppState(const AppState& state) {
   }
   if (!FingerprintIsTransient(current)) {
     for (const auto& f : state.fences) {
-      const int rx = (f.x - work.left) * 10000 / ww;
-      const int ry = (f.y - work.top) * 10000 / wh;
+      // U3: ratios are relative to the fence's own monitor work area (Python
+      // _target_screen_rect / _ratios_for), not the primary work area. This
+      // keeps each fence anchored to its display across hot-plug changes.
+      const POINT c{f.x + f.w / 2, f.y + f.h / 2};
+      const RECT wa = WorkAreaAtPoint(c);
+      const int ww = (std::max)(1, static_cast<int>(wa.right - wa.left));
+      const int wh = (std::max)(1, static_cast<int>(wa.bottom - wa.top));
+      const int rx = (f.x - wa.left) * 10000 / ww;
+      const int ry = (f.y - wa.top) * 10000 / wh;
       const int rw = f.w * 10000 / ww;
       const int rh = f.h * 10000 / wh;
       write_row(current, f.id, f.x, f.y, f.w, f.h, rx, ry, rw, rh);
     }
   }
+  out << "\n  ],\n  \"page_geometries\": [";
+  bool first_pg = true;
+  for (const auto& f : state.fences) {
+    for (const auto& kv : f.page_geometries) {
+      const FencePageGeometry& g = kv.second;
+      if (!first_pg) {
+        out << ",";
+      }
+      first_pg = false;
+      out << "\n    {\"pg\":true,\"id\":\"" << EscapeJson(f.id) << "\","
+          << "\"page\":" << kv.first << ","
+          << "\"x\":" << g.x << ",\"y\":" << g.y << ",\"w\":" << g.w
+          << ",\"h\":" << g.h << ","
+          << "\"visible\":" << (g.visible ? "true" : "false") << ","
+          << "\"collapsed\":" << (g.collapsed ? "true" : "false") << "}";
+    }
+  }
   out << "\n  ]\n}\n";
+  const std::string json = out.str();
+
+  // U2: atomic write — temp + flush, preserve a single .bak of the previous good
+  // file, then atomic replace (same policy as app_prefs).
+  const std::wstring tmp = path + L".tmp";
+  HANDLE h = CreateFileW(tmp.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
+                         FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH,
+                         nullptr);
+  if (h == INVALID_HANDLE_VALUE) {
+    LogLine(L"[layout] save failed: cannot create temp file %s", tmp.c_str());
+    return false;
+  }
+  DWORD written = 0;
+  const BOOL ok = WriteFile(h, json.data(), static_cast<DWORD>(json.size()),
+                            &written, nullptr);
+  FlushFileBuffers(h);
+  CloseHandle(h);
+  if (!ok || written != json.size()) {
+    DeleteFileW(tmp.c_str());
+    LogLine(L"[layout] save failed: temp write short (%lu != %zu)", written,
+            json.size());
+    return false;
+  }
+  WIN32_FILE_ATTRIBUTE_DATA fad{};
+  if (GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &fad) &&
+      !(fad.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) &&
+      (fad.nFileSizeHigh != 0 || fad.nFileSizeLow != 0)) {
+    CopyFileW(path.c_str(), (path + L".bak").c_str(), FALSE);
+  }
+  if (!MoveFileExW(tmp.c_str(), path.c_str(),
+                   MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+    DeleteFileW(tmp.c_str());
+    LogLine(L"[layout] save failed: MoveFileExW replace");
+    return false;
+  }
   return true;
 }
 
@@ -572,26 +922,37 @@ int HealFenceLayouts(std::vector<FenceLayout>* fences) {
   if (!fences || fences->empty()) {
     return 0;
   }
+  constexpr int kMinW = 200;
+  constexpr int kMinH = 180;
   const RECT virt = VirtualScreenRect();
   const RECT primary = PrimaryWorkArea();
   int changed = 0;
   int cascade = 0;
   for (auto& f : *fences) {
     FenceLayout before = f;
-    if (f.w < 120) {
-      f.w = 260;
+    if (f.w < kMinW) {
+      f.w = (std::max)(kMinW, 260);
     }
-    if (f.h < 100) {
-      f.h = 280;
+    if (f.h < kMinH) {
+      f.h = (std::max)(kMinH, 280);
     }
     RECT rc{f.x, f.y, f.x + f.w, f.y + f.h};
     const bool mostly_off =
         rc.right < virt.left + 40 || rc.bottom < virt.top + 40 ||
         rc.left > virt.right - 40 || rc.top > virt.bottom - 40;
     if (mostly_off) {
-      f.x = primary.left + 40 + cascade * 28;
-      f.y = primary.top + 40 + cascade * 28;
+      // Rescue onto the nearest work area (fallback: primary).
+      POINT pt{primary.left + 80, primary.top + 80};
+      const RECT work = WorkAreaAtPoint(pt);
+      f.x = work.left + 40 + cascade * 28;
+      f.y = work.top + 40 + cascade * 28;
       ++cascade;
+      RECT placed{f.x, f.y, f.x + f.w, f.y + f.h};
+      ClampRectToWorkArea(&placed);
+      f.x = placed.left;
+      f.y = placed.top;
+      f.w = placed.right - placed.left;
+      f.h = placed.bottom - placed.top;
     } else {
       ClampRectToWorkArea(&rc);
       f.x = rc.left;
@@ -604,5 +965,200 @@ int HealFenceLayouts(std::vector<FenceLayout>* fences) {
       ++changed;
     }
   }
+  // Heavy pairwise overlap on the same page → cascade later fence right.
+  for (size_t i = 0; i < fences->size(); ++i) {
+    for (size_t j = i + 1; j < fences->size(); ++j) {
+      auto& a = (*fences)[i];
+      auto& b = (*fences)[j];
+      if (a.page != b.page) {
+        continue;
+      }
+      const int ax2 = a.x + a.w;
+      const int ay2 = a.y + a.h;
+      const int bx2 = b.x + b.w;
+      const int by2 = b.y + b.h;
+      const int ix = (std::max)(0, (std::min)(ax2, bx2) - (std::max)(a.x, b.x));
+      const int iy = (std::max)(0, (std::min)(ay2, by2) - (std::max)(a.y, b.y));
+      const int inter = ix * iy;
+      if (inter <= 0) {
+        continue;
+      }
+      const int smaller = (std::min)(a.w * a.h, b.w * b.h);
+      if (smaller <= 0 || inter * 2 < smaller) {
+        continue;
+      }
+      FenceLayout before = b;
+      b.x = a.x + a.w + 16;
+      RECT rc{b.x, b.y, b.x + b.w, b.y + b.h};
+      ClampRectToWorkArea(&rc);
+      b.x = rc.left;
+      b.y = rc.top;
+      b.w = rc.right - rc.left;
+      b.h = rc.bottom - rc.top;
+      if (b.x != before.x || b.y != before.y || b.w != before.w ||
+          b.h != before.h) {
+        ++changed;
+      }
+    }
+  }
   return changed;
+}
+
+bool PrepareDestinationProfileForDisplayChange(const RECT& old_work,
+                                               const RECT& new_work) {
+  AppState state = LoadAppState();
+  if (state.fences.empty()) {
+    return false;
+  }
+  const int ow = (std::max)(1, static_cast<int>(old_work.right - old_work.left));
+  const int oh = (std::max)(1, static_cast<int>(old_work.bottom - old_work.top));
+  const int nw = (std::max)(1, static_cast<int>(new_work.right - new_work.left));
+  const int nh = (std::max)(1, static_cast<int>(new_work.bottom - new_work.top));
+  const double sx = static_cast<double>(nw) / static_cast<double>(ow);
+  const double sy = static_cast<double>(nh) / static_cast<double>(oh);
+  for (auto& f : state.fences) {
+    f.x = new_work.left +
+          static_cast<int>((f.x - old_work.left) * sx + 0.5);
+    f.y = new_work.top +
+          static_cast<int>((f.y - old_work.top) * sy + 0.5);
+    f.w = (std::max)(160, static_cast<int>(f.w * sx + 0.5));
+    f.h = (std::max)(120, static_cast<int>(f.h * sy + 0.5));
+    for (auto& kv : f.page_geometries) {
+      kv.second.x = new_work.left +
+                    static_cast<int>((kv.second.x - old_work.left) * sx + 0.5);
+      kv.second.y = new_work.top +
+                    static_cast<int>((kv.second.y - old_work.top) * sy + 0.5);
+      kv.second.w = (std::max)(160, static_cast<int>(kv.second.w * sx + 0.5));
+      kv.second.h = (std::max)(120, static_cast<int>(kv.second.h * sy + 0.5));
+    }
+  }
+  HealFenceLayouts(&state.fences);
+  return SaveAppState(state);
+}
+
+// ---------------------------------------------------------------------------
+// G1 / G2 / G3 — pure geometry (see layout.h).
+// ---------------------------------------------------------------------------
+namespace {
+int AbsInt(int v) { return v < 0 ? -v : v; }
+}  // namespace
+
+LayoutPoint SnapFencePosition(const LayoutRect& moving,
+                              const std::vector<LayoutRect>& others,
+                              const LayoutRect& work, int snap_px) {
+  const int threshold = snap_px > 0 ? snap_px : 24;
+  const int top_threshold = (std::min)(8, threshold);
+
+  int x = moving.x;
+  int y = moving.y;
+  int w = moving.w < 1 ? 1 : moving.w;
+  int h = moving.h < 1 ? 1 : moving.h;
+
+  // Screen work-area edges (Python snap_geometry). Top is tighter.
+  if (AbsInt(x - work.x) <= threshold) {
+    x = work.x;
+  } else if (AbsInt((x + w) - work.right()) <= threshold) {
+    x = work.right() - w;
+  }
+  if (AbsInt(y - work.y) <= top_threshold) {
+    y = work.y;
+  } else if (AbsInt((y + h) - work.bottom()) <= threshold) {
+    y = work.bottom() - h;
+  }
+
+  // Always keep the result fully inside the work area.
+  if (w > work.w) {
+    w = work.w;
+  }
+  if (h > work.h) {
+    h = work.h;
+  }
+  if (x < work.x) {
+    x = work.x;
+  }
+  if (y < work.y) {
+    y = work.y;
+  }
+  if (x + w > work.right()) {
+    x = work.right() - w;
+  }
+  if (y + h > work.bottom()) {
+    y = work.bottom() - h;
+  }
+
+  // `others` reserved for fence-to-fence edge/centerline alignment; Python
+  // currently snaps screen edges only and resolves sibling overlap separately
+  // (ResolveFenceCollisions).
+  (void)others;
+
+  LayoutPoint out;
+  out.x = x;
+  out.y = y;
+  return out;
+}
+
+void ResolveFenceCollisions(std::vector<LayoutRect>* rects, int min_w, int min_h) {
+  if (!rects || rects->empty()) {
+    return;
+  }
+  const int mw = min_w > 0 ? min_w : 160;
+  const int mh = min_h > 0 ? min_h : 180;
+
+  for (auto& r : *rects) {
+    if (r.w < mw) {
+      r.w = mw;
+    }
+    if (r.h < mh) {
+      r.h = mh;
+    }
+  }
+
+  // Python apply_siblings_rejection "move": at most 2 passes; push a later
+  // rect off an earlier one along the dominant (center-delta) axis.
+  for (int pass = 0; pass < 2; ++pass) {
+    bool touched = false;
+    for (size_t i = 0; i < rects->size(); ++i) {
+      for (size_t j = i + 1; j < rects->size(); ++j) {
+        LayoutRect& a = (*rects)[i];
+        LayoutRect& b = (*rects)[j];
+        if (!a.Overlaps(b)) {
+          continue;
+        }
+        const int dx = a.center_x() - b.center_x();
+        const int dy = a.center_y() - b.center_y();
+        if (AbsInt(dx) >= AbsInt(dy)) {
+          b.x = (dx >= 0) ? (a.x - 1 - b.w) : (a.right() + 1);
+        } else {
+          b.y = (dy >= 0) ? (a.y - 1 - b.h) : (a.bottom() + 1);
+        }
+        touched = true;
+      }
+    }
+    if (!touched) {
+      break;
+    }
+  }
+}
+
+FencePageGeometry FenceGeometryForPage(const FenceLayout& fence, int page) {
+  const auto it = fence.page_geometries.find(page);
+  if (it != fence.page_geometries.end()) {
+    return it->second;
+  }
+  FencePageGeometry out;
+  out.x = fence.x;
+  out.y = fence.y;
+  out.w = fence.w;
+  out.h = fence.h;
+  out.visible = fence.visible;
+  out.collapsed = fence.collapsed;
+  return out;
+}
+
+void SetFenceGeometryForPage(FenceLayout* fence, int page,
+                             const FencePageGeometry& geo) {
+  if (!fence) {
+    return;
+  }
+  fence->page_geometries[page] = geo;
 }

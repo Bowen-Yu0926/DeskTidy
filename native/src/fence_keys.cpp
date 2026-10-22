@@ -11,8 +11,11 @@ LRESULT CALLBACK FenceKeyProc(int code, WPARAM wparam, LPARAM lparam) {
     const auto* kb = reinterpret_cast<KBDLLHOOKSTRUCT*>(lparam);
     const DWORD vk = kb->vkCode;
     const bool ctrl = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
+    const bool shift = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
     const bool interesting =
-        vk == VK_DELETE || vk == VK_F2 ||
+        vk == VK_DELETE || vk == VK_F2 || vk == VK_ESCAPE ||
+        vk == VK_RETURN || vk == VK_SPACE || vk == VK_HOME || vk == VK_END ||
+        vk == VK_LEFT || vk == VK_RIGHT || vk == VK_UP || vk == VK_DOWN ||
         (ctrl && (vk == 'A' || vk == 'C' || vk == 'V' || vk == 'X'));
     if (interesting) {
       POINT pt{};
@@ -21,6 +24,10 @@ LRESULT CALLBACK FenceKeyProc(int code, WPARAM wparam, LPARAM lparam) {
       wchar_t cls[64] = {};
       if (target && GetClassNameW(target, cls, 64) &&
           wcscmp(cls, L"EDIT") == 0) {
+        // Inline rename owns Esc/Enter/Space — do not steal.
+        if (vk == VK_ESCAPE || vk == VK_RETURN || vk == VK_SPACE) {
+          return CallNextHookEx(g_hook, code, wparam, lparam);
+        }
         target = GetParent(target);
         cls[0] = 0;
         if (target) {
@@ -34,7 +41,9 @@ LRESULT CALLBACK FenceKeyProc(int code, WPARAM wparam, LPARAM lparam) {
           GetClassNameW(focus, focus_cls, 32);
         }
         if (wcscmp(focus_cls, L"EDIT") != 0) {
-          PostMessageW(target, WM_APP + 60, vk, ctrl ? 1 : 0);
+          // lParam: bit0=ctrl, bit1=shift
+          const LPARAM flags = (ctrl ? 1 : 0) | (shift ? 2 : 0);
+          PostMessageW(target, WM_APP + 60, vk, flags);
           return 1;
         }
       }

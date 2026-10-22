@@ -15,6 +15,8 @@ DefViewHost g_cache{};
 ULONGLONG g_cache_tick = 0;
 constexpr ULONGLONG kCacheTtlMs = 2000;
 
+HWND g_tracked_defview = nullptr;
+
 bool IsWindowAlive(HWND hwnd) {
   return hwnd && IsWindow(hwnd);
 }
@@ -56,6 +58,33 @@ HWND WindowAboveDefView(HWND defview, HWND host, HWND self) {
 }
 
 }  // namespace
+
+void InvalidateDefViewCache() {
+  g_cache = {};
+  g_cache_tick = 0;
+}
+
+void ResetExplorerRebuildTracking() {
+  g_tracked_defview = nullptr;
+}
+
+bool PollExplorerDesktopRebuild() {
+  const DefViewHost host = FindDefViewHost();
+  const HWND cur = host.defview;
+  if (cur == nullptr) {
+    // No DefView yet (Explorer still starting / restarted but not ready).
+    return false;
+  }
+  if (g_tracked_defview == nullptr) {
+    g_tracked_defview = cur;
+    return false;
+  }
+  if (g_tracked_defview != cur) {
+    g_tracked_defview = cur;
+    return true;
+  }
+  return false;
+}
 
 DefViewHost FindDefViewHost() {
   const ULONGLONG now = GetTickCount64();
@@ -165,6 +194,43 @@ bool AttachOverlayToDesktop(HWND hwnd, bool show) {
   return IsAttachedToDesktop(hwnd, &host);
 }
 
+bool ForceAttachOverlayToDesktop(HWND hwnd, bool show) {
+  if (!IsWindowAlive(hwnd)) {
+    return false;
+  }
+  // Win+D / wallpaper WorkerW churn can leave a stale owner — detach first.
+  InvalidateDefViewCache();
+  DetachOverlayFromDesktop(hwnd);
+  return AttachOverlayToDesktop(hwnd, show);
+}
+
+bool IsExplorerDesktopForeground() {
+  // Match Python is_explorer_desktop_foreground: Progman/WorkerW/DefView only.
+  // Taskbar / tray must NOT count — clicking the tray icon would otherwise
+  // schedule RaiseOverlay and lift fences above open apps.
+  HWND fg = GetForegroundWindow();
+  if (!IsWindowAlive(fg)) {
+    return false;
+  }
+  HWND cur = fg;
+  for (int hop = 0; hop < 6 && IsWindowAlive(cur); ++hop) {
+    wchar_t cls[64] = {};
+    if (GetClassNameW(cur, cls, 64) > 0) {
+      if (wcscmp(cls, L"Progman") == 0 || wcscmp(cls, L"WorkerW") == 0 ||
+          wcscmp(cls, L"SHELLDLL_DefView") == 0 ||
+          wcscmp(cls, L"SysListView32") == 0) {
+        return true;
+      }
+    }
+    HWND parent = ParentOf(cur);
+    if (!parent) {
+      parent = OwnerOf(cur);
+    }
+    cur = parent;
+  }
+  return false;
+}
+
 bool DetachOverlayFromDesktop(HWND hwnd) {
   if (!IsWindowAlive(hwnd)) {
     return false;
@@ -199,20 +265,14 @@ void RaiseOverlayInDesktopBand(HWND hwnd) {
     return;
   }
 
+  // Place just above DefView: insert-after = window currently above DefView.
+  // When DefView is already topmost (Win+D), insert-after HWND_TOP (0) puts
+  // the overlay at the top of the non-topmost band — matching Python.
+  // Seating HWND_BOTTOM here buries fences under wallpaper after show-desktop.
   HWND above = WindowAboveDefView(host.defview, host.host, hwnd);
+  HWND insert_after = (above && above != hwnd) ? above : HWND_TOP;
   const UINT flags = kSwpNoMoveNoSizeNoActivate | SWP_NOREDRAW;
-
-  if (above && above != hwnd) {
-    // Place just below `above` => just above DefView. Never insert_after=0.
-    SetWindowPos(hwnd, above, 0, 0, 0, 0, flags);
-  } else {
-    // No safe neighbor — seat only. Do NOT HWND_TOP (covers 管理端 / apps).
-    PlaceOverlayInDesktopBand(hwnd, true);
-    above = WindowAboveDefView(host.defview, host.host, hwnd);
-    if (above && above != hwnd) {
-      SetWindowPos(hwnd, above, 0, 0, 0, 0, flags);
-    }
-  }
+  SetWindowPos(hwnd, insert_after, 0, 0, 0, 0, flags);
 
   if (!IsWindowVisible(hwnd)) {
     ShowWindow(hwnd, SW_SHOWNOACTIVATE);

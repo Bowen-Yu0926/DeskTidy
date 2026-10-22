@@ -1,16 +1,23 @@
 #include "shell_icons.h"
 
+#include "log.h"
 #include "paths_util.h"
 
 #include <Windows.h>
 #include <CommCtrl.h>
 
 #include <fstream>
+#include <regex>
 #include <sstream>
 #include <string>
 #include <vector>
 
 namespace {
+
+constexpr UINT kWmCommand = 0x0111;
+constexpr WPARAM kToggleDesktopIcons = 0x7402;
+constexpr wchar_t kExplorerAdvanced[] =
+    L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced";
 
 constexpr UINT kLvmGetItemCount = 0x1004;
 constexpr UINT kLvmGetItemPosition = 0x1010;
@@ -40,30 +47,63 @@ struct LVITEMW_REMOTE {
   int iGroup;
 };
 
-HWND FindDesktopListView() {
+HWND FindDesktopDefView() {
   HWND progman = FindWindowW(L"Progman", nullptr);
   if (progman) {
     HWND def = FindWindowExW(progman, nullptr, L"SHELLDLL_DefView", nullptr);
     if (def) {
-      HWND lv = FindWindowExW(def, nullptr, L"SysListView32", nullptr);
-      if (lv) {
-        return lv;
-      }
+      return def;
     }
   }
   HWND worker = nullptr;
   while ((worker = FindWindowExW(nullptr, worker, L"WorkerW", nullptr)) !=
          nullptr) {
     HWND def = FindWindowExW(worker, nullptr, L"SHELLDLL_DefView", nullptr);
-    if (!def) {
-      continue;
-    }
-    HWND lv = FindWindowExW(def, nullptr, L"SysListView32", nullptr);
-    if (lv) {
-      return lv;
+    if (def) {
+      return def;
     }
   }
   return nullptr;
+}
+
+HWND FindDesktopListView() {
+  HWND def = FindDesktopDefView();
+  if (!def) {
+    return nullptr;
+  }
+  return FindWindowExW(def, nullptr, L"SysListView32", nullptr);
+}
+
+bool ReadHideIconsRegistry(bool* hidden) {
+  HKEY key = nullptr;
+  if (RegOpenKeyExW(HKEY_CURRENT_USER, kExplorerAdvanced, 0, KEY_READ, &key) !=
+      ERROR_SUCCESS) {
+    return false;
+  }
+  DWORD val = 0;
+  DWORD type = 0;
+  DWORD size = sizeof(val);
+  const LONG rc =
+      RegQueryValueExW(key, L"HideIcons", nullptr, &type, reinterpret_cast<LPBYTE>(&val),
+                       &size);
+  RegCloseKey(key);
+  if (rc != ERROR_SUCCESS || type != REG_DWORD) {
+    return false;
+  }
+  *hidden = val != 0;
+  return true;
+}
+
+void WriteHideIconsRegistry(bool hidden) {
+  HKEY key = nullptr;
+  if (RegOpenKeyExW(HKEY_CURRENT_USER, kExplorerAdvanced, 0, KEY_SET_VALUE,
+                    &key) != ERROR_SUCCESS) {
+    return;
+  }
+  DWORD val = hidden ? 1u : 0u;
+  RegSetValueExW(key, L"HideIcons", 0, REG_DWORD,
+                 reinterpret_cast<const BYTE*>(&val), sizeof(val));
+  RegCloseKey(key);
 }
 
 bool RemoteReadText(HANDLE proc, HWND lv, int index, std::wstring* out) {
@@ -241,52 +281,60 @@ std::vector<ShellIconPos> LoadShellIconsSidecar(
   std::ostringstream ss;
   ss << in.rdbuf();
   const std::string json = ss.str();
-  size_t pos = 0;
-  while (true) {
-    const size_t start = json.find('{', pos);
-    if (start == std::string::npos) {
-      break;
-    }
-    const size_t end = json.find('}', start);
-    if (end == std::string::npos) {
-      break;
-    }
-    const std::string obj = json.substr(start, end - start + 1);
-    pos = end + 1;
-    const size_t np = obj.find("\"name\"");
-    if (np == std::string::npos) {
-      continue;
-    }
-    size_t q = obj.find('"', obj.find(':', np) + 1);
-    if (q == std::string::npos) {
-      continue;
-    }
-    ++q;
-    std::string name;
-    while (q < obj.size() && obj[q] != '"') {
-      if (obj[q] == '\\' && q + 1 < obj.size()) {
-        ++q;
-      }
-      name.push_back(obj[q++]);
-    }
-    auto find_num = [&](const char* key) {
-      const size_t p = obj.find(key);
-      if (p == std::string::npos) {
-        return 0;
-      }
-      size_t c = obj.find(':', p);
-      if (c == std::string::npos) {
-        return 0;
-      }
-      return atoi(obj.c_str() + c + 1);
-    };
+  // Brace-safe parse: match each icon object by its fields rather than
+  // splitting on '{'/'}', so desktop icon names containing braces are handled
+  // correctly.
+  static const std::regex kIconRe(
+      R"RX("name"\s*:\s*"((?:[^"\\]|\\.)*)"\s*,\s*"x"\s*:\s*(-?\d+)\s*,\s*"y"\s*:\s*(-?\d+))RX");
+  std::sregex_iterator it(json.begin(), json.end(), kIconRe);
+  const std::sregex_iterator end;
+  for (; it != end; ++it) {
+    const std::smatch& m = *it;
     ShellIconPos icon;
-    icon.name = WidenUtf8(name);
-    icon.x = find_num("\"x\"");
-    icon.y = find_num("\"y\"");
-    if (!icon.name.empty()) {
-      out.push_back(std::move(icon));
+    icon.name = WidenUtf8(m[1].str());
+    icon.x = atoi(m[2].str().c_str());
+    icon.y = atoi(m[3].str().c_str());
+    if (icon.name.empty()) {
+      LogLineA("[shell_icons] sidecar entry with empty name skipped");
+      continue;
     }
+    out.push_back(std::move(icon));
+  }
+  if (out.empty() && !json.empty()) {
+    LogLineA("[shell_icons] sidecar parse produced no entries: %.120s",
+             json.c_str());
   }
   return out;
+}
+
+bool AreDesktopIconsVisible() {
+  HWND lv = FindDesktopListView();
+  if (lv) {
+    return IsWindowVisible(lv) != FALSE;
+  }
+  bool hidden = false;
+  if (ReadHideIconsRegistry(&hidden)) {
+    return !hidden;
+  }
+  return true;
+}
+
+void SetDesktopIconsVisible(bool visible) {
+  const bool want_hidden = !visible;
+  bool currently_visible = AreDesktopIconsVisible();
+  if (currently_visible == visible) {
+    bool hidden = false;
+    if (ReadHideIconsRegistry(&hidden) && hidden != want_hidden) {
+      WriteHideIconsRegistry(want_hidden);
+    }
+    return;
+  }
+  HWND def = FindDesktopDefView();
+  if (def) {
+    SendMessageW(def, kWmCommand, kToggleDesktopIcons, 0);
+  }
+  bool hidden = false;
+  if (ReadHideIconsRegistry(&hidden) && hidden != want_hidden) {
+    WriteHideIconsRegistry(want_hidden);
+  }
 }

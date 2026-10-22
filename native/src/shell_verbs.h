@@ -1,5 +1,6 @@
 #pragma once
 
-// Register/unregister desktop background context-menu verbs for Native.
+// Cascading DeskTidy submenu under Explorer desktop background (Python parity).
 bool RegisterNativeShellVerbs();
 bool UnregisterNativeShellVerbs();
+void SyncNativeShellVerbs(bool enabled);

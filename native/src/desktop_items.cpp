@@ -1,5 +1,7 @@
 #include "desktop_items.h"
 
+#include "namespace_icons.h"
+
 #include <CommCtrl.h>
 #include <ShlObj.h>
 #include <Shellapi.h>
@@ -35,6 +37,16 @@ bool EndsWithIgnoreCase(const std::wstring& s, const wchar_t* suffix) {
   return _wcsicmp(s.c_str() + (s.size() - n), suffix) == 0;
 }
 
+// Office lock/temp files (~$foo.docx) — matched by Python is_temp_desktop_file.
+bool IsOfficeTempName(const wchar_t* name) {
+  return name[0] == L'~' && name[1] == L'$';
+}
+
+// 2.5s scan cache (Python _SCAN_CACHE_TTL_S).
+constexpr ULONGLONG kScanCacheTtlMs = 2500;
+ULONGLONG g_scan_tick = 0;
+std::vector<DesktopItem> g_scan_cache;
+
 void AppendFolder(const std::wstring& folder, std::vector<DesktopItem>* out) {
   if (folder.empty()) {
     return;
@@ -49,6 +61,9 @@ void AppendFolder(const std::wstring& folder, std::vector<DesktopItem>* out) {
     if (fd.cFileName[0] == L'.' &&
         (fd.cFileName[1] == L'\0' ||
          (fd.cFileName[1] == L'.' && fd.cFileName[2] == L'\0'))) {
+      continue;
+    }
+    if (IsOfficeTempName(fd.cFileName)) {
       continue;
     }
     if (fd.dwFileAttributes & FILE_ATTRIBUTE_HIDDEN) {
@@ -105,9 +120,16 @@ HICON IconFromImageList(int shil, int index) {
 }  // namespace
 
 std::vector<DesktopItem> ScanDesktopItems() {
+  const ULONGLONG now = GetTickCount64();
+  if (!g_scan_cache.empty() && now - g_scan_tick < kScanCacheTtlMs) {
+    return g_scan_cache;
+  }
+
   std::vector<DesktopItem> items;
   AppendFolder(KnownFolder(FOLDERID_Desktop), &items);
   AppendFolder(KnownFolder(FOLDERID_PublicDesktop), &items);
+  // Hosted This PC / Recycle Bin shortcuts (Python .public_system).
+  AppendPublicSystemItems(&items);
 
   std::sort(items.begin(), items.end(),
             [](const DesktopItem& a, const DesktopItem& b) {
@@ -126,7 +148,14 @@ std::vector<DesktopItem> ScanDesktopItems() {
       unique.push_back(std::move(it));
     }
   }
+  g_scan_cache = unique;
+  g_scan_tick = now;
   return unique;
+}
+
+void InvalidateDesktopScanCache() {
+  g_scan_cache.clear();
+  g_scan_tick = 0;
 }
 
 HICON LoadItemIcon(const std::wstring& path, int size_px) {

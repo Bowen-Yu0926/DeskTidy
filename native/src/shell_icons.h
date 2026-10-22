@@ -16,3 +16,8 @@ bool SaveShellIconsSidecar(const std::wstring& snapshot_json_path,
                            const std::vector<ShellIconPos>& icons);
 std::vector<ShellIconPos> LoadShellIconsSidecar(
     const std::wstring& snapshot_json_path);
+
+// Match Python win_shell.set_desktop_icons_visible — hide Explorer icons while
+// fences host the same items so they do not double-draw on the wallpaper.
+bool AreDesktopIconsVisible();
+void SetDesktopIconsVisible(bool visible);

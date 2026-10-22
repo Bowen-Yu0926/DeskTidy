@@ -1,12 +1,14 @@
 #include "whitelist.h"
 
+#include "mist_webview.h"
 #include "paths_util.h"
-#include "prompt_text.h"
 
 #include <Windows.h>
 
 #include <fstream>
 #include <sstream>
+#include <string>
+#include <vector>
 
 namespace {
 
@@ -22,27 +24,193 @@ std::wstring BaseName(const std::wstring& path) {
   return path.substr(slash + 1);
 }
 
-bool MatchOne(const std::wstring& name, const std::wstring& pattern) {
+// Locale-invariant Unicode lowercase. Approximates Python str.casefold; Windows
+// exposes no full casefold (no ß→ss), so that remains a known residual gap.
+std::wstring FoldLower(const std::wstring& s) {
+  if (s.empty()) {
+    return {};
+  }
+  const int n = LCMapStringW(LOCALE_INVARIANT, LCMAP_LOWERCASE, s.c_str(),
+                             static_cast<int>(s.size()), nullptr, 0);
+  if (n <= 0) {
+    return s;
+  }
+  std::wstring out(n, L'\0');
+  LCMapStringW(LOCALE_INVARIANT, LCMAP_LOWERCASE, s.c_str(),
+               static_cast<int>(s.size()), out.data(), n);
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// Case-sensitive fnmatch (Python fnmatch.fnmatchcase). Supports *, ?, [...],
+// ranges (a-z), negation ([!...]) and multiple '*'. Callers pre-fold inputs.
+// ---------------------------------------------------------------------------
+bool FnmatchImpl(const wchar_t* t, const wchar_t* p) {
+  while (*p) {
+    if (*p == L'*') {
+      do {
+        ++p;
+      } while (*p == L'*');
+      if (!*p) {
+        return true;
+      }
+      while (*t) {
+        if (FnmatchImpl(t, p)) {
+          return true;
+        }
+        ++t;
+      }
+      return FnmatchImpl(t, p);
+    }
+    if (*p == L'?') {
+      if (!*t) {
+        return false;
+      }
+      ++t;
+      ++p;
+      continue;
+    }
+    if (*p == L'[') {
+      if (!*t) {
+        return false;
+      }
+      ++p;
+      bool negate = false;
+      if (*p == L'!' || *p == L'^') {
+        negate = true;
+        ++p;
+      }
+      bool matched = false;
+      const wchar_t c = *t;
+      if (*p == L']') {
+        if (c == L']') {
+          matched = true;
+        }
+        ++p;
+      }
+      while (*p && *p != L']') {
+        if (p[1] == L'-' && p[2] && p[2] != L']') {
+          const wchar_t lo = *p;
+          const wchar_t hi = p[2];
+          if (c >= lo && c <= hi) {
+            matched = true;
+          }
+          p += 3;
+        } else {
+          if (*p == c) {
+            matched = true;
+          }
+          ++p;
+        }
+      }
+      if (*p != L']') {
+        return false;
+      }
+      ++p;
+      if (matched == negate) {
+        return false;
+      }
+      ++t;
+      continue;
+    }
+    if (!*t) {
+      return false;
+    }
+    if (*t != *p) {
+      return false;
+    }
+    ++t;
+    ++p;
+  }
+  return *t == 0;
+}
+
+bool FnmatchFolded(const std::wstring& text, const std::wstring& pattern) {
+  const std::wstring ft = FoldLower(text);
+  const std::wstring fp = FoldLower(pattern);
+  return FnmatchImpl(ft.c_str(), fp.c_str());
+}
+
+bool HasWildcard(const std::wstring& s) {
+  return s.find_first_of(L"*?[") != std::wstring::npos;
+}
+
+// Absolute, slash-normalized, case-folded path (Python
+// Path(p).resolve().as_posix().casefold()) for full-path whitelist equality.
+std::wstring CanonicalPosix(const std::wstring& s) {
+  wchar_t buf[32768];
+  const DWORD n = GetFullPathNameW(s.c_str(), 32768, buf, nullptr);
+  if (n == 0 || n >= 32768) {
+    return {};
+  }
+  std::wstring out(buf, n);
+  for (auto& ch : out) {
+    if (ch == L'\\') {
+      ch = L'/';
+    }
+  }
+  return FoldLower(out);
+}
+
+// Match one path against one pattern. Mirrors Python is_organize_whitelisted:
+//   wildcard (*?[) -> fnmatch against the basename only (no full-path glob)
+//   exact          -> basename equality, or resolved full-path equality
+// No directory-prefix matching (Python has none).
+bool MatchOne(const std::wstring& path, const std::wstring& pattern) {
   if (pattern.empty()) {
     return false;
   }
-  if (pattern.find(L'*') == std::wstring::npos) {
-    return _wcsicmp(name.c_str(), pattern.c_str()) == 0;
+  const std::wstring name = BaseName(path);
+  const std::wstring name_f = FoldLower(name);
+  const std::wstring pat_f = FoldLower(pattern);
+  if (HasWildcard(pattern)) {
+    return FnmatchImpl(name_f.c_str(), pat_f.c_str());
   }
-  // Simple prefix*suffix glob (one star).
-  const size_t star = pattern.find(L'*');
-  const std::wstring pre = pattern.substr(0, star);
-  const std::wstring suf = pattern.substr(star + 1);
-  if (name.size() < pre.size() + suf.size()) {
-    return false;
-  }
-  if (_wcsnicmp(name.c_str(), pre.c_str(), pre.size()) != 0) {
-    return false;
-  }
-  if (suf.empty()) {
+  if (name_f == pat_f) {
     return true;
   }
-  return _wcsicmp(name.c_str() + (name.size() - suf.size()), suf.c_str()) == 0;
+  const std::wstring path_cf = CanonicalPosix(path);
+  const std::wstring pat_cf = CanonicalPosix(pattern);
+  return !path_cf.empty() && path_cf == pat_cf;
+}
+
+void Dedup(std::vector<std::wstring>* items) {
+  std::vector<std::wstring> out;
+  std::vector<std::wstring> keys;
+  for (const auto& it : *items) {
+    const std::wstring key = FoldLower(it);
+    bool dup = false;
+    for (const auto& k : keys) {
+      if (k == key) {
+        dup = true;
+        break;
+      }
+    }
+    if (!dup) {
+      keys.push_back(key);
+      out.push_back(it);
+    }
+  }
+  *items = std::move(out);
+}
+
+struct Ctx {
+  std::vector<std::wstring> names;
+  bool saved = false;
+};
+
+std::wstring BuildState(Ctx* ctx) {
+  std::wstring json = L"{\"type\":\"state\",\"items\":[";
+  for (size_t i = 0; i < ctx->names.size(); ++i) {
+    if (i) {
+      json += L',';
+    }
+    json += L'"';
+    json += MistJsonEscape(ctx->names[i]);
+    json += L'"';
+  }
+  json += L"]}";
+  return json;
 }
 
 }  // namespace
@@ -74,26 +242,47 @@ std::vector<std::wstring> LoadWhitelist() {
       break;
     }
     pos = q2 + 1;
-    // Skip JSON keys like "names"
-    if (val == "names") {
+    // Skip object keys: native "names" and Python "organize_whitelist".
+    if (val == "names" || val == "organize_whitelist") {
       continue;
     }
     if (!val.empty()) {
       out.push_back(WidenUtf8(val));
     }
   }
-  return out;
+  // Strip whitespace and drop empties (Python get_organize_whitelist), then
+  // case-fold dedup.
+  std::vector<std::wstring> cleaned;
+  for (auto& item : out) {
+    size_t a = 0;
+    size_t b = item.size();
+    while (a < b && (item[a] == L' ' || item[a] == L'\t' || item[a] == L'\r' ||
+                     item[a] == L'\n')) {
+      ++a;
+    }
+    while (b > a && (item[b - 1] == L' ' || item[b - 1] == L'\t' ||
+                     item[b - 1] == L'\r' || item[b - 1] == L'\n')) {
+      --b;
+    }
+    if (a < b) {
+      cleaned.push_back(item.substr(a, b - a));
+    }
+  }
+  Dedup(&cleaned);
+  return cleaned;
 }
 
 bool SaveWhitelist(const std::vector<std::wstring>& names) {
+  std::vector<std::wstring> dedup = names;
+  Dedup(&dedup);
   std::ofstream out(WhitelistFile(), std::ios::binary);
   if (!out) {
     return false;
   }
   out << "{\n  \"names\": [\n";
-  for (size_t i = 0; i < names.size(); ++i) {
-    out << "    \"" << NarrowUtf8(names[i]) << "\"";
-    if (i + 1 < names.size()) {
+  for (size_t i = 0; i < dedup.size(); ++i) {
+    out << "    \"" << NarrowUtf8(dedup[i]) << "\"";
+    if (i + 1 < dedup.size()) {
       out << ",";
     }
     out << "\n";
@@ -104,9 +293,8 @@ bool SaveWhitelist(const std::vector<std::wstring>& names) {
 
 bool IsWhitelisted(const std::wstring& path_or_name,
                    const std::vector<std::wstring>& names) {
-  const std::wstring name = BaseName(path_or_name);
   for (const auto& p : names) {
-    if (MatchOne(name, p)) {
+    if (MatchOne(path_or_name, p)) {
       return true;
     }
   }
@@ -114,40 +302,68 @@ bool IsWhitelisted(const std::wstring& path_or_name,
 }
 
 void EditWhitelistDialog(HWND owner) {
-  auto names = LoadWhitelist();
-  std::wstring msg = L"整理白名单（文件名，支持 *.lnk）：\n\n";
-  if (names.empty()) {
-    msg += L"（空）\n";
-  } else {
-    for (size_t i = 0; i < names.size(); ++i) {
-      msg += std::to_wstring(i + 1) + L". " + names[i] + L"\n";
+  Ctx ctx;
+  ctx.names = LoadWhitelist();
+
+  MistWebDialog dlg;
+  dlg.owner = owner;
+  dlg.user = &ctx;
+  dlg.user_data_subdir = L"webview2-whitelist";
+  dlg.html_path = MistFindAssetHtml(L"dialogs\\whitelist.html");
+  if (dlg.html_path.empty()) {
+    MessageBoxW(owner, L"找不到 whitelist.html", L"整理白名单",
+                MB_OK | MB_ICONWARNING);
+    return;
+  }
+  dlg.build_state = [&ctx]() { return BuildState(&ctx); };
+  dlg.on_message = [&](const std::wstring& json) -> bool {
+    const std::wstring type = MistJsonStringField(json, L"type");
+    if (type != L"action") {
+      return false;
     }
-  }
-  msg += L"\n是 = 添加　否 = 删除一项　取消 = 关闭";
-  const int choice =
-      MessageBoxW(owner, msg.c_str(), L"整理白名单", MB_YESNOCANCEL | MB_ICONQUESTION);
-  if (choice == IDCANCEL) {
-    return;
-  }
-  if (choice == IDYES) {
-    const std::wstring add =
-        PromptText(owner, L"白名单", L"文件名或模式（如 Recycle Bin.lnk / *.tmp）：",
-                   L"");
-    if (!add.empty()) {
-      names.push_back(add);
-      SaveWhitelist(names);
+    const std::wstring id = MistJsonStringField(json, L"id");
+    if (id == L"ready") {
+      MistWebDialogPushState(&dlg);
+      return false;
     }
-    return;
-  }
-  if (names.empty()) {
-    return;
-  }
-  const std::wstring ans = PromptText(
-      owner, L"删除白名单项",
-      (L"输入编号 (1-" + std::to_wstring(names.size()) + L")：").c_str(), L"1");
-  const int idx = _wtoi(ans.c_str()) - 1;
-  if (idx >= 0 && idx < static_cast<int>(names.size())) {
-    names.erase(names.begin() + idx);
-    SaveWhitelist(names);
-  }
+    if (id == L"add") {
+      const std::wstring value = MistJsonStringField(json, L"value");
+      if (!value.empty()) {
+        ctx.names.push_back(value);
+        Dedup(&ctx.names);
+        MistWebDialogPushState(&dlg);
+      }
+      return false;
+    }
+    if (id == L"edit") {
+      const int index = MistJsonIntField(json, L"index", -1);
+      const std::wstring value = MistJsonStringField(json, L"value");
+      if (index >= 0 && index < static_cast<int>(ctx.names.size()) &&
+          !value.empty()) {
+        ctx.names[static_cast<size_t>(index)] = value;
+        Dedup(&ctx.names);
+        MistWebDialogPushState(&dlg);
+      }
+      return false;
+    }
+    if (id == L"del") {
+      const int index = MistJsonIntField(json, L"index", -1);
+      if (index >= 0 && index < static_cast<int>(ctx.names.size())) {
+        ctx.names.erase(ctx.names.begin() + index);
+        MistWebDialogPushState(&dlg);
+      }
+      return false;
+    }
+    if (id == L"save") {
+      SaveWhitelist(ctx.names);
+      ctx.saved = true;
+      return true;
+    }
+    if (id == L"cancel") {
+      return true;
+    }
+    return false;
+  };
+
+  MistWebDialogRun(&dlg, L"整理白名单", 520, 420);
 }

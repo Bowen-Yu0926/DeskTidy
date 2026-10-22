@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <winreg.h>
 
 namespace {
 
@@ -263,4 +264,195 @@ bool FingerprintIsTransient(const std::string& fp) {
     start = end + 1;
   }
   return false;
+}
+
+// ---------------------------------------------------------------------------
+// G6 / G7 — DPI recalc + Explorer icon grid metrics.
+// ---------------------------------------------------------------------------
+namespace {
+
+constexpr UINT kSpiIconHorz = 0x000D;
+constexpr UINT kSpiIconVert = 0x0018;
+constexpr UINT kSpiIconTitleWrap = 0x0019;
+constexpr UINT kLvmGetItemSpacing = 0x1000 + 51;  // LVM_FIRST + 51
+
+HWND FindDesktopListView() {
+  HWND progman = FindWindowW(L"Progman", nullptr);
+  if (progman) {
+    HWND def = FindWindowExW(progman, nullptr, L"SHELLDLL_DefView", nullptr);
+    if (def) {
+      HWND lv = FindWindowExW(def, nullptr, L"SysListView32", nullptr);
+      if (lv) {
+        return lv;
+      }
+    }
+  }
+  HWND worker = nullptr;
+  while ((worker = FindWindowExW(nullptr, worker, L"WorkerW", nullptr)) !=
+         nullptr) {
+    HWND def = FindWindowExW(worker, nullptr, L"SHELLDLL_DefView", nullptr);
+    if (def) {
+      HWND lv = FindWindowExW(def, nullptr, L"SysListView32", nullptr);
+      if (lv) {
+        return lv;
+      }
+    }
+  }
+  return nullptr;
+}
+
+int DesktopBagIconSize() {
+  HKEY key = nullptr;
+  if (RegOpenKeyExW(HKEY_CURRENT_USER,
+                    L"Software\\Microsoft\\Windows\\Shell\\Bags\\1\\Desktop", 0,
+                    KEY_READ, &key) == ERROR_SUCCESS) {
+    DWORD raw = 0;
+    DWORD type = 0;
+    DWORD size = sizeof(raw);
+    const LONG rc = RegQueryValueExW(key, L"IconSize", nullptr, &type,
+                                     reinterpret_cast<LPBYTE>(&raw), &size);
+    RegCloseKey(key);
+    if (rc == ERROR_SUCCESS && type == REG_DWORD && raw >= 16 && raw <= 256) {
+      return static_cast<int>(raw);
+    }
+  }
+  return 0;
+}
+
+int RoundScale(int v, double k) {
+  return static_cast<int>(llround(static_cast<double>(v) * k));
+}
+
+}  // namespace
+
+int SystemDpi() {
+  HDC dc = GetDC(nullptr);
+  if (dc) {
+    const int dpi = GetDeviceCaps(dc, LOGPIXELSX);
+    ReleaseDC(nullptr, dc);
+    if (dpi > 0) {
+      return dpi;
+    }
+  }
+  return 96;
+}
+
+int DpiAtPoint(POINT pt) {
+  HMONITOR mon = MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST);
+  if (mon) {
+    const UINT dpi = MonitorDpi(mon);
+    if (dpi > 0) {
+      return static_cast<int>(dpi);
+    }
+  }
+  return SystemDpi();
+}
+
+void ScaleRectForDpi(int* x, int* y, int* w, int* h, int old_dpi, int new_dpi) {
+  if (old_dpi <= 0) {
+    old_dpi = 96;
+  }
+  if (new_dpi <= 0) {
+    new_dpi = 96;
+  }
+  if (old_dpi == new_dpi) {
+    return;
+  }
+  const double k = static_cast<double>(new_dpi) / old_dpi;
+  if (x) {
+    *x = RoundScale(*x, k);
+  }
+  if (y) {
+    *y = RoundScale(*y, k);
+  }
+  if (w) {
+    *w = (std::max)(1, RoundScale(*w, k));
+  }
+  if (h) {
+    *h = (std::max)(1, RoundScale(*h, k));
+  }
+}
+
+void ScaleIconGridForDpi(IconGridMetrics* m, int old_dpi, int new_dpi) {
+  if (!m) {
+    return;
+  }
+  if (old_dpi <= 0) {
+    old_dpi = 96;
+  }
+  if (new_dpi <= 0) {
+    new_dpi = 96;
+  }
+  if (old_dpi == new_dpi) {
+    return;
+  }
+  const double k = static_cast<double>(new_dpi) / old_dpi;
+  m->cell_w = (std::max)(48, RoundScale(m->cell_w, k));
+  m->cell_h = (std::max)(48, RoundScale(m->cell_h, k));
+  m->icon_size = (std::max)(16, RoundScale(m->icon_size, k));
+}
+
+IconGridMetrics QueryIconGridMetrics() {
+  // Legacy fixed defaults — preserved when Explorer metrics are unavailable.
+  IconGridMetrics out;
+  const double scale = (std::max)(1.0, static_cast<double>(SystemDpi()) / 96.0);
+
+  int native_w = 0;
+  int native_h = 0;
+  int lines = 2;
+
+  // 1) Explorer DefView large-icon spacing (actual desktop pitch).
+  const HWND lv = FindDesktopListView();
+  if (lv) {
+    const LRESULT raw = SendMessageW(lv, kLvmGetItemSpacing, 0, 0);
+    const int cw = static_cast<int>(raw & 0xFFFF);
+    const int ch = static_cast<int>((raw >> 16) & 0xFFFF);
+    if (cw >= 32 && ch >= 32) {
+      native_w = cw;
+      native_h = ch;
+    }
+  }
+
+  // 2) SPI icon spacing fallback.
+  if (native_w == 0) {
+    UINT spi_w = 0;
+    UINT spi_h = 0;
+    BOOL wrap = FALSE;
+    SystemParametersInfoW(kSpiIconHorz, 0, &spi_w, 0);
+    SystemParametersInfoW(kSpiIconVert, 0, &spi_h, 0);
+    SystemParametersInfoW(kSpiIconTitleWrap, 0, &wrap, 0);
+    if (spi_w >= 32 && spi_h >= 32) {
+      native_w = static_cast<int>(spi_w);
+      native_h = static_cast<int>(spi_h);
+      lines = wrap ? 2 : 1;
+    }
+  }
+
+  if (native_w == 0 || native_h == 0) {
+    return out;  // keep legacy defaults
+  }
+
+  const int icon = DesktopBagIconSize();
+  out.icon_size = icon > 0 ? icon : out.icon_size;
+  out.caption_lines = lines < 2 ? 1 : 2;
+
+  // Comfort padding (Python _comfort_cell_size / desktop_icon_footprint_height).
+  const int cjk = (std::max)(8, RoundScale(12, scale));
+  const int side_chrome = (std::max)(cjk, RoundScale(10, scale));
+  const int line_h = (std::max)(12, RoundScale(18, scale));
+  const int target_w0 = cjk * 8 + side_chrome;
+  const int target_w = (std::max)(target_w0, RoundScale(native_w, 1.55));
+  const int margin = (std::max)(2, RoundScale(3, scale));
+  const int gap = (std::max)(2, RoundScale(3, scale));
+  const int shelf = (std::max)(16, line_h * out.caption_lines + 10);
+  const int pitch = (std::max)(8, RoundScale(line_h, 0.7));
+  const int footprint = margin + out.icon_size + gap + shelf + margin + pitch;
+  const int target_h = (std::max)(native_h, footprint);
+
+  out.cell_w =
+      (std::max)(48, (std::max)(native_w, (std::max)(target_w, out.icon_size + cjk * 4)));
+  out.cell_h = (std::max)(48, target_h);
+  const int min_caption = (std::max)(16, line_h);
+  out.cell_h = (std::max)(out.icon_size + min_caption, out.cell_h);
+  return out;
 }

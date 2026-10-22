@@ -1,45 +1,101 @@
 #include "snapshot_ui.h"
 
+#include "i18n.h"
+#include "mist_webview.h"
 #include "prompt_text.h"
 #include "snapshot.h"
 
+#include <Windows.h>
+
+#include <algorithm>
 #include <fstream>
 #include <sstream>
 #include <string>
+#include <vector>
 
 namespace {
 
+std::wstring BaseName(const std::wstring& path) {
+  const size_t slash = path.find_last_of(L"\\/");
+  if (slash == std::wstring::npos) {
+    return path;
+  }
+  return path.substr(slash + 1);
+}
+
+std::wstring StripJsonExt(const std::wstring& path) {
+  const std::wstring suf = L".json";
+  if (path.size() >= suf.size() &&
+      _wcsicmp(path.c_str() + (path.size() - suf.size()), suf.c_str()) == 0) {
+    return path.substr(0, path.size() - suf.size());
+  }
+  return path;
+}
+
+// Non-destructive structured preview: per-fence geometry + icon (pinned) count
+// + title. No PNG thumbnail — a clear text summary is shown instead.
 std::wstring SnapshotPreviewText(const std::wstring& path) {
-  AppState st;
-  if (!LoadSnapshot(path, &st)) {
+  SnapshotInfo info;
+  info.path = path;
+  info.name = StripJsonExt(BaseName(path));
+  const SnapshotCardData card = BuildSnapshotCard(info);
+  if (card.boxes.empty() && card.name.empty()) {
     return L"（无法读取预览）";
   }
-  std::wstring out = L"页=" + std::to_wstring(st.current_page) + L"  分区=" +
-                     std::to_wstring(st.fences.size()) + L"\n";
-  for (size_t i = 0; i < st.fences.size() && i < 12; ++i) {
-    const auto& f = st.fences[i];
-    out += L" · " + f.title + L"  (" + std::to_wstring(f.w) + L"x" +
-           std::to_wstring(f.h) + L") p" + std::to_wstring(f.page) + L"\n";
+  std::wstring out = L"页=" + std::to_wstring(card.focus_page) + L"  分区=" +
+                     std::to_wstring(card.boxes.size()) + L"\n";
+  for (size_t i = 0; i < card.boxes.size() && i < 12; ++i) {
+    const auto& b = card.boxes[i];
+    out += L" · " + b.title + L"  (" + std::to_wstring(b.w) + L"x" +
+           std::to_wstring(b.h) + L") 图标=" + std::to_wstring(b.icon_count) +
+           L"  p" + std::to_wstring(b.page) + L"\n";
   }
-  if (st.fences.size() > 12) {
+  if (card.boxes.size() > 12) {
     out += L" · …\n";
   }
-  // Sidecar icon count if present.
-  const std::wstring icons = path + L".icons.json";
-  std::ifstream in(icons);
-  if (in) {
-    std::ostringstream ss;
-    ss << in.rdbuf();
-    const std::string json = ss.str();
-    int n = 0;
-    size_t p = 0;
-    while ((p = json.find("\"path\"", p)) != std::string::npos) {
-      ++n;
-      ++p;
-    }
-    out += L"壳图标约 " + std::to_wstring(n) + L" 项\n";
-  }
   return out;
+}
+
+struct Ctx {
+  std::vector<SnapshotInfo> list;
+  std::vector<std::wstring> previews;
+  AppState* applied = nullptr;
+  bool restored = false;
+  int sel = 0;
+};
+
+void EnsurePreviews(Ctx* ctx) {
+  ctx->previews.resize(ctx->list.size());
+  for (size_t i = 0; i < ctx->list.size(); ++i) {
+    if (ctx->previews[i].empty()) {
+      ctx->previews[i] = SnapshotPreviewText(ctx->list[i].path);
+    }
+  }
+}
+
+std::wstring BuildState(Ctx* ctx) {
+  EnsurePreviews(ctx);
+  if (ctx->sel < 0) {
+    ctx->sel = 0;
+  }
+  if (ctx->sel >= static_cast<int>(ctx->list.size())) {
+    ctx->sel = ctx->list.empty() ? -1 : 0;
+  }
+  std::wstring json = L"{\"type\":\"state\",\"sel\":";
+  json += std::to_wstring(ctx->sel);
+  json += L",\"items\":[";
+  for (size_t i = 0; i < ctx->list.size(); ++i) {
+    if (i) {
+      json += L',';
+    }
+    json += L"{\"name\":\"";
+    json += MistJsonEscape(ctx->list[i].name);
+    json += L"\",\"preview\":\"";
+    json += MistJsonEscape(ctx->previews[i]);
+    json += L"\"}";
+  }
+  json += L"]}";
+  return json;
 }
 
 }  // namespace
@@ -50,58 +106,119 @@ bool ManageSnapshotsDialog(HWND owner, AppState* applied) {
   }
   auto list = ListSnapshots();
   if (list.empty()) {
-    MessageBoxW(owner, L"还没有快照。请先「保存布局快照」。", L"布局快照",
+    MessageBoxW(owner, Tr("snap_empty").c_str(), Tr("snap_title").c_str(),
                 MB_OK | MB_ICONINFORMATION);
     return false;
   }
 
-  std::wstring msg = L"布局快照列表：\n\n";
-  for (size_t i = 0; i < list.size(); ++i) {
-    msg += std::to_wstring(i + 1) + L". " + list[i].name + L"\n";
-  }
-  msg += L"\n是 = 恢复选中　否 = 删除选中　取消 = 关闭\n"
-         L"（选择编号后会先显示预览）";
-  const int choice =
-      MessageBoxW(owner, msg.c_str(), L"布局快照", MB_YESNOCANCEL | MB_ICONQUESTION);
-  if (choice == IDCANCEL) {
+  Ctx ctx;
+  ctx.list = std::move(list);
+  ctx.applied = applied;
+  ctx.sel = 0;
+
+  MistWebDialog dlg;
+  dlg.owner = owner;
+  dlg.user = &ctx;
+  dlg.user_data_subdir = L"webview2-snapshot";
+  dlg.html_path = MistFindAssetHtml(L"dialogs\\snapshot.html");
+  if (dlg.html_path.empty()) {
+    MessageBoxW(owner, L"找不到 snapshot.html", Tr("snap_title").c_str(),
+                MB_OK | MB_ICONWARNING);
     return false;
   }
-
-  const std::wstring prompt =
-      L"输入编号 (1-" + std::to_wstring(list.size()) + L")：";
-  const std::wstring ans = PromptText(owner, L"布局快照", prompt.c_str(), L"1");
-  const int idx = _wtoi(ans.c_str()) - 1;
-  if (idx < 0 || idx >= static_cast<int>(list.size())) {
-    MessageBoxW(owner, L"编号无效。", L"布局快照", MB_OK | MB_ICONWARNING);
-    return false;
-  }
-
-  const auto& item = list[static_cast<size_t>(idx)];
-  const std::wstring preview =
-      L"预览：" + item.name + L"\n\n" + SnapshotPreviewText(item.path);
-
-  if (choice == IDNO) {
-    if (MessageBoxW(owner, (preview + L"\n确认删除？").c_str(), L"删除快照",
-                    MB_YESNO | MB_ICONWARNING) != IDYES) {
+  dlg.build_state = [&ctx]() { return BuildState(&ctx); };
+  dlg.on_message = [&](const std::wstring& json) -> bool {
+    const std::wstring type = MistJsonStringField(json, L"type");
+    if (type != L"action") {
       return false;
     }
-    if (DeleteFileW(item.path.c_str())) {
-      DeleteFileW((item.path + L".icons.json").c_str());
-      MessageBoxW(owner, L"已删除。", L"布局快照", MB_OK | MB_ICONINFORMATION);
-    } else {
-      MessageBoxW(owner, L"删除失败。", L"布局快照", MB_OK | MB_ICONWARNING);
+    const std::wstring id = MistJsonStringField(json, L"id");
+    if (id == L"ready" || id == L"select") {
+      if (id == L"select") {
+        ctx.sel = MistJsonIntField(json, L"index", ctx.sel);
+      }
+      MistWebDialogPushState(&dlg);
+      return false;
+    }
+    if (id == L"restore") {
+      const int sel = MistJsonIntField(json, L"index", ctx.sel);
+      if (sel < 0 || sel >= static_cast<int>(ctx.list.size())) {
+        return false;
+      }
+      const auto& item = ctx.list[static_cast<size_t>(sel)];
+      const std::wstring ask =
+          Tr("snap_restore_ask") + L"\n「" + item.name + L"」";
+      HWND parent = dlg.hwnd ? dlg.hwnd : owner;
+      if (MessageBoxW(parent, ask.c_str(), Tr("snap_restore_title").c_str(),
+                      MB_YESNO | MB_ICONQUESTION) != IDYES) {
+        return false;
+      }
+      if (!LoadSnapshotWithIcons(item.path, ctx.applied)) {
+        MessageBoxW(parent, Tr("snap_read_fail").c_str(),
+                    Tr("snap_title").c_str(), MB_OK | MB_ICONWARNING);
+        return false;
+      }
+      ctx.restored = true;
+      return true;
+    }
+    if (id == L"delete") {
+      const int sel = MistJsonIntField(json, L"index", ctx.sel);
+      if (sel < 0 || sel >= static_cast<int>(ctx.list.size())) {
+        return false;
+      }
+      const auto& item = ctx.list[static_cast<size_t>(sel)];
+      const std::wstring ask =
+          Tr("snap_delete_ask") + L"\n「" + item.name + L"」";
+      HWND parent = dlg.hwnd ? dlg.hwnd : owner;
+      if (MessageBoxW(parent, ask.c_str(), Tr("snap_delete_title").c_str(),
+                      MB_YESNO | MB_ICONWARNING) != IDYES) {
+        return false;
+      }
+      if (DeleteSnapshot(item.path)) {
+        ctx.list.erase(ctx.list.begin() + sel);
+        if (sel < static_cast<int>(ctx.previews.size())) {
+          ctx.previews.erase(ctx.previews.begin() + sel);
+        }
+        if (ctx.list.empty()) {
+          return true;
+        }
+        ctx.sel = std::min(sel, static_cast<int>(ctx.list.size()) - 1);
+        MistWebDialogPushState(&dlg);
+      } else {
+        MessageBoxW(parent, Tr("snap_delete_fail").c_str(),
+                    Tr("snap_title").c_str(), MB_OK | MB_ICONWARNING);
+      }
+      return false;
+    }
+    if (id == L"rename") {
+      const int sel = MistJsonIntField(json, L"index", ctx.sel);
+      if (sel < 0 || sel >= static_cast<int>(ctx.list.size())) {
+        return false;
+      }
+      HWND parent = dlg.hwnd ? dlg.hwnd : owner;
+      const auto& item = ctx.list[static_cast<size_t>(sel)];
+      const std::wstring nv =
+          PromptText(parent, L"重命名快照", L"新名称", item.name);
+      if (nv.empty() || nv == item.name) {
+        return false;
+      }
+      if (!RenameSnapshot(item.path, nv)) {
+        MessageBoxW(parent, Tr("snap_delete_fail").c_str(), L"重命名快照",
+                    MB_OK | MB_ICONWARNING);
+        return false;
+      }
+      ctx.list = ListSnapshots();
+      ctx.previews.clear();
+      ctx.sel = 0;
+      MistWebDialogPushState(&dlg);
+      return false;
+    }
+    if (id == L"close") {
+      return true;
     }
     return false;
-  }
+  };
 
-  if (MessageBoxW(owner, (preview + L"\n恢复此快照？").c_str(), L"恢复快照",
-                  MB_YESNO | MB_ICONQUESTION) != IDYES) {
-    return false;
-  }
-
-  if (!LoadSnapshotWithIcons(item.path, applied)) {
-    MessageBoxW(owner, L"读取快照失败。", L"布局快照", MB_OK | MB_ICONWARNING);
-    return false;
-  }
-  return true;
+  MistWebDialogRun(&dlg, Tr("snap_mgr_title").c_str(), 580, 420);
+  return ctx.restored;
 }
