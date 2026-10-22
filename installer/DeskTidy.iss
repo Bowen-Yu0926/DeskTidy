@@ -116,6 +116,10 @@ Type: files; Name: "{userstartup}\桌面整理（私人版）-桌面守护.lnk"
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "启动 {#MyAppName}"; Flags: nowait postinstall skipifsilent
 
+[UninstallRun]
+; Native layer cleanup when the C++ desktop layer (Tasks: native) was installed.
+Filename: "{app}\desktidy_native.exe"; Parameters: "--uninstall-cleanup"; Flags: runhidden waituntilterminated skipifdoesntexist; RunOnceId: "DeskTidyNativeUninstallCleanup"
+
 [Code]
 var
   GPurgeUserData: Boolean;

@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>DeskNote Help</title>
+<style>
+body{font-family:'Segoe UI','Microsoft YaHei UI',sans-serif;font-size:13px;line-height:1.55;color:#1f2937;margin:8px 12px 16px;}
+h1{font-size:18px;margin:0 0 6px;}
+h2{font-size:1.3em;margin:0.9em 0 0.4em;padding-bottom:4px;border-bottom:1px solid #e5e7eb;}
+h3{font-size:1.05em;margin:0.9em 0 0.3em;}
+p.purpose{color:#4b5563;margin-top:0;}
+p.tip{background:#f8fafc;border-left:3px solid #93c5fd;padding:8px 10px;color:#374151;}
+code{font-family:Consolas,'Cascadia Mono',monospace;background:#f3f4f6;padding:0.05em 0.3em;border-radius:3px;}
+table.op-table{width:100%;border-collapse:collapse;margin:0.5em 0 0.8em;}
+table.op-table th,table.op-table td{border:1px solid #e5e7eb;text-align:left;vertical-align:top;padding:6px 8px;}
+table.op-table th{background:#f3f4f6;}
+nav.toc{background:#f8fafc;border:1px solid #e5e7eb;border-radius:6px;padding:8px 14px;margin:10px 0;}
+nav.toc ol{margin:4px 0;padding-left:1.4em;}
+nav.toc a{color:#1d4ed8;text-decoration:none;}
+nav.toc a:hover{text-decoration:underline;}
+</style>
+</head>
+<body>
+<h1>DeskNote Help</h1>
+<p class="purpose">DeskNote is a standalone notepad installed alongside DeskTidy.
+This help covers only DeskNote. For DeskTidy desktop fences etc., see DeskTidy main window → Help.</p>
+<nav class="toc"><ol>
+<li><a href="#manual-overview">Overview</a></li>
+<li><a href="#manual-tabs_files">Tabs &amp; Files</a></li>
+<li><a href="#manual-library">Note Library Sidebar</a></li>
+<li><a href="#manual-edit_find">Edit &amp; Find</a></li>
+<li><a href="#manual-markdown">Markdown Preview &amp; Editing</a></li>
+<li><a href="#manual-edit_modes">Editing Modes</a></li>
+<li><a href="#manual-headings">Headings &amp; Outline</a></li>
+<li><a href="#manual-shortcuts">Keyboard Shortcuts</a></li>
+<li><a href="#manual-desktidy">DeskTidy Integration</a></li>
+</ol></nav>
+
+<article class="manual-chapter" id="manual-overview">
+<h2>Overview</h2>
+<p class="purpose">DeskNote is an optional standalone notepad installed with DeskTidy: multi-tab editing of common text/code,
+with a note-library sidebar, preview/edit toggle, WYSIWYG, focus/typewriter modes and smart paste for <code>.md</code>.</p>
+<table class="op-table" cellspacing="0" cellpadding="6"><tr><th align="left">Action</th><th align="left">Notes</th></tr>
+<tr><td>How to open</td><td>DeskNote shortcut on desktop / Start menu; or enable the shortcut in DeskTidy → Extensions.</td></tr>
+<tr><td>Default save location</td><td>The 「笔记」(Notes) folder under the install directory (changeable in DeskTidy → Extensions).</td></tr>
+<tr><td>Window close</td><td>Closing the window keeps tab contents for next launch; closing a tab cleans up its draft/note file per rules.</td></tr>
+</table>
+<p class="tip">This help covers DeskNote only. DeskTidy desktop-fence features are in the DeskTidy main-window Help.</p>
+</article>
+
+<article class="manual-chapter" id="manual-tabs_files">
+<h2>Tabs &amp; Files</h2>
+<p class="purpose">One window can hold several tabs, like Notepad++.</p>
+<table class="op-table" cellspacing="0" cellpadding="6"><tr><th align="left">Action</th><th align="left">Notes</th></tr>
+<tr><td>File · New / Ctrl+N</td><td>Create and open a new Markdown file in the notes folder (e.g. untitled.md).</td></tr>
+<tr><td>Double-click empty tab bar</td><td>Same — create a new file in the notes folder.</td></tr>
+<tr><td>File · Open / Ctrl+O</td><td>Open text, Markdown, and common code/config files.</td></tr>
+<tr><td>Drop files</td><td>Drag text / Markdown / code files into the window to open them as tabs.</td></tr>
+<tr><td>File · Save / Ctrl+S</td><td>Save the current tab.</td></tr>
+<tr><td>File · Save As</td><td>Save to a new path or extension (e.g. convert to .md).</td></tr>
+<tr><td>Open Notes Folder</td><td>Open the default notes directory in Explorer.</td></tr>
+<tr><td>Close tab / Ctrl+W</td><td>Close the current tab; asks whether to save when there are unsaved changes. Middle-click a tab also closes it.</td></tr>
+<tr><td>Tab pin / right-click pin</td><td>Click the pin on the left of a tab to fix it to the far left; click again to unpin. Pin state persists across sessions.</td></tr>
+<tr><td>Tab / library file right-click</td><td>Open, rename, pin/unpin, close, delete (same menu in both places). Close only closes the tab; delete removes the file from disk.</td></tr>
+<tr><td>Close window</td><td>Ends this window; opened content is kept for the next launch as much as possible.</td></tr>
+</table>
+</article>
+
+<article class="manual-chapter" id="manual-library">
+<h2>Note Library Sidebar</h2>
+<p class="purpose">A left file tree browsing the default notes folder (path changeable in DeskTidy → Extensions).</p>
+<table class="op-table" cellspacing="0" cellpadding="6"><tr><th align="left">Action</th><th align="left">Notes</th></tr>
+<tr><td>View · File tree / Ctrl+Shift+E</td><td>Show or hide the sidebar.</td></tr>
+<tr><td>Double-click a file</td><td>Open it; if already open, switch to that tab.</td></tr>
+<tr><td>+ / right-click blank · New Markdown</td><td>Same as File · New: create a <code>.md</code> in the notes root and open it.</td></tr>
+<tr><td>File right-click</td><td>Same as tab right-click: open, rename, pin, close (if open), delete.</td></tr>
+<tr><td>Right-click · Rename / F2</td><td>Renames only the filename stem; the extension (.md etc.) is kept; open tabs follow the new path.</td></tr>
+<tr><td>Right-click · Delete / Delete</td><td>Deletes the file; if open, closes the corresponding tab.</td></tr>
+<tr><td>Search box / Ctrl+Shift+F</td><td>Searches the note library by filename and content (large files are skipped).</td></tr>
+<tr><td>Blank-area right-click</td><td>New Markdown, refresh, or open the notes folder in Explorer.</td></tr>
+</table>
+<p class="tip">In focus mode the sidebar auto-hides; exiting focus restores it per your File-tree toggle.</p>
+</article>
+
+<article class="manual-chapter" id="manual-edit_find">
+<h2>Edit &amp; Find</h2>
+<table class="op-table" cellspacing="0" cellpadding="6"><tr><th align="left">Action</th><th align="left">Notes</th></tr>
+<tr><td>Undo / cut / copy / paste / select all</td><td>Edit menu or standard system shortcuts.</td></tr>
+<tr><td>Paste (Markdown)</td><td>When the clipboard holds HTML (browser/Word), it is converted to Markdown before pasting; plain text pastes as-is.</td></tr>
+<tr><td>Format · Word wrap</td><td>Wraps to window width; turn off to view long lines.</td></tr>
+<tr><td>Find / Ctrl+F</td><td>Find in the current tab.</td></tr>
+<tr><td>Replace / Ctrl+H</td><td>Find and replace; can act on the current tab or all tabs (see find dialog options).</td></tr>
+<tr><td>F3 / Shift+F3</td><td>Find next / previous.</td></tr>
+<tr><td>Status bar</td><td>Shows path, modified state, and current line, column and word count (selection counted when present).</td></tr>
+</table>
+</article>
+
+<article class="manual-chapter" id="manual-markdown">
+<h2>Markdown Preview &amp; Editing</h2>
+<p class="purpose">Opening <code>.md</code> / <code>.markdown</code> defaults to full-width preview; click the right-side Edit bar to edit, then Preview to return.</p>
+<table class="op-table" cellspacing="0" cellpadding="6"><tr><th align="left">Action</th><th align="left">Notes</th></tr>
+<tr><td>Open .md</td><td>Defaults to full-width preview (code highlight, formulas, Mermaid, footnotes, <code>[TOC]</code>).</td></tr>
+<tr><td>View · Preview / Ctrl+Shift+V</td><td>Switch to preview.</td></tr>
+<tr><td>View · Edit / Ctrl+E</td><td>Switch to edit (source or WYSIWYG).</td></tr>
+<tr><td>Edit · Outline</td><td>Optional left outline in source-edit mode (Ctrl+Shift+O).</td></tr>
+<tr><td>File · Export HTML / PDF</td><td>Export current Markdown; PDF needs the enhanced preview engine.</td></tr>
+<tr><td>File · Export Word</td><td>Convert to .docx via local Pandoc; install hint shown when missing.</td></tr>
+<tr><td>Paste / drop image</td><td>In edit mode, paste screenshots or drop images — saved beside the note under <code>assets/</code> with a relative path inserted.</td></tr>
+</table>
+<p class="tip">Plain <code>.txt</code> etc. files have only an edit area, no Markdown preview.</p>
+</article>
+
+<article class="manual-chapter" id="manual-edit_modes">
+<h2>Editing Modes</h2>
+<p class="purpose">Enter the Edit view first, then choose source or WYSIWYG from the View menu (requires a saved <code>.md</code>).</p>
+<table class="op-table" cellspacing="0" cellpadding="6"><tr><th align="left">Action</th><th align="left">Notes</th></tr>
+<tr><td>View · Source editing</td><td>Optional left outline + source editor.</td></tr>
+<tr><td>View · WYSIWYG</td><td>Toast UI visual editing; Markdown is synced back before switching/saving. Requires WebEngine.</td></tr>
+<tr><td>View · Focus mode / F11</td><td>Hides sidebar and status bar, full-width source editing; exit restores layout.</td></tr>
+<tr><td>View · Typewriter mode</td><td>Keeps the caret line vertically centered for long-form writing.</td></tr>
+</table>
+<p class="tip">Focus mode forces source editing. Typewriter mode applies only to the source editor.</p>
+</article>
+
+<article class="manual-chapter" id="manual-headings">
+<h2>Headings &amp; Outline</h2>
+<p class="purpose">The outline levels ATX headings. Canonical form is「hash + space + title」.</p>
+<table class="op-table" cellspacing="0" cellpadding="6"><tr><th align="left">Level</th><th align="left">Markup</th></tr>
+<tr><td>Level 1</td><td><code># Title</code></td></tr>
+<tr><td>Level 2</td><td><code>## Title</code></td></tr>
+<tr><td>Level 3</td><td><code>### Title</code> (up to six <code>######</code>)</td></tr>
+<tr><td>Missing space</td><td><code>###Title</code> is still recognized when possible; prefer the space.</td></tr>
+<tr><td>Click outline item</td><td>Moves the caret to that source line, centered when possible.</td></tr>
+</table>
+<p class="tip">Preview supports lists, task lists, quotes, code highlight, tables, links, images, formulas, Mermaid, <code>[TOC]</code> and footnotes; leading YAML front matter is not shown as body.</p>
+</article>
+
+<article class="manual-chapter" id="manual-shortcuts">
+<h2>Keyboard Shortcuts</h2>
+<table class="op-table" cellspacing="0" cellpadding="6"><tr><th align="left">Keys</th><th align="left">Action</th></tr>
+<tr><td>Ctrl+N</td><td>New tab</td></tr>
+<tr><td>Ctrl+O</td><td>Open</td></tr>
+<tr><td>Ctrl+S</td><td>Save</td></tr>
+<tr><td>Ctrl+Shift+S</td><td>Save As</td></tr>
+<tr><td>Ctrl+W</td><td>Close tab</td></tr>
+<tr><td>Ctrl+F</td><td>Find</td></tr>
+<tr><td>Ctrl+H</td><td>Replace</td></tr>
+<tr><td>F3 / Shift+F3</td><td>Find next / previous</td></tr>
+<tr><td>Ctrl+Shift+V</td><td>Markdown preview</td></tr>
+<tr><td>Ctrl+E</td><td>Markdown edit</td></tr>
+<tr><td>Ctrl+Shift+O</td><td>Toggle outline (edit mode)</td></tr>
+<tr><td>Ctrl+Shift+E</td><td>Toggle file-tree sidebar</td></tr>
+<tr><td>Ctrl+Shift+F</td><td>Search note library</td></tr>
+<tr><td>F11</td><td>Focus mode</td></tr>
+<tr><td>F1</td><td>Open this help</td></tr>
+</table>
+</article>
+
+<article class="manual-chapter" id="manual-desktidy">
+<h2>DeskTidy Integration</h2>
+<p class="purpose">DeskNote is a standalone process installed with DeskTidy, sharing settings and the notes folder.</p>
+<table class="op-table" cellspacing="0" cellpadding="6"><tr><th align="left">Action</th><th align="left">Notes</th></tr>
+<tr><td>Install</td><td>DeskNote installs together with DeskTidy; no separate component checkbox.</td></tr>
+<tr><td>Enable</td><td>Toggle the shortcut in DeskTidy → Extensions → DeskNote (does not uninstall the program).</td></tr>
+<tr><td>Explorer · Open with</td><td>The Open-with list for text / Markdown / code files offers DeskNote (no longer DeskTidy).</td></tr>
+<tr><td>Fence「Open in Notepad」</td><td>Open text files with DeskNote.</td></tr>
+<tr><td>Single instance</td><td>Launching DeskNote again activates the existing window instead of opening a new one.</td></tr>
+<tr><td>Theme</td><td>Follows the current DeskTidy theme setting.</td></tr>
+</table>
+</article>
+
+</body>
+</html>

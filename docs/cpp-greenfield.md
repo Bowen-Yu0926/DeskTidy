@@ -126,4 +126,4 @@ scripts\build_native_installer.bat
 
 Config under `%LocalAppData%\DeskTidyNative\`: `layout.json`, `hotkeys.json`, `whitelist.json`, `wallpaper.json`, `minutes.json`, `todos.txt`, `app_prefs.json`, `snapshots\`.
 
-Helpers: `ffmpeg.exe` / `fd.exe` under assets or PATH. Optional `pet.png` beside exe or in data dir.
+Helpers: `ffmpeg.exe` / `fd.exe` under assets or PATH. Pet sprites: `assets/pets/` (Python-compatible `hoodie_*.png` / `voyage_*.png`; build copies them next to the exe). Optional single `pet.png` fallback beside exe or in data dir.

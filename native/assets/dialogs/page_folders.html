@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>分页文件夹</title>
+<style>
+  :root {
+    --bg: #EEF1F6; --card: #FFFFFF; --border: #C9D2DE; --text: #1A2332;
+    --muted: #64748B; --accent: #1D4ED8; --accent-soft: #E0E7FF;
+    --primary: #16A34A; --primary-hover: #15803D; --danger: #DC2626; --row: #F8FAFC;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; height: 100%;
+    font-family: "Microsoft YaHei UI", "Segoe UI", sans-serif;
+    background: var(--bg); color: var(--text); font-size: 13px;
+  }
+  #wrap { height: 100%; display: flex; flex-direction: column; padding: 14px 16px 12px; }
+  .title { font-size: 16px; font-weight: 800; margin: 0 0 4px; }
+  .hint { margin: 0 0 10px; color: var(--muted); font-size: 12px; line-height: 1.45; }
+  .panel {
+    flex: 1; min-height: 0; display: flex; gap: 12px;
+    background: var(--card); border: 1px solid var(--border); border-radius: 14px;
+    border-left: 3px solid var(--accent); padding: 12px; overflow: hidden;
+  }
+  #list { flex: 1; min-width: 0; overflow: auto; display: flex; flex-direction: column; gap: 6px; }
+  .item {
+    padding: 9px 12px; border: 1px solid var(--border); border-radius: 10px;
+    background: var(--row); cursor: pointer;
+  }
+  .item:hover { background: var(--accent-soft); }
+  .item.sel { background: var(--accent-soft); border-color: var(--accent); }
+  .name { font-weight: 800; }
+  .path { font-size: 12px; color: var(--muted); margin-top: 2px; word-break: break-all; }
+  .side { width: 110px; flex-shrink: 0; display: flex; flex-direction: column; gap: 8px; }
+  .btn {
+    border: 1px solid var(--border); background: #fff; border-radius: 10px;
+    padding: 8px 10px; font: inherit; font-weight: 700; cursor: pointer;
+  }
+  .btn:hover { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+  .btn.primary { background: var(--primary); border-color: var(--primary); color: #fff; }
+  .btn.primary:hover { background: var(--primary-hover); color: #fff; }
+  .btn.danger { color: var(--danger); border-color: #FECACA; }
+  .foot { display: flex; gap: 8px; justify-content: flex-end; margin-top: 12px; }
+  #empty { color: var(--muted); text-align: center; padding: 40px 8px; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <h1 class="title">分页文件夹</h1>
+  <p class="hint">托盘「分页文件夹」可快速打开这些路径。</p>
+  <div class="panel">
+    <div id="list"></div>
+    <div class="side">
+      <button class="btn" id="add">添加…</button>
+      <button class="btn" id="rename">重命名</button>
+      <button class="btn danger" id="del">删除</button>
+    </div>
+  </div>
+  <div class="foot">
+    <button class="btn" id="cancel">取消</button>
+    <button class="btn primary" id="save">保存</button>
+  </div>
+</div>
+<script>
+  let items = [];
+  let sel = -1;
+  function post(msg) {
+    try { chrome.webview.postMessage(JSON.stringify(msg)); } catch (e) {}
+  }
+  function esc(s) {
+    return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
+  function render() {
+    const list = document.getElementById('list');
+    if (!items.length) {
+      list.innerHTML = '<div id="empty">暂无文件夹</div>';
+      return;
+    }
+    list.innerHTML = items.map((it, i) =>
+      `<div class="item${i===sel?' sel':''}" data-i="${i}">
+        <div class="name">${esc(it.name)}</div>
+        <div class="path">${esc(it.path)}</div>
+      </div>`).join('');
+    list.querySelectorAll('.item').forEach(el => {
+      el.onclick = () => { sel = +el.dataset.i; render(); };
+      el.ondblclick = () => document.getElementById('rename').click();
+    });
+  }
+  window.applyState = function(m) {
+    if (!m || m.type !== 'state') return;
+    items = Array.isArray(m.items) ? m.items.slice() : [];
+    if (typeof m.sel === 'number') sel = m.sel;
+    if (sel >= items.length) sel = items.length ? 0 : -1;
+    render();
+  };
+  document.getElementById('add').onclick = () => post({ type: 'action', id: 'add' });
+  document.getElementById('rename').onclick = () => {
+    if (sel < 0) return;
+    post({ type: 'action', id: 'rename', index: sel });
+  };
+  document.getElementById('del').onclick = () => {
+    if (sel < 0) return;
+    post({ type: 'action', id: 'del', index: sel });
+  };
+  document.getElementById('save').onclick = () => post({ type: 'action', id: 'save' });
+  document.getElementById('cancel').onclick = () => post({ type: 'action', id: 'cancel' });
+  try {
+    chrome.webview.addEventListener('message', ev => {
+      let m = ev.data; if (typeof m === 'string') { try { m = JSON.parse(m); } catch(e) { return; } }
+      applyState(m);
+    });
+  } catch (e) {}
+  post({ type: 'action', id: 'ready' });
+</script>
+</body>
+</html>

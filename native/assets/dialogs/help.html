@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>帮助</title>
+<style>
+  :root {
+    --bg: #EEF1F6; --card: #FFFFFF; --border: #C9D2DE; --text: #1A2332;
+    --muted: #64748B; --accent: #1D4ED8; --accent-soft: #E0E7FF; --primary: #16A34A;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; height: 100%;
+    font-family: "Microsoft YaHei UI", "Segoe UI", sans-serif;
+    background: var(--bg); color: var(--text); font-size: 13px;
+  }
+  #wrap { height: 100%; display: flex; flex-direction: column; padding: 16px 18px 14px; gap: 12px; }
+  .title { font-size: 18px; font-weight: 800; margin: 0; }
+  .hint { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
+  .actions { display: flex; flex-wrap: wrap; gap: 8px; }
+  .btn {
+    border: 1px solid var(--border); background: #fff; border-radius: 10px;
+    padding: 8px 14px; font: inherit; font-weight: 700; cursor: pointer;
+  }
+  .btn:hover { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+  .btn.primary { background: var(--primary); border-color: var(--primary); color: #fff; }
+  .btn.primary:hover { filter: brightness(0.95); color: #fff; }
+  .card {
+    flex: 1; min-height: 0; overflow: auto;
+    background: var(--card); border: 1px solid var(--border); border-radius: 14px;
+    border-left: 3px solid var(--accent); padding: 14px 18px;
+  }
+  h2 { font-size: 14px; margin: 16px 0 8px; color: var(--accent); }
+  h2:first-child { margin-top: 0; }
+  p, li { color: var(--text); line-height: 1.55; }
+  ul { padding-left: 1.2em; margin: 0 0 8px; }
+  code {
+    background: #F1F5F9; padding: 1px 6px; border-radius: 4px; font-size: 12px;
+  }
+  .muted { color: var(--muted); font-size: 12px; }
+  .foot { display: flex; justify-content: flex-end; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <h1 class="title">DeskTidy 使用手册</h1>
+  <p class="hint">本页可打开介绍与使用手册（系统浏览器）。DeskNote 笔记帮助请在 DeskNote 窗口按 F1 单独打开。</p>
+  <div class="actions">
+    <button class="btn primary" id="open-docs">在浏览器中打开</button>
+    <button class="btn" id="guide" title="在桌面上再次查看分步小提示">入门指引</button>
+    <button class="btn" id="updates" title="联网查询是否发布了新版本">检查更新</button>
+  </div>
+  <div class="card">
+    <p class="muted">数据目录：<code>%LocalAppData%\DeskTidyNative\</code></p>
+    <h2>分区</h2>
+    <ul>
+      <li>拖动边角缩放；把桌面图标拖入即可钉选</li>
+      <li>设置 → 桌面分区 →「新建分区」框选区域，或桌面右键 DeskTidy → 新建分区</li>
+      <li>右键：重命名、换页、样式；图标右键：打开 / 复制剪切 / 取消钉选</li>
+      <li>Ctrl+V 或右键「粘贴文件」从资源管理器剪贴板钉入</li>
+    </ul>
+    <h2>整理</h2>
+    <ul>
+      <li>一键整理：按规则写入钉选（文件仍留在桌面）</li>
+      <li>规则：扩展名（.pdf）、类型（kind:image）、通配（Invoice*）→ 分区</li>
+      <li>白名单跳过指定文件名；可开启动自动整理与监视新文件</li>
+    </ul>
+    <h2>工具</h2>
+    <ul>
+      <li>区域截图、贴图、录屏、搜索、待办、笔记、账号保险库</li>
+      <li>Dock / 宠物 / 页条：快捷入口与翻页</li>
+    </ul>
+    <h2>默认快捷键</h2>
+    <ul>
+      <li>Ctrl+Shift+O 整理 · F 分区显隐 · H 桌面图标</li>
+      <li>Ctrl+Space Peek · Ctrl+Shift+←/→ 换页</li>
+      <li>Ctrl+Alt+1 区域截图 · 2 贴图 · 3 录屏 · 4 搜索 · C 计算器</li>
+      <li>设置 → 快捷键 可改绑</li>
+    </ul>
+  </div>
+  <div class="foot">
+    <button class="btn" id="close">关闭</button>
+  </div>
+</div>
+<script>
+  function post(msg) {
+    try { chrome.webview.postMessage(JSON.stringify(msg)); } catch (e) {}
+  }
+  document.getElementById('close').onclick = () => post({ type: 'action', id: 'close' });
+  document.getElementById('open-docs').onclick = () => post({ type: 'action', id: 'open_docs' });
+  document.getElementById('guide').onclick = () => post({ type: 'action', id: 'guide' });
+  document.getElementById('updates').onclick = () => post({ type: 'action', id: 'updates' });
+  window.applyState = function() {};
+  post({ type: 'action', id: 'ready' });
+</script>
+</body>
+</html>

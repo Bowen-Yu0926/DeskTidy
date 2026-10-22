@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>输入</title>
+<style>
+  :root {
+    --bg: #EEF1F6; --card: #FFFFFF; --border: #C9D2DE; --text: #1A2332;
+    --muted: #64748B; --accent: #1D4ED8; --accent-soft: #E0E7FF;
+    --primary: #16A34A; --primary-hover: #15803D;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; height: 100%;
+    font-family: "Microsoft YaHei UI", "Segoe UI", sans-serif;
+    background: var(--bg); color: var(--text); font-size: 13px;
+  }
+  #wrap {
+    height: 100%; display: flex; align-items: center; justify-content: center;
+    padding: 16px;
+  }
+  #card {
+    width: 100%; max-width: 400px;
+    background: var(--card); border: 1px solid var(--border); border-radius: 14px;
+    border-left: 3px solid var(--accent); padding: 16px 18px 14px;
+    box-shadow: 0 10px 28px rgba(26,35,50,0.10);
+  }
+  #title { margin: 0 0 6px; font-size: 16px; font-weight: 800; }
+  #label { margin: 0 0 10px; color: var(--muted); font-size: 12px; line-height: 1.45; }
+  #val {
+    width: 100%; height: 36px; padding: 0 12px; margin-bottom: 14px;
+    border: 1px solid var(--border); border-radius: 10px; font: inherit;
+  }
+  #val:focus { outline: 2px solid var(--accent-soft); border-color: var(--accent); }
+  .foot { display: flex; gap: 8px; justify-content: flex-end; }
+  .btn {
+    border: 1px solid var(--border); background: #fff; border-radius: 10px;
+    padding: 8px 16px; font: inherit; font-weight: 700; cursor: pointer;
+  }
+  .btn:hover { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+  .btn.primary { background: var(--primary); border-color: var(--primary); color: #fff; }
+  .btn.primary:hover { background: var(--primary-hover); color: #fff; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <div id="card">
+    <h1 id="title">输入</h1>
+    <p id="label"></p>
+    <input id="val" type="text" />
+    <div class="foot">
+      <button class="btn" id="cancel">取消</button>
+      <button class="btn primary" id="ok">确定</button>
+    </div>
+  </div>
+</div>
+<script>
+  function post(msg) {
+    try { chrome.webview.postMessage(JSON.stringify(msg)); } catch (e) {}
+  }
+  window.applyState = function(m) {
+    if (!m || m.type !== 'state') return;
+    if (m.title) document.getElementById('title').textContent = m.title;
+    document.getElementById('label').textContent = m.label || '';
+    document.getElementById('val').value = m.value || '';
+    setTimeout(() => {
+      const el = document.getElementById('val');
+      el.focus(); el.select();
+    }, 40);
+  };
+  document.getElementById('ok').onclick = () => {
+    post({ type: 'action', id: 'ok', value: document.getElementById('val').value });
+  };
+  document.getElementById('cancel').onclick = () => post({ type: 'action', id: 'cancel' });
+  document.getElementById('val').onkeydown = e => {
+    if (e.key === 'Enter') document.getElementById('ok').click();
+    if (e.key === 'Escape') document.getElementById('cancel').click();
+  };
+  try {
+    chrome.webview.addEventListener('message', ev => {
+      let m = ev.data; if (typeof m === 'string') { try { m = JSON.parse(m); } catch(e) { return; } }
+      applyState(m);
+    });
+  } catch (e) {}
+  post({ type: 'action', id: 'ready' });
+</script>
+</body>
+</html>

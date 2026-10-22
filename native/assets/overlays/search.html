@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>文件搜索</title>
+<style>
+  :root {
+    --bg: #EEF1F6; --card: rgba(255,255,255,0.96); --border: #C9D2DE;
+    --text: #1A2332; --muted: #64748B; --accent: #1D4ED8; --accent-soft: #E0E7FF;
+    --primary: #16A34A; --primary-hover: #15803D; --row: #F8FAFC; --sidebar: #1A2740;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; height: 100%; overflow: hidden;
+    font-family: "Microsoft YaHei UI", "Segoe UI", sans-serif;
+    background: transparent; color: var(--text); font-size: 13px; user-select: none;
+  }
+  #card {
+    height: 100%; display: flex; flex-direction: column;
+    background: var(--card); border: 1px solid var(--border); border-radius: 14px;
+    overflow: hidden; box-shadow: 0 12px 36px rgba(26,35,50,0.16);
+  }
+  #title {
+    display: flex; align-items: center; gap: 8px;
+    padding: 10px 12px 10px 14px; background: var(--sidebar); color: #EAF0FA;
+    cursor: move;
+  }
+  #title .t { font-weight: 800; font-size: 14px; flex: 1; }
+  #title .hint { color: #93A4BF; font-size: 11px; }
+  #hide {
+    width: 28px; height: 28px; border: 0; border-radius: 8px;
+    background: transparent; color: #93A4BF; font-size: 18px; cursor: pointer;
+  }
+  #hide:hover { background: rgba(29,78,216,0.26); color: #fff; }
+  .toolbar {
+    display: flex; gap: 8px; align-items: center; padding: 10px 12px 6px;
+  }
+  #q {
+    flex: 1; min-width: 0; height: 36px; padding: 0 12px;
+    border: 1px solid var(--border); border-radius: 10px; font: inherit; outline: none;
+  }
+  #q:focus { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
+  .btn {
+    border: 1px solid var(--border); background: #fff; border-radius: 10px;
+    padding: 8px 12px; font: inherit; font-weight: 700; cursor: pointer; white-space: nowrap;
+  }
+  .btn:hover { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+  .btn.primary { background: var(--primary); border-color: var(--primary); color: #fff; }
+  .btn.primary:hover { background: var(--primary-hover); color: #fff; }
+  .opts {
+    padding: 0 12px 8px; display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12px;
+  }
+  .opts label { display: flex; align-items: center; gap: 6px; cursor: pointer; }
+  #list { flex: 1; overflow: auto; padding: 4px 12px 8px; }
+  .item {
+    padding: 9px 12px; border: 1px solid var(--border); border-radius: 10px;
+    background: var(--row); margin-bottom: 6px; cursor: pointer;
+    border-left: 3px solid transparent;
+  }
+  .item:hover { background: var(--accent-soft); }
+  .item.sel { border-left-color: var(--accent); background: var(--accent-soft); }
+  .item .name { font-weight: 800; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .item .path { font-size: 11px; color: var(--muted); margin-top: 2px; word-break: break-all; }
+  #empty { color: var(--muted); text-align: center; padding: 48px 12px; }
+  .foot {
+    display: flex; gap: 8px; padding: 8px 12px 12px; border-top: 1px solid var(--border);
+  }
+</style>
+</head>
+<body>
+<div id="card">
+  <div id="title">
+    <div class="t">文件搜索</div>
+    <div class="hint" id="status">输入文件名</div>
+    <button id="hide" title="关闭">×</button>
+  </div>
+  <div class="toolbar">
+    <input id="q" type="text" placeholder="文件名关键词…" />
+    <button class="btn primary" id="go">搜索</button>
+  </div>
+  <div class="opts">
+    <label><input type="checkbox" id="all" /> 所有固定磁盘</label>
+  </div>
+  <div id="list"></div>
+  <div class="foot">
+    <button class="btn primary" id="open">打开</button>
+    <button class="btn" id="reveal">打开所在位置</button>
+  </div>
+</div>
+<script>
+  let items = [];
+  let sel = -1;
+  let debounce = null;
+  let dragging = false;
+
+  function post(msg) {
+    try { chrome.webview.postMessage(JSON.stringify(msg)); } catch (e) {}
+  }
+  function esc(s) {
+    return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
+  function baseName(p) {
+    const s = String(p || '');
+    const i = Math.max(s.lastIndexOf('\\'), s.lastIndexOf('/'));
+    return i >= 0 ? s.slice(i + 1) : s;
+  }
+  function render() {
+    const list = document.getElementById('list');
+    if (!items.length) {
+      list.innerHTML = '<div id="empty">无结果</div>';
+      return;
+    }
+    list.innerHTML = items.map((p, i) =>
+      `<div class="item${i===sel?' sel':''}" data-i="${i}">
+        <div class="name">${esc(baseName(p))}</div>
+        <div class="path">${esc(p)}</div>
+      </div>`).join('');
+    list.querySelectorAll('.item').forEach(el => {
+      el.onclick = () => { sel = +el.dataset.i; render(); };
+      el.ondblclick = () => post({ type: 'action', id: 'open', index: sel });
+      el.oncontextmenu = e => {
+        e.preventDefault();
+        sel = +el.dataset.i; render();
+        post({ type: 'action', id: 'context', index: sel, x: e.screenX, y: e.screenY });
+      };
+    });
+  }
+  window.applyState = function(m) {
+    if (!m || m.type !== 'state') return;
+    items = Array.isArray(m.items) ? m.items.slice() : [];
+    if (typeof m.sel === 'number') sel = m.sel;
+    if (sel >= items.length) sel = items.length ? 0 : -1;
+    document.getElementById('all').checked = !!m.all_drives;
+    if (typeof m.query === 'string' && document.activeElement !== document.getElementById('q')) {
+      document.getElementById('q').value = m.query;
+    }
+    document.getElementById('status').textContent = m.status || (items.length ? (items.length + ' 项') : '输入文件名');
+    render();
+  };
+  document.getElementById('go').onclick = () => {
+    post({ type: 'action', id: 'search', query: document.getElementById('q').value, all_drives: document.getElementById('all').checked });
+  };
+  document.getElementById('q').oninput = () => {
+    clearTimeout(debounce);
+    debounce = setTimeout(() => document.getElementById('go').click(), 420);
+  };
+  document.getElementById('q').onkeydown = e => {
+    if (e.key === 'Enter') { clearTimeout(debounce); document.getElementById('go').click(); }
+    if (e.key === 'Escape') post({ type: 'action', id: 'hide' });
+  };
+  document.getElementById('all').onchange = () => {
+    post({ type: 'action', id: 'all_drives', value: document.getElementById('all').checked });
+  };
+  document.getElementById('open').onclick = () => { if (sel >= 0) post({ type: 'action', id: 'open', index: sel }); };
+  document.getElementById('reveal').onclick = () => { if (sel >= 0) post({ type: 'action', id: 'reveal', index: sel }); };
+  document.getElementById('hide').onclick = () => post({ type: 'action', id: 'hide' });
+  document.getElementById('title').onmousedown = e => {
+    if (e.target.id === 'hide') return;
+    dragging = true;
+    post({ type: 'action', id: 'drag_start', x: e.screenX, y: e.screenY });
+  };
+  window.addEventListener('mouseup', () => {
+    if (dragging) { dragging = false; post({ type: 'action', id: 'drag_end' }); }
+  });
+  window.addEventListener('mousemove', e => {
+    if (dragging) post({ type: 'action', id: 'drag_move', x: e.screenX, y: e.screenY });
+  });
+  try {
+    chrome.webview.addEventListener('message', ev => {
+      let m = ev.data; if (typeof m === 'string') { try { m = JSON.parse(m); } catch(e) { return; } }
+      applyState(m);
+    });
+  } catch (e) {}
+  post({ type: 'action', id: 'ready' });
+  setTimeout(() => document.getElementById('q').focus(), 80);
+</script>
+</body>
+</html>

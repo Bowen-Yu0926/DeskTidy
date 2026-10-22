@@ -1,0 +1,2686 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>DeskTidy 设置</title>
+<style>
+  /* Mist palette — mirror src/ui/styles.py get_theme_palette("mist") */
+  :root {
+    --window: #EEF1F6;
+    --sidebar: #1A2740;
+    --sidebar-text: #EAF0FA;
+    --sidebar-muted: #93A4BF;
+    --sidebar-hover: rgba(29, 78, 216, 0.16);
+    --sidebar-active: rgba(29, 78, 216, 0.26);
+    --sidebar-line: rgba(29, 78, 216, 0.28);
+    --content: #F4F6F9;
+    --card: #FFFFFF;
+    --border: #C9D2DE;
+    --text: #1A2332;
+    --muted: #64748B;
+    --accent: #1D4ED8;
+    --accent-soft: #E0E7FF;
+    --accent-hover: #1E40AF;
+    --primary: #16A34A;
+    --primary-hover: #15803D;
+    --danger: #DC2626;
+    --inlay: #1D4ED8;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; height: 100%;
+    font-family: "Microsoft YaHei UI", "Segoe UI", sans-serif;
+    background: var(--window);
+    color: var(--text);
+    font-size: 13px;
+  }
+  #app { display: flex; height: 100%; }
+  .sidebar {
+    width: 200px; flex-shrink: 0;
+    background: var(--sidebar);
+    border-right: 1px solid var(--sidebar-line);
+    padding: 16px 12px 12px;
+    display: flex; flex-direction: column; gap: 16px;
+  }
+  .brand {
+    display: flex; gap: 10px; align-items: flex-start;
+    padding: 2px 2px 10px;
+    border-bottom: 1px solid var(--sidebar-line);
+  }
+  .brand-mark {
+    width: 40px; height: 40px; flex-shrink: 0;
+  }
+  .brand-mark svg { width: 40px; height: 40px; display: block; }
+  .brand-title {
+    color: var(--sidebar-text);
+    font-size: 17px; font-weight: 800; letter-spacing: 0.2px;
+    line-height: 1.2;
+  }
+  .brand-tag {
+    color: var(--inlay);
+    font-size: 10px; font-weight: 800; letter-spacing: 2.4px;
+    margin-top: 2px;
+  }
+  .brand-ver {
+    color: var(--sidebar-muted); font-size: 12px; margin-top: 2px;
+  }
+  .nav-list { display: flex; flex-direction: column; gap: 2px; flex: 1; padding: 6px 0; }
+  .nav {
+    display: flex; align-items: center; gap: 8px;
+    border: 0; background: transparent; text-align: left;
+    padding: 7px 10px 7px 8px; border-radius: 8px; cursor: pointer;
+    color: var(--sidebar-muted); font: inherit; font-size: 13px;
+  }
+  .nav svg { width: 18px; height: 18px; flex-shrink: 0; stroke: currentColor; fill: none; stroke-width: 1.55; stroke-linecap: round; stroke-linejoin: round; }
+  .nav:hover { background: var(--sidebar-hover); color: var(--sidebar-text); }
+  .nav.active {
+    background: var(--sidebar-active);
+    color: var(--sidebar-text);
+    font-weight: 700;
+    border-left: 3px solid var(--inlay);
+    padding-left: 7px;
+  }
+  .account-card {
+    display: none; margin: 0 2px; padding: 10px 10px;
+    border-radius: 10px; background: rgba(29, 78, 216, 0.18);
+    border: 1px solid rgba(147, 197, 253, 0.28); cursor: pointer;
+  }
+  .account-card.on { display: block; }
+  .account-card:hover { background: rgba(29, 78, 216, 0.26); }
+  .account-card .ac-name {
+    color: var(--sidebar-text); font-size: 13px; font-weight: 800;
+    line-height: 1.3; word-break: break-word;
+  }
+  .account-card .ac-login {
+    color: var(--sidebar-muted); font-size: 11px; margin-top: 2px;
+    word-break: break-all;
+  }
+  .help-btn {
+    border: 0; background: transparent; text-align: left;
+    color: var(--sidebar-muted); font: inherit; font-size: 13px;
+    padding: 8px 10px; border-radius: 8px; cursor: pointer;
+  }
+  .help-btn:hover { background: var(--sidebar-hover); color: var(--sidebar-text); }
+
+  .main {
+    flex: 1; overflow: auto; background: var(--content);
+    padding: 20px 28px 28px;
+  }
+  .page-header { margin-bottom: 18px; }
+  .page-title {
+    margin: 0; font-size: 22px; font-weight: 800;
+    letter-spacing: -0.2px; color: var(--text);
+  }
+  .page-sub {
+    margin: 6px 0 0; color: var(--muted); font-size: 12px; line-height: 1.45;
+  }
+  .panel { display: none; }
+  .panel.active { display: block; }
+  .card {
+    position: relative;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 14px 16px 14px 18px;
+    margin-bottom: 14px;
+    overflow: visible;
+  }
+  .card::before {
+    content: "";
+    position: absolute; left: 0; top: 0; bottom: 0; width: 3px;
+    background: var(--inlay);
+    border-top-left-radius: 14px;
+    border-bottom-left-radius: 14px;
+  }
+  .card h3 {
+    margin: 0; font-size: 15px; font-weight: 800; color: var(--text); letter-spacing: -0.1px;
+  }
+  .card > h3 + .hint { margin-top: 4px; }
+  .card > .hint { margin-bottom: 12px; }
+  .card > .row:first-of-type,
+  .card > .toggles:first-of-type,
+  .card > .field-row:first-of-type { margin-top: 0; }
+  .card-foot {
+    display: flex; gap: 8px; flex-wrap: wrap; align-items: center;
+    margin-top: 12px; padding-top: 12px;
+    border-top: 1px solid #EEF2F7;
+  }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 10px; }
+  .list {
+    border: 1px solid var(--border); border-radius: 12px;
+    max-height: 200px; overflow: auto; background: #fff;
+  }
+  .item {
+    padding: 8px 10px; border-bottom: 1px solid #EEF2F7;
+    cursor: pointer; color: var(--muted); border-radius: 8px; margin: 1px 4px;
+  }
+  .item:last-child { border-bottom: 0; }
+  .item:hover { background: var(--accent-soft); color: var(--text); }
+  .item.sel {
+    background: var(--accent-soft); color: #1E3A8A; font-weight: 700;
+  }
+  label.field { display: flex; flex-direction: column; gap: 4px; color: var(--text); font-size: 13px; }
+  input[type="text"], select {
+    min-width: 160px; height: 34px; padding: 0 10px;
+    border: 1px solid var(--border); border-radius: 10px;
+    font: inherit; color: var(--text); background: #fff;
+  }
+  input:focus, select:focus { outline: 2px solid var(--accent-soft); border-color: var(--accent); }
+  button.btn {
+    min-height: 34px; padding: 7px 13px; border-radius: 10px;
+    border: 1px solid var(--border); background: var(--card);
+    color: var(--text); font: inherit; font-size: 13px; font-weight: 600; cursor: pointer;
+  }
+  button.btn:hover {
+    background: var(--accent-soft); border-color: var(--accent); color: var(--accent-hover);
+  }
+  button.btn.primary {
+    background: var(--primary); border: none; color: #fff;
+    font-weight: 700; font-size: 13px; padding: 8px 16px; border-radius: 10px;
+  }
+  button.btn.primary:hover { background: var(--primary-hover); color: #fff; }
+  button.btn.danger {
+    color: var(--danger); border-color: #FECACA;
+  }
+  button.btn.danger:hover { background: #FEF2F2; border-color: var(--danger); }
+  .toggles { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
+  .toggle {
+    display: flex; align-items: center; gap: 10px; cursor: pointer; user-select: none;
+    color: var(--text); font-size: 13px; padding: 6px 8px; border-radius: 8px;
+  }
+  .toggle:hover { background: #F8FAFC; }
+  .toggle input {
+    appearance: none; width: 36px; height: 20px; flex-shrink: 0;
+    border-radius: 999px; background: #CBD5E1; border: 0; position: relative;
+    cursor: pointer; transition: background 0.15s;
+  }
+  .toggle input::after {
+    content: ""; position: absolute; top: 2px; left: 2px;
+    width: 16px; height: 16px; border-radius: 50%; background: #fff;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.18); transition: transform 0.15s;
+  }
+  .toggle input:checked { background: var(--accent); }
+  .toggle input:checked::after { transform: translateX(16px); }
+  .preview {
+    border: 1px solid var(--border); border-radius: 12px; min-height: 88px;
+    padding: 10px 12px; color: var(--muted); background: #F8FAFC;
+    max-height: 160px; overflow: auto; list-style: none; margin: 0;
+  }
+  .preview li { margin: 4px 0; }
+  .kpi {
+    display: flex; gap: 8px; margin-bottom: 16px;
+  }
+  .kpi .tile {
+    flex: 1; background: #F8FAFC; border: 1px solid var(--border);
+    border-radius: 10px; padding: 10px 14px;
+  }
+  .kpi .value { font-size: 22px; font-weight: 800; color: var(--text); line-height: 1.1; }
+  .kpi .label { color: var(--muted); font-size: 12px; margin-top: 2px; }
+  .page-header-row {
+    display: flex; align-items: flex-start; gap: 10px; margin-bottom: 18px;
+  }
+  .page-header-row .page-header { margin-bottom: 0; flex: 1; }
+  .page-badge {
+    margin-top: 4px; padding: 4px 10px; border-radius: 999px;
+    background: var(--accent-soft); color: #1E3A8A; font-size: 12px; font-weight: 700;
+    white-space: nowrap;
+  }
+  .card-head {
+    display: flex; align-items: flex-start; gap: 12px; margin-bottom: 12px; flex-wrap: wrap;
+  }
+  .card-head .titles { flex: 1; min-width: 160px; }
+  .card-head h3 { margin: 0; }
+  .card-head .hint { margin: 4px 0 0; }
+  .card-head .actions { display: flex; gap: 8px; flex-wrap: wrap; margin: 0; }
+  .org-split {
+    display: flex; gap: 12px; min-height: 280px; align-items: stretch;
+  }
+  .org-list {
+    flex: 1; min-width: 0; display: flex; flex-direction: column; position: relative;
+  }
+  .org-preview-panel {
+    width: 260px; flex-shrink: 0; border: 1px solid var(--border); border-radius: 12px;
+    background: #F8FAFC; padding: 12px 14px; display: flex; flex-direction: column; gap: 8px;
+  }
+  .org-preview-panel .panel-title { margin: 0; font-size: 14px; font-weight: 800; }
+  .org-preview-panel .hint { margin: 0; }
+  .org-preview-panel .summary { font-size: 12px; color: var(--text); line-height: 1.45; }
+  .org-preview-panel .section {
+    margin: 4px 0 0; font-size: 12px; font-weight: 800; color: var(--muted);
+  }
+  .org-preview-panel .pins {
+    flex: 1; overflow: auto; margin: 0; padding: 0; list-style: none; max-height: 220px;
+  }
+  .org-preview-panel .pins li {
+    padding: 6px 8px; border-radius: 8px; font-size: 12px; color: var(--text);
+    border-bottom: 1px solid #EEF2F7;
+  }
+  .org-preview-panel .pins li:nth-child(even) { background: #fff; }
+  .org-preview-panel .empty-hint { color: var(--muted); font-size: 12px; margin: 0; }
+  .files-table {
+    width: 100%; border-collapse: collapse; font-size: 13px;
+  }
+  .files-table th {
+    text-align: left; font-weight: 700; color: var(--muted); font-size: 12px;
+    padding: 8px 10px; border-bottom: 1px solid var(--border);
+  }
+  .files-table td {
+    padding: 10px; border-bottom: 1px solid #EEF2F7; color: var(--text);
+  }
+  .files-table tr:nth-child(even) td { background: #F8FAFC; }
+  .files-table tr:hover td { background: var(--accent-soft); }
+  .files-table-wrap {
+    flex: 1; overflow: auto; border: 1px solid var(--border); border-radius: 12px; background: #fff;
+    min-height: 200px;
+  }
+  .files-empty-state {
+    display: none; flex-direction: column; align-items: center; justify-content: center;
+    text-align: center; padding: 48px 28px; min-height: 220px;
+  }
+  .files-empty-state.on { display: flex; }
+  .files-empty-kicker {
+    color: var(--accent); font-size: 11px; font-weight: 800; letter-spacing: 2px;
+  }
+  .files-empty-title { font-size: 16px; font-weight: 800; margin: 8px 0 4px; }
+  .files-empty-body { color: var(--muted); font-size: 12px; max-width: 280px; line-height: 1.45; }
+  .files-status-hint { margin: 0 0 8px; color: var(--muted); font-size: 12px; }
+  @media (max-width: 900px) {
+    .org-split { flex-direction: column; }
+    .org-preview-panel { width: auto; }
+  }
+  .hint { margin: 0 0 10px; color: var(--muted); font-size: 12px; line-height: 1.45; }
+  .group { margin: 14px 0 6px; font-size: 12px; font-weight: 700; color: var(--muted); }
+  .field-row {
+    display: flex; gap: 8px; align-items: center; margin-top: 8px; flex-wrap: wrap;
+  }
+  .field-row > span.label {
+    min-width: 88px; color: var(--text); font-size: 13px; flex-shrink: 0; font-weight: 600;
+  }
+  .field-row input[type="text"], .field-row select {
+    flex: 1; min-width: 160px;
+  }
+  .field-row input[type="number"] {
+    width: 72px; height: 34px; padding: 0 10px;
+    border: 1px solid var(--border); border-radius: 10px; font: inherit;
+  }
+  .hk-list { display: flex; flex-direction: column; gap: 8px; margin-top: 4px; }
+  .hk-row {
+    display: flex; align-items: center; gap: 10px;
+    padding: 8px 10px; border: 1px solid var(--border); border-radius: 10px;
+    background: #F8FAFC;
+  }
+  .hk-row .hk-label { flex: 1; min-width: 120px; font-weight: 600; color: var(--text); }
+  .hk-row .hk-chord {
+    min-width: 150px; text-align: center; font-family: Consolas, "Cascadia Mono", monospace;
+    color: var(--accent); font-weight: 700; font-size: 12px;
+    border: 1px dashed var(--border); border-radius: 8px; padding: 6px 8px;
+    background: #fff; cursor: text; outline: none;
+  }
+  .hk-row .hk-chord:focus {
+    border-color: var(--accent); background: var(--accent-soft);
+  }
+  .hk-row .hk-chord.listening { border-style: solid; color: var(--danger); }
+  .hk-row .btn { min-height: 30px; padding: 4px 12px; }
+  .subtabs {
+    display: flex; gap: 0; margin-bottom: 16px; flex-wrap: wrap;
+    border-bottom: 1px solid var(--border);
+  }
+  .subtabs button {
+    border: 0; background: transparent; color: var(--muted);
+    border-radius: 0; padding: 8px 14px 10px; font: inherit; cursor: pointer;
+    border-bottom: 2px solid transparent; margin-bottom: -1px; font-weight: 600;
+  }
+  .subtabs button:hover { color: var(--text); }
+  .subtabs button.on {
+    background: transparent; color: var(--accent); border-bottom-color: var(--accent); font-weight: 800;
+  }
+  .subpanel { display: none; }
+  .subpanel.on { display: block; }
+  .ext-sub { display: none; }
+  .ext-sub.on { display: block; }
+  .pet-char-grid {
+    display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px; margin-top: 8px;
+  }
+  .pet-char-card {
+    border: 1px solid var(--border); border-radius: 18px; padding: 12px 10px;
+    background: rgba(255,255,255,0.96); cursor: pointer; text-align: center;
+    transition: background .12s, border-color .12s;
+  }
+  .pet-char-card:hover { background: #DBEAFE; }
+  .pet-char-card.on {
+    border: 2px solid var(--accent); background: #DBEAFE;
+  }
+  .pet-char-card .pc-top {
+    display: flex; gap: 10px; align-items: flex-start; text-align: left;
+  }
+  .pet-char-card .pc-preview {
+    width: 108px; height: 148px; flex: 0 0 auto; object-fit: contain;
+    display: block; border-radius: 12px; background: #F8FAFC;
+  }
+  .pet-char-card .pc-actions {
+    flex: 1; min-width: 0; display: none; flex-direction: column; gap: 4px;
+    padding-top: 4px;
+  }
+  .pet-char-card.on .pc-actions { display: flex; }
+  .pet-char-card .pc-act-hint {
+    font-size: 11px; color: var(--muted); line-height: 1.35; margin-bottom: 2px;
+  }
+  .pet-char-card .pc-act-row {
+    display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--text);
+  }
+  .pet-char-card .pc-act-row input { accent-color: var(--accent); }
+  .pet-char-card .pc-title { font-weight: 700; margin-top: 8px; color: var(--text); }
+  .pet-char-card .pc-blurb { font-size: 12px; color: var(--muted); margin-top: 4px; line-height: 1.35; }
+  .fence-layout-card { min-height: 420px; display: flex; flex-direction: column; }
+  .fence-layout-card .card-head { align-items: center; }
+  .fence-layout-card .card-head .head-right {
+    display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  }
+  .fence-date {
+    font-size: 12px; font-weight: 700; color: var(--muted);
+    padding: 4px 10px; border-radius: 999px; background: #F1F5F9;
+  }
+  .fence-columns {
+    display: flex; gap: 12px; flex: 1; min-height: 320px; align-items: stretch;
+  }
+  .fence-col-pages {
+    flex: 0 0 220px; max-width: 260px; min-width: 180px;
+    display: flex; flex-direction: column; gap: 6px;
+  }
+  .fence-col-fences {
+    flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px;
+  }
+  .fence-col-label {
+    margin: 0; font-size: 13px; font-weight: 700; color: var(--muted);
+  }
+  .page-list {
+    flex: 1; overflow: auto; display: flex; flex-direction: column; gap: 4px;
+    border: 1px solid var(--border); border-radius: 12px; padding: 6px; background: #F8FAFC;
+  }
+  .page-row {
+    display: flex; align-items: center; gap: 8px; padding: 8px 10px;
+    border-radius: 10px; cursor: pointer; border: 1px solid transparent;
+  }
+  .page-row:hover { background: #fff; border-color: var(--border); }
+  .page-row.sel {
+    background: var(--accent-soft); border-color: var(--accent);
+  }
+  .page-swatch {
+    width: 28px; height: 28px; border-radius: 8px; flex-shrink: 0;
+    background: linear-gradient(135deg, #93C5FD, #1D4ED8);
+    color: #fff; font-size: 12px; font-weight: 800;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .page-row .pr-body { flex: 1; min-width: 0; }
+  .page-row .pr-name {
+    font-weight: 700; font-size: 13px; color: var(--text);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .page-row .pr-meta { font-size: 11px; color: var(--muted); margin-top: 1px; }
+  .page-row .pr-acts { display: flex; gap: 4px; flex-shrink: 0; }
+  .icon-btn {
+    width: 28px; height: 28px; border: 1px solid var(--border); border-radius: 8px;
+    background: #fff; color: var(--muted); cursor: pointer; font-size: 13px;
+    display: inline-flex; align-items: center; justify-content: center; padding: 0;
+  }
+  .icon-btn:hover { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
+  .icon-btn.danger:hover { color: var(--danger); border-color: var(--danger); background: #FEF2F2; }
+  .page-add-row {
+    display: flex; align-items: center; justify-content: center; gap: 6px;
+    padding: 8px; margin-top: 2px; border: 1px dashed var(--border); border-radius: 10px;
+    color: var(--muted); font-size: 12px; font-weight: 700; cursor: pointer; background: #fff;
+  }
+  .page-add-row:hover { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
+  .fence-grid {
+    flex: 1; overflow: auto; display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px; align-content: flex-start; padding: 2px;
+  }
+  .fence-tile {
+    width: auto; min-width: 0; min-height: 200px; border: 1px solid var(--border); border-radius: 14px;
+    background: #fff; padding: 10px; cursor: pointer; display: flex; flex-direction: column; gap: 8px;
+    box-sizing: border-box;
+  }
+  .fence-tile.sel { box-shadow: 0 0 0 2px var(--accent) inset; background: #F8FAFC; }
+  .fence-tile .ft-preview {
+    position: relative; height: 88px; border-radius: 10px; border: 1px solid var(--border);
+    overflow: hidden;
+  }
+  .fence-tile .ft-preview .ft-bar {
+    height: 18px; display: flex; align-items: center; padding: 0 6px; gap: 4px;
+  }
+  .fence-tile .ft-preview .ft-accent {
+    width: 3px; height: 10px; border-radius: 2px; flex-shrink: 0;
+  }
+  .fence-tile .ft-preview .ft-icons {
+    display: flex; gap: 8px; padding: 10px 12px;
+  }
+  .fence-tile .ft-preview .ft-dot {
+    width: 22px; height: 22px; border-radius: 5px; background: rgba(255,255,255,0.35);
+  }
+  .fence-tile .ft-op-badge {
+    position: absolute; top: 6px; right: 6px; font-size: 10px; font-weight: 800;
+    color: #F8FAFC; background: rgba(15,23,42,0.78); padding: 2px 6px; border-radius: 8px;
+  }
+  .fence-tile .ft-chips { display: flex; flex-wrap: wrap; gap: 4px; }
+  .fence-tile .ft-chip {
+    width: 18px; height: 14px; border-radius: 4px; border: 1px solid var(--border);
+    cursor: pointer; padding: 0;
+  }
+  .fence-tile .ft-chip.on { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .fence-tile .ft-op {
+    display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--muted);
+  }
+  .fence-tile .ft-op input[type=range] { flex: 1; min-width: 0; }
+  .fence-tile .ft-foot {
+    display: flex; align-items: center; gap: 6px; margin-top: auto;
+  }
+  .fence-tile .ft-title {
+    flex: 1; min-width: 0; font-weight: 800; font-size: 13px; color: var(--text);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .fence-add-tile {
+    width: auto; min-width: 0; min-height: 200px; border: 1px dashed var(--border); border-radius: 14px;
+    background: #F8FAFC; display: flex; flex-direction: column; align-items: center;
+    justify-content: center; gap: 8px; cursor: pointer; color: var(--muted); box-sizing: border-box;
+  }
+  .fence-add-tile:hover { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
+  .fence-add-tile .plus {
+    width: 36px; height: 36px; border-radius: 10px; border: 1px dashed currentColor;
+    display: flex; align-items: center; justify-content: center; font-size: 22px; font-weight: 300;
+  }
+  .fence-add-tile .label { font-size: 13px; font-weight: 700; }
+  @media (max-width: 900px) {
+    .fence-columns { flex-direction: column; }
+    .fence-col-pages { flex: none; max-width: none; width: 100%; }
+    .fence-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  }
+  @media (max-width: 560px) {
+    .fence-grid { grid-template-columns: 1fr; }
+  }
+  .snap-grid {
+    display: flex; flex-wrap: wrap; gap: 14px; align-content: flex-start;
+    min-height: 200px; margin: 10px 0 14px;
+  }
+  .snap-tile {
+    width: 248px; border: 1px solid var(--border); border-radius: 12px;
+    background: #fff; padding: 10px; box-sizing: border-box; cursor: pointer;
+    display: flex; flex-direction: column; gap: 8px;
+  }
+  .snap-tile:hover { border-color: var(--accent); background: var(--accent-soft); }
+  .snap-tile.sel { box-shadow: 0 0 0 2px var(--accent) inset; background: var(--accent-soft); }
+  .snap-tile .st-thumb {
+    height: 118px; border-radius: 10px; border: 1px solid var(--border);
+    background: #E8EEF6; position: relative; overflow: hidden;
+  }
+  /* Shared schematic chrome — cards AND enlarged preview modal. */
+  .st-thumb .st-desk {
+    position: absolute; inset: 8px; border-radius: 6px;
+    background: linear-gradient(160deg, #DCE5F0 0%, #C5D0DE 100%);
+    border: 1px solid #B8C4D4; overflow: hidden;
+  }
+  .st-thumb .st-fence {
+    position: absolute; border-radius: 4px; border: 1.5px solid;
+    box-sizing: border-box; overflow: hidden; min-width: 10px; min-height: 8px;
+  }
+  .st-thumb .st-fence .st-bar {
+    height: 14%; min-height: 3px; max-height: 10px; opacity: 0.55;
+  }
+  .st-thumb .st-empty {
+    position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+    color: #8B97A8; font-size: 12px; font-weight: 600;
+  }
+  .snap-preview-overlay {
+    display: none; position: fixed; inset: 0; z-index: 80;
+    background: rgba(15, 23, 42, 0.45); align-items: center; justify-content: center;
+    padding: 24px;
+  }
+  .snap-preview-overlay.show { display: flex; }
+  .snap-preview-card {
+    background: #fff; border-radius: 16px; border: 1px solid var(--border);
+    box-shadow: 0 18px 48px rgba(15, 23, 42, 0.22);
+    width: min(640px, 100%); max-height: 90vh; overflow: auto; padding: 16px 18px 18px;
+  }
+  .snap-preview-card h3 { margin: 0 0 6px; font-size: 16px; }
+  .snap-preview-card .hint { margin: 0 0 12px; }
+  .snap-preview-card .st-thumb {
+    height: 320px; border-radius: 12px; border: 1px solid var(--border);
+    background: #E8EEF6; position: relative; overflow: hidden; margin-bottom: 14px;
+  }
+  .snap-preview-card .st-thumb .st-desk { inset: 12px; border-radius: 8px; }
+  .snap-preview-card .row { justify-content: flex-end; }
+  .snap-tile .st-title {
+    font-weight: 800; font-size: 13px; color: var(--text);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .snap-tile .st-meta { font-size: 11px; color: var(--muted); line-height: 1.35; min-height: 2.6em; }
+  .snap-tile .st-acts { display: flex; gap: 6px; flex-wrap: wrap; }
+  .snap-tile .st-acts .btn { min-height: 28px; padding: 4px 10px; font-size: 12px; }
+  .snap-empty {
+    width: 100%; text-align: center; color: var(--muted); padding: 48px 16px;
+    font-size: 13px; line-height: 1.5;
+  }
+  .page-folders-list {
+    display: flex; flex-direction: column; gap: 6px; margin-top: 10px;
+  }
+  .pf-row {
+    display: flex; align-items: center; gap: 10px;
+    border: 1px solid var(--border); border-radius: 10px; padding: 8px 10px;
+    background: #F8FAFC;
+  }
+  .pf-row .pf-body { flex: 1; min-width: 0; }
+  .pf-row .pf-name { font-weight: 700; font-size: 13px; }
+  .pf-row .pf-path {
+    font-size: 11px; color: var(--muted); white-space: nowrap;
+    overflow: hidden; text-overflow: ellipsis;
+  }
+  .pf-empty {
+    text-align: center; color: var(--muted); font-size: 12px;
+    padding: 18px 8px; border: 1px dashed var(--border); border-radius: 10px;
+  }
+  #page-extensions .hk-chord {
+    flex: 1; min-width: 120px; text-align: center;
+    font-family: Consolas, "Cascadia Mono", monospace;
+    color: var(--accent); font-weight: 700; font-size: 12px;
+    border: 1px dashed var(--border); border-radius: 8px; padding: 6px 8px;
+    background: #fff;
+  }
+  .wl-list {
+    border: 1px solid var(--border); border-radius: 12px; background: #fff;
+    min-height: 140px; max-height: 260px; overflow: auto; margin-top: 8px;
+  }
+  .wl-item {
+    padding: 8px 12px; border-bottom: 1px solid #EEF2F7; cursor: pointer;
+    font-size: 13px; color: var(--text);
+  }
+  .wl-item:last-child { border-bottom: 0; }
+  .wl-item:hover { background: #F8FAFC; }
+  .wl-item.sel { background: var(--accent-soft); color: #1E3A8A; font-weight: 700; }
+  .wl-empty { padding: 28px 12px; text-align: center; color: var(--muted); font-size: 12px; }
+  .vault-list { display: flex; flex-direction: column; gap: 10px; margin-top: 10px; max-height: 420px; overflow: auto; }
+  .vault-row {
+    border: 1px solid var(--border); border-radius: 12px; padding: 10px;
+    background: var(--card, #fff); display: flex; flex-direction: column; gap: 0;
+  }
+  .vault-row:hover {
+    background: rgba(224, 231, 255, 0.38);
+    border-color: var(--accent);
+  }
+  .vault-row .vr-top {
+    display: flex; align-items: center; gap: 6px; margin-bottom: 6px;
+  }
+  .vault-row .vr-title {
+    font-size: 13px; font-weight: 600; color: var(--text);
+    flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .vault-row .vr-meta {
+    font-size: 12px; color: var(--muted); word-break: break-all;
+    margin: 0 0 6px; cursor: pointer; line-height: 1.35;
+  }
+  .vault-row .vr-meta:hover {
+    color: var(--accent); font-weight: 600; text-decoration: underline;
+  }
+  .vault-row .vr-pass {
+    display: flex; align-items: center; gap: 6px; margin-bottom: 6px;
+  }
+  .vault-row .vr-pass .vr-meta { margin: 0; flex: 1; min-width: 0; }
+  .vault-row .vr-actions {
+    display: flex; gap: 6px; justify-content: flex-end; margin-top: 2px;
+  }
+  .vault-chip {
+    border: 1px solid var(--accent);
+    background: rgba(224, 231, 255, 0.22);
+    color: var(--accent);
+    font: inherit; font-weight: 600;
+    padding: 4px 10px; border-radius: 6px; cursor: pointer;
+  }
+  .vault-chip:hover { background: rgba(29, 78, 216, 0.28); color: var(--text); }
+  .vault-chip.danger {
+    border-color: #EF4444; color: #EF4444; background: transparent;
+  }
+  .vault-chip.danger:hover { background: rgba(239, 68, 68, 0.12); }
+  .vault-tbtn {
+    border: 0; background: transparent; color: var(--muted);
+    font: inherit; padding: 2px 6px; border-radius: 6px; cursor: pointer;
+  }
+  .vault-tbtn:hover { background: rgba(224, 231, 255, 0.35); color: var(--text); }
+  #page-extensions .card .row { margin-top: 10px; }
+  #page-extensions .card .toggles + .field-row { margin-top: 10px; }
+  #page-organize .card > .row { margin-top: 0; }
+</style>
+</head>
+<body>
+<div id="app">
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand-mark" aria-hidden="true">
+        <!-- Stacked panes — mirror src/ui/brand_mark.py -->
+        <svg viewBox="0 0 40 40" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <linearGradient id="bm0" x1="0" y1="0" x2="1" y2="1">
+              <stop offset="0%" stop-color="#3B82F6" stop-opacity="0.35"/>
+              <stop offset="100%" stop-color="#1D4ED8" stop-opacity="0.27"/>
+            </linearGradient>
+            <linearGradient id="bm1" x1="0" y1="0" x2="1" y2="1">
+              <stop offset="0%" stop-color="#60A5FA" stop-opacity="0.65"/>
+              <stop offset="100%" stop-color="#1D4ED8" stop-opacity="0.55"/>
+            </linearGradient>
+            <linearGradient id="bm2" x1="0" y1="0" x2="1" y2="1">
+              <stop offset="0%" stop-color="#93C5FD"/>
+              <stop offset="100%" stop-color="#1D4ED8"/>
+            </linearGradient>
+          </defs>
+          <rect x="6" y="10" width="28" height="22" rx="6" fill="url(#bm0)" stroke="rgba(255,255,255,0.28)" stroke-width="1"/>
+          <rect x="4" y="6" width="28" height="22" rx="6" fill="url(#bm1)" stroke="rgba(255,255,255,0.45)" stroke-width="1"/>
+          <rect x="2" y="2" width="28" height="22" rx="6" fill="url(#bm2)" stroke="rgba(255,255,255,0.7)" stroke-width="1"/>
+          <circle cx="24.5" cy="10.5" r="2.5" fill="rgba(255,255,255,0.9)"/>
+        </svg>
+      </div>
+      <div>
+        <div class="brand-title">DeskTidy</div>
+        <div class="brand-tag">DESK · TIDY</div>
+        <div class="brand-ver" id="brand-ver">…</div>
+      </div>
+    </div>
+    <div class="nav-list">
+      <button class="nav active" data-page="organize">
+        <svg viewBox="0 0 18 18"><path d="M3 5h12M4.5 9h9M6 13h6"/></svg>
+        <span data-i18n="nav_organize">整理</span>
+      </button>
+      <button class="nav" data-page="fences">
+        <svg viewBox="0 0 18 18"><rect x="3" y="4" width="12" height="4" rx="1.5"/><rect x="3" y="10" width="12" height="4" rx="1.5"/></svg>
+        <span data-i18n="nav_fences">桌面分区</span>
+      </button>
+      <button class="nav" data-page="snapshot">
+        <svg viewBox="0 0 18 18"><rect x="3" y="4" width="12" height="11" rx="2"/><path d="M3 7h12"/><circle cx="9" cy="11" r="1.5"/></svg>
+        <span data-i18n="nav_snapshot">布局快照</span>
+      </button>
+      <button class="nav" data-page="extensions">
+        <svg viewBox="0 0 18 18"><rect x="3" y="3" width="5" height="5" rx="1.5"/><rect x="10" y="3" width="5" height="5" rx="1.5"/><rect x="3" y="10" width="5" height="5" rx="1.5"/><path d="M11.5 11.5h3M13 10v3"/></svg>
+        <span data-i18n="nav_extensions">扩展功能</span>
+      </button>
+      <button class="nav" data-page="vault">
+        <svg viewBox="0 0 18 18"><rect x="5" y="8" width="8" height="7" rx="1.5"/><path d="M6.5 8V6a2.5 2.5 0 0 1 5 0v2"/><circle cx="9" cy="11.5" r="1"/></svg>
+        <span data-i18n="nav_vault">账号管理</span>
+      </button>
+      <button class="nav" data-page="settings">
+        <svg viewBox="0 0 18 18"><circle cx="9" cy="9" r="2.5"/><path d="M9 2.5v2M9 13.5v2M2.5 9h2M13.5 9h2M4.2 4.2l1.4 1.4M12.4 12.4l1.4 1.4M13.8 4.2l-1.4 1.4M5.6 12.4l-1.4 1.4"/></svg>
+        <span data-i18n="nav_settings">设置</span>
+      </button>
+    </div>
+    <div class="account-card" id="account-card" title="账号管理" role="button">
+      <div class="ac-name" id="account-name">已登录</div>
+      <div class="ac-login" id="account-login"></div>
+    </div>
+    <button class="help-btn" data-act="help" data-i18n="help">帮助</button>
+  </aside>
+  <main class="main">
+    <section class="panel active" id="page-organize">
+      <div class="page-header-row">
+        <div class="page-header">
+          <h1 class="page-title" data-i18n="title_organize">整理</h1>
+          <p class="page-sub" data-i18n="sub_organize">未归入分区的桌面项</p>
+        </div>
+        <div class="page-badge" id="org-badge">未归入 0</div>
+      </div>
+      <div class="kpi" id="org-kpi">
+        <div class="tile"><div class="value" id="kpi-pending">0</div><div class="label">未归入</div></div>
+        <div class="tile"><div class="value" id="kpi-organized">0</div><div class="label">已在分区</div></div>
+        <div class="tile"><div class="value" id="kpi-total">0</div><div class="label">桌面合计</div></div>
+      </div>
+      <div class="card">
+        <div class="card-head">
+          <div class="titles">
+            <h3>待整理</h3>
+            <p class="hint">已归入分区的项目不会出现。</p>
+          </div>
+          <div class="actions">
+            <button class="btn primary" data-act="org_virtual">一键整理</button>
+            <button class="btn" data-act="org_preview">预览</button>
+            <button class="btn" data-act="refresh">刷新</button>
+          </div>
+        </div>
+        <p class="files-status-hint" id="files-status"></p>
+        <div class="org-split">
+          <div class="org-list">
+            <div class="files-empty-state" id="files-empty">
+              <div class="files-empty-kicker">DESK · CLEAR</div>
+              <div class="files-empty-title">桌面已整理完毕</div>
+              <div class="files-empty-body">新出现在桌面且匹配规则的项目会显示在左侧列表。</div>
+            </div>
+            <div class="files-table-wrap" id="files-table-wrap">
+              <table class="files-table" id="files-table">
+                <thead><tr><th>名称</th><th>类型</th><th>大小</th></tr></thead>
+                <tbody id="files-tbody"></tbody>
+              </table>
+            </div>
+          </div>
+          <aside class="org-preview-panel" id="org-preview-panel">
+            <h3 class="panel-title">整理预览</h3>
+            <p class="hint">干跑预览 · 不会改动桌面</p>
+            <div class="summary" id="org-summary">尚未预览</div>
+            <div class="section" id="org-pins-label" style="display:none">将钉入</div>
+            <ul class="pins" id="org-pins" style="display:none"></ul>
+            <p class="empty-hint" id="org-pins-empty">点「预览」或「刷新」查看干跑结果</p>
+          </aside>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel" id="page-fences">
+      <div class="page-header-row">
+        <div class="page-header">
+          <h1 class="page-title" data-i18n="title_fences">桌面分区</h1>
+          <p class="page-sub" data-i18n="sub_fences">分页与分区外观</p>
+        </div>
+        <div class="page-badge" id="fence-badge"></div>
+      </div>
+      <div class="card fence-layout-card">
+        <div class="card-head">
+          <div class="titles">
+            <h3>桌面分页与分区</h3>
+            <p class="hint" id="fence-card-hint">分页切换本软件分区（≠ Windows 虚拟桌面）。左列表选分页，右卡片点色块改该分区外观。</p>
+          </div>
+          <div class="head-right">
+            <span class="fence-date" id="fence-date"></span>
+            <label class="toggle"><input type="checkbox" id="ext_page_indicator" /> 显示页码指示器</label>
+          </div>
+        </div>
+        <div class="fence-columns">
+          <div class="fence-col-pages">
+            <h4 class="fence-col-label">分页</h4>
+            <div id="page-list" class="page-list"></div>
+          </div>
+          <div class="fence-col-fences">
+            <h4 class="fence-col-label" id="fence-col-title">分区</h4>
+            <div id="fence-cards" class="fence-grid"></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel" id="page-snapshot">
+      <div class="page-header">
+        <h1 class="page-title" data-i18n="title_snapshot">布局快照</h1>
+        <p class="page-sub" data-i18n="sub_snapshot">保存并复用布局</p>
+      </div>
+      <div class="card">
+        <div class="card-head">
+          <h3>快照</h3>
+          <span class="page-badge" id="snap-count-badge">0</span>
+        </div>
+        <p class="hint">保存当前分区布局与样式（位置、大小、折叠、外观、分页等）。卡片可应用或删除；双击也可应用。</p>
+        <div id="snap-grid" class="snap-grid"></div>
+        <div class="row">
+          <button class="btn primary" data-act="snap_save">保存当前布局</button>
+          <button class="btn" data-act="snap_refresh">刷新</button>
+        </div>
+      </div>
+      <div id="snap-preview-overlay" class="snap-preview-overlay" role="dialog" aria-modal="true">
+        <div class="snap-preview-card">
+          <h3 id="snap-preview-title">布局预览</h3>
+          <p class="hint" id="snap-preview-meta"></p>
+          <div class="st-thumb" id="snap-preview-thumb"></div>
+          <div class="row">
+            <button type="button" class="btn" id="snap-preview-close">关闭</button>
+            <button type="button" class="btn primary" id="snap-preview-apply">应用此快照</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel" id="page-extensions">
+      <div class="page-header">
+        <h1 class="page-title" data-i18n="title_extensions">扩展功能</h1>
+        <p class="page-sub" data-i18n="sub_extensions">纪要、壁纸、录屏与文件夹</p>
+      </div>
+      <div class="subtabs" id="ext-tabs">
+        <button type="button" class="on" data-extsub="tools">扩展功能</button>
+        <button type="button" data-extsub="pet">桌面宠物</button>
+      </div>
+
+      <div class="ext-sub on" id="extsub-tools">
+      <div class="card">
+        <h3>会议纪要</h3>
+        <p class="hint">桌面分页栏底部「纪要」按钮双击后会在此文件夹生成文档，文件名格式为 年月日_流水号（如 20260803_001）。留空则使用安装目录下的「纪要」文件夹。关闭后分页栏不显示该按钮。</p>
+        <div class="toggles" style="margin-top:0">
+          <label class="toggle"><input type="checkbox" id="ext_minutes_enabled" /> 启用会议纪要</label>
+          <label class="toggle"><input type="checkbox" id="ext_minutes_bar" /> 在分页栏显示「纪要」</label>
+        </div>
+        <div class="field-row">
+          <span class="label">保存文件夹</span>
+          <input type="text" id="ext_minutes_folder" placeholder="留空 = 安装目录\纪要" />
+          <button class="btn" data-act="minutes_browse">浏览…</button>
+          <button class="btn" data-act="minutes_reset">默认</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>DeskNote</h3>
+        <p class="hint">DeskNote 随 DeskTidy 一并安装，是独立记事本进程。支持 Markdown 预览与大纲；Ctrl+F 查找、Ctrl+H 替换、F3 查找下一个。默认保存在安装目录下的「笔记」文件夹。下方勾选仅控制是否启用（创建桌面 / 开始菜单快捷方式）。</p>
+        <div class="toggles" style="margin-top:0">
+          <label class="toggle"><input type="checkbox" id="ext_notepad" /> 启用 DeskNote（桌面 + 开始菜单快捷方式）</label>
+        </div>
+        <div class="field-row">
+          <span class="label">默认文件夹</span>
+          <input type="text" id="ext_notepad_folder" placeholder="留空 = 安装目录\笔记" />
+          <button class="btn" data-act="notepad_browse">浏览…</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>桌面壁纸</h3>
+        <p class="hint">未配置时不会改动系统壁纸。配置壁纸库后，可在此更换或从库中随机更换。支持 JPG / PNG / BMP。</p>
+        <div class="field-row">
+          <span class="label">壁纸库文件夹</span>
+          <input type="text" id="ext_wallpaper_folder" placeholder="可选：存放壁纸图片的文件夹…" />
+          <button class="btn" data-act="wallpaper_browse">浏览…</button>
+        </div>
+        <div class="row">
+          <button class="btn primary" data-act="wallpaper">更换壁纸…</button>
+          <button class="btn" data-act="wallpaper_random">从库随机更换</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>区域截图</h3>
+        <p class="hint">框选屏幕区域进行截图。可在下方配置全局快捷键；「显示贴图」从最近往旧多贴一张（亦可使用 F2）。</p>
+        <div class="toggles" style="margin-top:0">
+          <label class="toggle"><input type="checkbox" id="ext_shot_pin" /> 截图复制后自动贴图到桌面</label>
+        </div>
+        <div class="field-row">
+          <span class="label">同时贴图最多</span>
+          <input type="number" id="ext_shot_max" min="1" max="5" value="3" />
+          <span class="label" style="min-width:auto">张</span>
+        </div>
+        <div class="field-row">
+          <span class="label">截图快捷键</span>
+          <input type="text" class="hk-chord" id="ext_hk_shot" readonly data-hk="screenshot" />
+          <button class="btn" type="button" data-hk-edit="screenshot">修改</button>
+        </div>
+        <div class="field-row">
+          <span class="label">显示贴图快捷键</span>
+          <input type="text" class="hk-chord" id="ext_hk_pin" readonly data-hk="show_screenshot" />
+          <button class="btn" type="button" data-hk-edit="show_screenshot">修改</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>桌面录屏</h3>
+        <p class="hint">使用下方快捷键开始/结束录屏。每次开始时会先选择要录制的屏幕。安装版已内置 FFmpeg；留空保存目录则使用安装目录下的「录屏」文件夹。</p>
+        <div class="toggles" style="margin-top:0">
+          <label class="toggle"><input type="checkbox" id="ext_record_enabled" /> 启用录屏功能</label>
+          <label class="toggle"><input type="checkbox" id="ext_record_bar" /> 在分页栏显示「录屏」</label>
+        </div>
+        <div class="field-row">
+          <span class="label">录屏快捷键</span>
+          <input type="text" class="hk-chord" id="ext_hk_record" readonly data-hk="screen_record" />
+          <button class="btn" type="button" data-hk-edit="screen_record">修改</button>
+        </div>
+        <div class="field-row">
+          <span class="label">保存目录</span>
+          <input type="text" id="ext_record_dir" placeholder="留空 = 安装目录\录屏" />
+          <button class="btn" data-act="record_browse">浏览…</button>
+          <button class="btn" data-act="record_reset">默认</button>
+          <button class="btn" data-act="record_open">打开</button>
+        </div>
+        <div class="field-row">
+          <span class="label">画质</span>
+          <select id="ext_record_quality">
+            <option value="2">高（更清晰，文件较大）</option>
+            <option value="1" selected>中（默认）</option>
+            <option value="0">低（省空间）</option>
+          </select>
+        </div>
+        <div class="field-row">
+          <span class="label">麦克风</span>
+          <input type="text" id="ext_record_mic" placeholder="留空 = 不录制麦克风" />
+          <button class="btn" data-act="record">更多…</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>文件搜索</h3>
+        <p class="hint">内置 fd，按文件名快速查找；默认包含桌面 / 文档 / 下载，并含当前已打开的资源管理器文件夹。本地搜完后可在弹窗上点「全局搜索」扫全盘。</p>
+        <div class="field-row">
+          <span class="label">搜索快捷键</span>
+          <input type="text" class="hk-chord" id="ext_hk_search" readonly data-hk="file_search" />
+          <button class="btn" type="button" data-hk-edit="file_search">修改</button>
+        </div>
+        <div class="toggles" style="margin-top:0">
+          <label class="toggle"><input type="checkbox" id="ext_search_open_folders" /> 包含已打开的资源管理器文件夹</label>
+          <label class="toggle"><input type="checkbox" id="ext_search_hidden" /> 包含隐藏文件</label>
+        </div>
+        <div class="field-row">
+          <span class="label">搜索线程数</span>
+          <input type="number" id="ext_search_threads" min="1" max="64" value="2" />
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>计算器</h3>
+        <p class="hint">分页栏可显示「计算器」按钮（双击打开系统计算器）；已在前台时再次操作会最小化。下方全局快捷键始终可用。</p>
+        <div class="toggles" style="margin-top:0">
+          <label class="toggle"><input type="checkbox" id="ext_calc_enabled" /> 启用计算器</label>
+          <label class="toggle"><input type="checkbox" id="ext_calc_bar" /> 在分页栏显示「计算器」</label>
+        </div>
+        <div class="field-row">
+          <span class="label">快捷键</span>
+          <input type="text" class="hk-chord" id="ext_hk_calc" readonly data-hk="calculator" />
+          <button class="btn" type="button" data-hk-edit="calculator">修改</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>桌面待办</h3>
+        <p class="hint">在桌面显示待办便签。可鼠标添加、删除、勾选完成。拖动标题栏可移动位置；分页栏「待办」可置顶面板。</p>
+        <div class="toggles" style="margin-top:0">
+          <label class="toggle"><input type="checkbox" id="ext_todos_enabled" /> 启用桌面待办</label>
+          <label class="toggle"><input type="checkbox" id="ext_todos_bar" /> 在分页栏显示「待办」</label>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>分页栏文件夹</h3>
+        <p class="hint">显示在右侧分页栏下方。双击打开文件夹；右键打开所在位置。</p>
+        <div class="row" style="margin-top:0">
+          <button class="btn primary" data-act="folders">添加文件夹</button>
+        </div>
+        <div id="page-folders-list" class="page-folders-list"></div>
+      </div>
+      </div><!-- /extsub-tools -->
+
+      <div class="ext-sub" id="extsub-pet">
+        <div class="card">
+          <h3>桌面宠物</h3>
+          <p class="hint">启用后宠物会出现在桌面；隐藏后可点下方「显示到桌面」找回。</p>
+          <p class="hint">选中形象后，在卡片右侧勾选互动动作；桌面点「⋯」或点宠物使用。</p>
+          <div class="toggles" style="margin-top:0">
+            <label class="toggle"><input type="checkbox" id="pet3" /> 启用桌面宠物</label>
+            <label class="toggle"><input type="checkbox" id="ext_pet_bubbles" /> 在宠物上显示浮标栏（分页 / 文件夹 / 录屏等；开启后隐藏右侧浮标栏）</label>
+          </div>
+          <div class="field-row">
+            <span class="label">宠物大小</span>
+            <input type="range" id="ext_pet_scale" min="50" max="160" step="5" value="100" style="flex:1" />
+            <span id="ext_pet_scale_lbl" class="hint" style="margin:0;min-width:3rem">100%</span>
+          </div>
+          <div class="group">选择宠物形象</div>
+          <div id="pet-char-grid" class="pet-char-grid"></div>
+          <div class="row" style="margin-top:12px">
+            <button class="btn primary" data-act="pet_show" type="button">显示到桌面</button>
+          </div>
+          <input type="hidden" id="ext_pet_character" />
+        </div>
+      </div><!-- /extsub-pet -->
+
+    </section>
+
+    <section class="panel" id="page-vault">
+      <div class="page-header">
+        <h1 class="page-title" data-i18n="title_vault">账号管理</h1>
+        <p class="page-sub" data-i18n="sub_vault">账号、密码与网址</p>
+      </div>
+      <div class="card">
+        <h3>登录与入口</h3>
+        <p class="hint">先登录云端账号，再在下方维护名称、账号、密码、网址。启用后桌面会出现账号浮标，点击即可打开账号面板。</p>
+        <div class="toggles" style="margin-top:0">
+          <label class="toggle"><input type="checkbox" id="ext_vault_enabled" /> 启用桌面账号浮标</label>
+        </div>
+        <!-- Advanced sync interval — default 2h still applied in prefs. -->
+        <div class="field-row" hidden>
+          <span class="label">后台刷新间隔（小时）</span>
+          <input type="number" id="ext_vault_refresh" min="1" max="168" step="1" value="2" />
+        </div>
+        <div class="field-row">
+          <span class="label">复制密码后自动清空剪贴板</span>
+          <select id="ext_vault_clip">
+            <option value="0">不自动</option>
+            <option value="15">15 秒</option>
+            <option value="30" selected>30 秒</option>
+            <option value="60">60 秒</option>
+          </select>
+        </div>
+        <!-- Power-user API base + session line hidden; prefs still bind in JS. -->
+        <div id="vault-api-settings" hidden>
+        <div class="field-row">
+          <span class="label">API 根地址</span>
+          <input type="text" id="ext_vault_api" style="flex:1;min-width:12rem"
+            value="https://bowen-yu0926.byethost10.com/desktidy-vault/"
+            placeholder="https://bowen-yu0926.byethost10.com/desktidy-vault/" />
+        </div>
+        <p class="hint" id="vault-session">未登录 — 请先登录或注册账号</p>
+        </div>
+        <div class="row">
+          <button class="btn primary" data-act="vault_login" id="vault-login">登录 / 注册</button>
+          <button class="btn" data-act="vault_logout" id="vault-logout" style="display:none">退出登录</button>
+        </div>
+      </div>
+      <div class="card">
+        <h3>账号清单</h3>
+        <div class="row" style="margin-top:0">
+          <input type="text" id="vault-search" placeholder="搜索名称 / 账号 / 网址…" style="flex:1;min-width:10rem" />
+          <button class="btn" data-act="vault_refresh" hidden>刷新</button>
+          <button class="btn" data-act="vault_export">导出</button>
+          <button class="btn" data-act="vault_import">导入</button>
+          <button class="btn primary" data-act="vault">新建</button>
+        </div>
+        <div id="vault-list" class="vault-list"></div>
+        <p class="hint" id="vault-list-status" style="margin-top:10px">登录后可在此新增、编辑、复制账号信息。</p>
+      </div>
+    </section>
+
+    <section class="panel" id="page-settings">
+      <div class="page-header">
+        <h1 class="page-title" data-i18n="title_settings">设置</h1>
+        <p class="page-sub" data-i18n="sub_settings">主题、快捷键与应用行为</p>
+      </div>
+      <div class="subtabs" id="set-tabs">
+        <button type="button" class="on" data-sub="general">常规</button>
+        <button type="button" data-sub="hotkey">快捷键</button>
+        <button type="button" data-sub="rules">整理规则</button>
+        <button type="button" data-sub="backup">备份</button>
+      </div>
+      <div class="subpanel on" id="sub-general">
+        <div class="card">
+          <h3>常规选项</h3>
+          <p class="hint">控制启动、整理与桌面交互行为。</p>
+          <div class="group">启动与托盘</div>
+          <div class="toggles" style="margin-top:0">
+            <label class="toggle"><input type="checkbox" id="autostart2" /> 开机自动启动</label>
+            <label class="toggle"><input type="checkbox" id="ext_close_to_tray" /> 关闭窗口后在后台运行（系统托盘）</label>
+            <label class="toggle"><input type="checkbox" id="ext_check_update" /> 启动时检查更新</label>
+          </div>
+          <p class="hint">控制开机自启与托盘驻留行为。</p>
+          <div class="group">桌面行为</div>
+          <div class="toggles">
+            <label class="toggle"><input type="checkbox" id="ext_show_fences" /> 显示桌面分区</label>
+            <label class="toggle"><input type="checkbox" id="org_startup2" /> 启动时自动整理桌面（按规则钉选到分区）</label>
+            <label class="toggle"><input type="checkbox" id="org_watch2" /> 新桌面文件按规则自动钉选到分区</label>
+            <label class="toggle"><input type="checkbox" id="ext_dblclick_hide" /> 双击桌面空白处隐藏/显示系统桌面图标</label>
+            <!-- Public strip confused users; keep binding, hide control. -->
+            <label class="toggle" hidden><input type="checkbox" id="ext_public_desktop" /> 启用公共区域</label>
+          </div>
+          <p class="hint">分区为虚拟钉选，文件始终留在桌面。</p>
+          <div class="group">系统集成</div>
+          <div class="toggles">
+            <label class="toggle"><input type="checkbox" id="ext_desktop_menu" /> 桌面右键菜单（新建分区）</label>
+          </div>
+          <p class="hint">在系统桌面右键菜单加入分区入口。</p>
+          <!-- Dock UI hidden for now; keep markup so prefs/JS still bind if re-enabled. -->
+          <div id="dock-settings" hidden>
+          <div class="group">Dock</div>
+          <div class="toggles">
+            <label class="toggle"><input type="checkbox" id="dock2" /> 显示 Dock</label>
+          </div>
+          <div class="field-row">
+            <span class="label">位置</span>
+            <select id="ext_dock_edge">
+              <option value="0">底部</option>
+              <option value="1">左侧</option>
+              <option value="2">右侧</option>
+            </select>
+          </div>
+          <div class="field-row">
+            <span class="label">透明度</span>
+            <input type="number" id="ext_dock_opacity" min="50" max="100" step="5" />
+            <span class="hint" style="margin:0">%</span>
+          </div>
+          <div class="field-row">
+            <span class="label">Dock 项目</span>
+            <input type="text" id="ext_dock_items" placeholder="逗号分隔的应用路径…" />
+          </div>
+          <p class="hint">桌面宠物请到「扩展功能 → 桌面宠物」配置。</p>
+          </div>
+        </div>
+        <div class="card">
+          <h3>外观主题</h3>
+          <p class="hint">推荐「薄雾 / 石墨」；分区强调色会跟随主题。淡紫、浅杏偏柔和装饰向。</p>
+          <div class="field-row">
+            <span class="label">界面主题</span>
+            <select id="ext_ui_theme"></select>
+          </div>
+        </div>
+      </div>
+      <div class="subpanel" id="sub-hotkey">
+        <div class="card">
+          <h3>全局快捷键</h3>
+          <p class="hint">点击输入框后按下组合键即可设置；Delete/Backspace 清空表示不绑定。</p>
+          <div id="hotkey-list" class="hk-list"></div>
+        </div>
+      </div>
+      <div class="subpanel" id="sub-rules">
+        <div class="card">
+          <h3>整理白名单</h3>
+          <p class="hint">点「添加」选择文件加入白名单；也可在输入框填通配符（如 *.lnk）后回车。名单中的文件在一键整理 / 自动整理时都会跳过。</p>
+          <div id="whitelist-list" class="wl-list"></div>
+          <div class="row" style="margin-top:10px">
+            <input type="text" id="whitelist-edit" placeholder="也可输入通配符，如 *.tmp / 截图*，回车添加" style="flex:1;min-width:12rem" />
+            <button class="btn" type="button" id="whitelist-add">添加</button>
+            <button class="btn danger" type="button" id="whitelist-del">删除选中</button>
+          </div>
+        </div>
+        <div class="card">
+          <h3>整理排除模式</h3>
+          <p class="hint">逗号分隔；名称匹配这些模式的文件/文件夹在整理时会被跳过（默认 desktop.ini、DeskTidy）。</p>
+          <input type="text" id="ext_exclude_patterns" placeholder="desktop.ini, DeskTidy" style="width:100%" />
+        </div>
+        <div class="card">
+          <h3>类别分区映射</h3>
+          <p class="hint">格式：类别=分区ID，多个用「;」分隔。例如：工作=system_common; 学习=system_docs</p>
+          <input type="text" id="ext_category_fence_map" placeholder="工作=system_common; 学习=system_docs" style="width:100%" />
+        </div>
+        <div class="card">
+          <h3>文件名规则</h3>
+          <p class="hint">格式：类别=模式1,模式2，多个类别用「;」分隔。例如：工作=报告*,*.xlsx; 学习=*.pdf</p>
+          <input type="text" id="ext_filename_rules" placeholder="工作=报告*,*.xlsx; 学习=*.pdf" style="width:100%" />
+        </div>
+      </div>
+      <div class="subpanel" id="sub-backup">
+        <div class="card">
+          <h3>配置备份</h3>
+          <p class="hint">导出或导入完整应用配置。</p>
+          <div class="row" style="margin-top:0">
+            <button class="btn" data-act="export_prefs">导出配置</button>
+            <button class="btn" data-act="import_prefs">导入配置</button>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+</div>
+<script>
+  const STYLE_COLORS = {
+    charcoal: { bg: '#2A2E35', accent: '#4C8DFF', text: '#FFFFFF' },
+    slate: { bg: '#3D4450', accent: '#7DD3FC', text: '#FFFFFF' },
+    frost: { bg: '#F4F6F8', accent: '#3B82F6', text: '#0F172A' },
+    mist_blue: { bg: '#C5E1F5', accent: '#1D7BB8', text: '#0F172A' },
+    forest: { bg: '#C8EBD6', accent: '#1E9B55', text: '#0F172A' },
+    sunset: { bg: '#F8D5B5', accent: '#E07A2F', text: '#0F172A' }
+  };
+
+  const state = {
+    fences: [], pages: [], selected: 0, selected_page: 0, current_page: 0,
+    dock: false, pet: true, autostart: false,
+    org_startup: false, org_watch: false, preview: [],
+    org_pending: 0, org_organized: 0, org_total: 0, org_files: [],
+    minutes_on_bar: true, notepad_enabled: true, record_on_bar: false,
+    calculator_on_bar: false, todos_on_bar: false, screenshot_auto_pin: false,
+    minutes_enabled: false, calculator_enabled: false, todos_enabled: false,
+    record_enabled: false,
+    screenshot_max_pins: 3, minutes_folder: '', notepad_folder: '',
+    wallpaper_folder: '', record_dir: '', record_mic: '', record_quality: 1,
+    page_folders: [], whitelist: [], whitelist_selected: -1,
+    search_desktop: true, search_documents: true, search_downloads: true,
+    search_all_drives: false,
+    search_max_results: 50, search_max_depth: 12,
+    search_include_open_folders: true, search_include_hidden: false,
+    search_threads: 2,
+    exclude_patterns: [],
+    category_fence_map: '', filename_rules: '',
+    pet_auto_wander: true, pet_show_bubbles: true, pet_size_scale: 1,
+    pet_character: 'hoodie', pet_characters: ['hoodie'],
+    pet_actions: {},
+    dock_edge: 0, dock_opacity: 85, dock_items: [],
+    check_update_on_startup: true,
+    desktop_right_click_menu: true,
+    close_to_tray: true, show_fences: true, double_click_hide: true,
+    enable_public_desktop: false,
+    vault_enabled: false, vault_logged_in: false, vault_session_label: '',
+    vault_api_base: 'https://bowen-yu0926.byethost10.com/desktidy-vault/',
+    vault_refresh_hours: 2, vault_clipboard_clear_seconds: 30,
+    lang: 'zh', app_version: '',
+    theme_id: 'charcoal', themes: [],
+    ui_theme: 'mist', ui_themes: [],
+    fence_cards: [], snapshots: [], snap_selected: -1,
+    vault_items: [], vault_list_status: '',
+    show_page_indicator: true,
+    // Defaults mirror hotkey_store.cpp — always paint a list even before host push.
+    hotkeys: [
+      {id:'organize', label:'一键整理', chord:'Ctrl+Shift+O'},
+      {id:'toggle_fences', label:'显示/隐藏分区', chord:'Ctrl+Shift+F'},
+      {id:'toggle_icons', label:'显示/隐藏桌面图标', chord:'Ctrl+Shift+H'},
+      {id:'peek_fences', label:'临时查看分区', chord:'Ctrl+Space'},
+      {id:'page_next', label:'下一页', chord:'Ctrl+Shift+Right'},
+      {id:'page_prev', label:'上一页', chord:'Ctrl+Shift+Left'},
+      {id:'screenshot', label:'区域截图', chord:'Ctrl+Alt+1'},
+      {id:'show_screenshot', label:'显示截图贴图', chord:'Ctrl+Alt+2'},
+      {id:'screen_record', label:'录屏（开始/结束）', chord:'Ctrl+Alt+3'},
+      {id:'file_search', label:'文件搜索', chord:'Ctrl+Alt+4'},
+      {id:'calculator', label:'计算器', chord:'Ctrl+Alt+C'},
+      {id:'settings', label:'打开设置', chord:''},
+      {id:'notes', label:'打开便签', chord:''},
+      {id:'todos', label:'打开待办', chord:''},
+      {id:'vault', label:'打开账号库', chord:''}
+    ]
+  };
+  function post(obj) {
+    try {
+      if (window.chrome && window.chrome.webview) {
+        chrome.webview.postMessage(JSON.stringify(obj));
+      }
+    } catch (e) {}
+  }
+
+  const I18N = {
+    zh: {
+      nav_organize: '整理', nav_fences: '桌面分区', nav_snapshot: '布局快照',
+      nav_extensions: '扩展功能', nav_vault: '账号管理', nav_settings: '设置',
+      help: '帮助',
+      title_organize: '整理', sub_organize: '未归入分区的桌面项',
+      title_fences: '桌面分区', sub_fences: '分页与分区外观',
+      title_snapshot: '布局快照', sub_snapshot: '保存并复用布局',
+      title_extensions: '扩展功能', sub_extensions: '纪要、壁纸、录屏与文件夹',
+      title_vault: '账号管理', sub_vault: '账号、密码与网址',
+      title_settings: '设置', sub_settings: '主题、快捷键与应用行为'
+    },
+    en: {
+      nav_organize: 'Organize', nav_fences: 'Fences', nav_snapshot: 'Snapshots',
+      nav_extensions: 'Extensions', nav_vault: 'Accounts', nav_settings: 'Settings',
+      help: 'Help',
+      title_organize: 'Organize', sub_organize: 'Desktop items not in a fence',
+      title_fences: 'Desktop fences', sub_fences: 'Pages and fence chrome',
+      title_snapshot: 'Layout snapshots', sub_snapshot: 'Save and restore layouts',
+      title_extensions: 'Extensions', sub_extensions: 'Notes, wallpaper, record…',
+      title_vault: 'Accounts', sub_vault: 'Usernames, passwords, URLs',
+      title_settings: 'Settings', sub_settings: 'Theme, hotkeys, and behavior'
+    }
+  };
+  function applyI18n() {
+    const pack = I18N[state.lang === 'en' ? 'en' : 'zh'] || I18N.zh;
+    document.documentElement.lang = state.lang === 'en' ? 'en' : 'zh-CN';
+    document.querySelectorAll('[data-i18n]').forEach((el) => {
+      const key = el.getAttribute('data-i18n');
+      if (key && pack[key]) el.textContent = pack[key];
+    });
+  }
+
+  function todayLabel() {
+    const d = new Date();
+    const m = d.getMonth() + 1;
+    const day = d.getDate();
+    const week = ['日', '一', '二', '三', '四', '五', '六'][d.getDay()];
+    return m + '月' + day + '日 · 周' + week;
+  }
+
+  function allFenceCards() {
+    if (Array.isArray(state.fence_cards) && state.fence_cards.length) {
+      return state.fence_cards;
+    }
+    return state.fences.map((name, i) => ({
+      index: i, title: (name.split('·')[0] || name).trim(),
+      page: 0, style_id: state.theme_id || 'charcoal', opacity_pct: 70
+    }));
+  }
+
+  function fenceCountOnPage(pageIdx) {
+    return allFenceCards().filter((c) => (c.page || 0) === pageIdx).length;
+  }
+
+  function selectPage(pageIdx, pushHost) {
+    const n = (state.pages || []).length;
+    state.selected_page = Math.max(0, Math.min(pageIdx, Math.max(0, n - 1)));
+    if (pushHost) {
+      post({ type: 'action', id: 'goto_page', page: state.selected_page });
+    }
+    renderPageList();
+    renderFenceCards();
+  }
+
+  function renderFences() {
+    // Legacy list removed — page/fence UI uses renderPageList + renderFenceCards.
+  }
+
+  function renderPageList() {
+    const box = document.getElementById('page-list');
+    if (!box) return;
+    const pages = Array.isArray(state.pages) ? state.pages : [];
+    if (!pages.length) state.selected_page = 0;
+    else if (state.selected_page >= pages.length) {
+      state.selected_page = pages.length - 1;
+    }
+    const dateEl = document.getElementById('fence-date');
+    const badge = document.getElementById('fence-badge');
+    const label = todayLabel();
+    if (dateEl) dateEl.textContent = label;
+    if (badge) badge.textContent = label;
+    box.innerHTML = '';
+    pages.forEach((name, i) => {
+      const row = document.createElement('div');
+      row.className = 'page-row' + (i === state.selected_page ? ' sel' : '');
+      const sw = (name || '页').trim().charAt(0) || '页';
+      const count = fenceCountOnPage(i);
+      row.innerHTML =
+        '<div class="page-swatch">' + sw + '</div>' +
+        '<div class="pr-body"><div class="pr-name"></div><div class="pr-meta"></div></div>' +
+        '<div class="pr-acts">' +
+        '<button type="button" class="icon-btn" data-page-edit title="重命名">✎</button>' +
+        '<button type="button" class="icon-btn danger" data-page-del title="删除">✕</button>' +
+        '</div>';
+      row.querySelector('.pr-name').textContent = name || (i === 0 ? '工作' : (i === 1 ? '文档' : ('页' + (i + 1))));
+      row.querySelector('.pr-meta').textContent = count + ' 个分区';
+      row.addEventListener('click', (ev) => {
+        if (ev.target.closest('button')) return;
+        selectPage(i, true);
+      });
+      row.addEventListener('dblclick', () => {
+        selectPage(i, true);
+        post({ type: 'action', id: 'rename_page' });
+      });
+      const editBtn = row.querySelector('[data-page-edit]');
+      if (editBtn) {
+        editBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          selectPage(i, true);
+          post({ type: 'action', id: 'rename_page' });
+        });
+      }
+      const delBtn = row.querySelector('[data-page-del]');
+      if (delBtn) {
+        delBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          selectPage(i, true);
+          post({ type: 'action', id: 'remove_page' });
+        });
+      }
+      box.appendChild(row);
+    });
+    const add = document.createElement('div');
+    add.className = 'page-add-row';
+    add.innerHTML = '<span>+</span><span>新建分页</span>';
+    add.title = '新建分页';
+    add.addEventListener('click', () => post({ type: 'action', id: 'add_page' }));
+    box.appendChild(add);
+
+    const pageName = pages[state.selected_page] || '分页';
+    const colTitle = document.getElementById('fence-col-title');
+    if (colTitle) colTitle.textContent = '分区 · ' + pageName;
+    const hint = document.getElementById('fence-card-hint');
+    if (hint) {
+      hint.textContent = '分页「' + pageName +
+        '」— 左选分页；右卡片点色块改该分区外观；右侧「+」新建分区';
+    }
+  }
+
+  function renderFenceCards() {
+    const box = document.getElementById('fence-cards');
+    if (!box) return;
+    const pageIdx = state.selected_page || 0;
+    const cards = allFenceCards().filter((c) => (c.page || 0) === pageIdx);
+    const styles = Array.isArray(state.themes) && state.themes.length
+      ? state.themes
+      : Object.keys(STYLE_COLORS).map((id) => ({ id, name: id }));
+    box.innerHTML = '';
+    cards.forEach((c) => {
+      const i = typeof c.index === 'number' ? c.index : 0;
+      const el = document.createElement('div');
+      el.className = 'fence-tile' + (i === state.selected ? ' sel' : '');
+      const title = c.title || ('分区 ' + (i + 1));
+      const pct = Math.max(35, Math.min(100, Number(c.opacity_pct) || 70));
+      const sid = c.style_id || state.theme_id || 'charcoal';
+      const colors = STYLE_COLORS[sid] || STYLE_COLORS.charcoal;
+      const alpha = Math.max(0.35, Math.min(1, pct / 100));
+      const chips = styles.map((t) => {
+        const id = t.id || '';
+        const col = STYLE_COLORS[id] || STYLE_COLORS.charcoal;
+        return '<button type="button" class="ft-chip' + (id === sid ? ' on' : '') +
+          '" data-style="' + id + '" title="' + (t.name || id) +
+          '" style="background:' + col.bg + '"></button>';
+      }).join('');
+      el.innerHTML =
+        '<div class="ft-preview" style="background:' + colors.bg +
+        '; opacity:' + alpha + '">' +
+        '<div class="ft-bar" style="background:rgba(0,0,0,0.12)">' +
+        '<span class="ft-accent" style="background:' + colors.accent + '"></span></div>' +
+        '<div class="ft-icons"><span class="ft-dot"></span><span class="ft-dot"></span>' +
+        '<span class="ft-dot"></span></div>' +
+        '<span class="ft-op-badge">' + pct + '%</span></div>' +
+        '<div class="ft-chips">' + chips + '</div>' +
+        '<div class="ft-op"><input type="range" min="35" max="100" step="1" value="' +
+        pct + '" data-fc-op /><span data-fc-pct>' + pct + '%</span></div>' +
+        '<div class="ft-foot"><div class="ft-title"></div>' +
+        '<button type="button" class="icon-btn" data-fc-edit title="重命名">✎</button>' +
+        '<button type="button" class="icon-btn danger" data-fc-del title="删除">✕</button></div>';
+      el.querySelector('.ft-title').textContent = title;
+      el.addEventListener('click', (ev) => {
+        if (ev.target.closest('button,input')) return;
+        state.selected = i;
+        renderFenceCards();
+      });
+      el.addEventListener('dblclick', () => {
+        state.selected = i;
+        post({ type: 'action', id: 'rename_fence', index: i });
+      });
+      el.querySelectorAll('[data-style]').forEach((chip) => {
+        chip.addEventListener('click', (e) => {
+          e.stopPropagation();
+          post({ type: 'action', id: 'fence_set_style', index: i, value: chip.dataset.style });
+        });
+      });
+      const range = el.querySelector('input[data-fc-op]');
+      const pctEl = el.querySelector('[data-fc-pct]');
+      const preview = el.querySelector('.ft-preview');
+      const badge = el.querySelector('.ft-op-badge');
+      if (range) {
+        range.addEventListener('input', () => {
+          const v = range.value;
+          if (pctEl) pctEl.textContent = v + '%';
+          if (badge) badge.textContent = v + '%';
+          if (preview) preview.style.opacity = String(Math.max(0.35, Number(v) / 100));
+        });
+        range.addEventListener('change', () => {
+          post({ type: 'action', id: 'fence_set_opacity', index: i,
+                 value: Number(range.value) });
+        });
+      }
+      const editBtn = el.querySelector('[data-fc-edit]');
+      if (editBtn) {
+        editBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          post({ type: 'action', id: 'rename_fence', index: i });
+        });
+      }
+      const delBtn = el.querySelector('[data-fc-del]');
+      if (delBtn) {
+        delBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          post({ type: 'action', id: 'remove', index: i });
+        });
+      }
+      box.appendChild(el);
+    });
+    const add = document.createElement('div');
+    add.className = 'fence-add-tile';
+    add.innerHTML = '<div class="plus">+</div><div class="label">新建分区</div>';
+    add.title = '框选新建分区';
+    add.addEventListener('click', () => post({ type: 'action', id: 'add' }));
+    box.appendChild(add);
+  }
+
+  function paintSnapThumb(thumbEl, it, large) {
+    if (!thumbEl) return;
+    thumbEl.innerHTML = '';
+    const boxes = Array.isArray(it && it.preview) ? it.preview : [];
+    const focus = (it && typeof it.focus_page === 'number') ? it.focus_page : 0;
+    let pageBoxes = boxes.filter((b) => (b.page || 0) === focus);
+    if (!pageBoxes.length) pageBoxes = boxes.slice();
+    if (!pageBoxes.length) {
+      const empty = document.createElement('div');
+      empty.className = 'st-empty';
+      empty.textContent = '暂无预览';
+      thumbEl.appendChild(empty);
+      return;
+    }
+    const desk = document.createElement('div');
+    desk.className = 'st-desk';
+    thumbEl.appendChild(desk);
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    pageBoxes.forEach((b) => {
+      const x = Number(b.x) || 0, y = Number(b.y) || 0;
+      const w = Math.max(40, Number(b.w) || 120);
+      const h = Math.max(40, Number(b.h) || 80);
+      minX = Math.min(minX, x); minY = Math.min(minY, y);
+      maxX = Math.max(maxX, x + w); maxY = Math.max(maxY, y + h);
+    });
+    let spanW = Math.max(1, maxX - minX);
+    let spanH = Math.max(1, maxY - minY);
+    const pad = 0.12;
+    minX -= spanW * pad; minY -= spanH * pad;
+    spanW *= 1 + 2 * pad; spanH *= 1 + 2 * pad;
+    // Wide short desktop fences crush in a tiny thumb — stack for readability.
+    // Enlarged modal always uses mapped geometry so it matches the real layout.
+    const useStack = !large && pageBoxes.length >= 1 &&
+      (spanH / pageBoxes.length) < 70;
+    if (useStack) {
+      const n = pageBoxes.length;
+      pageBoxes.forEach((b, idx) => {
+        const colors = STYLE_COLORS[b.style_id] || STYLE_COLORS.charcoal;
+        const el = document.createElement('div');
+        el.className = 'st-fence';
+        const top = idx * (100 / n) + 2;
+        const h = Math.max(12, (100 / n) - 4);
+        el.style.left = '4%';
+        el.style.width = '92%';
+        el.style.top = top + '%';
+        el.style.height = h + '%';
+        el.style.background = colors.bg;
+        el.style.borderColor = colors.accent;
+        const bar = document.createElement('div');
+        bar.className = 'st-bar';
+        bar.style.background = colors.accent;
+        el.appendChild(bar);
+        desk.appendChild(el);
+      });
+      return;
+    }
+    pageBoxes.forEach((b) => {
+      const colors = STYLE_COLORS[b.style_id] || STYLE_COLORS.charcoal;
+      const x = Number(b.x) || 0, y = Number(b.y) || 0;
+      const w = Math.max(40, Number(b.w) || 120);
+      const h = Math.max(40, Number(b.h) || 80);
+      const el = document.createElement('div');
+      el.className = 'st-fence';
+      el.style.left = ((x - minX) / spanW * 100) + '%';
+      el.style.top = ((y - minY) / spanH * 100) + '%';
+      el.style.width = Math.max(4, w / spanW * 100) + '%';
+      el.style.height = Math.max(4, h / spanH * 100) + '%';
+      el.style.background = colors.bg;
+      el.style.borderColor = colors.accent;
+      el.title = b.title || '';
+      const bar = document.createElement('div');
+      bar.className = 'st-bar';
+      bar.style.background = colors.accent;
+      el.appendChild(bar);
+      if (large) {
+        const lab = document.createElement('div');
+        lab.style.cssText = 'padding:4px 6px;font-size:11px;font-weight:700;color:' +
+          (colors.text || '#fff') + ';white-space:nowrap;overflow:hidden;text-overflow:ellipsis';
+        lab.textContent = (b.title || '分区') + (b.collapsed ? ' · 已折叠' : '');
+        el.appendChild(lab);
+      }
+      desk.appendChild(el);
+    });
+  }
+
+  function hideSnapPreview() {
+    const ov = document.getElementById('snap-preview-overlay');
+    if (ov) ov.classList.remove('show');
+    state._snap_preview_index = -1;
+  }
+
+  function showSnapPreview(index) {
+    const items = Array.isArray(state.snapshots) ? state.snapshots : [];
+    if (index < 0 || index >= items.length) return;
+    const it = items[index];
+    state._snap_preview_index = index;
+    state.snap_selected = index;
+    const title = document.getElementById('snap-preview-title');
+    const meta = document.getElementById('snap-preview-meta');
+    const thumb = document.getElementById('snap-preview-thumb');
+    if (title) title.textContent = (it.name || '快照') + ' · 放大预览';
+    if (meta) meta.textContent = it.meta || '';
+    paintSnapThumb(thumb, it, true);
+    const ov = document.getElementById('snap-preview-overlay');
+    if (ov) ov.classList.add('show');
+  }
+
+  function renderSnapshots() {
+    const box = document.getElementById('snap-grid');
+    if (!box) return;
+    const items = Array.isArray(state.snapshots) ? state.snapshots : [];
+    const badge = document.getElementById('snap-count-badge');
+    if (badge) badge.textContent = String(items.length);
+    box.innerHTML = '';
+    if (!items.length) {
+      const empty = document.createElement('div');
+      empty.className = 'snap-empty';
+      empty.textContent = '暂无快照。点「保存当前布局」创建第一份。';
+      box.appendChild(empty);
+      return;
+    }
+    items.forEach((it, i) => {
+      const el = document.createElement('div');
+      el.className = 'snap-tile' + (i === state.snap_selected ? ' sel' : '');
+      el.innerHTML =
+        '<div class="st-thumb"></div>' +
+        '<div class="st-title"></div>' +
+        '<div class="st-meta"></div>' +
+        '<div class="st-acts">' +
+        '<button type="button" class="btn" data-snap-preview>预览</button>' +
+        '<button type="button" class="btn primary" data-snap-apply>应用</button>' +
+        '<button type="button" class="btn danger" data-snap-del>删除</button>' +
+        '</div>';
+      paintSnapThumb(el.querySelector('.st-thumb'), it, false);
+      el.querySelector('.st-title').textContent = it.name || ('快照 ' + (i + 1));
+      el.querySelector('.st-meta').textContent = it.meta || '';
+      el.addEventListener('click', (ev) => {
+        if (ev.target.closest('button')) return;
+        state.snap_selected = i;
+        renderSnapshots();
+      });
+      el.addEventListener('dblclick', () => {
+        post({ type: 'action', id: 'snap_apply', index: i });
+      });
+      const prevBtn = el.querySelector('[data-snap-preview]');
+      if (prevBtn) {
+        prevBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          showSnapPreview(i);
+        });
+      }
+      const applyBtn = el.querySelector('[data-snap-apply]');
+      if (applyBtn) {
+        applyBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          post({ type: 'action', id: 'snap_apply', index: i });
+        });
+      }
+      const delBtn = el.querySelector('[data-snap-del]');
+      if (delBtn) {
+        delBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          post({ type: 'action', id: 'snap_delete', index: i });
+        });
+      }
+      box.appendChild(el);
+    });
+  }
+
+  function escHtml(s) {
+    return String(s == null ? '' : s)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+  function vaultClipLine(label, value) {
+    let shown = value ? String(value) : '（空）';
+    if (shown.length > 56) shown = shown.slice(0, 53) + '…';
+    return label + '：' + shown;
+  }
+  function vaultMaskPass(len) {
+    const n = Math.max(0, Number(len) || 0);
+    if (!n) return '密码：（空）';
+    return '密码：' + '•'.repeat(Math.min(12, Math.max(6, n)));
+  }
+  function renderVaultList() {
+    const box = document.getElementById('vault-list');
+    const st = document.getElementById('vault-list-status');
+    if (st) {
+      st.textContent = state.vault_list_status ||
+        (state.vault_logged_in
+          ? '共 0 条 · 已同步'
+          : '登录后可在此新增、编辑、复制账号信息。');
+    }
+    if (!box) return;
+    box.innerHTML = '';
+    const q = ((document.getElementById('vault-search') || {}).value || '')
+      .trim().toLowerCase();
+    let items = Array.isArray(state.vault_items) ? state.vault_items : [];
+    if (q) {
+      items = items.filter((it) => {
+        const blob = ((it.title || '') + ' ' + (it.username || '') + ' ' +
+                      (it.url || '') + ' ' + (it.note || '')).toLowerCase();
+        return blob.indexOf(q) >= 0;
+      });
+    }
+    if (!items.length) {
+      const empty = document.createElement('div');
+      empty.className = 'hint';
+      empty.textContent = q ? '（无匹配）'
+        : (state.vault_logged_in ? '暂无账号' : '登录后可在此新增、编辑、复制账号信息。');
+      box.appendChild(empty);
+      return;
+    }
+    items.forEach((it) => {
+      const i = (typeof it.index === 'number') ? it.index : -1;
+      const row = document.createElement('div');
+      row.className = 'vault-row';
+      const note = it.note || '';
+      row.innerHTML =
+        '<div class="vr-top"><div class="vr-title">' +
+        escHtml(it.title || '未命名') + '</div>' +
+        '<button type="button" class="vault-chip" data-vault-edit title="在账号面板中编辑">编辑</button></div>' +
+        '<div class="vr-meta" data-vault-url title="双击复制网址">' +
+        escHtml(vaultClipLine('网址', it.url || '')) + '</div>' +
+        '<div class="vr-meta" data-vault-user title="双击复制账号">' +
+        escHtml(vaultClipLine('账号', it.username || '')) + '</div>' +
+        '<div class="vr-pass">' +
+        '<div class="vr-meta" data-vault-pass title="双击复制密码">' +
+        escHtml(vaultMaskPass(it.pass_len)) + '</div>' +
+        '<button type="button" class="vault-tbtn" data-vault-pass-btn title="复制密码">复制</button>' +
+        '</div>' +
+        (note
+          ? ('<div class="vr-meta">' + escHtml(vaultClipLine('备注', note)) + '</div>')
+          : '') +
+        '<div class="vr-actions">' +
+        '<button type="button" class="vault-chip" data-vault-edit>编辑</button>' +
+        '<button type="button" class="vault-chip danger" data-vault-del title="删除">删除</button>' +
+        '</div>';
+      row.querySelectorAll('[data-vault-edit]').forEach((btn) => {
+        btn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          post({ type: 'action', id: 'vault' });
+        });
+      });
+      const delBtn = row.querySelector('[data-vault-del]');
+      if (delBtn) {
+        delBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          if (i < 0) return;
+          post({ type: 'action', id: 'vault_delete_item', index: i });
+        });
+      }
+      const passBtn = row.querySelector('[data-vault-pass-btn]');
+      if (passBtn) {
+        passBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          if (i < 0) return;
+          post({ type: 'action', id: 'vault_copy_pass', index: i });
+        });
+      }
+      row.querySelectorAll('.vr-meta').forEach((el) => {
+        el.addEventListener('dblclick', (e) => {
+          e.stopPropagation();
+          if (i < 0) return;
+          if (el.hasAttribute('data-vault-user')) {
+            post({ type: 'action', id: 'vault_copy_user_idx', index: i });
+          } else if (el.hasAttribute('data-vault-pass')) {
+            post({ type: 'action', id: 'vault_copy_pass', index: i });
+          } else if (el.hasAttribute('data-vault-url')) {
+            post({ type: 'action', id: 'vault_copy_url', index: i });
+          }
+        });
+      });
+      box.appendChild(row);
+    });
+  }
+
+  function renderPages() {
+    renderPageList();
+  }
+
+  function renderToggles() {
+    const set = (id, v) => { const el = document.getElementById(id); if (el) el.checked = !!v; };
+    const setVal = (id, v) => { const el = document.getElementById(id); if (el) el.value = v == null ? '' : String(v); };
+    set('dock2', state.dock);
+    set('pet3', state.pet);
+    set('autostart2', state.autostart);
+    set('org_startup2', state.org_startup);
+    set('org_watch2', state.org_watch);
+    set('ext_minutes_bar', state.minutes_on_bar);
+    set('ext_minutes_enabled', state.minutes_enabled);
+    set('ext_notepad', state.notepad_enabled);
+    set('ext_record_bar', state.record_on_bar);
+    set('ext_record_enabled', state.record_enabled);
+    set('ext_calc_bar', state.calculator_on_bar);
+    set('ext_calc_enabled', state.calculator_enabled);
+    set('ext_todos_bar', state.todos_on_bar);
+    set('ext_todos_enabled', state.todos_enabled);
+    set('ext_shot_pin', state.screenshot_auto_pin);
+    setVal('ext_shot_max', state.screenshot_max_pins);
+    setVal('ext_minutes_folder', state.minutes_folder);
+    setVal('ext_notepad_folder', state.notepad_folder);
+    setVal('ext_wallpaper_folder', state.wallpaper_folder);
+    setVal('ext_record_dir', state.record_dir);
+    setVal('ext_record_mic', state.record_mic);
+    setVal('ext_record_quality', state.record_quality);
+    renderExtHotkeys();
+    renderPageFolders();
+    set('ext_search_desktop', state.search_desktop);
+    set('ext_search_documents', state.search_documents);
+    set('ext_search_downloads', state.search_downloads);
+    set('ext_search_all', state.search_all_drives);
+    setVal('ext_search_max', state.search_max_results);
+    setVal('ext_search_depth', state.search_max_depth);
+    set('ext_search_open_folders', state.search_include_open_folders);
+    set('ext_search_hidden', state.search_include_hidden);
+    setVal('ext_search_threads', state.search_threads);
+    setVal('ext_exclude_patterns', (Array.isArray(state.exclude_patterns) ? state.exclude_patterns : []).join(', '));
+    setVal('ext_dock_items', (Array.isArray(state.dock_items) ? state.dock_items : []).join(', '));
+    setVal('ext_category_fence_map', state.category_fence_map || '');
+    setVal('ext_filename_rules', state.filename_rules || '');
+    set('ext_pet_bubbles', state.pet_show_bubbles);
+    setVal('ext_dock_edge', state.dock_edge);
+    setVal('ext_dock_opacity', state.dock_opacity);
+    // Path placeholders — resolved install defaults (Python resolve_*).
+    const ph = (id, v, fallback) => {
+      const el = document.getElementById(id);
+      if (el) el.placeholder = v || fallback || '';
+    };
+    ph('ext_minutes_folder', state.minutes_folder_default, '留空 = 安装目录\\纪要');
+    ph('ext_notepad_folder', state.notepad_folder_default, '留空 = 安装目录\\笔记');
+    ph('ext_record_dir', state.record_dir_default, '留空 = 安装目录\\录屏');
+    // Pet size: UI is percent 50–160; host stores float scale.
+    const scaleEl = document.getElementById('ext_pet_scale');
+    const scaleLbl = document.getElementById('ext_pet_scale_lbl');
+    let pct = Math.round((Number(state.pet_size_scale) || 1) * 100);
+    if (pct < 50) pct = 50;
+    if (pct > 160) pct = 160;
+    if (scaleEl) scaleEl.value = String(pct);
+    if (scaleLbl) scaleLbl.textContent = pct + '%';
+    renderPetChars();
+    set('ext_check_update', state.check_update_on_startup);
+    set('ext_desktop_menu', state.desktop_right_click_menu);
+    set('ext_close_to_tray', state.close_to_tray);
+    set('ext_show_fences', state.show_fences);
+    set('ext_dblclick_hide', state.double_click_hide);
+    set('ext_public_desktop', state.enable_public_desktop);
+    set('ext_page_indicator', state.show_page_indicator);
+    set('ext_vault_enabled', state.vault_enabled);
+    setVal('ext_vault_api', state.vault_api_base);
+    setVal('ext_vault_refresh', state.vault_refresh_hours);
+    setVal('ext_vault_clip', state.vault_clipboard_clear_seconds);
+    const sess = document.getElementById('vault-session');
+    if (sess) {
+      sess.textContent = state.vault_logged_in
+        ? (state.vault_session_label || '已登录')
+        : '未登录 — 请先登录或注册账号';
+    }
+    const loginBtn = document.getElementById('vault-login');
+    const logoutBtn = document.getElementById('vault-logout');
+    if (loginBtn) loginBtn.style.display = state.vault_logged_in ? 'none' : '';
+    if (logoutBtn) logoutBtn.style.display = state.vault_logged_in ? '' : 'none';
+    const acCard = document.getElementById('account-card');
+    const acName = document.getElementById('account-name');
+    const acLogin = document.getElementById('account-login');
+    if (acCard) {
+      acCard.classList.toggle('on', !!state.vault_logged_in);
+      if (state.vault_logged_in) {
+        const label = state.vault_session_label || '已登录';
+        const m = /^已登录[：:]\s*(.+)$/.exec(label);
+        if (acName) acName.textContent = m ? m[1] : '已登录';
+        if (acLogin) {
+          acLogin.textContent = '';
+          acLogin.style.display = 'none';
+        }
+      }
+    }
+    const themeSel = document.getElementById('ext_ui_theme');
+    if (themeSel) {
+      const themes = Array.isArray(state.ui_themes) && state.ui_themes.length
+        ? state.ui_themes : state.themes;
+      const cur = state.ui_theme || 'mist';
+      themeSel.innerHTML = '';
+      (themes || []).forEach((t) => {
+        const opt = document.createElement('option');
+        opt.value = t.id || '';
+        opt.textContent = t.name || t.id || '';
+        if (opt.value === cur) opt.selected = true;
+        themeSel.appendChild(opt);
+      });
+      if (!themes || !themes.length) {
+        const opt = document.createElement('option');
+        opt.value = cur; opt.textContent = cur; opt.selected = true;
+        themeSel.appendChild(opt);
+      }
+    }
+  }
+
+  function hotkeyChord(id) {
+    const rows = Array.isArray(state.hotkeys) ? state.hotkeys : [];
+    const hit = rows.find((h) => h && h.id === id);
+    return hit ? (hit.chord || '') : '';
+  }
+
+  function renderExtHotkeys() {
+    document.querySelectorAll('#page-extensions [data-hk]').forEach((el) => {
+      if (el.classList.contains('listening')) return;
+      el.value = hotkeyChord(el.getAttribute('data-hk')) || '未设置';
+    });
+  }
+
+  function beginExtHotkeyListen(input) {
+    if (!input) return;
+    const hkId = input.getAttribute('data-hk');
+    if (!hkId) return;
+    input.classList.add('listening');
+    input.dataset.prev = input.value;
+    input.value = '按下组合键…';
+    input.focus();
+  }
+
+  function wireExtHotkeyInputs() {
+    document.querySelectorAll('#page-extensions [data-hk]').forEach((el) => {
+      if (el.dataset.hkWired === '1') return;
+      el.dataset.hkWired = '1';
+      el.title = '点击后按下组合键；Delete/Backspace 清空；Esc 取消';
+      el.addEventListener('click', () => beginExtHotkeyListen(el));
+      el.addEventListener('focus', () => {
+        if (!el.classList.contains('listening')) beginExtHotkeyListen(el);
+      });
+      el.addEventListener('blur', () => {
+        el.classList.remove('listening');
+        if (el.value === '按下组合键…') {
+          el.value = el.dataset.prev || hotkeyChord(el.getAttribute('data-hk')) || '未设置';
+        }
+      });
+      el.addEventListener('keydown', (ev) => {
+        if (!el.classList.contains('listening') && ev.key !== 'Tab') {
+          beginExtHotkeyListen(el);
+        }
+        if (ev.key === 'Escape') {
+          el.blur();
+          ev.preventDefault();
+          return;
+        }
+        if (ev.key === 'Delete' || ev.key === 'Backspace') {
+          ev.preventDefault();
+          ev.stopPropagation();
+          el.value = '未设置';
+          el.classList.remove('listening');
+          post({ type: 'action', id: 'hotkey_set', key: el.getAttribute('data-hk'), chord: '' });
+          el.blur();
+          return;
+        }
+        const c = formatEventChord(ev);
+        if (!c) return;
+        ev.preventDefault();
+        ev.stopPropagation();
+        el.value = c;
+        el.classList.remove('listening');
+        post({ type: 'action', id: 'hotkey_set', key: el.getAttribute('data-hk'), chord: c });
+        el.blur();
+      });
+    });
+    document.querySelectorAll('#page-extensions [data-hk-edit]').forEach((btn) => {
+      if (btn.dataset.hkEditWired === '1') return;
+      btn.dataset.hkEditWired = '1';
+      btn.addEventListener('click', (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        const id = btn.getAttribute('data-hk-edit');
+        const input = document.querySelector('#page-extensions [data-hk="' + id + '"]');
+        beginExtHotkeyListen(input);
+      });
+    });
+  }
+
+  function renderPageFolders() {
+    const box = document.getElementById('page-folders-list');
+    if (!box) return;
+    const items = Array.isArray(state.page_folders) ? state.page_folders : [];
+    box.innerHTML = '';
+    if (!items.length) {
+      const empty = document.createElement('div');
+      empty.className = 'pf-empty';
+      empty.textContent = '还没有快捷文件夹 — 添加后会出现在右侧分页栏';
+      box.appendChild(empty);
+      return;
+    }
+    items.forEach((it, i) => {
+      const row = document.createElement('div');
+      row.className = 'pf-row';
+      row.innerHTML =
+        '<div class="pf-body"><div class="pf-name"></div><div class="pf-path"></div></div>' +
+        '<button type="button" class="icon-btn danger" data-pf-del title="删除">✕</button>';
+      row.querySelector('.pf-name').textContent = it.name || '文件夹';
+      row.querySelector('.pf-path').textContent = it.path || '';
+      row.querySelector('[data-pf-del]').addEventListener('click', () => {
+        post({ type: 'action', id: 'folder_remove', index: i });
+      });
+      box.appendChild(row);
+    });
+  }
+
+  function renderOrganize() {
+    const pending = state.org_pending || 0;
+    const organized = state.org_organized || 0;
+    const total = state.org_total || 0;
+    const setText = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
+    setText('kpi-pending', String(pending));
+    setText('kpi-organized', String(organized));
+    setText('kpi-total', String(total));
+    setText('org-badge', '未归入 ' + pending);
+
+    const files = Array.isArray(state.org_files) ? state.org_files : [];
+    const empty = document.getElementById('files-empty');
+    const wrap = document.getElementById('files-table-wrap');
+    const tbody = document.getElementById('files-tbody');
+    const status = document.getElementById('files-status');
+    if (tbody) tbody.innerHTML = '';
+    if (!files.length) {
+      if (empty) empty.classList.add('on');
+      if (wrap) wrap.style.display = 'none';
+      if (status) status.textContent = '';
+    } else {
+      if (empty) empty.classList.remove('on');
+      if (wrap) wrap.style.display = '';
+      if (status) status.textContent = files.length + ' 项待整理';
+      files.forEach((f) => {
+        const tr = document.createElement('tr');
+        tr.innerHTML = '<td>' + escapeHtml(f.name || '') + '</td><td>' +
+          escapeHtml(f.type || '') + '</td><td>' + escapeHtml(f.size || '—') + '</td>';
+        tbody.appendChild(tr);
+      });
+    }
+
+    const summary = document.getElementById('org-summary');
+    const pins = document.getElementById('org-pins');
+    const pinsLabel = document.getElementById('org-pins-label');
+    const pinsEmpty = document.getElementById('org-pins-empty');
+    const preview = Array.isArray(state.preview) ? state.preview : [];
+    if (pins) pins.innerHTML = '';
+    if (!preview.length) {
+      if (summary) summary.textContent = '尚未预览';
+      if (pins) pins.style.display = 'none';
+      if (pinsLabel) pinsLabel.style.display = 'none';
+      if (pinsEmpty) {
+        pinsEmpty.style.display = '';
+        pinsEmpty.textContent = '点「预览」或「刷新」查看干跑结果';
+      }
+    } else {
+      if (summary) summary.textContent = '将钉入 ' + preview.length + ' 项 · 扫描 ' + total;
+      if (pinsLabel) pinsLabel.style.display = '';
+      if (pins) {
+        pins.style.display = '';
+        preview.forEach((line) => {
+          const li = document.createElement('li');
+          li.textContent = line;
+          pins.appendChild(li);
+        });
+      }
+      if (pinsEmpty) pinsEmpty.style.display = 'none';
+    }
+  }
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
+  function renderPreview() { renderOrganize(); }
+
+  function chordOf(id) {
+    const hit = state.hotkeys.find((h) => h.id === id);
+    return hit && hit.chord ? hit.chord : '';
+  }
+
+  function formatEventChord(ev) {
+    const parts = [];
+    if (ev.ctrlKey) parts.push('Ctrl');
+    if (ev.altKey) parts.push('Alt');
+    if (ev.shiftKey) parts.push('Shift');
+    const k = ev.key;
+    if (!k || k === 'Control' || k === 'Alt' || k === 'Shift' || k === 'Meta') {
+      return null;
+    }
+    if (k === ' ') parts.push('Space');
+    else if (k === 'ArrowLeft') parts.push('Left');
+    else if (k === 'ArrowRight') parts.push('Right');
+    else if (k === 'ArrowUp') parts.push('Up');
+    else if (k === 'ArrowDown') parts.push('Down');
+    else if (k.length === 1) parts.push(k.toUpperCase());
+    else parts.push(k);
+    return parts.join('+');
+  }
+
+  const SETTINGS_HOTKEYS = [
+    'organize', 'toggle_fences', 'toggle_icons',
+    'peek_fences', 'page_next', 'page_prev'
+  ];
+
+  function renderWhitelist() {
+    const box = document.getElementById('whitelist-list');
+    if (!box) return;
+    const items = Array.isArray(state.whitelist) ? state.whitelist : [];
+    if (state.whitelist_selected >= items.length) state.whitelist_selected = -1;
+    box.innerHTML = '';
+    if (!items.length) {
+      const empty = document.createElement('div');
+      empty.className = 'wl-empty';
+      empty.textContent = '白名单为空';
+      box.appendChild(empty);
+      return;
+    }
+    items.forEach((name, i) => {
+      const el = document.createElement('div');
+      el.className = 'wl-item' + (i === state.whitelist_selected ? ' sel' : '');
+      el.textContent = name;
+      el.addEventListener('click', () => {
+        state.whitelist_selected = i;
+        renderWhitelist();
+      });
+      box.appendChild(el);
+    });
+  }
+
+  function renderHotkeys() {
+    const box = document.getElementById('hotkey-list');
+    if (box) {
+      box.innerHTML = '';
+      const rows = (Array.isArray(state.hotkeys) ? state.hotkeys : [])
+        .filter((hk) => SETTINGS_HOTKEYS.indexOf(hk.id) >= 0);
+      const ordered = SETTINGS_HOTKEYS.map((id) =>
+        rows.find((h) => h.id === id) || { id, label: id, chord: '' });
+      ordered.forEach((hk) => {
+        const row = document.createElement('div');
+        row.className = 'hk-row';
+        const lab = document.createElement('div');
+        lab.className = 'hk-label';
+        lab.textContent = hk.label || hk.id;
+        const chord = document.createElement('div');
+        chord.className = 'hk-chord';
+        chord.tabIndex = 0;
+        chord.textContent = hk.chord || '（未绑定）';
+        chord.title = '点击后按下组合键；Delete/Backspace 清空；Esc 取消';
+        chord.addEventListener('focus', () => {
+          chord.classList.add('listening');
+          chord.dataset.prev = chord.textContent;
+          chord.textContent = '按下组合键…';
+        });
+        chord.addEventListener('blur', () => {
+          chord.classList.remove('listening');
+          if (chord.textContent === '按下组合键…') {
+            chord.textContent = chord.dataset.prev || hk.chord || '（未绑定）';
+          }
+        });
+        chord.addEventListener('keydown', (ev) => {
+          if (ev.key === 'Escape') {
+            chord.blur();
+            ev.preventDefault();
+            return;
+          }
+          if (ev.key === 'Delete' || ev.key === 'Backspace') {
+            ev.preventDefault();
+            ev.stopPropagation();
+            chord.textContent = '（未绑定）';
+            chord.classList.remove('listening');
+            post({ type: 'action', id: 'hotkey_set', key: hk.id, chord: '' });
+            chord.blur();
+            return;
+          }
+          const c = formatEventChord(ev);
+          if (!c) return;
+          ev.preventDefault();
+          ev.stopPropagation();
+          chord.textContent = c;
+          chord.classList.remove('listening');
+          post({ type: 'action', id: 'hotkey_set', key: hk.id, chord: c });
+          chord.blur();
+        });
+        row.appendChild(lab);
+        row.appendChild(chord);
+        box.appendChild(row);
+      });
+    }
+    renderExtHotkeys();
+  }
+
+  function showSub(sub) {
+    if (!sub) return;
+    document.querySelectorAll('#set-tabs button').forEach((b) => {
+      b.classList.toggle('on', b.dataset.sub === sub);
+    });
+    // Only settings-page subpanels — do not touch #extsub-* under 扩展功能.
+    document.querySelectorAll('#page-settings .subpanel').forEach((p) => {
+      p.classList.toggle('on', p.id === 'sub-' + sub);
+    });
+  }
+
+  function showExtSub(sub) {
+    if (!sub) return;
+    document.querySelectorAll('#ext-tabs button').forEach((b) => {
+      b.classList.toggle('on', b.dataset.extsub === sub);
+    });
+    document.querySelectorAll('#page-extensions .ext-sub').forEach((p) => {
+      p.classList.toggle('on', p.id === 'extsub-' + sub);
+    });
+  }
+
+  const PET_META = {
+    hoodie: {
+      name: '卫衣少年',
+      blurb: '卫衣少年：摸摸、玩手机 / 睡觉（等待时轮流）、跌落；拖拽揪领，松开跌落',
+      actions: [{ id: 'wait', label: '玩手机' }, { id: 'sleep', label: '睡觉' }]
+    },
+    voyage: {
+      name: '出海少女',
+      blurb: '出海少女：救生衣草帽造型；摸摸、等待（刷手机）、跌落；拖拽拎起',
+      actions: [{ id: 'wait', label: '刷手机' }]
+    }
+  };
+  function petEnabledSet(charId) {
+    const map = state.pet_actions && typeof state.pet_actions === 'object'
+      ? state.pet_actions : {};
+    const raw = Array.isArray(map[charId]) ? map[charId] : null;
+    if (raw && raw.length) return new Set(raw.map(String));
+    return charId === 'hoodie'
+      ? new Set(['pet', 'wait', 'sleep', 'fall'])
+      : new Set(['pet', 'wait', 'fall']);
+  }
+  function postPetActions(charId) {
+    const set = petEnabledSet(charId);
+    set.add('pet');
+    set.add('fall');
+    const order = ['pet', 'wait', 'sleep', 'fall'];
+    const list = order.filter((a) => set.has(a) && !(charId === 'voyage' && a === 'sleep'));
+    if (!state.pet_actions || typeof state.pet_actions !== 'object') state.pet_actions = {};
+    state.pet_actions[charId] = list;
+    post({ type: 'field', id: 'pet_actions', value: charId + ':' + list.join(',') });
+  }
+  function renderPetChars() {
+    const grid = document.getElementById('pet-char-grid');
+    const hidden = document.getElementById('ext_pet_character');
+    if (!grid) return;
+    const chars = Array.isArray(state.pet_characters) && state.pet_characters.length
+      ? state.pet_characters : ['hoodie', 'voyage'];
+    const cur = state.pet_character || 'hoodie';
+    if (hidden) hidden.value = cur;
+    grid.innerHTML = '';
+    chars.forEach((id) => {
+      const meta = PET_META[id] || { name: id, blurb: '桌面小伙伴', actions: [] };
+      const card = document.createElement('div');
+      card.className = 'pet-char-card' + (id === cur ? ' on' : '');
+      const src = '../pets/' + encodeURIComponent(id) + '_idle.png';
+      const enabled = petEnabledSet(id);
+      const actHtml = (meta.actions || []).map((a) =>
+        '<label class="pc-act-row" data-stop="1">' +
+          '<input type="checkbox" data-act-id="' + escHtml(a.id) + '"' +
+            (enabled.has(a.id) ? ' checked' : '') + ' />' +
+          '<span>' + escHtml(a.label) + '</span></label>'
+      ).join('');
+      card.innerHTML =
+        '<div class="pc-top">' +
+          '<img class="pc-preview" alt="" src="' + src + '" />' +
+          '<div class="pc-actions">' +
+            '<div class="pc-act-hint">可选动作<br/>（取消勾选即从「⋯」隐藏）</div>' +
+            actHtml +
+          '</div>' +
+        '</div>' +
+        '<div class="pc-title">' + escHtml(meta.name) + '</div>' +
+        '<div class="pc-blurb">' + escHtml(meta.blurb) + '</div>';
+      const img = card.querySelector('img');
+      if (img) {
+        img.addEventListener('error', () => { img.style.display = 'none'; });
+      }
+      card.querySelectorAll('input[data-act-id]').forEach((cb) => {
+        cb.addEventListener('click', (e) => e.stopPropagation());
+        cb.addEventListener('change', () => {
+          const set = petEnabledSet(id);
+          if (cb.checked) set.add(cb.getAttribute('data-act-id'));
+          else set.delete(cb.getAttribute('data-act-id'));
+          if (!state.pet_actions || typeof state.pet_actions !== 'object') state.pet_actions = {};
+          state.pet_actions[id] = Array.from(set);
+          postPetActions(id);
+        });
+      });
+      card.addEventListener('click', (e) => {
+        if (e.target && e.target.closest && e.target.closest('[data-stop]')) return;
+        state.pet_character = id;
+        if (hidden) hidden.value = id;
+        post({ type: 'field', id: 'pet_character', value: id });
+        renderPetChars();
+      });
+      grid.appendChild(card);
+    });
+  }
+
+  function applyUiTheme(msg) {
+    const vars = (msg && msg.vars) ? msg.vars : msg;
+    if (!vars || typeof vars !== 'object') return;
+    const root = document.documentElement;
+    Object.keys(vars).forEach((k) => {
+      if (typeof vars[k] === 'string') root.style.setProperty('--' + k, vars[k]);
+    });
+  }
+  window.applyUiTheme = applyUiTheme;
+
+  function applyState(msg) {
+    if (!msg || typeof msg !== 'object') return;
+    if (msg.type === 'ui_theme') { applyUiTheme(msg); return; }
+    if (Array.isArray(msg.fences)) state.fences = msg.fences;
+    // Host pages always win (including legacy「第 N 页」→ 工作/文档 migration).
+    if (Array.isArray(msg.pages) && msg.pages.length) {
+      state.pages = msg.pages.map((n, i) => {
+        const s = String(n || '');
+        if (/^第\s*1\s*页$/.test(s) || s === '第1页') return '工作';
+        if (/^第\s*2\s*页$/.test(s) || s === '第2页') return '文档';
+        return s || (i === 0 ? '工作' : (i === 1 ? '文档' : ('页' + (i + 1))));
+      });
+    }
+    if (typeof msg.dock === 'boolean') state.dock = msg.dock;
+    if (typeof msg.pet === 'boolean') state.pet = msg.pet;
+    if (typeof msg.autostart === 'boolean') state.autostart = msg.autostart;
+    if (typeof msg.org_startup === 'boolean') state.org_startup = msg.org_startup;
+    if (typeof msg.org_watch === 'boolean') state.org_watch = msg.org_watch;
+    if (Array.isArray(msg.preview)) state.preview = msg.preview;
+    if (typeof msg.org_pending === 'number') state.org_pending = msg.org_pending;
+    if (typeof msg.org_organized === 'number') state.org_organized = msg.org_organized;
+    if (typeof msg.org_total === 'number') state.org_total = msg.org_total;
+    if (Array.isArray(msg.org_files)) state.org_files = msg.org_files;
+    if (typeof msg.selected === 'number') state.selected = msg.selected;
+    const copyBool = (k) => { if (typeof msg[k] === 'boolean') state[k] = msg[k]; };
+    const copyStr = (k) => { if (typeof msg[k] === 'string') state[k] = msg[k]; };
+    const copyNum = (k) => { if (typeof msg[k] === 'number') state[k] = msg[k]; };
+    ['minutes_on_bar','notepad_enabled','record_on_bar','calculator_on_bar',
+     'todos_on_bar','screenshot_auto_pin','search_desktop','search_documents',
+     'search_downloads','search_all_drives','pet_auto_wander','pet_show_bubbles',
+     'check_update_on_startup',
+     'desktop_right_click_menu','close_to_tray','show_fences',
+     'double_click_hide','enable_public_desktop','show_page_indicator',
+     'vault_enabled','vault_logged_in',
+     'minutes_enabled','calculator_enabled','todos_enabled','record_enabled',
+     'search_include_open_folders','search_include_hidden'].forEach(copyBool);
+    ['minutes_folder','notepad_folder','wallpaper_folder','record_dir','record_mic',
+     'minutes_folder_default','notepad_folder_default','record_dir_default',
+     'pet_character','theme_id','ui_theme','vault_api_base','lang','app_version',
+     'vault_session_label'].forEach(copyStr);
+    if (Array.isArray(msg.page_folders)) state.page_folders = msg.page_folders;
+    if (Array.isArray(msg.whitelist)) state.whitelist = msg.whitelist;
+    if (Array.isArray(msg.dock_items)) state.dock_items = msg.dock_items;
+    if (Array.isArray(msg.exclude_patterns)) state.exclude_patterns = msg.exclude_patterns;
+    if (typeof msg.category_fence_map === 'string') state.category_fence_map = msg.category_fence_map;
+    if (typeof msg.filename_rules === 'string') state.filename_rules = msg.filename_rules;
+    ['screenshot_max_pins','record_quality','search_max_results','search_max_depth',
+     'dock_edge','dock_opacity','vault_refresh_hours',
+     'vault_clipboard_clear_seconds','search_threads'].forEach(copyNum);
+    if (typeof msg.pet_size_scale === 'number') state.pet_size_scale = msg.pet_size_scale;
+    if (Array.isArray(msg.pet_characters)) state.pet_characters = msg.pet_characters;
+    if (msg.pet_actions && typeof msg.pet_actions === 'object') state.pet_actions = msg.pet_actions;
+    if (Array.isArray(msg.themes)) state.themes = msg.themes;
+    if (Array.isArray(msg.ui_themes)) state.ui_themes = msg.ui_themes;
+    if (Array.isArray(msg.fence_cards) && msg.fence_cards.length) {
+      state.fence_cards = msg.fence_cards;
+    }
+    if (Array.isArray(msg.snapshots) && msg.snapshots.length) {
+      state.snapshots = msg.snapshots;
+    }
+    if (Array.isArray(msg.vault_items)) state.vault_items = msg.vault_items;
+    if (typeof msg.vault_list_status === 'string') state.vault_list_status = msg.vault_list_status;
+    if (typeof msg.current_page === 'number') {
+      state.current_page = msg.current_page;
+      state.selected_page = msg.current_page;
+    }
+    // Never wipe the painted default list with an empty host payload.
+    if (Array.isArray(msg.hotkeys) && msg.hotkeys.length) state.hotkeys = msg.hotkeys;
+    // Toggles/vault fields first — later renderers must not block login/API paint.
+    const safe = (fn) => { try { fn(); } catch (e) {} };
+    safe(renderToggles);
+    safe(renderVaultList);
+    safe(renderSnapshots);
+    safe(renderWhitelist);
+    safe(renderPages);
+    safe(renderFenceCards);
+    safe(renderPreview);
+    safe(renderHotkeys);
+    safe(applyI18n);
+    // Keep last good layout lists across accidental empty pushes / reloads.
+    try {
+      if (state.pages.length) {
+        sessionStorage.setItem('dt_pages', JSON.stringify(state.pages));
+        sessionStorage.setItem('dt_fence_cards', JSON.stringify(state.fence_cards || []));
+        sessionStorage.setItem('dt_snapshots', JSON.stringify(state.snapshots || []));
+      }
+      if (state.vault_items && state.vault_items.length) {
+        sessionStorage.setItem('dt_vault_items', JSON.stringify(state.vault_items));
+        sessionStorage.setItem('dt_vault_status', state.vault_list_status || '');
+        sessionStorage.setItem('dt_vault_logged', state.vault_logged_in ? '1' : '0');
+        sessionStorage.setItem('dt_vault_session', state.vault_session_label || '');
+        sessionStorage.setItem('dt_vault_api', state.vault_api_base || '');
+      }
+    } catch (e) {}
+    const verEl = document.getElementById('brand-ver');
+    if (verEl && state.app_version) {
+      verEl.textContent = state.app_version.startsWith('v')
+        ? state.app_version : ('v' + state.app_version);
+    }
+    if (typeof msg.focus_sub === 'string' && msg.focus_sub) {
+      // Navigate to 设置 → 快捷键 (or other subtab).
+      document.querySelectorAll('.nav').forEach((b) => b.classList.remove('active'));
+      document.querySelectorAll('.panel').forEach((p) => p.classList.remove('active'));
+      const setNav = document.querySelector('.nav[data-page="settings"]');
+      if (setNav) setNav.classList.add('active');
+      const setPanel = document.getElementById('page-settings');
+      if (setPanel) setPanel.classList.add('active');
+      showSub(msg.focus_sub);
+    }
+  }
+  window.applyState = applyState;
+  if (window.__desktidyPendingState) {
+    applyState(window.__desktidyPendingState);
+    window.__desktidyPendingState = null;
+  }
+
+  document.querySelectorAll('.nav').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.nav').forEach((b) => b.classList.remove('active'));
+      document.querySelectorAll('.panel').forEach((p) => p.classList.remove('active'));
+      btn.classList.add('active');
+      document.getElementById('page-' + btn.dataset.page).classList.add('active');
+      if (btn.dataset.page === 'organize') post({ type: 'action', id: 'org_preview' });
+      if (btn.dataset.page === 'vault') post({ type: 'action', id: 'vault_refresh' });
+      if (btn.dataset.page === 'snapshot') {
+        renderSnapshots();
+        post({ type: 'action', id: 'snap_refresh' });
+      }
+      if (btn.dataset.page === 'fences') {
+        post({ type: 'action', id: 'fences_refresh' });
+        renderPageList();
+        renderFenceCards();
+      }
+    });
+  });
+
+  document.querySelectorAll('[data-act]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      post({ type: 'action', id: btn.dataset.act });
+    });
+  });
+  wireExtHotkeyInputs();
+
+  function bindToggle(elId, logicalId) {
+    const el = document.getElementById(elId);
+    if (!el) return;
+    let lastSent = null;
+    const send = () => {
+      const value = !!el.checked;
+      // Skip duplicate posts (change + click both fire on some WebView2 builds).
+      const key = logicalId + ':' + (value ? '1' : '0');
+      if (lastSent === key) return;
+      lastSent = key;
+      setTimeout(() => { lastSent = null; }, 80);
+      if (Object.prototype.hasOwnProperty.call(state, logicalId)) {
+        state[logicalId] = value;
+      }
+      post({ type: 'toggle', id: logicalId, value });
+    };
+    el.addEventListener('change', send);
+    // appearance:none switches sometimes miss "change" in WebView2 — also listen.
+    el.addEventListener('input', send);
+  }
+  ['dock2','pet3','autostart2','org_startup2','org_watch2'].forEach((id) => {
+    const logical = id.replace(/[23]$/, '');
+    bindToggle(id, logical);
+  });
+  const extToggles = {
+    ext_minutes_bar: 'minutes_on_bar',
+    ext_minutes_enabled: 'minutes_enabled',
+    ext_notepad: 'notepad_enabled',
+    ext_record_bar: 'record_on_bar',
+    ext_record_enabled: 'record_enabled',
+    ext_calc_bar: 'calculator_on_bar',
+    ext_calc_enabled: 'calculator_enabled',
+    ext_todos_bar: 'todos_on_bar',
+    ext_todos_enabled: 'todos_enabled',
+    ext_shot_pin: 'screenshot_auto_pin',
+    ext_search_desktop: 'search_desktop',
+    ext_search_documents: 'search_documents',
+    ext_search_downloads: 'search_downloads',
+    ext_search_all: 'search_all_drives',
+    ext_search_open_folders: 'search_include_open_folders',
+    ext_search_hidden: 'search_include_hidden',
+    ext_pet_bubbles: 'pet_show_bubbles',
+    ext_check_update: 'check_update_on_startup',
+    ext_desktop_menu: 'desktop_right_click_menu',
+    ext_close_to_tray: 'close_to_tray',
+    ext_show_fences: 'show_fences',
+    ext_dblclick_hide: 'double_click_hide',
+    ext_public_desktop: 'enable_public_desktop',
+    ext_page_indicator: 'show_page_indicator',
+    ext_vault_enabled: 'vault_enabled'
+  };
+  Object.keys(extToggles).forEach((elId) => bindToggle(elId, extToggles[elId]));
+
+  function bindField(elId, fieldId, asNumber) {
+    const el = document.getElementById(elId);
+    if (!el) return;
+    const send = () => {
+      let value = el.value;
+      if (asNumber) value = Number(value || 0);
+      post({ type: 'field', id: fieldId, value });
+    };
+    el.addEventListener('change', send);
+    if (el.tagName === 'INPUT' && el.type === 'text') {
+      el.addEventListener('blur', send);
+    }
+  }
+  bindField('ext_minutes_folder', 'minutes_folder');
+  bindField('ext_notepad_folder', 'notepad_folder');
+  bindField('ext_wallpaper_folder', 'wallpaper_folder');
+  bindField('ext_record_dir', 'record_dir');
+  bindField('ext_record_mic', 'record_mic');
+  bindField('ext_shot_max', 'screenshot_max_pins', true);
+  bindField('ext_record_quality', 'record_quality', true);
+  bindField('ext_search_max', 'search_max_results', true);
+  bindField('ext_search_depth', 'search_max_depth', true);
+  bindField('ext_search_threads', 'search_threads', true);
+  bindField('ext_exclude_patterns', 'exclude_patterns');
+  bindField('ext_dock_items', 'dock_items');
+  bindField('ext_category_fence_map', 'category_fence_map');
+  bindField('ext_filename_rules', 'filename_rules');
+  bindField('ext_dock_edge', 'dock_edge', true);
+  {
+    const scaleEl = document.getElementById('ext_pet_scale');
+    const scaleLbl = document.getElementById('ext_pet_scale_lbl');
+    if (scaleEl) {
+      const sendScale = () => {
+        let pct = Number(scaleEl.value || 100);
+        if (pct < 50) pct = 50;
+        if (pct > 160) pct = 160;
+        if (scaleLbl) scaleLbl.textContent = pct + '%';
+        post({ type: 'field', id: 'pet_size_scale', value: pct / 100 });
+      };
+      scaleEl.addEventListener('input', () => {
+        if (scaleLbl) scaleLbl.textContent = (scaleEl.value || '100') + '%';
+      });
+      scaleEl.addEventListener('change', sendScale);
+    }
+  }
+  document.querySelectorAll('#ext-tabs button').forEach((btn) => {
+    btn.addEventListener('click', () => showExtSub(btn.dataset.extsub));
+  });
+  bindField('ext_dock_opacity', 'dock_opacity', true);
+  bindField('ext_ui_theme', 'ui_theme');
+  bindField('ext_vault_api', 'vault_api_base');
+  bindField('ext_vault_refresh', 'vault_refresh_hours', true);
+  bindField('ext_vault_clip', 'vault_clipboard_clear_seconds', true);
+
+  const vaultSearch = document.getElementById('vault-search');
+  if (vaultSearch) {
+    vaultSearch.addEventListener('input', () => renderVaultList());
+  }
+  const accountCard = document.getElementById('account-card');
+  if (accountCard) {
+    accountCard.addEventListener('click', () => {
+      document.querySelectorAll('.nav').forEach((b) => b.classList.remove('active'));
+      document.querySelectorAll('.panel').forEach((p) => p.classList.remove('active'));
+      const nav = document.querySelector('.nav[data-page="vault"]');
+      if (nav) nav.classList.add('active');
+      const panel = document.getElementById('page-vault');
+      if (panel) panel.classList.add('active');
+      post({ type: 'action', id: 'vault_refresh' });
+    });
+  }
+
+  function whitelistAddTyped() {
+    const el = document.getElementById('whitelist-edit');
+    const v = ((el && el.value) || '').trim();
+    if (!v) {
+      post({ type: 'action', id: 'whitelist_pick' });
+      return;
+    }
+    post({ type: 'action', id: 'whitelist_add', value: v });
+    if (el) el.value = '';
+  }
+  const wlAdd = document.getElementById('whitelist-add');
+  if (wlAdd) wlAdd.addEventListener('click', whitelistAddTyped);
+  const wlEdit = document.getElementById('whitelist-edit');
+  if (wlEdit) {
+    wlEdit.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Enter') {
+        ev.preventDefault();
+        whitelistAddTyped();
+      }
+    });
+  }
+  const wlDel = document.getElementById('whitelist-del');
+  if (wlDel) {
+    wlDel.addEventListener('click', () => {
+      if (state.whitelist_selected < 0) return;
+      post({ type: 'action', id: 'whitelist_remove',
+             index: state.whitelist_selected });
+    });
+  }
+
+  document.querySelectorAll('#set-tabs button').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      showSub(btn.dataset.sub);
+      if (btn.dataset.sub === 'hotkey') {
+        post({ type: 'action', id: 'hotkeys_refresh' });
+      }
+      if (btn.dataset.sub === 'rules') renderWhitelist();
+    });
+  });
+
+  try {
+    if (window.chrome && window.chrome.webview) {
+      window.chrome.webview.addEventListener('message', (ev) => {
+        let msg = ev.data;
+        if (typeof msg === 'string') {
+          try { msg = JSON.parse(msg); } catch (e) { return; }
+        }
+        if (msg && msg.type === 'ui_theme') {
+          applyUiTheme(msg);
+        } else if (msg && (msg.type === 'state' || Array.isArray(msg.hotkeys))) {
+          applyState(msg);
+        }
+      });
+    }
+  } catch (e) {}
+
+  // Host may also inject via ExecuteScript(applyState) when PostWebMessage drops.
+
+  const snapOv = document.getElementById('snap-preview-overlay');
+  const snapClose = document.getElementById('snap-preview-close');
+  const snapApply = document.getElementById('snap-preview-apply');
+  if (snapClose) snapClose.addEventListener('click', hideSnapPreview);
+  if (snapApply) {
+    snapApply.addEventListener('click', () => {
+      const idx = state._snap_preview_index;
+      hideSnapPreview();
+      if (typeof idx === 'number' && idx >= 0) {
+        post({ type: 'action', id: 'snap_apply', index: idx });
+      }
+    });
+  }
+  if (snapOv) {
+    snapOv.addEventListener('click', (e) => {
+      if (e.target === snapOv) hideSnapPreview();
+    });
+  }
+
+  function isLegacyDefaultPages(arr) {
+    if (!Array.isArray(arr) || !arr.length) return false;
+    return arr.some((n) => /^第\s*\d+\s*页$/.test(String(n || '')) || /^第\d+页$/.test(String(n || '')));
+  }
+
+  // Restore last good lists instantly (before host push) so 桌面分区 is not blank.
+  try {
+    const p = JSON.parse(sessionStorage.getItem('dt_pages') || '[]');
+    const f = JSON.parse(sessionStorage.getItem('dt_fence_cards') || '[]');
+    const s = JSON.parse(sessionStorage.getItem('dt_snapshots') || '[]');
+    const v = JSON.parse(sessionStorage.getItem('dt_vault_items') || '[]');
+    // Drop stale「第 1/2 页」cache — host now uses 工作/文档.
+    if (Array.isArray(p) && p.length && !isLegacyDefaultPages(p)) state.pages = p;
+    if (Array.isArray(f) && f.length) state.fence_cards = f;
+    if (Array.isArray(s) && s.length) state.snapshots = s;
+    if (Array.isArray(v) && v.length) {
+      state.vault_items = v;
+      state.vault_list_status = sessionStorage.getItem('dt_vault_status') || '';
+      state.vault_logged_in = sessionStorage.getItem('dt_vault_logged') === '1';
+      state.vault_session_label = sessionStorage.getItem('dt_vault_session') || '';
+      const api = sessionStorage.getItem('dt_vault_api') || '';
+      if (api) state.vault_api_base = api;
+    }
+  } catch (e) {}
+
+  // Paint defaults immediately so 快捷键 / 分区 / 快照 never looks empty.
+  renderToggles();
+  renderVaultList();
+  renderHotkeys();
+  renderPageList();
+  renderFenceCards();
+  renderSnapshots();
+  post({ type: 'ready' });
+  // Host OnReady / DeferredOpenSettings already push full state — do not storm
+  // fences_refresh/snap_refresh here (each rebuilds a large JSON on the UI thread).
+</script>
+</body>
+</html>

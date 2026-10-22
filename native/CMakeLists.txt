@@ -6,14 +6,19 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 add_executable(desktidy_native WIN32
   src/main.cpp
+  src/log.cpp
   src/app.cpp
   src/desktop_shell.cpp
   src/fence_window.cpp
   src/settings_window.cpp
   src/layout.cpp
+  src/python_layout_sync.cpp
   src/desktop_items.cpp
+  src/namespace_icons.cpp
+  src/brand_mark.cpp
   src/pin_store.cpp
   src/rule_store.cpp
+  src/rules_editor.cpp
   src/ole_drag.cpp
   src/organize.cpp
   src/dock_window.cpp
@@ -42,6 +47,7 @@ add_executable(desktidy_native WIN32
   src/fence_style.cpp
   src/whitelist.cpp
   src/snapshot_ui.cpp
+  src/mist_webview.cpp
   src/display_geom.cpp
   src/minutes.cpp
   src/i18n.cpp
@@ -53,18 +59,26 @@ add_executable(desktidy_native WIN32
   src/markdown_preview.cpp
   src/organize_suppress.cpp
   src/app_prefs.cpp
+  src/ui_theme.cpp
+  src/desktop_dblclick.cpp
+  src/vault_launcher.cpp
   src/screen_record.cpp
+  src/ffmpeg_fetch.cpp
   src/fence_region_overlay.cpp
   src/update_check.cpp
   src/shell_clipboard.cpp
   src/icon_actions.cpp
+  src/shell_context_menu.cpp
   src/toast.cpp
   src/help_center.cpp
   src/native_cleanup.cpp
   src/fence_keys.cpp
   src/layout_editor.cpp
   src/pet_ledges.cpp
+  src/pet_lines.cpp
   src/cli_ipc.cpp
+  src/desknote_help.cpp
+  src/file_assoc.cpp
   src/version.rc
 )
 
@@ -82,6 +96,18 @@ target_link_libraries(desktidy_native PRIVATE
 add_custom_command(TARGET desktidy_native POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E make_directory
           $<TARGET_FILE_DIR:desktidy_native>/assets/md_preview/vendor
+  COMMAND ${CMAKE_COMMAND} -E make_directory
+          $<TARGET_FILE_DIR:desktidy_native>/assets/pets
+  COMMAND ${CMAKE_COMMAND} -E make_directory
+          $<TARGET_FILE_DIR:desktidy_native>/assets/settings
+  COMMAND ${CMAKE_COMMAND} -E make_directory
+          $<TARGET_FILE_DIR:desktidy_native>/assets/vault
+  COMMAND ${CMAKE_COMMAND} -E make_directory
+          $<TARGET_FILE_DIR:desktidy_native>/assets/dialogs
+  COMMAND ${CMAKE_COMMAND} -E make_directory
+          $<TARGET_FILE_DIR:desktidy_native>/assets/overlays
+  COMMAND ${CMAKE_COMMAND} -E make_directory
+          $<TARGET_FILE_DIR:desktidy_native>/docs
   COMMAND ${CMAKE_COMMAND} -E copy_if_different
           ${CMAKE_CURRENT_SOURCE_DIR}/assets/md_preview/wysiwyg_native.html
           $<TARGET_FILE_DIR:desktidy_native>/assets/md_preview/wysiwyg_native.html
@@ -91,6 +117,75 @@ add_custom_command(TARGET desktidy_native POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E copy_if_different
           ${CMAKE_CURRENT_SOURCE_DIR}/assets/md_preview/vendor/toastui-editor.min.css
           $<TARGET_FILE_DIR:desktidy_native>/assets/md_preview/vendor/toastui-editor.min.css
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          ${CMAKE_CURRENT_SOURCE_DIR}/assets/md_preview/viewer_native.html
+          $<TARGET_FILE_DIR:desktidy_native>/assets/md_preview/viewer_native.html
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          ${CMAKE_CURRENT_SOURCE_DIR}/assets/md_preview/bridge_native.js
+          $<TARGET_FILE_DIR:desktidy_native>/assets/md_preview/bridge_native.js
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          ${CMAKE_CURRENT_SOURCE_DIR}/assets/md_preview/theme-light.css
+          $<TARGET_FILE_DIR:desktidy_native>/assets/md_preview/theme-light.css
+  COMMAND ${CMAKE_COMMAND} -E copy_directory
+          ${CMAKE_CURRENT_SOURCE_DIR}/../assets/md_preview/vendor
+          $<TARGET_FILE_DIR:desktidy_native>/assets/md_preview/vendor
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          ${CMAKE_CURRENT_SOURCE_DIR}/assets/settings/settings.html
+          $<TARGET_FILE_DIR:desktidy_native>/assets/settings/settings.html
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          ${CMAKE_CURRENT_SOURCE_DIR}/assets/vault/vault.html
+          $<TARGET_FILE_DIR:desktidy_native>/assets/vault/vault.html
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          ${CMAKE_CURRENT_SOURCE_DIR}/assets/dialogs/whitelist.html
+          $<TARGET_FILE_DIR:desktidy_native>/assets/dialogs/whitelist.html
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          ${CMAKE_CURRENT_SOURCE_DIR}/assets/dialogs/rules.html
+          $<TARGET_FILE_DIR:desktidy_native>/assets/dialogs/rules.html
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          ${CMAKE_CURRENT_SOURCE_DIR}/assets/dialogs/snapshot.html
+          $<TARGET_FILE_DIR:desktidy_native>/assets/dialogs/snapshot.html
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          ${CMAKE_CURRENT_SOURCE_DIR}/assets/dialogs/prompt.html
+          $<TARGET_FILE_DIR:desktidy_native>/assets/dialogs/prompt.html
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          ${CMAKE_CURRENT_SOURCE_DIR}/assets/dialogs/pick_list.html
+          $<TARGET_FILE_DIR:desktidy_native>/assets/dialogs/pick_list.html
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          ${CMAKE_CURRENT_SOURCE_DIR}/assets/dialogs/page_folders.html
+          $<TARGET_FILE_DIR:desktidy_native>/assets/dialogs/page_folders.html
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          ${CMAKE_CURRENT_SOURCE_DIR}/assets/dialogs/record_cfg.html
+          $<TARGET_FILE_DIR:desktidy_native>/assets/dialogs/record_cfg.html
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          ${CMAKE_CURRENT_SOURCE_DIR}/assets/dialogs/help.html
+          $<TARGET_FILE_DIR:desktidy_native>/assets/dialogs/help.html
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          ${CMAKE_CURRENT_SOURCE_DIR}/assets/dialogs/notes_find.html
+          $<TARGET_FILE_DIR:desktidy_native>/assets/dialogs/notes_find.html
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          ${CMAKE_CURRENT_SOURCE_DIR}/assets/dialogs/desknote_help_zh.html
+          $<TARGET_FILE_DIR:desktidy_native>/assets/dialogs/desknote_help_zh.html
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          ${CMAKE_CURRENT_SOURCE_DIR}/assets/dialogs/desknote_help_en.html
+          $<TARGET_FILE_DIR:desktidy_native>/assets/dialogs/desknote_help_en.html
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          ${CMAKE_CURRENT_SOURCE_DIR}/assets/dialogs/help_manual_chapters.html
+          $<TARGET_FILE_DIR:desktidy_native>/assets/dialogs/help_manual_chapters.html
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          ${CMAKE_CURRENT_SOURCE_DIR}/../docs/desktidy.html
+          $<TARGET_FILE_DIR:desktidy_native>/docs/desktidy.html
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          ${CMAKE_CURRENT_SOURCE_DIR}/../docs/desknote.html
+          $<TARGET_FILE_DIR:desktidy_native>/docs/desknote.html
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          ${CMAKE_CURRENT_SOURCE_DIR}/assets/overlays/search.html
+          $<TARGET_FILE_DIR:desktidy_native>/assets/overlays/search.html
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          ${CMAKE_CURRENT_SOURCE_DIR}/assets/overlays/todo.html
+          $<TARGET_FILE_DIR:desktidy_native>/assets/overlays/todo.html
+  COMMAND ${CMAKE_COMMAND} -E copy_directory
+          ${CMAKE_CURRENT_SOURCE_DIR}/assets/pets
+          $<TARGET_FILE_DIR:desktidy_native>/assets/pets
 )
 
 if(MSVC)

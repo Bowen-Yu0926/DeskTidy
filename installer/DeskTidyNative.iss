@@ -60,6 +60,15 @@ Name: "{userstartup}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: st
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "启动 {#MyAppName}"; Flags: nowait postinstall skipifsilent
 
+[UninstallRun]
+; Headless cleanup: stop other instances, restore desktop/namespace icons,
+; remove autostart + shell verbs + Run values, purge config/cache/logs while
+; preserving user 笔记/录屏/纪要 document folders.
+Filename: "{app}\{#MyAppExeName}"; Parameters: "--uninstall-cleanup"; Flags: runhidden waituntilterminated; RunOnceId: "DeskTidyNativeUninstallCleanup"
+
 [UninstallDelete]
 Type: files; Name: "{userstartup}\{#MyAppName}.lnk"
 Type: files; Name: "{userstartup}\DeskTidy Native.lnk"
+; Runtime caches beside the exe. Never list 笔记/录屏/纪要 (user documents).
+Type: filesandordirs; Name: "{app}\assets"
+Type: filesandordirs; Name: "{app}\logs"
