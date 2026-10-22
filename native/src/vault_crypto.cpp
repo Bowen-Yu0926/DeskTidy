@@ -166,7 +166,13 @@ std::vector<BYTE> VaultHexToBytes(const std::string& hex) {
 
 bool VaultDeriveKey(const std::wstring& master_password,
                     const std::vector<BYTE>& salt, std::vector<BYTE>* key_out) {
-  if (!key_out || salt.empty()) {
+  return VaultDeriveKeyEx(master_password, salt, kVaultKdfIterations, key_out);
+}
+
+bool VaultDeriveKeyEx(const std::wstring& master_password,
+                      const std::vector<BYTE>& salt, int iterations,
+                      std::vector<BYTE>* key_out) {
+  if (!key_out || salt.empty() || iterations < 1) {
     return false;
   }
   const std::string pw = Narrow(master_password);
@@ -180,8 +186,8 @@ bool VaultDeriveKey(const std::wstring& master_password,
   const NTSTATUS st = BCryptDeriveKeyPBKDF2(
       alg, reinterpret_cast<PUCHAR>(const_cast<char*>(pw.data())),
       static_cast<ULONG>(pw.size()), const_cast<PUCHAR>(salt.data()),
-      static_cast<ULONG>(salt.size()), kVaultKdfIterations, key_out->data(),
-      kVaultKeyLen, 0);
+      static_cast<ULONG>(salt.size()), static_cast<ULONG>(iterations),
+      key_out->data(), kVaultKeyLen, 0);
   BCryptCloseAlgorithmProvider(alg, 0);
   return st == 0;
 }
@@ -245,4 +251,30 @@ bool VaultVerifyKeyCheck(const std::wstring& key_check,
                          const std::vector<BYTE>& key) {
   const std::wstring plain = VaultDecryptField(key_check, key);
   return Narrow(plain) == kKeyCheckPlain;
+}
+
+std::string VaultBytesToB64(const std::vector<BYTE>& b) {
+  return B64Encode(b.data(), static_cast<DWORD>(b.size()));
+}
+
+std::vector<BYTE> VaultB64ToBytes(const std::string& b64) {
+  if (b64.empty()) {
+    return {};
+  }
+  return B64Decode(b64);
+}
+
+std::vector<BYTE> VaultDecodeSalt(const std::string& s) {
+  if (s.empty()) {
+    return {};
+  }
+  // Base64 salt always carries '=' padding (16 bytes → 24 chars, ends "==");
+  // legacy hex salt is pure [0-9a-f] of even length with no padding.
+  if (s.find('=') == std::string::npos && (s.size() % 2) == 0) {
+    const std::vector<BYTE> hex = VaultHexToBytes(s);
+    if (!hex.empty() && hex.size() * 2 == s.size()) {
+      return hex;
+    }
+  }
+  return VaultB64ToBytes(s);
 }

@@ -1,5 +1,7 @@
 #include "vault_window.h"
 
+#include "brand_mark.h"
+#include "display_geom.h"
 #include "i18n.h"
 #include "paths_util.h"
 #include "prompt_text.h"
@@ -8,34 +10,246 @@
 #include "vault_http.h"
 
 #include <commdlg.h>
+#include <objbase.h>
+#ifndef interface
+#define interface struct
+#endif
+#include <WebView2.h>
 #include <wincrypt.h>
+#include <wrl.h>
 
+#include <Shellapi.h>
+
+#include <algorithm>
 #include <fstream>
+#include <memory>
 #include <sstream>
 #include <string>
+#include <thread>
+#include <vector>
 
 #pragma comment(lib, "crypt32.lib")
 #pragma comment(lib, "comdlg32.lib")
 
+using Microsoft::WRL::Callback;
+using Microsoft::WRL::ComPtr;
+
 namespace {
 constexpr wchar_t kClass[] = L"DeskTidyNativeVault";
-constexpr int kList = 5001;
-constexpr int kTitle = 5002;
-constexpr int kUser = 5003;
-constexpr int kPass = 5004;
-constexpr int kUrl = 5005;
-constexpr int kAdd = 5006;
-constexpr int kDel = 5007;
-constexpr int kExport = 5008;
-constexpr int kImport = 5009;
-constexpr int kLogin = 5010;
-constexpr int kSync = 5011;
-constexpr int kGen = 5012;
-constexpr int kCopy = 5013;
-constexpr int kUpdate = 5014;
-constexpr int kNote = 5015;
-constexpr int kCopyUser = 5016;
+constexpr wchar_t kHostClass[] = L"DeskTidyNativeVaultWeb";
 constexpr UINT_PTR kClipTimer = 70;
+constexpr UINT kMsgLoginDone = WM_APP + 71;
+constexpr UINT kMsgSyncDone = WM_APP + 72;
+constexpr int kPanelW = 420;
+constexpr int kPanelH = 480;
+
+struct SyncOutcome {
+  bool ok = false;
+  bool have_entries = false;
+  bool quiet = false;
+  std::wstring message;
+  std::vector<VaultHttpCredential> entries;
+};
+
+// Masked password prompt (classic Win32 modal, ES_PASSWORD) — never WebView2.
+namespace {
+struct PassCtx {
+  std::wstring result;
+  std::wstring label;
+  bool accepted = false;
+  bool done = false;
+  HWND edit = nullptr;
+  HWND owner = nullptr;
+};
+
+UINT PwDpi(HWND h) {
+  using Fn = UINT(WINAPI*)(HWND);
+  static Fn fn = nullptr;
+  if (!fn) {
+    fn = reinterpret_cast<Fn>(
+        GetProcAddress(GetModuleHandleW(L"user32.dll"), "GetDpiForWindow"));
+  }
+  if (fn && h) {
+    const UINT d = fn(h);
+    if (d) {
+      return d;
+    }
+  }
+  return 96;
+}
+
+int PwS(HWND h, int px) { return MulDiv(px, static_cast<int>(PwDpi(h)), 96); }
+
+void PwFinish(HWND hwnd, PassCtx* ctx, bool ok) {
+  if (ok) {
+    wchar_t buf[512] = {};
+    if (ctx->edit) {
+      GetWindowTextW(ctx->edit, buf, 512);
+    }
+    ctx->result = buf;
+    ctx->accepted = true;
+  } else {
+    ctx->accepted = false;
+    ctx->result.clear();
+  }
+  DestroyWindow(hwnd);
+}
+
+LRESULT CALLBACK PwProc(HWND hwnd, UINT msg, WPARAM w, LPARAM l) {
+  PassCtx* ctx =
+      reinterpret_cast<PassCtx*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+  switch (msg) {
+    case WM_NCCREATE: {
+      auto* cs = reinterpret_cast<CREATESTRUCTW*>(l);
+      ctx = static_cast<PassCtx*>(cs->lpCreateParams);
+      SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(ctx));
+      return TRUE;
+    }
+    case WM_CREATE: {
+      if (!ctx) {
+        return -1;
+      }
+      const int pad = PwS(hwnd, 16);
+      const int lh = PwS(hwnd, 22);
+      const int eh = PwS(hwnd, 28);
+      const int bw = PwS(hwnd, 88);
+      const int bh = PwS(hwnd, 30);
+      const int gap = PwS(hwnd, 10);
+      RECT rc{};
+      GetClientRect(hwnd, &rc);
+      const int cw = (std::max)(80, static_cast<int>(rc.right - rc.left));
+      CreateWindowExW(0, L"STATIC",
+                      (ctx->label.empty() ? L"主密码：" : ctx->label.c_str()),
+                      WS_CHILD | WS_VISIBLE | SS_LEFT, pad, pad,
+                      (std::max)(40, cw - pad * 2), lh, hwnd, nullptr,
+                      GetModuleHandleW(nullptr), nullptr);
+      ctx->edit = CreateWindowExW(
+          WS_EX_CLIENTEDGE, L"EDIT", L"",
+          WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_PASSWORD | ES_AUTOHSCROLL,
+          pad, pad + lh + gap / 2, (std::max)(40, cw - pad * 2), eh, hwnd,
+          reinterpret_cast<HMENU>(1001), GetModuleHandleW(nullptr), nullptr);
+      const int by = pad + lh + gap / 2 + eh + gap;
+      CreateWindowExW(0, L"BUTTON", L"取消",
+                      WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
+                      cw - pad - bw * 2 - gap, by, bw, bh, hwnd,
+                      reinterpret_cast<HMENU>(IDCANCEL),
+                      GetModuleHandleW(nullptr), nullptr);
+      CreateWindowExW(0, L"BUTTON", L"确定",
+                      WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON,
+                      cw - pad - bw, by, bw, bh, hwnd,
+                      reinterpret_cast<HMENU>(IDOK), GetModuleHandleW(nullptr),
+                      nullptr);
+      HFONT f = CreateFontW(PwS(hwnd, 14), 0, 0, 0, FW_NORMAL, FALSE, FALSE,
+                            FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
+                            CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+                            DEFAULT_PITCH | FF_SWISS, L"Microsoft YaHei UI");
+      if (f) {
+        EnumChildWindows(
+            hwnd,
+            [](HWND c, LPARAM lp) -> BOOL {
+              SendMessageW(c, WM_SETFONT, static_cast<WPARAM>(lp), TRUE);
+              return TRUE;
+            },
+            reinterpret_cast<LPARAM>(f));
+        SetPropW(hwnd, L"PwFont", f);
+      }
+      if (ctx->edit) {
+        SendMessageW(ctx->edit, EM_SETPASSWORDCHAR, static_cast<WPARAM>(L'●'),
+                     0);
+        SetFocus(ctx->edit);
+      }
+      return 0;
+    }
+    case WM_COMMAND:
+      if (LOWORD(w) == IDOK) {
+        PwFinish(hwnd, ctx, true);
+        return 0;
+      }
+      if (LOWORD(w) == IDCANCEL) {
+        PwFinish(hwnd, ctx, false);
+        return 0;
+      }
+      break;
+    case WM_CLOSE:
+      PwFinish(hwnd, ctx, false);
+      return 0;
+    case WM_DESTROY: {
+      HFONT f = static_cast<HFONT>(RemovePropW(hwnd, L"PwFont"));
+      if (f) {
+        DeleteObject(f);
+      }
+      if (ctx) {
+        ctx->done = true;
+      }
+      return 0;
+    }
+  }
+  return DefWindowProcW(hwnd, msg, w, l);
+}
+
+std::wstring PromptPassword(HWND owner, const wchar_t* title,
+                            const wchar_t* label) {
+  static bool registered = false;
+  constexpr wchar_t kPwClass[] = L"DeskTidyNativeVaultPwd";
+  if (!registered) {
+    WNDCLASSEXW wc{};
+    wc.cbSize = sizeof(wc);
+    wc.lpfnWndProc = PwProc;
+    wc.hInstance = GetModuleHandleW(nullptr);
+    wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+    wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_3DFACE + 1);
+    wc.lpszClassName = kPwClass;
+    RegisterClassExW(&wc);
+    registered = true;
+  }
+  PassCtx ctx;
+  ctx.owner = owner && IsWindow(owner) ? owner : nullptr;
+  ctx.label = label ? label : L"";
+  const UINT dpi = PwDpi(ctx.owner ? ctx.owner : GetDesktopWindow());
+  const int width = MulDiv(420, static_cast<int>(dpi), 96);
+  const int height = MulDiv(158, static_cast<int>(dpi), 96);
+  RECT anchor{};
+  if (ctx.owner) {
+    GetWindowRect(ctx.owner, &anchor);
+  } else {
+    SystemParametersInfoW(SPI_GETWORKAREA, 0, &anchor, 0);
+  }
+  const int x = anchor.left + ((anchor.right - anchor.left) - width) / 2;
+  const int y = anchor.top + ((anchor.bottom - anchor.top) - height) / 3;
+  HWND hwnd = CreateWindowExW(
+      WS_EX_DLGMODALFRAME, kPwClass, title && title[0] ? title : L"输入",
+      WS_CAPTION | WS_SYSMENU | WS_POPUP | WS_CLIPCHILDREN, x, y, width, height,
+      ctx.owner, nullptr, GetModuleHandleW(nullptr), &ctx);
+  if (!hwnd) {
+    return {};
+  }
+  if (ctx.owner) {
+    EnableWindow(ctx.owner, FALSE);
+  }
+  ShowWindow(hwnd, SW_SHOW);
+  SetForegroundWindow(hwnd);
+  if (ctx.edit) {
+    SetFocus(ctx.edit);
+  }
+  MSG m{};
+  while (!ctx.done && GetMessageW(&m, nullptr, 0, 0) > 0) {
+    if (m.message == WM_KEYDOWN && m.wParam == VK_ESCAPE && m.hwnd &&
+        (m.hwnd == hwnd || IsChild(hwnd, m.hwnd))) {
+      PwFinish(hwnd, &ctx, false);
+      continue;
+    }
+    if (!IsDialogMessageW(hwnd, &m)) {
+      TranslateMessage(&m);
+      DispatchMessageW(&m);
+    }
+  }
+  if (ctx.owner) {
+    EnableWindow(ctx.owner, TRUE);
+    SetForegroundWindow(ctx.owner);
+  }
+  return ctx.accepted ? ctx.result : std::wstring{};
+}
+}  // namespace
 
 std::wstring VaultPath() { return JoinPath(NativeDataDir(), L"vault.dpapi"); }
 
@@ -65,6 +279,231 @@ bool UnprotectBlob(const std::vector<BYTE>& enc, std::string* plain) {
   LocalFree(out.pbData);
   return true;
 }
+
+std::wstring JsonEscape(const std::wstring& s) {
+  std::wstring o;
+  o.reserve(s.size() + 8);
+  for (wchar_t c : s) {
+    switch (c) {
+      case L'\\':
+        o += L"\\\\";
+        break;
+      case L'"':
+        o += L"\\\"";
+        break;
+      case L'\n':
+        o += L"\\n";
+        break;
+      case L'\r':
+        o += L"\\r";
+        break;
+      case L'\t':
+        o += L"\\t";
+        break;
+      default:
+        o.push_back(c);
+        break;
+    }
+  }
+  return o;
+}
+
+std::wstring JsonStringField(const std::wstring& json, const wchar_t* key) {
+  const std::wstring needle = std::wstring(L"\"") + key + L"\"";
+  size_t p = json.find(needle);
+  if (p == std::wstring::npos) {
+    return {};
+  }
+  p = json.find(L'"', json.find(L':', p) + 1);
+  if (p == std::wstring::npos) {
+    return {};
+  }
+  ++p;
+  std::wstring v;
+  while (p < json.size() && json[p] != L'"') {
+    if (json[p] == L'\\' && p + 1 < json.size()) {
+      ++p;
+    }
+    v.push_back(json[p++]);
+  }
+  return v;
+}
+
+int JsonIntField(const std::wstring& json, const wchar_t* key, int fallback) {
+  const std::wstring needle = std::wstring(L"\"") + key + L"\"";
+  size_t p = json.find(needle);
+  if (p == std::wstring::npos) {
+    return fallback;
+  }
+  p = json.find(L':', p);
+  if (p == std::wstring::npos) {
+    return fallback;
+  }
+  ++p;
+  while (p < json.size() && (json[p] == L' ' || json[p] == L'\t')) {
+    ++p;
+  }
+  if (p >= json.size() ||
+      !(json[p] == L'-' || (json[p] >= L'0' && json[p] <= L'9'))) {
+    return fallback;
+  }
+  return _wtoi(json.c_str() + p);
+}
+
+bool PathExists(const std::wstring& path) {
+  const DWORD attr = GetFileAttributesW(path.c_str());
+  return attr != INVALID_FILE_ATTRIBUTES;
+}
+
+std::wstring FindVaultHtml() {
+  wchar_t mod[MAX_PATH] = {};
+  GetModuleFileNameW(nullptr, mod, MAX_PATH);
+  std::wstring dir = mod;
+  const size_t slash = dir.find_last_of(L"\\/");
+  if (slash != std::wstring::npos) {
+    dir.resize(slash);
+  }
+  const std::wstring candidates[] = {
+      dir + L"\\assets\\vault\\vault.html",
+      dir + L"\\..\\assets\\vault\\vault.html",
+      dir + L"\\..\\..\\assets\\vault\\vault.html",
+  };
+  for (const auto& c : candidates) {
+    if (PathExists(c)) {
+      return c;
+    }
+  }
+  return {};
+}
+
+std::wstring FileUrlFromPath(const std::wstring& path) {
+  std::wstring abs = path;
+  for (auto& c : abs) {
+    if (c == L'\\') {
+      c = L'/';
+    }
+  }
+  return L"file:///" + abs;
+}
+
+std::wstring StripTabs(std::wstring s) {
+  for (wchar_t& c : s) {
+    if (c == L'\t' || c == L'\r' || c == L'\n') {
+      c = L' ';
+    }
+  }
+  return s;
+}
+
+bool JsonBoolFieldW(const std::wstring& json, const wchar_t* key,
+                    bool fallback) {
+  const std::wstring needle = std::wstring(L"\"") + key + L"\"";
+  size_t p = json.find(needle);
+  if (p == std::wstring::npos) {
+    return fallback;
+  }
+  p = json.find(L':', p);
+  if (p == std::wstring::npos) {
+    return fallback;
+  }
+  ++p;
+  while (p < json.size() && (json[p] == L' ' || json[p] == L'\t')) {
+    ++p;
+  }
+  if (p >= json.size()) {
+    return fallback;
+  }
+  if (json.compare(p, 4, L"true") == 0) {
+    return true;
+  }
+  if (json.compare(p, 5, L"false") == 0) {
+    return false;
+  }
+  if (json[p] == L'1') {
+    return true;
+  }
+  return fallback;
+}
+
+std::string ReadWholeFileBytes(const std::wstring& path) {
+  std::ifstream in(path, std::ios::binary);
+  if (!in) {
+    return {};
+  }
+  return std::string((std::istreambuf_iterator<char>(in)),
+                     std::istreambuf_iterator<char>());
+}
+
+bool WriteWholeFileBytes(const std::wstring& path, const std::string& data) {
+  std::ofstream out(path, std::ios::binary);
+  if (!out) {
+    return false;
+  }
+  out.write(data.data(), static_cast<std::streamsize>(data.size()));
+  return static_cast<bool>(out);
+}
+
+std::wstring NowTimestamp() {
+  SYSTEMTIME st{};
+  GetLocalTime(&st);
+  wchar_t buf[32] = {};
+  swprintf_s(buf, L"%04d-%02d-%02dT%02d:%02d:%02d", st.wYear, st.wMonth,
+             st.wDay, st.wHour, st.wMinute, st.wSecond);
+  return buf;
+}
+
+// Parse a Python-format export JSON into credentials (returns empty on bad
+// input). Accepts {items:[...]}, a bare [...], or a single {...} object.
+std::vector<VaultHttpCredential> ParseImportCredentials(
+    const std::wstring& json) {
+  std::vector<VaultHttpCredential> out;
+  auto from_obj = [&](const std::wstring& obj) {
+    VaultHttpCredential c;
+    c.title = StripTabs(JsonStringField(obj, L"title"));
+    if (c.title.empty()) {
+      return;
+    }
+    c.username = StripTabs(JsonStringField(obj, L"username"));
+    c.password = StripTabs(JsonStringField(obj, L"password"));
+    c.url = StripTabs(JsonStringField(obj, L"url"));
+    c.note = StripTabs(JsonStringField(obj, L"note"));
+    c.pinned = JsonBoolFieldW(obj, L"pinned", false);
+    out.push_back(std::move(c));
+  };
+  size_t arr = json.find(L"\"items\"");
+  size_t begin = std::wstring::npos;
+  if (arr != std::wstring::npos) {
+    begin = json.find(L'[', arr);
+  } else if (!json.empty() && json[0] == L'[') {
+    begin = 0;
+  } else if (json.find(L"\"title\"") != std::wstring::npos) {
+    from_obj(json);
+    return out;
+  }
+  if (begin == std::wstring::npos) {
+    return out;
+  }
+  size_t i = begin + 1;
+  while (i < json.size()) {
+    while (i < json.size() && json[i] != L'{') {
+      if (json[i] == L']') {
+        return out;
+      }
+      ++i;
+    }
+    if (i >= json.size()) {
+      break;
+    }
+    const size_t obj_end = json.find(L'}', i);
+    if (obj_end == std::wstring::npos) {
+      break;
+    }
+    from_obj(json.substr(i, obj_end - i + 1));
+    i = obj_end + 1;
+  }
+  return out;
+}
+
 }  // namespace
 
 bool VaultWindow::Create(HINSTANCE instance) {
@@ -73,137 +512,489 @@ bool VaultWindow::Create(HINSTANCE instance) {
   wc.lpfnWndProc = VaultWindow::WndProc;
   wc.hInstance = instance;
   wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
-  wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
+  wc.hbrBackground = CreateSolidBrush(RGB(0xEE, 0xF1, 0xF6));
   wc.lpszClassName = kClass;
   RegisterClassExW(&wc);
 
-  hwnd_ = CreateWindowExW(WS_EX_APPWINDOW, kClass, L"账号保险库 (本地 DPAPI)",
-                          WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, 560,
-                          600, nullptr, nullptr, instance, this);
+  // APPWINDOW only — TOOLWINDOW+APPWINDOW made the taskbar button look broken.
+  hwnd_ = CreateWindowExW(
+      WS_EX_APPWINDOW, kClass, L"账号管理",
+      WS_POPUP | WS_CLIPCHILDREN, CW_USEDEFAULT, CW_USEDEFAULT, kPanelW,
+      kPanelH, nullptr, nullptr, instance, this);
   if (!hwnd_) {
     return false;
   }
   SetWindowLongPtrW(hwnd_, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(this));
-  list_ = CreateWindowExW(WS_EX_CLIENTEDGE, L"LISTBOX", L"",
-                          WS_CHILD | WS_VISIBLE | WS_VSCROLL | LBS_NOTIFY, 12, 12,
-                          520, 200, hwnd_,
-                          reinterpret_cast<HMENU>(static_cast<INT_PTR>(kList)),
-                          instance, nullptr);
-  CreateWindowW(L"STATIC", L"标题", WS_CHILD | WS_VISIBLE, 12, 230, 40, 20, hwnd_,
-                nullptr, instance, nullptr);
-  edit_title_ = CreateWindowExW(
-      WS_EX_CLIENTEDGE, L"EDIT", L"", WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL, 60,
-      228, 200, 24, hwnd_,
-      reinterpret_cast<HMENU>(static_cast<INT_PTR>(kTitle)), instance, nullptr);
-  CreateWindowW(L"STATIC", L"用户", WS_CHILD | WS_VISIBLE, 280, 230, 40, 20,
-                hwnd_, nullptr, instance, nullptr);
-  edit_user_ = CreateWindowExW(
-      WS_EX_CLIENTEDGE, L"EDIT", L"", WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL, 320,
-      228, 200, 24, hwnd_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kUser)),
-      instance, nullptr);
-  CreateWindowW(L"STATIC", L"密码", WS_CHILD | WS_VISIBLE, 12, 270, 40, 20, hwnd_,
-                nullptr, instance, nullptr);
-  edit_pass_ = CreateWindowExW(
-      WS_EX_CLIENTEDGE, L"EDIT", L"",
-      WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL | ES_PASSWORD, 60, 268, 200, 24,
-      hwnd_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kPass)), instance,
-      nullptr);
-  CreateWindowW(L"STATIC", L"网址", WS_CHILD | WS_VISIBLE, 280, 270, 40, 20,
-                hwnd_, nullptr, instance, nullptr);
-  edit_url_ = CreateWindowExW(
-      WS_EX_CLIENTEDGE, L"EDIT", L"", WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL, 320,
-      268, 200, 24, hwnd_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kUrl)),
-      instance, nullptr);
-  CreateWindowW(L"STATIC", L"备注", WS_CHILD | WS_VISIBLE, 12, 308, 40, 20, hwnd_,
-                nullptr, instance, nullptr);
-  edit_note_ = CreateWindowExW(
-      WS_EX_CLIENTEDGE, L"EDIT", L"", WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL, 60,
-      306, 460, 24, hwnd_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kNote)),
-      instance, nullptr);
-  CreateWindowW(L"BUTTON", L"添加", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 12,
-                344, 100, 30, hwnd_,
-                reinterpret_cast<HMENU>(static_cast<INT_PTR>(kAdd)), instance,
-                nullptr);
-  CreateWindowW(L"BUTTON", L"保存选中", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 120,
-                344, 100, 30, hwnd_,
-                reinterpret_cast<HMENU>(static_cast<INT_PTR>(kUpdate)), instance,
-                nullptr);
-  CreateWindowW(L"BUTTON", L"删除选中", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 230,
-                344, 100, 30, hwnd_,
-                reinterpret_cast<HMENU>(static_cast<INT_PTR>(kDel)), instance,
-                nullptr);
-  CreateWindowW(L"BUTTON", L"导出备份", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 340,
-                344, 90, 30, hwnd_,
-                reinterpret_cast<HMENU>(static_cast<INT_PTR>(kExport)), instance,
-                nullptr);
-  CreateWindowW(L"BUTTON", L"导入备份", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 440,
-                344, 90, 30, hwnd_,
-                reinterpret_cast<HMENU>(static_cast<INT_PTR>(kImport)), instance,
-                nullptr);
-  CreateWindowW(L"BUTTON", L"云登录", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 12,
-                384, 100, 30, hwnd_,
-                reinterpret_cast<HMENU>(static_cast<INT_PTR>(kLogin)), instance,
-                nullptr);
-  CreateWindowW(L"BUTTON", L"云同步", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 120,
-                384, 100, 30, hwnd_,
-                reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSync)), instance,
-                nullptr);
-  CreateWindowW(L"BUTTON", L"生成密码", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 240,
-                384, 100, 30, hwnd_,
-                reinterpret_cast<HMENU>(static_cast<INT_PTR>(kGen)), instance,
-                nullptr);
-  CreateWindowW(L"BUTTON", L"复制密码", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 350,
-                384, 80, 30, hwnd_,
-                reinterpret_cast<HMENU>(static_cast<INT_PTR>(kCopy)), instance,
-                nullptr);
-  CreateWindowW(L"BUTTON", L"复制用户", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 440,
-                384, 80, 30, hwnd_,
-                reinterpret_cast<HMENU>(static_cast<INT_PTR>(kCopyUser)),
-                instance, nullptr);
-  CreateWindowW(L"STATIC",
-                L"备注仅存本地。复制密码约 30 秒后清空剪贴板。云同步不含备注。",
-                WS_CHILD | WS_VISIBLE, 12, 430, 520, 40, hwnd_, nullptr,
-                instance, nullptr);
+  ApplyBrandWindowIcons(hwnd_);
   Load();
-  RefreshList();
   return true;
+}
+
+bool VaultWindow::CreateWebView() {
+  if (web_available_ || controller_ || !hwnd_) {
+    return web_available_;
+  }
+  static bool registered = false;
+  if (!registered) {
+    WNDCLASSEXW wc{};
+    wc.cbSize = sizeof(wc);
+    wc.lpfnWndProc = VaultWindow::HostProc;
+    wc.hInstance = GetModuleHandleW(nullptr);
+    wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
+    wc.hbrBackground = CreateSolidBrush(RGB(0xF4, 0xF6, 0xF9));
+    wc.lpszClassName = kHostClass;
+    RegisterClassExW(&wc);
+    registered = true;
+  }
+  if (!host_) {
+    RECT rc{};
+    GetClientRect(hwnd_, &rc);
+    if (rc.right < 40 || rc.bottom < 40) {
+      rc.right = kPanelW;
+      rc.bottom = kPanelH;
+    }
+    host_ = CreateWindowExW(0, kHostClass, L"", WS_CHILD | WS_VISIBLE, 0, 0,
+                            rc.right, rc.bottom, hwnd_, nullptr,
+                            GetModuleHandleW(nullptr), this);
+    if (!host_) {
+      return false;
+    }
+    SetWindowLongPtrW(host_, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(this));
+  }
+
+  const std::wstring user_data = JoinPath(NativeDataDir(), L"webview2-vault");
+  CreateDirectoryW(user_data.c_str(), nullptr);
+
+  CreateCoreWebView2EnvironmentWithOptions(
+      nullptr, user_data.c_str(), nullptr,
+      Callback<ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler>(
+          [this](HRESULT result, ICoreWebView2Environment* env) -> HRESULT {
+            if (FAILED(result) || !env || !host_) {
+              return S_OK;
+            }
+            env->CreateCoreWebView2Controller(
+                host_,
+                Callback<
+                    ICoreWebView2CreateCoreWebView2ControllerCompletedHandler>(
+                    [this](HRESULT result2,
+                           ICoreWebView2Controller* controller) -> HRESULT {
+                      if (FAILED(result2) || !controller) {
+                        return S_OK;
+                      }
+                      controller_ = controller;
+                      controller->AddRef();
+                      ICoreWebView2* web = nullptr;
+                      controller->get_CoreWebView2(&web);
+                      if (!web) {
+                        return S_OK;
+                      }
+                      webview_ = web;
+                      web_available_ = true;
+                      ResizeWebView();
+                      controller->put_IsVisible(TRUE);
+                      web->add_WebMessageReceived(
+                          Callback<ICoreWebView2WebMessageReceivedEventHandler>(
+                              [this](ICoreWebView2*,
+                                     ICoreWebView2WebMessageReceivedEventArgs*
+                                         args) -> HRESULT {
+                                LPWSTR raw = nullptr;
+                                if (SUCCEEDED(args->TryGetWebMessageAsString(
+                                        &raw)) &&
+                                    raw) {
+                                  OnWebMessage(raw);
+                                  CoTaskMemFree(raw);
+                                }
+                                return S_OK;
+                              })
+                              .Get(),
+                          nullptr);
+                      web->add_NavigationCompleted(
+                          Callback<ICoreWebView2NavigationCompletedEventHandler>(
+                              [this](ICoreWebView2*,
+                                     ICoreWebView2NavigationCompletedEventArgs*
+                                         args) -> HRESULT {
+                                BOOL ok = FALSE;
+                                if (args) {
+                                  args->get_IsSuccess(&ok);
+                                }
+                                if (ok) {
+                                  OnWebReady();
+                                }
+                                return S_OK;
+                              })
+                              .Get(),
+                          nullptr);
+                      NavigateHome();
+                      return S_OK;
+                    })
+                    .Get());
+            return S_OK;
+          })
+          .Get());
+  return true;
+}
+
+void VaultWindow::DestroyWebView() {
+  if (webview_) {
+    static_cast<ICoreWebView2*>(webview_)->Release();
+    webview_ = nullptr;
+  }
+  if (controller_) {
+    static_cast<ICoreWebView2Controller*>(controller_)->Close();
+    static_cast<ICoreWebView2Controller*>(controller_)->Release();
+    controller_ = nullptr;
+  }
+  if (host_) {
+    DestroyWindow(host_);
+    host_ = nullptr;
+  }
+  web_available_ = false;
+  web_ready_ = false;
+}
+
+void VaultWindow::ResizeWebView() {
+  if (!host_ || !hwnd_) {
+    return;
+  }
+  RECT rc{};
+  GetClientRect(hwnd_, &rc);
+  MoveWindow(host_, 0, 0, rc.right, rc.bottom, TRUE);
+  if (controller_) {
+    RECT bounds{0, 0, rc.right, rc.bottom};
+    static_cast<ICoreWebView2Controller*>(controller_)->put_Bounds(bounds);
+  }
+}
+
+void VaultWindow::NavigateHome() {
+  if (!webview_) {
+    return;
+  }
+  const std::wstring html = FindVaultHtml();
+  if (html.empty()) {
+    return;
+  }
+  static_cast<ICoreWebView2*>(webview_)->Navigate(FileUrlFromPath(html).c_str());
+}
+
+void VaultWindow::OnWebReady() {
+  web_ready_ = true;
+  PushState();
+}
+
+void VaultWindow::PushState(const std::wstring& generated_password) {
+  if (!webview_ || !web_ready_) {
+    return;
+  }
+  std::wstring json = L"{\"type\":\"state\",\"logged_in\":";
+  json += VaultHttpLoggedIn() ? L"true" : L"false";
+  json += L",\"session\":\"";
+  json += JsonEscape(VaultHttpSessionLogin());
+  json += L"\",\"status\":\"";
+  json += JsonEscape(L"共 " + std::to_wstring(entries_.size()) +
+                     L" 条 · 已同步");
+  json += L"\",\"items\":[";
+  for (size_t i = 0; i < entries_.size(); ++i) {
+    if (i) {
+      json += L',';
+    }
+    const auto& e = entries_[i];
+    json += L"{\"index\":";
+    json += std::to_wstring(static_cast<int>(i));
+    json += L",\"title\":\"";
+    json += JsonEscape(e.title);
+    json += L"\",\"username\":\"";
+    json += JsonEscape(e.user);
+    json += L"\",\"url\":\"";
+    json += JsonEscape(e.url);
+    json += L"\",\"note\":\"";
+    json += JsonEscape(e.note);
+    json += L"\",\"pass_len\":";
+    json += std::to_wstring(static_cast<int>(e.pass.size()));
+    json += L",\"pinned\":";
+    json += e.pinned ? L"true" : L"false";
+    json += L'}';
+  }
+  json += L']';
+  if (!generated_password.empty()) {
+    json += L",\"generated_password\":\"";
+    json += JsonEscape(generated_password);
+    json += L'"';
+  }
+  json += L'}';
+
+  auto* web = static_cast<ICoreWebView2*>(webview_);
+  web->PostWebMessageAsString(json.c_str());
+  std::wstring script =
+      L"(function(){try{var m=" + json +
+      L";if(typeof window.applyState==='function'){window.applyState(m);}"
+      L"}catch(e){}})();";
+  web->ExecuteScript(script.c_str(), nullptr);
+}
+
+void VaultWindow::OnWebMessage(const std::wstring& json) {
+  const std::wstring type = JsonStringField(json, L"type");
+  if (type == L"ready") {
+    OnWebReady();
+    return;
+  }
+  if (type != L"action") {
+    return;
+  }
+  const std::wstring id = JsonStringField(json, L"id");
+  // Drag must stay synchronous for smooth move; everything else leaves
+  // WebMessageReceived first (login/PromptText, file dialogs, MessageBox).
+  if (id == L"drag_begin" || id == L"drag_move" || id == L"drag_end") {
+    DispatchAction(json);
+    return;
+  }
+  if (hwnd_) {
+    pending_action_jsons_.push_back(json);
+    PostMessageW(hwnd_, WM_APP + 70, 0, 0);
+  } else {
+    DispatchAction(json);
+  }
+}
+
+void VaultWindow::DispatchAction(const std::wstring& json) {
+  const std::wstring id = JsonStringField(json, L"id");
+  if (id == L"hide") {
+    Hide();
+  } else if (id == L"refresh") {
+    Load();
+    PushState();
+  } else if (id == L"logout") {
+    VaultHttpLogout();
+    PushState();
+    ShowToast(L"已退出登录");
+  } else if (id == L"login") {
+    CloudLogin();
+    PushState();
+  } else if (id == L"register") {
+    CloudRegister();
+  } else if (id == L"generate") {
+    GeneratePassword(JsonStringField(json, L"length"),
+                     JsonStringField(json, L"charset"));
+  } else if (id == L"copy_pass") {
+    CopyPasswordAt(JsonIntField(json, L"index", -1));
+  } else if (id == L"copy_user") {
+    CopyUsernameAt(JsonIntField(json, L"index", -1));
+  } else if (id == L"copy_url") {
+    CopyUrlAt(JsonIntField(json, L"index", -1));
+  } else if (id == L"copy_note") {
+    CopyNoteAt(JsonIntField(json, L"index", -1));
+  } else if (id == L"delete") {
+    DeleteAt(JsonIntField(json, L"index", -1));
+  } else if (id == L"save_entry") {
+    SaveEntryFromJson(json);
+  } else if (id == L"open_url") {
+    const int index = JsonIntField(json, L"index", -1);
+    if (index >= 0 && index < static_cast<int>(entries_.size())) {
+      const std::wstring& url = entries_[static_cast<size_t>(index)].url;
+      if (!url.empty()) {
+        ShellExecuteW(nullptr, L"open", url.c_str(), nullptr, nullptr,
+                      SW_SHOWNORMAL);
+      }
+    }
+  } else if (id == L"drag_begin") {
+    dragging_ = true;
+    drag_start_.x = JsonIntField(json, L"x", 0);
+    drag_start_.y = JsonIntField(json, L"y", 0);
+    RECT rc{};
+    GetWindowRect(hwnd_, &rc);
+    drag_origin_.x = rc.left;
+    drag_origin_.y = rc.top;
+  } else if (id == L"drag_move" && dragging_) {
+    const int x = JsonIntField(json, L"x", 0);
+    const int y = JsonIntField(json, L"y", 0);
+    SetWindowPos(hwnd_, nullptr, drag_origin_.x + (x - drag_start_.x),
+                 drag_origin_.y + (y - drag_start_.y), 0, 0,
+                 SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+  } else if (id == L"drag_end") {
+    dragging_ = false;
+  } else if (id == L"export") {
+    ExportBackup();
+  } else if (id == L"import") {
+    ImportBackup();
+  } else if (id == L"sync") {
+    CloudSync();
+  }
 }
 
 void VaultWindow::Destroy() {
   Save();
   ClearClipboardIfOurs();
+  DestroyWebView();
   if (hwnd_) {
     DestroyWindow(hwnd_);
     hwnd_ = nullptr;
   }
 }
 
-void VaultWindow::GeneratePassword() {
-  constexpr wchar_t kAlpha[] =
-      L"ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789!@#$%&*";
-  constexpr int kLen = 16;
-  BYTE rnd[kLen]{};
+void VaultWindow::WarmWebView() {
+  if (!hwnd_ || web_available_) {
+    return;
+  }
+  CreateWebView();
+}
+
+void VaultWindow::Show() {
+  if (!hwnd_) {
+    return;
+  }
+  if (!web_available_) {
+    CreateWebView();
+  }
+  ResizeWebView();
+  ShowWindow(hwnd_, SW_SHOW);
+  SetForegroundWindow(hwnd_);
+  ApplyBrandWindowIcons(hwnd_);
+  if (controller_) {
+    static_cast<ICoreWebView2Controller*>(controller_)->put_IsVisible(TRUE);
+  }
+  // Keep in-memory entries from Create/edits — do not CryptUnprotect on every open.
+  if (web_ready_) {
+    PushState();
+  } else if (webview_) {
+    NavigateHome();
+  }
+  StartCloudRefresh();
+}
+
+void VaultWindow::Hide() {
+  if (dirty_) {
+    Save();
+    dirty_ = false;
+  }
+  if (hwnd_) {
+    ShowWindow(hwnd_, SW_HIDE);
+  }
+}
+
+void VaultWindow::PlaceBeside(HWND anchor) {
+  if (!hwnd_) {
+    return;
+  }
+  RECT work = PrimaryWorkArea();
+  int x = work.right - kPanelW - 48;
+  int y = work.top + 120;
+  if (anchor && IsWindow(anchor)) {
+    RECT ar{};
+    GetWindowRect(anchor, &ar);
+    x = ar.left - kPanelW - 12;
+    y = ar.top;
+    if (x < work.left) {
+      x = ar.right + 12;
+    }
+    if (y + kPanelH > work.bottom) {
+      y = work.bottom - kPanelH;
+    }
+    if (y < work.top) {
+      y = work.top;
+    }
+  }
+  SetWindowPos(hwnd_, HWND_TOP, x, y, kPanelW, kPanelH,
+               SWP_SHOWWINDOW | SWP_NOACTIVATE);
+}
+
+void VaultWindow::SetClipboardClearSeconds(int seconds) {
+  if (seconds < 0) {
+    seconds = 0;
+  }
+  if (seconds > 300) {
+    seconds = 300;
+  }
+  clipboard_clear_seconds_ = seconds;
+}
+
+void VaultWindow::GeneratePassword(const std::wstring& length_arg,
+                                   const std::wstring& charset_arg) {
+  int len = length_arg.empty() ? 16 : _wtoi(length_arg.c_str());
+  if (len < 4) {
+    len = 4;
+  }
+  if (len > 128) {
+    len = 128;
+  }
+  std::wstring charset = charset_arg;
+  if (charset.empty()) {
+    charset = L"ULDS";
+  }
+  const bool want_upper = charset.find(L'U') != std::wstring::npos;
+  const bool want_lower = charset.find(L'L') != std::wstring::npos;
+  const bool want_digits = charset.find(L'D') != std::wstring::npos;
+  const bool want_symbols = charset.find(L'S') != std::wstring::npos;
+  if (!want_upper && !want_lower && !want_digits && !want_symbols) {
+    charset = L"ULDS";
+  }
+  // Same pools as Python generate_password (avoid_ambiguous=True).
+  const std::wstring amb = L"0O1lI|";
+  auto pool = [&](const std::wstring& src) {
+    std::wstring o;
+    for (wchar_t c : src) {
+      if (amb.find(c) == std::wstring::npos) {
+        o.push_back(c);
+      }
+    }
+    return o;
+  };
+  std::vector<std::wstring> pools;
+  if (charset.find(L'U') != std::wstring::npos) {
+    pools.push_back(pool(L"ABCDEFGHIJKLMNOPQRSTUVWXYZ"));
+  }
+  if (charset.find(L'L') != std::wstring::npos) {
+    pools.push_back(pool(L"abcdefghijklmnopqrstuvwxyz"));
+  }
+  if (charset.find(L'D') != std::wstring::npos) {
+    pools.push_back(pool(L"0123456789"));
+  }
+  if (charset.find(L'S') != std::wstring::npos) {
+    pools.push_back(pool(L"!#$%&()*+,-./:;<=>?@[]^_{}~"));
+  }
+  if (pools.empty()) {
+    return;
+  }
+  std::wstring alphabet;
+  for (const auto& p : pools) {
+    alphabet += p;
+  }
+  const int total = static_cast<int>(len);
+  BYTE* rnd = new BYTE[static_cast<size_t>(total) + 16];
   HCRYPTPROV prov = 0;
   if (!CryptAcquireContextW(&prov, nullptr, nullptr, PROV_RSA_FULL,
                             CRYPT_VERIFYCONTEXT) ||
-      !CryptGenRandom(prov, kLen, rnd)) {
-    MessageBoxW(hwnd_, L"无法生成随机密码。", L"保险库", MB_OK | MB_ICONWARNING);
+      !CryptGenRandom(prov, static_cast<DWORD>(total + 16), rnd)) {
+    delete[] rnd;
     if (prov) {
       CryptReleaseContext(prov, 0);
     }
     return;
   }
   CryptReleaseContext(prov, 0);
-  const size_t n = wcslen(kAlpha);
-  std::wstring pwd(kLen, L'0');
-  for (int i = 0; i < kLen; ++i) {
-    pwd[static_cast<size_t>(i)] = kAlpha[rnd[i] % n];
+  auto pick = [&](const std::wstring& src, size_t& i) -> wchar_t {
+    const wchar_t c = src[rnd[i++] % src.size()];
+    return c;
+  };
+  size_t r = 0;
+  std::wstring result;
+  result.reserve(static_cast<size_t>(total));
+  for (const auto& p : pools) {
+    result.push_back(pick(p, r));
   }
-  SetWindowTextW(edit_pass_, pwd.c_str());
+  while (static_cast<int>(result.size()) < total) {
+    result.push_back(pick(alphabet, r));
+  }
+  // Fisher–Yates shuffle with the same PRNG bytes.
+  for (int i = static_cast<int>(result.size()) - 1; i > 0; --i) {
+    const int j = rnd[r++] % (i + 1);
+    std::swap(result[static_cast<size_t>(i)], result[static_cast<size_t>(j)]);
+  }
+  delete[] rnd;
+  PushState(result);
 }
 
 void VaultWindow::CopyFieldToClipboard(const std::wstring& value,
-                                       const wchar_t* tip) {
+                                       const wchar_t* tip,
+                                       bool schedule_clear) {
   if (value.empty() || !OpenClipboard(hwnd_)) {
     return;
   }
@@ -219,44 +1010,116 @@ void VaultWindow::CopyFieldToClipboard(const std::wstring& value,
   GlobalUnlock(mem);
   SetClipboardData(CF_UNICODETEXT, mem);
   CloseClipboard();
-  clip_secret_ = value;
   if (clip_timer_) {
     KillTimer(hwnd_, clip_timer_);
+    clip_timer_ = 0;
   }
-  clip_timer_ = SetTimer(hwnd_, kClipTimer, 30000, nullptr);
+  if (schedule_clear && clipboard_clear_seconds_ > 0) {
+    clip_secret_ = value;
+    clip_timer_ = SetTimer(
+        hwnd_, kClipTimer,
+        static_cast<UINT>(clipboard_clear_seconds_) * 1000u, nullptr);
+  } else {
+    clip_secret_.clear();
+  }
   ShowToast(tip ? tip : L"已复制");
 }
 
-void VaultWindow::CopyPassword() {
-  std::wstring secret;
-  if (list_) {
-    const int sel = static_cast<int>(SendMessageW(list_, LB_GETCURSEL, 0, 0));
-    if (sel >= 0 && sel < static_cast<int>(entries_.size())) {
-      secret = entries_[static_cast<size_t>(sel)].pass;
-    }
+void VaultWindow::ReloadFromDisk() { Load(); }
+
+std::vector<VaultWindow::ListRow> VaultWindow::ListRows() const {
+  std::vector<ListRow> out;
+  out.reserve(entries_.size());
+  for (size_t i = 0; i < entries_.size(); ++i) {
+    ListRow row;
+    row.index = static_cast<int>(i);
+    row.title = entries_[i].title;
+    row.username = entries_[i].user;
+    row.url = entries_[i].url;
+    row.note = entries_[i].note;
+    row.pass_len = static_cast<int>(entries_[i].pass.size());
+    out.push_back(std::move(row));
   }
-  if (secret.empty() && edit_pass_) {
-    wchar_t buf[512] = {};
-    GetWindowTextW(edit_pass_, buf, 512);
-    secret = buf;
-  }
-  CopyFieldToClipboard(secret, L"密码已复制 · 30 秒后清空");
+  return out;
 }
 
-void VaultWindow::CopyUsername() {
-  std::wstring user;
-  if (list_) {
-    const int sel = static_cast<int>(SendMessageW(list_, LB_GETCURSEL, 0, 0));
-    if (sel >= 0 && sel < static_cast<int>(entries_.size())) {
-      user = entries_[static_cast<size_t>(sel)].user;
+void VaultWindow::CopyPasswordAt(int index) {
+  if (index < 0 || index >= static_cast<int>(entries_.size())) {
+    return;
+  }
+  std::wstring tip = L"密码已复制";
+  if (clipboard_clear_seconds_ > 0) {
+    tip += L" · ";
+    tip += std::to_wstring(clipboard_clear_seconds_);
+    tip += L" 秒后清空";
+  }
+  CopyFieldToClipboard(entries_[static_cast<size_t>(index)].pass, tip.c_str(),
+                       true);
+}
+
+void VaultWindow::CopyUsernameAt(int index) {
+  if (index < 0 || index >= static_cast<int>(entries_.size())) {
+    return;
+  }
+  CopyFieldToClipboard(entries_[static_cast<size_t>(index)].user, L"账号已复制",
+                       false);
+}
+
+void VaultWindow::CopyUrlAt(int index) {
+  if (index < 0 || index >= static_cast<int>(entries_.size())) {
+    return;
+  }
+  CopyFieldToClipboard(entries_[static_cast<size_t>(index)].url, L"网址已复制",
+                       false);
+}
+
+void VaultWindow::CopyNoteAt(int index) {
+  if (index < 0 || index >= static_cast<int>(entries_.size())) {
+    return;
+  }
+  CopyFieldToClipboard(entries_[static_cast<size_t>(index)].note, L"备注已复制",
+                       false);
+}
+
+void VaultWindow::DeleteAt(int index) {
+  if (index < 0 || index >= static_cast<int>(entries_.size())) {
+    return;
+  }
+  // Owner for the confirm box: prefer the vault window when visible, else the
+  // current foreground window (e.g. the settings page that triggered delete).
+  HWND owner = (hwnd_ && IsWindow(hwnd_) && IsWindowVisible(hwnd_))
+                   ? hwnd_
+                   : GetForegroundWindow();
+  if (MessageBoxW(owner, L"确定删除该账号？", L"账号管理",
+                  MB_YESNO | MB_ICONQUESTION | MB_SETFOREGROUND) != IDYES) {
+    return;
+  }
+  entries_.erase(entries_.begin() + index);
+  Save();
+  PushState();
+}
+
+void VaultWindow::SaveEntryFromJson(const std::wstring& json) {
+  Entry e;
+  e.title = StripTabs(JsonStringField(json, L"title"));
+  e.user = StripTabs(JsonStringField(json, L"username"));
+  e.pass = StripTabs(JsonStringField(json, L"password"));
+  e.url = StripTabs(JsonStringField(json, L"url"));
+  e.note = StripTabs(JsonStringField(json, L"note"));
+  if (e.title.empty()) {
+    return;
+  }
+  const int index = JsonIntField(json, L"index", -1);
+  if (index >= 0 && index < static_cast<int>(entries_.size())) {
+    if (e.pass.empty()) {
+      e.pass = entries_[static_cast<size_t>(index)].pass;
     }
+    entries_[static_cast<size_t>(index)] = std::move(e);
+  } else {
+    entries_.push_back(std::move(e));
   }
-  if (user.empty() && edit_user_) {
-    wchar_t buf[512] = {};
-    GetWindowTextW(edit_user_, buf, 512);
-    user = buf;
-  }
-  CopyFieldToClipboard(user, L"用户名已复制 · 30 秒后清空");
+  Save();
+  PushState();
 }
 
 void VaultWindow::ClearClipboardIfOurs() {
@@ -283,105 +1146,68 @@ void VaultWindow::ClearClipboardIfOurs() {
   clip_secret_.clear();
 }
 
-void VaultWindow::Show() {
-  if (!hwnd_) {
-    return;
+std::vector<VaultHttpCredential> VaultWindow::SnapshotCredentials() const {
+  std::vector<VaultHttpCredential> out;
+  out.reserve(entries_.size());
+  for (size_t i = 0; i < entries_.size(); ++i) {
+    const auto& e = entries_[i];
+    VaultHttpCredential c;
+    c.title = e.title;
+    c.username = e.user;
+    c.password = e.pass;
+    c.url = e.url;
+    c.note = e.note;
+    c.pinned = e.pinned;
+    c.sort_order = static_cast<int>(i);
+    out.push_back(std::move(c));
   }
-  ShowWindow(hwnd_, SW_SHOW);
-  SetForegroundWindow(hwnd_);
+  return out;
 }
 
-void VaultWindow::Hide() {
-  Save();
-  if (hwnd_) {
-    ShowWindow(hwnd_, SW_HIDE);
-  }
-}
-
-void VaultWindow::RefreshList() {
-  if (!list_) {
-    return;
-  }
-  SendMessageW(list_, LB_RESETCONTENT, 0, 0);
-  for (const auto& e : entries_) {
-    std::wstring line = e.title + L"  <" + e.user + L">";
-    if (!e.note.empty()) {
-      line += L"  · " + e.note;
+void VaultWindow::ApplyPulledCredentials(
+    const std::vector<VaultHttpCredential>& remote) {
+  std::vector<Entry> previous = entries_;
+  entries_.clear();
+  for (const auto& c : remote) {
+    Entry e;
+    e.title = c.title;
+    e.user = c.username;
+    e.pass = c.password;
+    e.url = c.url;
+    e.note = c.note;
+    e.pinned = c.pinned;
+    e.sort_order = c.sort_order;
+    e.has_sort_order = true;
+    if (e.note.empty()) {
+      for (const auto& old : previous) {
+        if (old.title == e.title && old.user == e.user) {
+          e.note = old.note;
+          break;
+        }
+      }
     }
-    SendMessageW(list_, LB_ADDSTRING, 0, reinterpret_cast<LPARAM>(line.c_str()));
+    entries_.push_back(std::move(e));
   }
-}
-
-namespace {
-
-std::wstring StripTabs(std::wstring s) {
-  for (wchar_t& c : s) {
-    if (c == L'\t' || c == L'\r' || c == L'\n') {
-      c = L' ';
-    }
-  }
-  return s;
-}
-
-}  // namespace
-
-VaultWindow::Entry VaultWindow::ReadFields() const {
-  Entry e;
-  wchar_t buf[1024] = {};
-  if (edit_title_) {
-    GetWindowTextW(edit_title_, buf, 1024);
-    e.title = StripTabs(buf);
-  }
-  if (edit_user_) {
-    GetWindowTextW(edit_user_, buf, 1024);
-    e.user = StripTabs(buf);
-  }
-  if (edit_pass_) {
-    GetWindowTextW(edit_pass_, buf, 1024);
-    e.pass = StripTabs(buf);
-  }
-  if (edit_url_) {
-    GetWindowTextW(edit_url_, buf, 1024);
-    e.url = StripTabs(buf);
-  }
-  if (edit_note_) {
-    GetWindowTextW(edit_note_, buf, 1024);
-    e.note = StripTabs(buf);
-  }
-  return e;
-}
-
-void VaultWindow::AddFromFields() {
-  Entry e = ReadFields();
-  if (e.title.empty()) {
-    return;
-  }
-  entries_.push_back(std::move(e));
-  SetWindowTextW(edit_title_, L"");
-  SetWindowTextW(edit_user_, L"");
-  SetWindowTextW(edit_pass_, L"");
-  SetWindowTextW(edit_url_, L"");
-  SetWindowTextW(edit_note_, L"");
+  SortEntries();
   Save();
-  RefreshList();
+  if (hwnd_ && IsWindowVisible(hwnd_)) {
+    PushState();
+  }
 }
 
-void VaultWindow::UpdateSelected() {
-  if (!list_) {
-    return;
+bool VaultWindow::QuietCloudRefresh() {
+  if (!VaultHttpLoggedIn()) {
+    return false;
   }
-  const int sel = static_cast<int>(SendMessageW(list_, LB_GETCURSEL, 0, 0));
-  if (sel < 0 || sel >= static_cast<int>(entries_.size())) {
-    return;
+  if (entries_.empty()) {
+    Load();
   }
-  Entry e = ReadFields();
-  if (e.title.empty()) {
-    return;
+  std::vector<VaultHttpCredential> remote = SnapshotCredentials();
+  if (!VaultHttpPullMerge(&remote)) {
+    return false;
   }
-  entries_[static_cast<size_t>(sel)] = std::move(e);
-  Save();
-  RefreshList();
-  SendMessageW(list_, LB_SETCURSEL, sel, 0);
+  ApplyPulledCredentials(remote);
+  return true;
 }
 
 void VaultWindow::Save() {
@@ -389,7 +1215,7 @@ void VaultWindow::Save() {
   for (const auto& e : entries_) {
     ss << NarrowUtf8(e.title) << '\t' << NarrowUtf8(e.user) << '\t'
        << NarrowUtf8(e.pass) << '\t' << NarrowUtf8(e.url) << '\t'
-       << NarrowUtf8(e.note) << '\n';
+       << NarrowUtf8(e.note) << '\t' << (e.pinned ? '1' : '0') << '\n';
   }
   std::vector<BYTE> enc;
   if (!ProtectBlob(ss.str(), &enc)) {
@@ -400,6 +1226,23 @@ void VaultWindow::Save() {
     out.write(reinterpret_cast<const char*>(enc.data()),
               static_cast<std::streamsize>(enc.size()));
   }
+  dirty_ = false;
+}
+
+void VaultWindow::SortEntries() {
+  // Render order: entries with an explicit sort_order (cloud) ascending first,
+  // then entries without one in their original/insertion order. Stable so ties
+  // and the "unset" group keep their relative order.
+  std::stable_sort(entries_.begin(), entries_.end(),
+                   [](const Entry& a, const Entry& b) {
+                     if (a.has_sort_order != b.has_sort_order) {
+                       return a.has_sort_order;
+                     }
+                     if (a.has_sort_order) {
+                       return a.sort_order < b.sort_order;
+                     }
+                     return false;
+                   });
 }
 
 void VaultWindow::Load() {
@@ -436,8 +1279,349 @@ void VaultWindow::Load() {
     if (p0 < line.size()) {
       next(&e.note);
     }
+    if (p0 < line.size()) {
+      std::wstring pinned;
+      next(&pinned);
+      e.pinned = (pinned == L"1" || pinned == L"true");
+    }
     entries_.push_back(std::move(e));
   }
+  SortEntries();
+}
+
+void VaultWindow::ExportBackup() {
+  Save();
+  wchar_t file[MAX_PATH] = L"vault_export.json";
+  OPENFILENAMEW ofn{};
+  ofn.lStructSize = sizeof(ofn);
+  ofn.hwndOwner = hwnd_;
+  ofn.lpstrFile = file;
+  ofn.nMaxFile = MAX_PATH;
+  ofn.lpstrFilter =
+      L"DeskTidy vault JSON\0*.json\0DPAPI backup\0*.dpapi\0All\0*.*\0";
+  ofn.nFilterIndex = 1;
+  ofn.Flags = OFN_OVERWRITEPROMPT;
+  if (!GetSaveFileNameW(&ofn)) {
+    return;
+  }
+  const std::wstring path = file;
+  if (path.size() >= 6 && _wcsicmp(path.c_str() + path.size() - 6,
+                                    L".dpapi") == 0) {
+    if (CopyFileW(VaultPath().c_str(), file, FALSE)) {
+      ShowToast(L"账号库已导出（DPAPI）");
+    }
+    return;
+  }
+  // Python-compatible plaintext JSON (matches account_vault.py semantics).
+  std::wstring json = L"{\n  \"format\": \"desktidy-vault\",\n";
+  json += L"  \"version\": 1,\n";
+  json += L"  \"exported_at\": \"" + JsonEscape(NowTimestamp()) + L"\",\n";
+  json += L"  \"items\": [\n";
+  for (size_t i = 0; i < entries_.size(); ++i) {
+    const auto& e = entries_[i];
+    if (i) {
+      json += L",\n";
+    }
+    json += L"    {\"title\": \"" + JsonEscape(e.title) + L"\",\n";
+    json += L"     \"username\": \"" + JsonEscape(e.user) + L"\",\n";
+    json += L"     \"password\": \"" + JsonEscape(e.pass) + L"\",\n";
+    json += L"     \"url\": \"" + JsonEscape(e.url) + L"\",\n";
+    json += L"     \"note\": \"" + JsonEscape(e.note) + L"\",\n";
+    json += L"     \"pinned\": " + std::wstring(e.pinned ? L"true" : L"false") +
+            L"}";
+  }
+  json += L"\n  ]\n}\n";
+  if (WriteWholeFileBytes(path, NarrowUtf8(json))) {
+    ShowToast(L"账号库已导出（JSON，含明文密码，请妥善保管）");
+  }
+}
+
+void VaultWindow::ImportBackup() {
+  wchar_t file[MAX_PATH] = {};
+  OPENFILENAMEW ofn{};
+  ofn.lStructSize = sizeof(ofn);
+  ofn.hwndOwner = hwnd_;
+  ofn.lpstrFile = file;
+  ofn.nMaxFile = MAX_PATH;
+  ofn.lpstrFilter =
+      L"DeskTidy vault JSON\0*.json\0DPAPI backup\0*.dpapi\0All\0*.*\0";
+  ofn.Flags = OFN_FILEMUSTEXIST;
+  if (!GetOpenFileNameW(&ofn)) {
+    return;
+  }
+  std::string raw = ReadWholeFileBytes(file);
+  if (raw.empty()) {
+    MessageBoxW(hwnd_, L"导入失败：文件为空或无法读取。", L"账号管理",
+                MB_OK | MB_ICONWARNING);
+    return;
+  }
+  // Strip an optional UTF-8 BOM (Python reads with encoding="utf-8-sig").
+  if (raw.size() >= 3 && static_cast<unsigned char>(raw[0]) == 0xEF &&
+      static_cast<unsigned char>(raw[1]) == 0xBB &&
+      static_cast<unsigned char>(raw[2]) == 0xBF) {
+    raw.erase(0, 3);
+  }
+  // JSON (Python) format if it starts with '{' or '['.
+  if (raw[0] == '{' || raw[0] == '[') {
+    std::vector<VaultHttpCredential> creds =
+        ParseImportCredentials(WidenUtf8(raw));
+    if (creds.empty()) {
+      MessageBoxW(hwnd_, L"导入失败：JSON 中无可导入的账号条目。", L"账号管理",
+                  MB_OK | MB_ICONWARNING);
+      return;
+    }
+    std::vector<Entry> previous = entries_;
+    entries_.clear();
+    for (const auto& c : creds) {
+      Entry e;
+      e.title = c.title;
+      e.user = c.username;
+      e.pass = c.password;
+      e.url = c.url;
+      e.note = c.note;
+      e.pinned = c.pinned;
+      entries_.push_back(std::move(e));
+    }
+    Save();
+    PushState();
+    ShowToast(L"账号库已导入（JSON）");
+    return;
+  }
+  // Legacy DPAPI whole-file blob.
+  std::vector<BYTE> enc(raw.begin(), raw.end());
+  std::string plain;
+  if (!UnprotectBlob(enc, &plain)) {
+    MessageBoxW(hwnd_, L"导入失败：DPAPI 文件无法解密（可能来自其他 Windows 账户）。",
+                L"账号管理", MB_OK | MB_ICONWARNING);
+    return;
+  }
+  std::istringstream ss(plain);
+  std::string line;
+  entries_.clear();
+  while (std::getline(ss, line)) {
+    if (line.empty()) {
+      continue;
+    }
+    Entry e;
+    size_t p0 = 0;
+    auto next = [&](std::wstring* field) {
+      const size_t p1 = line.find('\t', p0);
+      const std::string part =
+          (p1 == std::string::npos) ? line.substr(p0) : line.substr(p0, p1 - p0);
+      *field = WidenUtf8(part);
+      p0 = (p1 == std::string::npos) ? line.size() : p1 + 1;
+    };
+    next(&e.title);
+    next(&e.user);
+    next(&e.pass);
+    next(&e.url);
+    if (p0 < line.size()) {
+      next(&e.note);
+    }
+    entries_.push_back(std::move(e));
+  }
+  Save();
+  PushState();
+  ShowToast(L"账号库已导入（DPAPI）");
+}
+
+void VaultWindow::CloudLogin() {
+  const std::wstring user =
+      PromptText(hwnd_, L"云保险库", L"登录名：", L"");
+  if (user.empty()) {
+    return;
+  }
+  const std::wstring pass = PromptPassword(hwnd_, L"云保险库", L"登录密码：");
+  if (pass.empty()) {
+    return;
+  }
+  const HWND h = hwnd_;
+  std::thread([user, pass, h]() {
+    const bool ok = VaultHttpLogin(user, pass);
+    PostMessageW(h, kMsgLoginDone, ok ? 1 : 0, 0);
+  }).detach();
+}
+
+void VaultWindow::CloudRegister() {
+  const std::wstring user =
+      PromptText(hwnd_, L"云保险库注册", L"登录名：", L"");
+  if (user.empty()) {
+    return;
+  }
+  const std::wstring display =
+      PromptText(hwnd_, L"云保险库注册", L"显示名称（可留空）：", L"");
+  const std::wstring pass =
+      PromptPassword(hwnd_, L"云保险库注册", L"登录密码：");
+  if (pass.empty()) {
+    return;
+  }
+  const std::wstring pass2 =
+      PromptPassword(hwnd_, L"云保险库注册", L"确认密码：");
+  if (pass != pass2) {
+    MessageBoxW(hwnd_, L"两次输入的密码不一致。", L"云保险库注册",
+                MB_OK | MB_ICONWARNING);
+    return;
+  }
+  const HWND h = hwnd_;
+  std::thread([user, pass, display, h]() {
+    std::wstring err;
+    const bool ok = VaultHttpRegister(user, pass, display, &err);
+    if (ok) {
+      VaultHttpLogin(user, pass);
+    }
+    auto* outcome = new SyncOutcome;
+    outcome->ok = ok;
+    outcome->message = ok ? L"注册成功，已登录"
+                          : (err.empty() ? L"注册失败" : err);
+    if (!PostMessageW(h, kMsgSyncDone, 0, reinterpret_cast<LPARAM>(outcome))) {
+      delete outcome;
+    }
+  }).detach();
+}
+
+void VaultWindow::StartCloudRefresh() {
+  if (!VaultHttpLoggedIn()) {
+    return;
+  }
+  const std::vector<VaultHttpCredential> snapshot = SnapshotCredentials();
+  const HWND h = hwnd_;
+  std::thread([snapshot, h]() {
+    auto* outcome = new SyncOutcome;
+    outcome->quiet = true;
+    std::vector<VaultHttpCredential> remote = snapshot;
+    outcome->ok = VaultHttpPullMerge(&remote);
+    outcome->have_entries = outcome->ok;
+    outcome->entries = remote;
+    outcome->message = L"同步失败，已离线（网络或服务端不可达）";
+    if (!PostMessageW(h, kMsgSyncDone, 0, reinterpret_cast<LPARAM>(outcome))) {
+      delete outcome;
+    }
+  }).detach();
+}
+
+void VaultWindow::CloudSync() {
+  if (!VaultHttpLoggedIn()) {
+    CloudLogin();
+    return;
+  }
+  const int mode = MessageBoxW(
+      hwnd_,
+      L"云同步模式：\n\n是 = 零知识 (enc_ver=1，需主密码)\n否 = 服务端加密 (enc_ver=0)\n取消 = 返回",
+      Tr("vault").c_str(), MB_YESNOCANCEL | MB_ICONQUESTION);
+  if (mode == IDCANCEL) {
+    return;
+  }
+  const std::vector<VaultHttpCredential> snapshot = SnapshotCredentials();
+  const HWND h = hwnd_;
+
+  auto zk_worker = [snapshot, h](const std::wstring& master,
+                                 const std::vector<BYTE>& salt, int iterations,
+                                 const std::wstring& key_check,
+                                 bool verify) {
+    std::thread([snapshot, h, master, salt, iterations, key_check, verify]() {
+      auto* outcome = new SyncOutcome;
+      std::vector<BYTE> key;
+      if (!VaultDeriveKeyEx(master, salt, iterations, &key)) {
+        outcome->message = L"派生密钥失败";
+        PostMessageW(h, kMsgSyncDone, 0, reinterpret_cast<LPARAM>(outcome));
+        return;
+      }
+      if (verify && !VaultVerifyKeyCheck(key_check, key)) {
+        outcome->message = L"主密码错误";
+        PostMessageW(h, kMsgSyncDone, 0, reinterpret_cast<LPARAM>(outcome));
+        return;
+      }
+      if (!verify) {
+        const std::wstring check = VaultMakeKeyCheck(key);
+        const std::wstring salt_b64 = WidenUtf8(VaultBytesToB64(salt));
+        if (!VaultHttpEnsureMaster(salt_b64, iterations, check, L"pbkdf2")) {
+          outcome->message = L"主密码初始化失败（服务端不可达）";
+          PostMessageW(h, kMsgSyncDone, 0, reinterpret_cast<LPARAM>(outcome));
+          return;
+        }
+        VaultHttpSetKdfParams(salt_b64, iterations, check, L"pbkdf2");
+      }
+      VaultHttpSetMasterKey(key);
+      std::vector<VaultHttpCredential> remote = snapshot;
+      bool ok = VaultHttpPullMergeZk(&remote, key);
+      if (ok) {
+        ok = VaultHttpPushAllZk(remote, key);
+      }
+      VaultHttpMigrateLegacyToE2e(key);
+      outcome->ok = ok;
+      outcome->have_entries = true;
+      outcome->message =
+          ok ? L"零知识云同步完成" : L"云同步失败（网络或服务端错误）";
+      outcome->entries = remote;
+      PostMessageW(h, kMsgSyncDone, 0, reinterpret_cast<LPARAM>(outcome));
+    }).detach();
+  };
+
+  if (mode == IDYES) {
+    std::wstring salt_b64;
+    int iterations = 0;
+    std::wstring key_check;
+    std::wstring algo;
+    if (VaultHttpGetKdfParams(&salt_b64, &iterations, &key_check, &algo)) {
+      const std::wstring master =
+          PromptPassword(hwnd_, L"零知识保险库", L"主密码：");
+      if (master.empty()) {
+        return;
+      }
+      const std::vector<BYTE> salt = VaultDecodeSalt(NarrowUtf8(salt_b64));
+      if (salt.empty()) {
+        MessageBoxW(hwnd_, L"KDF 参数无效。", Tr("vault").c_str(),
+                    MB_OK | MB_ICONWARNING);
+        return;
+      }
+      zk_worker(master, salt, iterations, key_check, true);
+    } else {
+      const std::wstring master =
+          PromptPassword(hwnd_, L"零知识保险库", L"设置主密码：");
+      if (master.empty()) {
+        return;
+      }
+      const std::wstring master2 =
+          PromptPassword(hwnd_, L"零知识保险库", L"确认主密码：");
+      if (master != master2) {
+        MessageBoxW(hwnd_, L"两次输入的主密码不一致。", Tr("vault").c_str(),
+                    MB_OK | MB_ICONWARNING);
+        return;
+      }
+      zk_worker(master, VaultNewSalt(16), kVaultKdfIterations, L"", false);
+    }
+    return;
+  }
+
+  std::thread([snapshot, h]() {
+    auto* outcome = new SyncOutcome;
+    std::vector<VaultHttpCredential> remote = snapshot;
+    bool ok = VaultHttpPullMerge(&remote);
+    if (ok) {
+      ok = VaultHttpPushAll(remote);
+    }
+    outcome->ok = ok;
+    outcome->have_entries = true;
+    outcome->message = ok ? L"云同步完成" : L"云同步失败（网络或服务端错误）";
+    outcome->entries = remote;
+    PostMessageW(h, kMsgSyncDone, 0, reinterpret_cast<LPARAM>(outcome));
+  }).detach();
+}
+
+LRESULT CALLBACK VaultWindow::HostProc(HWND hwnd, UINT msg, WPARAM wparam,
+                                       LPARAM lparam) {
+  auto* self =
+      reinterpret_cast<VaultWindow*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+  if (msg == WM_NCCREATE) {
+    auto* cs = reinterpret_cast<CREATESTRUCTW*>(lparam);
+    SetWindowLongPtrW(hwnd, GWLP_USERDATA,
+                      reinterpret_cast<LONG_PTR>(cs->lpCreateParams));
+    return TRUE;
+  }
+  if (self && msg == WM_SIZE) {
+    self->ResizeWebView();
+  }
+  return DefWindowProcW(hwnd, msg, wparam, lparam);
 }
 
 LRESULT CALLBACK VaultWindow::WndProc(HWND hwnd, UINT msg, WPARAM wparam,
@@ -458,240 +1642,55 @@ LRESULT CALLBACK VaultWindow::WndProc(HWND hwnd, UINT msg, WPARAM wparam,
   return self->HandleMessage(msg, wparam, lparam);
 }
 
-void VaultWindow::ExportBackup() {
-  Save();
-  wchar_t file[MAX_PATH] = L"vault_backup.dpapi";
-  OPENFILENAMEW ofn{};
-  ofn.lStructSize = sizeof(ofn);
-  ofn.hwndOwner = hwnd_;
-  ofn.lpstrFile = file;
-  ofn.nMaxFile = MAX_PATH;
-  ofn.lpstrFilter = L"Vault backup\0*.dpapi\0All\0*.*\0";
-  ofn.Flags = OFN_OVERWRITEPROMPT;
-  if (!GetSaveFileNameW(&ofn)) {
-    return;
-  }
-  if (CopyFileW(VaultPath().c_str(), file, FALSE)) {
-    MessageBoxW(hwnd_, L"已导出。", L"保险库", MB_OK | MB_ICONINFORMATION);
-  }
-}
-
-void VaultWindow::CloudLogin() {
-  const std::wstring user =
-      PromptText(hwnd_, L"云保险库", L"登录名：", L"");
-  if (user.empty()) {
-    return;
-  }
-  const std::wstring pass =
-      PromptText(hwnd_, L"云保险库", L"密码：", L"");
-  if (pass.empty()) {
-    return;
-  }
-  if (VaultHttpLogin(user, pass)) {
-    MessageBoxW(hwnd_, Tr("cloud_sync_done").c_str(), Tr("vault").c_str(),
-                MB_OK | MB_ICONINFORMATION);
-  } else {
-    MessageBoxW(hwnd_, Tr("cloud_sync_fail").c_str(), Tr("vault").c_str(),
-                MB_OK | MB_ICONWARNING);
-  }
-}
-
-void VaultWindow::CloudSync() {
-  const int mode = MessageBoxW(
-      hwnd_,
-      L"云同步模式：\n\n是 = 零知识 (enc_ver=1，需主密码)\n否 = 服务端加密 (enc_ver=0)\n取消 = 返回",
-      Tr("vault").c_str(), MB_YESNOCANCEL | MB_ICONQUESTION);
-  if (mode == IDCANCEL) {
-    return;
-  }
-
-  std::vector<VaultHttpCredential> remote;
-  for (const auto& e : entries_) {
-    VaultHttpCredential c;
-    c.title = e.title;
-    c.username = e.user;
-    c.password = e.pass;
-    c.url = e.url;
-    remote.push_back(std::move(c));
-  }
-
-  if (mode == IDYES) {
-    const std::wstring master =
-        PromptText(hwnd_, L"零知识保险库", L"主密码：", L"");
-    if (master.empty()) {
-      return;
-    }
-    std::string salt_hex;
-    {
-      std::ifstream in(JoinPath(NativeDataDir(), L"vault_zk_salt.txt"));
-      if (in) {
-        std::getline(in, salt_hex);
-      }
-    }
-    std::vector<BYTE> salt =
-        salt_hex.empty() ? VaultNewSalt(16) : VaultHexToBytes(salt_hex);
-    if (salt_hex.empty()) {
-      salt_hex = VaultBytesToHex(salt);
-      std::ofstream out(JoinPath(NativeDataDir(), L"vault_zk_salt.txt"),
-                        std::ios::binary);
-      out << salt_hex;
-    }
-    std::vector<BYTE> key;
-    if (!VaultDeriveKey(master, salt, &key)) {
-      MessageBoxW(hwnd_, L"派生密钥失败。", Tr("vault").c_str(),
-                  MB_OK | MB_ICONWARNING);
-      return;
-    }
-    VaultHttpEnsureMaster(key, &salt_hex);
-    if (!VaultHttpPullMergeZk(&remote, key)) {
-      MessageBoxW(hwnd_, Tr("cloud_sync_fail").c_str(), Tr("vault").c_str(),
-                  MB_OK | MB_ICONWARNING);
-      return;
-    }
-    std::vector<Entry> previous = entries_;
-    entries_.clear();
-    for (const auto& c : remote) {
-      Entry e;
-      e.title = c.title;
-      e.user = c.username;
-      e.pass = c.password;
-      e.url = c.url;
-      for (const auto& old : previous) {
-        if (old.title == e.title && old.user == e.user) {
-          e.note = old.note;
-          break;
-        }
-      }
-      entries_.push_back(std::move(e));
-    }
-    Save();
-    RefreshList();
-    if (!VaultHttpPushAllZk(remote, key)) {
-      MessageBoxW(hwnd_, Tr("cloud_sync_fail").c_str(), Tr("vault").c_str(),
-                  MB_OK | MB_ICONWARNING);
-      return;
-    }
-    MessageBoxW(hwnd_, L"零知识云同步完成。", Tr("vault").c_str(),
-                MB_OK | MB_ICONINFORMATION);
-    return;
-  }
-
-  if (!VaultHttpPullMerge(&remote)) {
-    MessageBoxW(hwnd_, Tr("cloud_sync_fail").c_str(), Tr("vault").c_str(),
-                MB_OK | MB_ICONWARNING);
-    return;
-  }
-  std::vector<Entry> previous = entries_;
-  entries_.clear();
-  for (const auto& c : remote) {
-    Entry e;
-    e.title = c.title;
-    e.user = c.username;
-    e.pass = c.password;
-    e.url = c.url;
-    for (const auto& old : previous) {
-      if (old.title == e.title && old.user == e.user) {
-        e.note = old.note;
-        break;
-      }
-    }
-    entries_.push_back(std::move(e));
-  }
-  Save();
-  RefreshList();
-  if (!VaultHttpPushAll(remote)) {
-    MessageBoxW(hwnd_, Tr("cloud_sync_fail").c_str(), Tr("vault").c_str(),
-                MB_OK | MB_ICONWARNING);
-    return;
-  }
-  MessageBoxW(hwnd_, Tr("cloud_sync_done").c_str(), Tr("vault").c_str(),
-              MB_OK | MB_ICONINFORMATION);
-}
-
-void VaultWindow::ImportBackup() {
-  wchar_t file[MAX_PATH] = {};
-  OPENFILENAMEW ofn{};
-  ofn.lStructSize = sizeof(ofn);
-  ofn.hwndOwner = hwnd_;
-  ofn.lpstrFile = file;
-  ofn.nMaxFile = MAX_PATH;
-  ofn.lpstrFilter = L"Vault backup\0*.dpapi\0All\0*.*\0";
-  ofn.Flags = OFN_FILEMUSTEXIST;
-  if (!GetOpenFileNameW(&ofn)) {
-    return;
-  }
-  if (!CopyFileW(file, VaultPath().c_str(), FALSE)) {
-    MessageBoxW(hwnd_, L"导入失败。", L"保险库", MB_OK | MB_ICONWARNING);
-    return;
-  }
-  Load();
-  RefreshList();
-  MessageBoxW(hwnd_, L"已导入。", L"保险库", MB_OK | MB_ICONINFORMATION);
-}
-
 LRESULT VaultWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
   switch (msg) {
-    case WM_COMMAND:
-      if (LOWORD(wparam) == kList && HIWORD(wparam) == LBN_SELCHANGE && list_) {
-        const int sel =
-            static_cast<int>(SendMessageW(list_, LB_GETCURSEL, 0, 0));
-        if (sel >= 0 && sel < static_cast<int>(entries_.size())) {
-          const auto& e = entries_[static_cast<size_t>(sel)];
-          SetWindowTextW(edit_title_, e.title.c_str());
-          SetWindowTextW(edit_user_, e.user.c_str());
-          SetWindowTextW(edit_pass_, e.pass.c_str());
-          SetWindowTextW(edit_url_, e.url.c_str());
-          SetWindowTextW(edit_note_, e.note.c_str());
+    case WM_APP + 70: {
+      while (!pending_action_jsons_.empty()) {
+        const std::wstring json = std::move(pending_action_jsons_.front());
+        pending_action_jsons_.erase(pending_action_jsons_.begin());
+        if (!json.empty()) {
+          DispatchAction(json);
         }
-        return 0;
       }
-      if (LOWORD(wparam) == kAdd) {
-        AddFromFields();
-        return 0;
+      return 0;
+    }
+    case kMsgLoginDone: {
+      if (wparam) {
+        ShowToast(L"云登录成功");
+        StartCloudRefresh();
+      } else {
+        MessageBoxW(hwnd_, L"登录失败（用户名或密码错误，或服务端不可达）。",
+                    Tr("vault").c_str(), MB_OK | MB_ICONWARNING);
       }
-      if (LOWORD(wparam) == kUpdate) {
-        UpdateSelected();
-        return 0;
-      }
-      if (LOWORD(wparam) == kDel && list_) {
-        const int sel =
-            static_cast<int>(SendMessageW(list_, LB_GETCURSEL, 0, 0));
-        if (sel >= 0 && sel < static_cast<int>(entries_.size())) {
-          entries_.erase(entries_.begin() + sel);
-          Save();
-          RefreshList();
+      PushState();
+      return 0;
+    }
+    case kMsgSyncDone: {
+      std::unique_ptr<SyncOutcome> outcome(
+          reinterpret_cast<SyncOutcome*>(lparam));
+      if (outcome) {
+        if (outcome->have_entries) {
+          ApplyPulledCredentials(outcome->entries);
         }
-        return 0;
+        if (outcome->ok) {
+          if (!outcome->quiet) {
+            ShowToast(outcome->message.c_str());
+          }
+        } else if (outcome->quiet) {
+          // Background refresh: non-intrusive offline marker, never block UI.
+          ShowToast(outcome->message.empty() ? L"同步失败，已离线"
+                                             : outcome->message.c_str());
+        } else {
+          MessageBoxW(hwnd_, outcome->message.c_str(), Tr("vault").c_str(),
+                      MB_OK | MB_ICONWARNING);
+        }
+        PushState();
       }
-      if (LOWORD(wparam) == kExport) {
-        ExportBackup();
-        return 0;
-      }
-      if (LOWORD(wparam) == kImport) {
-        ImportBackup();
-        return 0;
-      }
-      if (LOWORD(wparam) == kLogin) {
-        CloudLogin();
-        return 0;
-      }
-      if (LOWORD(wparam) == kSync) {
-        CloudSync();
-        return 0;
-      }
-      if (LOWORD(wparam) == kGen) {
-        GeneratePassword();
-        return 0;
-      }
-      if (LOWORD(wparam) == kCopy) {
-        CopyPassword();
-        return 0;
-      }
-      if (LOWORD(wparam) == kCopyUser) {
-        CopyUsername();
-        return 0;
-      }
-      break;
+      return 0;
+    }
+    case WM_SIZE:
+      ResizeWebView();
+      return 0;
     case WM_TIMER:
       if (wparam == kClipTimer) {
         ClearClipboardIfOurs();
@@ -702,6 +1701,7 @@ LRESULT VaultWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
       Hide();
       return 0;
     case WM_DESTROY:
+      DestroyWebView();
       hwnd_ = nullptr;
       return 0;
     default:

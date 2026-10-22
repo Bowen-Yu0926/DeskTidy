@@ -10,6 +10,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <mutex>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -86,6 +87,36 @@ bool FindStringField(const std::string& obj, const char* key, std::string* out) 
   }
   *out = v;
   return true;
+}
+
+bool FindBoolField(const std::string& obj, const char* key, bool* out) {
+  const std::string needle = std::string("\"") + key + "\"";
+  size_t p = obj.find(needle);
+  if (p == std::string::npos) {
+    return false;
+  }
+  p = obj.find(':', p + needle.size());
+  if (p == std::string::npos) {
+    return false;
+  }
+  ++p;
+  while (p < obj.size() &&
+         (obj[p] == ' ' || obj[p] == '\t' || obj[p] == '\r' || obj[p] == '\n')) {
+    ++p;
+  }
+  if (p >= obj.size()) {
+    return false;
+  }
+  const std::string val = obj.substr(p, 5);
+  if (val.rfind("true", 0) == 0 || val.rfind('1', 0) == 0) {
+    *out = true;
+    return true;
+  }
+  if (val.rfind("false", 0) == 0 || val.rfind('0', 0) == 0) {
+    *out = false;
+    return true;
+  }
+  return false;
 }
 
 bool FindIntField(const std::string& obj, const char* key, int* out) {
@@ -197,16 +228,16 @@ bool Aes128CbcDecrypt(const std::vector<BYTE>& key, const std::vector<BYTE>& iv,
     if (st != 0) {
       break;
     }
-    struct {
-      BCRYPT_KEY_DATA_BLOB_HEADER hdr;
-      BYTE key_bytes[16];
-    } blob{};
-    blob.hdr.dwMagic = BCRYPT_KEY_DATA_BLOB_MAGIC;
-    blob.hdr.dwVersion = BCRYPT_KEY_DATA_BLOB_VERSION1;
-    blob.hdr.cbKeyData = 16;
-    memcpy(blob.key_bytes, key.data(), 16);
+    // Contiguous header+key — a packed struct inserts alignment padding and
+    // BCryptImportKey then reads the wrong 16 key bytes (byethost cookie fails).
+    std::vector<BYTE> blob(sizeof(BCRYPT_KEY_DATA_BLOB_HEADER) + 16);
+    auto* hdr = reinterpret_cast<BCRYPT_KEY_DATA_BLOB_HEADER*>(blob.data());
+    hdr->dwMagic = BCRYPT_KEY_DATA_BLOB_MAGIC;
+    hdr->dwVersion = BCRYPT_KEY_DATA_BLOB_VERSION1;
+    hdr->cbKeyData = 16;
+    memcpy(blob.data() + sizeof(BCRYPT_KEY_DATA_BLOB_HEADER), key.data(), 16);
     st = BCryptImportKey(h_alg, nullptr, BCRYPT_KEY_DATA_BLOB, &h_key, nullptr, 0,
-                         reinterpret_cast<PUCHAR>(&blob), sizeof(blob), 0);
+                         blob.data(), static_cast<ULONG>(blob.size()), 0);
     if (st != 0) {
       break;
     }
@@ -316,6 +347,10 @@ struct Session {
   std::wstring api_base = kDefaultBase;
   std::wstring login;
   std::wstring token;
+  std::wstring kdf_salt;      // base64 (Python wire format)
+  int kdf_iterations = 0;
+  std::wstring key_check;
+  std::wstring kdf_algo;      // "pbkdf2" | "argon2id"
 };
 
 Session LoadSession() {
@@ -327,7 +362,7 @@ Session LoadSession() {
   std::ostringstream ss;
   ss << in.rdbuf();
   const std::string json = ss.str();
-  std::string api, login, token;
+  std::string api, login, token, salt, check, algo;
   if (FindStringField(json, "api_base", &api) && !api.empty()) {
     s.api_base = NormalizeBase(WidenUtf8(api));
   }
@@ -336,6 +371,19 @@ Session LoadSession() {
   }
   if (FindStringField(json, "token", &token)) {
     s.token = WidenUtf8(token);
+  }
+  if (FindStringField(json, "kdf_salt", &salt)) {
+    s.kdf_salt = WidenUtf8(salt);
+  }
+  int iters = 0;
+  if (FindIntField(json, "kdf_iterations", &iters)) {
+    s.kdf_iterations = iters;
+  }
+  if (FindStringField(json, "key_check", &check)) {
+    s.key_check = WidenUtf8(check);
+  }
+  if (FindStringField(json, "kdf_algo", &algo)) {
+    s.kdf_algo = WidenUtf8(algo);
   }
   return s;
 }
@@ -348,7 +396,20 @@ bool SaveSession(const Session& s) {
   out << "{\n  \"api_base\": \""
       << EscapeJson(NarrowUtf8(NormalizeBase(s.api_base))) << "\",\n"
       << "  \"login\": \"" << EscapeJson(NarrowUtf8(s.login)) << "\",\n"
-      << "  \"token\": \"" << EscapeJson(NarrowUtf8(s.token)) << "\"\n}\n";
+      << "  \"token\": \"" << EscapeJson(NarrowUtf8(s.token)) << "\"";
+  if (!s.kdf_salt.empty()) {
+    out << ",\n  \"kdf_salt\": \"" << EscapeJson(NarrowUtf8(s.kdf_salt)) << "\"";
+  }
+  if (s.kdf_iterations > 0) {
+    out << ",\n  \"kdf_iterations\": " << s.kdf_iterations;
+  }
+  if (!s.kdf_algo.empty()) {
+    out << ",\n  \"kdf_algo\": \"" << EscapeJson(NarrowUtf8(s.kdf_algo)) << "\"";
+  }
+  if (!s.key_check.empty()) {
+    out << ",\n  \"key_check\": \"" << EscapeJson(NarrowUtf8(s.key_check)) << "\"";
+  }
+  out << "\n}\n";
   return true;
 }
 
@@ -526,7 +587,7 @@ std::wstring MatchKey(const VaultHttpCredential& e) {
 VaultHttpCredential ParseCredentialObj(const std::string& obj) {
   VaultHttpCredential c;
   FindIntField(obj, "id", &c.id);
-  std::string title, user, pass, url;
+  std::string title, user, pass, url, note;
   if (FindStringField(obj, "title", &title)) {
     c.title = WidenUtf8(title);
   }
@@ -539,10 +600,12 @@ VaultHttpCredential ParseCredentialObj(const std::string& obj) {
   if (FindStringField(obj, "url", &url)) {
     c.url = WidenUtf8(url);
   }
-  int enc = 0;
-  FindIntField(obj, "enc_ver", &enc);
-  // enc_ver 0: plaintext fields. enc_ver 1: keep raw ciphertext strings.
-  (void)enc;
+  if (FindStringField(obj, "note", &note)) {
+    c.note = WidenUtf8(note);
+  }
+  FindBoolField(obj, "pinned", &c.pinned);
+  FindIntField(obj, "sort_order", &c.sort_order);
+  FindIntField(obj, "enc_ver", &c.enc_ver);
   return c;
 }
 
@@ -574,18 +637,94 @@ std::vector<VaultHttpCredential> ParseCredentialItems(const std::string& json) {
 }
 
 std::string MakeCredBody(const std::wstring& title, const std::wstring& user,
-                         const std::wstring& pass, const std::wstring& url) {
+                         const std::wstring& pass, const std::wstring& url,
+                         const std::wstring& note, bool pinned,
+                         int sort_order) {
   std::ostringstream ss;
   ss << "{\"title\":\"" << EscapeJson(NarrowUtf8(title)) << "\","
      << "\"username\":\"" << EscapeJson(NarrowUtf8(user)) << "\","
      << "\"password\":\"" << EscapeJson(NarrowUtf8(pass)) << "\","
      << "\"url\":\"" << EscapeJson(NarrowUtf8(url)) << "\","
-     << "\"note\":\"\","
+     << "\"note\":\"" << EscapeJson(NarrowUtf8(note)) << "\","
+     << "\"pinned\":" << (pinned ? "true" : "false") << ","
+     << "\"sort_order\":" << sort_order << ","
      << "\"enc_ver\":0}";
   return ss.str();
 }
 
+std::string MakeCredBodyZk(const std::wstring& title, const std::wstring& user,
+                           const std::wstring& pass, const std::wstring& url,
+                           const std::wstring& note, bool pinned,
+                           int sort_order, const std::vector<BYTE>& key) {
+  std::ostringstream ss;
+  ss << "{\"title\":\"" << EscapeJson(NarrowUtf8(title)) << "\","
+     << "\"username\":\""
+     << EscapeJson(NarrowUtf8(VaultEncryptField(user, key))) << "\","
+     << "\"password\":\""
+     << EscapeJson(NarrowUtf8(VaultEncryptField(pass, key))) << "\","
+     << "\"url\":\"" << EscapeJson(NarrowUtf8(VaultEncryptField(url, key)))
+     << "\","
+     << "\"note\":\"" << EscapeJson(NarrowUtf8(VaultEncryptField(note, key)))
+     << "\","
+     << "\"pinned\":" << (pinned ? "true" : "false") << ","
+     << "\"sort_order\":" << sort_order << ","
+     << "\"enc_ver\":1}";
+  return ss.str();
+}
+
 }  // namespace
+
+void VaultHttpSetApiBase(const std::wstring& api_base) {
+  Session s = LoadSession();
+  s.api_base = NormalizeBase(api_base);
+  SaveSession(s);
+}
+
+std::wstring VaultHttpGetApiBase() {
+  return NormalizeBase(LoadSession().api_base);
+}
+
+bool VaultHttpLoggedIn() { return !LoadSession().token.empty(); }
+
+std::wstring VaultHttpSessionLogin() { return LoadSession().login; }
+
+bool VaultHttpImportPythonSessionIfNeeded() {
+  if (VaultHttpLoggedIn()) {
+    return true;
+  }
+  wchar_t profile[MAX_PATH] = {};
+  DWORD n = GetEnvironmentVariableW(L"USERPROFILE", profile, MAX_PATH);
+  if (n == 0 || n >= MAX_PATH) {
+    return false;
+  }
+  const std::wstring py =
+      JoinPath(profile, L".desktidy\\account_vault_session.json");
+  const DWORD attr = GetFileAttributesW(py.c_str());
+  if (attr == INVALID_FILE_ATTRIBUTES ||
+      (attr & FILE_ATTRIBUTE_DIRECTORY)) {
+    return false;
+  }
+  // Parse Python session (same JSON keys) into native session file.
+  std::ifstream in(py, std::ios::binary);
+  if (!in) {
+    return false;
+  }
+  std::ostringstream ss;
+  ss << in.rdbuf();
+  const std::string json = ss.str();
+  std::string api, login, token;
+  FindStringField(json, "api_base", &api);
+  FindStringField(json, "login", &login);
+  FindStringField(json, "token", &token);
+  if (token.empty()) {
+    return false;
+  }
+  Session s;
+  s.api_base = api.empty() ? kDefaultBase : NormalizeBase(WidenUtf8(api));
+  s.login = WidenUtf8(login);
+  s.token = WidenUtf8(token);
+  return SaveSession(s) && VaultHttpLoggedIn();
+}
 
 bool VaultHttpHealth() {
   Session s = LoadSession();
@@ -620,7 +759,56 @@ bool VaultHttpLogin(const std::wstring& login, const std::wstring& password) {
   s.login = login_echo.empty() ? login : WidenUtf8(login_echo);
   s.token = WidenUtf8(token);
   s.api_base = NormalizeBase(s.api_base);
+  // Adopt server KDF params — never overwrite with local fixed values.
+  std::string salt, check, algo;
+  if (FindStringField(resp.body, "kdf_salt", &salt) && !salt.empty()) {
+    s.kdf_salt = WidenUtf8(salt);
+  }
+  int iters = 0;
+  if (FindIntField(resp.body, "kdf_iterations", &iters) && iters > 0) {
+    s.kdf_iterations = iters;
+  }
+  if (FindStringField(resp.body, "key_check", &check)) {
+    s.key_check = WidenUtf8(check);
+  }
+  if (FindStringField(resp.body, "kdf_algo", &algo)) {
+    s.kdf_algo = WidenUtf8(algo);
+  }
   return SaveSession(s);
+}
+
+bool VaultHttpRegister(const std::wstring& login, const std::wstring& password,
+                       const std::wstring& display_name,
+                       std::wstring* error_msg) {
+  Session s = LoadSession();
+  VaultClient client(s.api_base);
+  std::ostringstream body;
+  body << "{\"login\":\"" << EscapeJson(NarrowUtf8(login)) << "\","
+       << "\"password\":\"" << EscapeJson(NarrowUtf8(password)) << "\","
+       << "\"display_name\":\"" << EscapeJson(NarrowUtf8(display_name))
+       << "\"}";
+  const std::string payload = body.str();
+  HttpResponse resp;
+  if (!client.Request(L"POST", L"auth/register", &payload, false, &resp)) {
+    if (error_msg) {
+      *error_msg = L"无法连接服务器";
+    }
+    return false;
+  }
+  if (!JsonOkTrue(resp.body)) {
+    if (error_msg) {
+      std::string err;
+      if (FindStringField(resp.body, "error", &err) && !err.empty()) {
+        *error_msg = WidenUtf8(err);
+      } else if (FindStringField(resp.body, "message", &err) && !err.empty()) {
+        *error_msg = WidenUtf8(err);
+      } else {
+        *error_msg = L"注册失败（HTTP " + std::to_wstring(resp.status) + L"）";
+      }
+    }
+    return false;
+  }
+  return true;
 }
 
 bool VaultHttpLogout() {
@@ -636,25 +824,53 @@ bool VaultHttpLogout() {
   return true;
 }
 
+bool RequestRetry(VaultClient* client, const wchar_t* method,
+                  const std::wstring& rel_path, const std::string* body,
+                  bool auth, HttpResponse* out) {
+  for (int attempt = 0; attempt < 3; ++attempt) {
+    if (client->Request(method, rel_path, body, auth, out)) {
+      return true;
+    }
+    if (attempt < 2) {
+      Sleep(400u << attempt);  // 400ms, 800ms exponential backoff.
+    }
+  }
+  return false;
+}
+
+bool VaultHttpListCredentialsEx(std::vector<VaultHttpCredential>* out);
+
 std::vector<VaultHttpCredential> VaultHttpListCredentials() {
+  std::vector<VaultHttpCredential> out;
+  VaultHttpListCredentialsEx(&out);
+  return out;
+}
+
+bool VaultHttpListCredentialsEx(std::vector<VaultHttpCredential>* out) {
+  if (!out) {
+    return false;
+  }
   Session s = LoadSession();
   if (s.token.empty()) {
-    return {};
+    return false;
   }
   VaultClient client(s.api_base);
   client.SetToken(s.token);
   HttpResponse resp;
-  if (!client.Request(L"GET", L"credentials", nullptr, true, &resp) ||
+  if (!RequestRetry(&client, L"GET", L"credentials", nullptr, true, &resp) ||
       !JsonOkTrue(resp.body)) {
-    return {};
+    return false;
   }
-  return ParseCredentialItems(resp.body);
+  *out = ParseCredentialItems(resp.body);
+  return true;
 }
 
 bool VaultHttpUpsertCredential(const std::wstring& title,
                                const std::wstring& user,
                                const std::wstring& pass,
-                               const std::wstring& url) {
+                               const std::wstring& url,
+                               const std::wstring& note, bool pinned,
+                               int sort_order) {
   Session s = LoadSession();
   if (s.token.empty()) {
     return false;
@@ -675,7 +891,8 @@ bool VaultHttpUpsertCredential(const std::wstring& title,
     }
   }
 
-  const std::string payload = MakeCredBody(title, user, pass, url);
+  const std::string payload =
+      MakeCredBody(title, user, pass, url, note, pinned, sort_order);
   HttpResponse resp;
   if (existing_id > 0) {
     const std::wstring path = L"credentials/" + std::to_wstring(existing_id);
@@ -690,6 +907,24 @@ bool VaultHttpUpsertCredential(const std::wstring& title,
   return JsonOkTrue(resp.body);
 }
 
+bool VaultHttpDeleteCredential(int id) {
+  if (id <= 0) {
+    return false;
+  }
+  Session s = LoadSession();
+  if (s.token.empty()) {
+    return false;
+  }
+  VaultClient client(s.api_base);
+  client.SetToken(s.token);
+  HttpResponse resp;
+  const std::wstring path = L"credentials/" + std::to_wstring(id);
+  if (!client.Request(L"DELETE", path, nullptr, true, &resp)) {
+    return false;
+  }
+  return JsonOkTrue(resp.body) || resp.status == 200 || resp.status == 204;
+}
+
 bool VaultHttpPushAll(const std::vector<VaultHttpCredential>& entries) {
   Session s = LoadSession();
   if (s.token.empty()) {
@@ -700,27 +935,31 @@ bool VaultHttpPushAll(const std::vector<VaultHttpCredential>& entries) {
     if (e.title.empty() && e.username.empty()) {
       continue;
     }
-    if (!VaultHttpUpsertCredential(e.title, e.username, e.password, e.url)) {
+    if (!VaultHttpUpsertCredential(e.title, e.username, e.password, e.url,
+                                   e.note, e.pinned, e.sort_order)) {
       any_ok = false;
     }
   }
+  // Delete remote rows that no longer exist locally (cloud mirror parity).
+  std::vector<VaultHttpCredential> remote;
+  if (VaultHttpListCredentialsEx(&remote)) {
+    for (const auto& r : remote) {
+      bool found = false;
+      for (const auto& e : entries) {
+        if (_wcsicmp(e.title.c_str(), r.title.c_str()) == 0 &&
+            _wcsicmp(e.username.c_str(), r.username.c_str()) == 0) {
+          found = true;
+          break;
+        }
+      }
+      if (!found && r.id > 0) {
+        if (!VaultHttpDeleteCredential(r.id)) {
+          any_ok = false;
+        }
+      }
+    }
+  }
   return any_ok;
-}
-
-std::string MakeCredBodyZk(const std::wstring& title, const std::wstring& user,
-                           const std::wstring& pass, const std::wstring& url,
-                           const std::vector<BYTE>& key) {
-  std::ostringstream ss;
-  ss << "{\"title\":\"" << EscapeJson(NarrowUtf8(title)) << "\","
-     << "\"username\":\""
-     << EscapeJson(NarrowUtf8(VaultEncryptField(user, key))) << "\","
-     << "\"password\":\""
-     << EscapeJson(NarrowUtf8(VaultEncryptField(pass, key))) << "\","
-     << "\"url\":\"" << EscapeJson(NarrowUtf8(VaultEncryptField(url, key)))
-     << "\","
-     << "\"note\":\"\","
-     << "\"enc_ver\":1}";
-  return ss.str();
 }
 
 bool VaultHttpPushAllZk(const std::vector<VaultHttpCredential>& entries,
@@ -741,14 +980,16 @@ bool VaultHttpPushAllZk(const std::vector<VaultHttpCredential>& entries,
     if (client.Request(L"GET", L"credentials", nullptr, true, &list_resp) &&
         JsonOkTrue(list_resp.body)) {
       for (const auto& r : ParseCredentialItems(list_resp.body)) {
-        if (_wcsicmp(r.title.c_str(), e.title.c_str()) == 0) {
+        if (_wcsicmp(r.title.c_str(), e.title.c_str()) == 0 &&
+            _wcsicmp(r.username.c_str(), e.username.c_str()) == 0) {
           existing_id = r.id;
           break;
         }
       }
     }
-    const std::string payload =
-        MakeCredBodyZk(e.title, e.username, e.password, e.url, key);
+    const std::string payload = MakeCredBodyZk(
+        e.title, e.username, e.password, e.url, e.note, e.pinned, e.sort_order,
+        key);
     HttpResponse resp;
     if (existing_id > 0) {
       const std::wstring path =
@@ -761,6 +1002,30 @@ bool VaultHttpPushAllZk(const std::vector<VaultHttpCredential>& entries,
                                &resp) ||
                !JsonOkTrue(resp.body)) {
       any_ok = false;
+    }
+  }
+  // Delete remote rows absent from local (decrypt remote usernames to match).
+  std::vector<VaultHttpCredential> remote;
+  if (VaultHttpListCredentialsEx(&remote)) {
+    for (auto& r : remote) {
+      if (r.enc_ver == 1) {
+        r.username = VaultDecryptField(r.username, key);
+      }
+    }
+    for (const auto& r : remote) {
+      bool found = false;
+      for (const auto& e : entries) {
+        if (_wcsicmp(e.title.c_str(), r.title.c_str()) == 0 &&
+            _wcsicmp(e.username.c_str(), r.username.c_str()) == 0) {
+          found = true;
+          break;
+        }
+      }
+      if (!found && r.id > 0) {
+        if (!VaultHttpDeleteCredential(r.id)) {
+          any_ok = false;
+        }
+      }
     }
   }
   return any_ok;
@@ -776,9 +1041,12 @@ bool VaultHttpPullMergeZk(std::vector<VaultHttpCredential>* entries,
     return false;
   }
   for (auto& r : remote) {
-    r.username = VaultDecryptField(r.username, key);
-    r.password = VaultDecryptField(r.password, key);
-    r.url = VaultDecryptField(r.url, key);
+    if (r.enc_ver == 1) {
+      r.username = VaultDecryptField(r.username, key);
+      r.password = VaultDecryptField(r.password, key);
+      r.url = VaultDecryptField(r.url, key);
+      r.note = VaultDecryptField(r.note, key);
+    }
   }
   for (const auto& r : remote) {
     bool found = false;
@@ -796,23 +1064,74 @@ bool VaultHttpPullMergeZk(std::vector<VaultHttpCredential>* entries,
   return true;
 }
 
-bool VaultHttpEnsureMaster(const std::vector<BYTE>& key,
-                           std::string* salt_hex_inout) {
-  if (!salt_hex_inout || key.size() != kVaultKeyLen) {
-    return false;
+// --- Master key (in process memory only) ---
+namespace {
+std::mutex g_master_mutex;
+std::vector<BYTE> g_master_key;
+std::vector<BYTE> MasterKeyCopy() {
+  std::lock_guard<std::mutex> lk(g_master_mutex);
+  return g_master_key;
+}
+}  // namespace
+
+void VaultHttpSetMasterKey(const std::vector<BYTE>& key) {
+  std::lock_guard<std::mutex> lk(g_master_mutex);
+  g_master_key = key;
+}
+
+void VaultHttpClearMasterKey() {
+  std::lock_guard<std::mutex> lk(g_master_mutex);
+  g_master_key.clear();
+}
+
+bool VaultHttpHasMasterKey() {
+  std::lock_guard<std::mutex> lk(g_master_mutex);
+  return g_master_key.size() == kVaultKeyLen;
+}
+
+bool VaultHttpGetKdfParams(std::wstring* salt_b64, int* iterations,
+                           std::wstring* key_check, std::wstring* algo) {
+  const Session s = LoadSession();
+  if (!s.kdf_salt.empty() && s.kdf_iterations > 0) {
+    if (salt_b64) {
+      *salt_b64 = s.kdf_salt;
+    }
+    if (iterations) {
+      *iterations = s.kdf_iterations;
+    }
+    if (key_check) {
+      *key_check = s.key_check;
+    }
+    if (algo) {
+      *algo = s.kdf_algo;
+    }
+    return true;
   }
+  return false;
+}
+
+void VaultHttpSetKdfParams(const std::wstring& salt_b64, int iterations,
+                           const std::wstring& key_check,
+                           const std::wstring& algo) {
+  Session s = LoadSession();
+  s.kdf_salt = salt_b64;
+  s.kdf_iterations = iterations;
+  s.key_check = key_check;
+  s.kdf_algo = algo;
+  SaveSession(s);
+}
+
+bool VaultHttpEnsureMaster(const std::wstring& salt_b64, int iterations,
+                           const std::wstring& key_check,
+                           const std::wstring& algo) {
   Session s = LoadSession();
   if (s.token.empty()) {
     return false;
   }
-  if (salt_hex_inout->empty()) {
-    *salt_hex_inout = VaultBytesToHex(VaultNewSalt(16));
-  }
-  const std::wstring key_check = VaultMakeKeyCheck(key);
   std::ostringstream body;
-  body << "{\"kdf_salt\":\"" << EscapeJson(*salt_hex_inout) << "\","
-       << "\"kdf_iterations\":" << kVaultKdfIterations << ","
-       << "\"kdf_algo\":\"pbkdf2\","
+  body << "{\"kdf_salt\":\"" << EscapeJson(NarrowUtf8(salt_b64)) << "\","
+       << "\"kdf_iterations\":" << iterations << ","
+       << "\"kdf_algo\":\"" << EscapeJson(NarrowUtf8(algo)) << "\","
        << "\"key_check\":\"" << EscapeJson(NarrowUtf8(key_check)) << "\"}";
   const std::string payload = body.str();
   VaultClient client(s.api_base);
@@ -828,24 +1147,27 @@ bool VaultHttpPullMerge(std::vector<VaultHttpCredential>* entries) {
   if (!entries) {
     return false;
   }
-  const auto remote = VaultHttpListCredentials();
-  if (remote.empty() && LoadSession().token.empty()) {
-    return false;
+  std::vector<VaultHttpCredential> remote;
+  if (!VaultHttpListCredentialsEx(&remote)) {
+    return false;  // offline / network error — do not overwrite local.
+  }
+  const std::vector<BYTE> key = MasterKeyCopy();
+  if (key.size() == kVaultKeyLen) {
+    for (auto& r : remote) {
+      if (r.enc_ver == 1) {
+        r.username = VaultDecryptField(r.username, key);
+        r.password = VaultDecryptField(r.password, key);
+        r.url = VaultDecryptField(r.url, key);
+        r.note = VaultDecryptField(r.note, key);
+      }
+    }
   }
   // Index local by title+username.
   for (const auto& r : remote) {
     bool found = false;
     for (auto& local : *entries) {
       if (_wcsicmp(MatchKey(local).c_str(), MatchKey(r).c_str()) == 0) {
-        local.id = r.id;
-        local.password = r.password;
-        local.url = r.url;
-        if (local.title.empty()) {
-          local.title = r.title;
-        }
-        if (local.username.empty()) {
-          local.username = r.username;
-        }
+        local = r;
         found = true;
         break;
       }
@@ -855,4 +1177,34 @@ bool VaultHttpPullMerge(std::vector<VaultHttpCredential>* entries) {
     }
   }
   return true;
+}
+
+int VaultHttpMigrateLegacyToE2e(const std::vector<BYTE>& key) {
+  if (key.size() != kVaultKeyLen) {
+    return 0;
+  }
+  std::vector<VaultHttpCredential> remote;
+  if (!VaultHttpListCredentialsEx(&remote)) {
+    return 0;
+  }
+  int migrated = 0;
+  for (const auto& r : remote) {
+    if (r.enc_ver != 0) {
+      continue;
+    }
+    const std::string payload = MakeCredBodyZk(
+        r.title, r.username, r.password, r.url, r.note, r.pinned, r.sort_order,
+        key);
+    Session s = LoadSession();
+    VaultClient client(s.api_base);
+    client.SetToken(s.token);
+    HttpResponse resp;
+    const std::wstring path =
+        L"credentials/" + std::to_wstring(r.id);
+    if (client.Request(L"PUT", path, &payload, true, &resp) &&
+        JsonOkTrue(resp.body)) {
+      ++migrated;
+    }
+  }
+  return migrated;
 }
