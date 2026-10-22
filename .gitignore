@@ -19,6 +19,7 @@ dist/
 dist_staging/
 build/
 native/build/
+native/build*/
 native/**/Release/
 native/**/Debug/
 native/**/*.user
