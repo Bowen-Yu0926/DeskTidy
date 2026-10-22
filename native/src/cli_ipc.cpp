@@ -2,6 +2,11 @@
 
 #include <string>
 
+namespace {
+// Mirrors instance_lock.cpp's single-instance mutex name (kept in sync).
+constexpr wchar_t kInstanceMutex[] = L"Local\\DeskTidyNativeSingleInstance";
+}  // namespace
+
 bool ForwardCliToRunningInstance(const std::wstring& action) {
   HWND hwnd = FindWindowW(kNativeMsgWindowClass, L"DeskTidyNative");
   if (!hwnd || action.empty()) {
@@ -14,4 +19,14 @@ bool ForwardCliToRunningInstance(const std::wstring& action) {
   SendMessageTimeoutW(hwnd, WM_COPYDATA, 0, reinterpret_cast<LPARAM>(&cds),
                       SMTO_ABORTIFHUNG, 3000, nullptr);
   return true;
+}
+
+bool IsNativeInstanceRunning() {
+  HANDLE m = CreateMutexW(nullptr, FALSE, kInstanceMutex);
+  if (!m) {
+    return false;
+  }
+  const bool exists = (GetLastError() == ERROR_ALREADY_EXISTS);
+  CloseHandle(m);
+  return exists;
 }

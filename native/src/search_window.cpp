@@ -1,37 +1,34 @@
 #include "search_window.h"
 
+#include "display_geom.h"
+#include "i18n.h"
 #include "icon_actions.h"
+#include "mist_webview.h"
+#include "paths_util.h"
 #include "tool_paths.h"
 
 #include <ShlObj.h>
 #include <Shellapi.h>
-#include <windowsx.h>
 
-#include <cstdio>
+#include <objbase.h>
+#include <exdisp.h>
+#include <shldisp.h>
+#ifndef interface
+#define interface struct
+#endif
+#include <WebView2.h>
+#include <wrl.h>
+
 #include <string>
 #include <vector>
 
+using Microsoft::WRL::Callback;
+
 namespace {
 constexpr wchar_t kClass[] = L"DeskTidyNativeSearch";
-constexpr int kEdit = 4001;
-constexpr int kList = 4002;
-constexpr int kBtn = 4003;
-constexpr int kOpen = 4004;
-constexpr int kReveal = 4005;
-WNDPROC g_old_edit = nullptr;
-
-LRESULT CALLBACK EditSubclass(HWND hwnd, UINT msg, WPARAM wparam,
-                              LPARAM lparam) {
-  if (msg == WM_KEYDOWN && wparam == VK_RETURN) {
-    HWND parent = GetParent(hwnd);
-    if (parent) {
-      SendMessageW(parent, WM_COMMAND, MAKEWPARAM(kBtn, BN_CLICKED),
-                   reinterpret_cast<LPARAM>(hwnd));
-    }
-    return 0;
-  }
-  return CallWindowProcW(g_old_edit, hwnd, msg, wparam, lparam);
-}
+constexpr wchar_t kHostClass[] = L"DeskTidyNativeSearchWeb";
+constexpr int kPanelW = 640;
+constexpr int kPanelH = 480;
 
 bool NameContains(const std::wstring& name, const std::wstring& needle) {
   if (needle.empty()) {
@@ -61,8 +58,9 @@ bool NameContains(const std::wstring& name, const std::wstring& needle) {
 }
 
 void SearchRecursive(const std::wstring& dir, const std::wstring& needle,
-                     std::vector<std::wstring>* out, int* budget) {
-  if (!out || !budget || *budget <= 0 || needle.empty()) {
+                     std::vector<std::wstring>* out, int* budget, int depth,
+                     int max_depth, bool include_hidden) {
+  if (!out || !budget || *budget <= 0 || needle.empty() || depth > max_depth) {
     return;
   }
   const std::wstring pattern = dir + L"\\*";
@@ -77,6 +75,9 @@ void SearchRecursive(const std::wstring& dir, const std::wstring& needle,
          (fd.cFileName[1] == L'.' && fd.cFileName[2] == L'\0'))) {
       continue;
     }
+    if (!include_hidden && (fd.dwFileAttributes & FILE_ATTRIBUTE_HIDDEN)) {
+      continue;
+    }
     const std::wstring name = fd.cFileName;
     const std::wstring full = dir + L"\\" + name;
     if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
@@ -85,19 +86,109 @@ void SearchRecursive(const std::wstring& dir, const std::wstring& needle,
           _wcsicmp(name.c_str(), L"AppData") == 0) {
         continue;
       }
-      SearchRecursive(full, needle, out, budget);
-    } else {
-      if (NameContains(name, needle)) {
-        out->push_back(full);
-        --(*budget);
-        if (*budget <= 0) {
-          break;
-        }
+      SearchRecursive(full, needle, out, budget, depth + 1, max_depth,
+                      include_hidden);
+    } else if (NameContains(name, needle)) {
+      out->push_back(full);
+      --(*budget);
+      if (*budget <= 0) {
+        break;
       }
     }
   } while (FindNextFileW(h, &fd));
   FindClose(h);
 }
+
+std::wstring KnownFolder(REFKNOWNFOLDERID id) {
+  PWSTR path = nullptr;
+  if (FAILED(SHGetKnownFolderPath(id, 0, nullptr, &path)) || !path) {
+    return {};
+  }
+  std::wstring out = path;
+  CoTaskMemFree(path);
+  return out;
+}
+
+bool IsDriveRootPath(const std::wstring& p) {
+  return p.size() == 3 && p[1] == L':' && (p[2] == L'\\' || p[2] == L'/');
+}
+
+// Filesystem folders currently open in Explorer (Python
+// open_explorer_folder_paths). Mirrors Shell.Application.Windows() enumeration:
+// for each window, Document → Folder → Self → Path. Virtual namespaces yield
+// empty paths (skipped); drive roots are too broad for the "open folder" bonus.
+std::vector<std::wstring> OpenExplorerFolders() {
+  std::vector<std::wstring> out;
+  IShellWindows* sw = nullptr;
+  if (FAILED(CoCreateInstance(CLSID_ShellWindows, nullptr, CLSCTX_LOCAL_SERVER,
+                              IID_IShellWindows,
+                              reinterpret_cast<void**>(&sw))) ||
+      !sw) {
+    return out;
+  }
+  long count = 0;
+  if (FAILED(sw->get_Count(&count))) {
+    sw->Release();
+    return out;
+  }
+  for (long i = 0; i < count && out.size() < 12; ++i) {
+    VARIANT v;
+    VariantInit(&v);
+    V_VT(&v) = VT_I4;
+    V_I4(&v) = i;
+    IDispatch* disp = nullptr;
+    if (FAILED(sw->Item(v, &disp)) || !disp) {
+      VariantClear(&v);
+      continue;
+    }
+    IWebBrowser* browser = nullptr;
+    if (SUCCEEDED(disp->QueryInterface(
+            IID_IWebBrowser, reinterpret_cast<void**>(&browser))) &&
+        browser) {
+      IDispatch* doc = nullptr;
+      if (SUCCEEDED(browser->get_Document(&doc)) && doc) {
+        IShellFolderViewDual* view = nullptr;
+        if (SUCCEEDED(doc->QueryInterface(
+                IID_IShellFolderViewDual, reinterpret_cast<void**>(&view))) &&
+            view) {
+          Folder* folder = nullptr;
+          if (SUCCEEDED(view->get_Folder(&folder)) && folder) {
+            Folder2* folder2 = nullptr;
+            if (SUCCEEDED(folder->QueryInterface(
+                    IID_Folder2, reinterpret_cast<void**>(&folder2))) &&
+                folder2) {
+              FolderItem* self = nullptr;
+              if (SUCCEEDED(folder2->get_Self(&self)) && self) {
+                BSTR path = nullptr;
+                if (SUCCEEDED(self->get_Path(&path)) && path &&
+                    SysStringLen(path) > 0) {
+                  const std::wstring p(path);
+                  if (!p.empty() && p[0] != L':' && !IsDriveRootPath(p)) {
+                    out.push_back(p);
+                  }
+                }
+                if (path) {
+                  SysFreeString(path);
+                }
+                self->Release();
+              }
+              folder2->Release();
+            }
+            folder->Release();
+          }
+          view->Release();
+        }
+        doc->Release();
+      }
+      browser->Release();
+    }
+    disp->Release();
+    VariantClear(&v);
+  }
+  sw->Release();
+  return out;
+}
+
 }  // namespace
 
 bool SearchWindow::Create(HINSTANCE instance) {
@@ -106,73 +197,317 @@ bool SearchWindow::Create(HINSTANCE instance) {
   wc.lpfnWndProc = SearchWindow::WndProc;
   wc.hInstance = instance;
   wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
-  wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
+  wc.hbrBackground = CreateSolidBrush(RGB(0xEE, 0xF1, 0xF6));
   wc.lpszClassName = kClass;
   RegisterClassExW(&wc);
 
+  const RECT work = PrimaryWorkArea();
   hwnd_ = CreateWindowExW(
-      WS_EX_APPWINDOW, kClass, L"文件搜索", WS_OVERLAPPEDWINDOW, CW_USEDEFAULT,
-      CW_USEDEFAULT, 640, 480, nullptr, nullptr, instance, this);
+      WS_EX_TOOLWINDOW | WS_EX_TOPMOST, kClass, Tr("search_title").c_str(),
+      WS_POPUP | WS_THICKFRAME | WS_CLIPCHILDREN,
+      work.left + ((work.right - work.left) - kPanelW) / 2,
+      work.top + ((work.bottom - work.top) - kPanelH) / 4, kPanelW, kPanelH,
+      nullptr, nullptr, instance, this);
   if (!hwnd_) {
     return false;
   }
   SetWindowLongPtrW(hwnd_, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(this));
-  edit_ = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
-                          WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL, 12, 12, 480,
-                          26, hwnd_,
-                          reinterpret_cast<HMENU>(static_cast<INT_PTR>(kEdit)),
-                          instance, nullptr);
-  btn_ = CreateWindowW(L"BUTTON", L"搜索", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON |
-                                               BS_DEFPUSHBUTTON,
-                       500, 10, 100, 30, hwnd_,
-                       reinterpret_cast<HMENU>(static_cast<INT_PTR>(kBtn)),
-                       instance, nullptr);
-  list_ = CreateWindowExW(WS_EX_CLIENTEDGE, L"LISTBOX", L"",
-                          WS_CHILD | WS_VISIBLE | WS_VSCROLL | LBS_NOTIFY, 12, 50,
-                          590, 320, hwnd_,
-                          reinterpret_cast<HMENU>(static_cast<INT_PTR>(kList)),
-                          instance, nullptr);
-  btn_open_ = CreateWindowW(
-      L"BUTTON", L"打开", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 12, 380, 100,
-      28, hwnd_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kOpen)), instance,
-      nullptr);
-  btn_reveal_ = CreateWindowW(
-      L"BUTTON", L"在资源管理器中显示", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-      122, 380, 160, 28, hwnd_,
-      reinterpret_cast<HMENU>(static_cast<INT_PTR>(kReveal)), instance, nullptr);
-  g_old_edit = reinterpret_cast<WNDPROC>(
-      SetWindowLongPtrW(edit_, GWLP_WNDPROC,
-                        reinterpret_cast<LONG_PTR>(EditSubclass)));
+  CreateWebView();
   return true;
 }
 
-int SearchWindow::SelectedIndex() const {
-  if (!list_) {
-    return -1;
+bool SearchWindow::CreateWebView() {
+  if (web_available_ || controller_ || !hwnd_) {
+    return web_available_;
   }
-  return static_cast<int>(SendMessageW(list_, LB_GETCURSEL, 0, 0));
+  static bool host_reg = false;
+  if (!host_reg) {
+    WNDCLASSEXW wc{};
+    wc.cbSize = sizeof(wc);
+    wc.lpfnWndProc = DefWindowProcW;
+    wc.hInstance = GetModuleHandleW(nullptr);
+    wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+    wc.hbrBackground = CreateSolidBrush(RGB(0xF4, 0xF6, 0xF9));
+    wc.lpszClassName = kHostClass;
+    RegisterClassExW(&wc);
+    host_reg = true;
+  }
+  RECT rc{};
+  GetClientRect(hwnd_, &rc);
+  host_ = CreateWindowExW(0, kHostClass, L"", WS_CHILD | WS_VISIBLE, 0, 0,
+                          rc.right, rc.bottom, hwnd_, nullptr,
+                          GetModuleHandleW(nullptr), nullptr);
+  if (!host_) {
+    return false;
+  }
+  const std::wstring user_data =
+      JoinPath(NativeDataDir(), L"webview2-search");
+  CreateDirectoryW(user_data.c_str(), nullptr);
+  CreateCoreWebView2EnvironmentWithOptions(
+      nullptr, user_data.c_str(), nullptr,
+      Callback<ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler>(
+          [this](HRESULT result, ICoreWebView2Environment* env) -> HRESULT {
+            if (FAILED(result) || !env || !host_) {
+              return S_OK;
+            }
+            env->CreateCoreWebView2Controller(
+                host_,
+                Callback<
+                    ICoreWebView2CreateCoreWebView2ControllerCompletedHandler>(
+                    [this](HRESULT result2,
+                           ICoreWebView2Controller* controller) -> HRESULT {
+                      if (FAILED(result2) || !controller) {
+                        return S_OK;
+                      }
+                      controller_ = controller;
+                      controller->AddRef();
+                      ICoreWebView2* web = nullptr;
+                      controller->get_CoreWebView2(&web);
+                      if (!web) {
+                        return S_OK;
+                      }
+                      webview_ = web;
+                      web_available_ = true;
+                      ResizeWebView();
+                      controller->put_IsVisible(TRUE);
+                      web->add_WebMessageReceived(
+                          Callback<ICoreWebView2WebMessageReceivedEventHandler>(
+                              [this](ICoreWebView2*,
+                                     ICoreWebView2WebMessageReceivedEventArgs*
+                                         args) -> HRESULT {
+                                LPWSTR raw = nullptr;
+                                if (SUCCEEDED(args->TryGetWebMessageAsString(
+                                        &raw)) &&
+                                    raw) {
+                                  OnWebMessage(raw);
+                                  CoTaskMemFree(raw);
+                                }
+                                return S_OK;
+                              })
+                              .Get(),
+                          nullptr);
+                      web->add_NavigationCompleted(
+                          Callback<ICoreWebView2NavigationCompletedEventHandler>(
+                              [this](ICoreWebView2*,
+                                     ICoreWebView2NavigationCompletedEventArgs*
+                                         args) -> HRESULT {
+                                BOOL ok = FALSE;
+                                if (args) {
+                                  args->get_IsSuccess(&ok);
+                                }
+                                if (ok) {
+                                  web_ready_ = true;
+                                  PushState();
+                                }
+                                return S_OK;
+                              })
+                              .Get(),
+                          nullptr);
+                      NavigateHome();
+                      return S_OK;
+                    })
+                    .Get());
+            return S_OK;
+          })
+          .Get());
+  return true;
 }
 
-void SearchWindow::OpenSelected() {
-  const int sel = SelectedIndex();
-  if (sel >= 0 && sel < static_cast<int>(results_.size())) {
-    ShellExecuteW(nullptr, L"open", results_[static_cast<size_t>(sel)].c_str(),
-                  nullptr, nullptr, SW_SHOWNORMAL);
+void SearchWindow::DestroyWebView() {
+  if (webview_) {
+    static_cast<ICoreWebView2*>(webview_)->Release();
+    webview_ = nullptr;
+  }
+  if (controller_) {
+    static_cast<ICoreWebView2Controller*>(controller_)->Close();
+    static_cast<ICoreWebView2Controller*>(controller_)->Release();
+    controller_ = nullptr;
+  }
+  if (host_) {
+    DestroyWindow(host_);
+    host_ = nullptr;
+  }
+  web_available_ = false;
+  web_ready_ = false;
+}
+
+void SearchWindow::ResizeWebView() {
+  if (!host_ || !hwnd_) {
+    return;
+  }
+  RECT rc{};
+  GetClientRect(hwnd_, &rc);
+  MoveWindow(host_, 0, 0, rc.right, rc.bottom, TRUE);
+  if (controller_) {
+    RECT bounds{0, 0, rc.right, rc.bottom};
+    static_cast<ICoreWebView2Controller*>(controller_)->put_Bounds(bounds);
   }
 }
 
-void SearchWindow::RevealSelected() {
-  const int sel = SelectedIndex();
-  if (sel < 0 || sel >= static_cast<int>(results_.size())) {
+void SearchWindow::NavigateHome() {
+  if (!webview_) {
+    return;
+  }
+  const std::wstring html = MistFindAssetHtml(L"overlays\\search.html");
+  if (html.empty()) {
+    return;
+  }
+  std::wstring url = html;
+  for (auto& c : url) {
+    if (c == L'\\') {
+      c = L'/';
+    }
+  }
+  static_cast<ICoreWebView2*>(webview_)->Navigate((L"file:///" + url).c_str());
+}
+
+void SearchWindow::PushState(const std::wstring& status) {
+  if (!webview_ || !web_ready_) {
+    return;
+  }
+  std::wstring json = L"{\"type\":\"state\",\"all_drives\":";
+  json += options_.all_drives ? L"true" : L"false";
+  json += L",\"query\":\"";
+  json += MistJsonEscape(query_);
+  json += L"\",\"status\":\"";
+  json += MistJsonEscape(status.empty()
+                             ? (results_.empty() ? Tr("search_hint")
+                                                 : (std::to_wstring(results_.size()) +
+                                                    L" 项"))
+                             : status);
+  json += L"\",\"items\":[";
+  for (size_t i = 0; i < results_.size(); ++i) {
+    if (i) {
+      json += L',';
+    }
+    json += L'"';
+    json += MistJsonEscape(results_[i]);
+    json += L'"';
+  }
+  json += L"]}";
+  auto* web = static_cast<ICoreWebView2*>(webview_);
+  web->PostWebMessageAsString(json.c_str());
+  std::wstring script =
+      L"(function(){try{var m=" + json +
+      L";if(typeof window.applyState==='function'){window.applyState(m);}"
+      L"}catch(e){}})();";
+  web->ExecuteScript(script.c_str(), nullptr);
+}
+
+void SearchWindow::OnWebMessage(const std::wstring& json) {
+  const std::wstring type = MistJsonStringField(json, L"type");
+  if (type != L"action") {
+    return;
+  }
+  const std::wstring id = MistJsonStringField(json, L"id");
+  if (id == L"ready") {
+    PushState();
+  } else if (id == L"hide") {
+    Hide();
+  } else if (id == L"search") {
+    query_ = MistJsonStringField(json, L"value");
+    if (query_.empty()) {
+      query_ = MistJsonStringField(json, L"query");
+    }
+    const std::wstring all = MistJsonStringField(json, L"all_drives");
+    // JSON bool may not parse as string — use presence of true in raw
+    if (json.find(L"\"all_drives\":true") != std::wstring::npos) {
+      options_.all_drives = true;
+    } else if (json.find(L"\"all_drives\":false") != std::wstring::npos) {
+      options_.all_drives = false;
+    }
+    if (on_all_drives_) {
+      on_all_drives_(options_.all_drives);
+    }
+    RunSearch(query_);
+  } else if (id == L"all_drives") {
+    options_.all_drives =
+        json.find(L"\"value\":true") != std::wstring::npos;
+    if (on_all_drives_) {
+      on_all_drives_(options_.all_drives);
+    }
+  } else if (id == L"open") {
+    OpenAt(MistJsonIntField(json, L"index", -1));
+  } else if (id == L"reveal") {
+    RevealAt(MistJsonIntField(json, L"index", -1));
+  } else if (id == L"context") {
+    ContextAt(MistJsonIntField(json, L"index", -1),
+              MistJsonIntField(json, L"x", 0), MistJsonIntField(json, L"y", 0));
+  } else if (id == L"drag_start") {
+    dragging_ = true;
+    drag_origin_ = {MistJsonIntField(json, L"x", 0),
+                    MistJsonIntField(json, L"y", 0)};
+    RECT wr{};
+    GetWindowRect(hwnd_, &wr);
+    win_origin_ = {wr.left, wr.top};
+  } else if (id == L"drag_move" && dragging_) {
+    const int x = MistJsonIntField(json, L"x", 0);
+    const int y = MistJsonIntField(json, L"y", 0);
+    SetWindowPos(hwnd_, HWND_TOPMOST, win_origin_.x + (x - drag_origin_.x),
+                 win_origin_.y + (y - drag_origin_.y), 0, 0,
+                 SWP_NOSIZE | SWP_NOACTIVATE);
+  } else if (id == L"drag_end") {
+    dragging_ = false;
+  }
+}
+
+void SearchWindow::OpenAt(int index) {
+  if (index < 0 || index >= static_cast<int>(results_.size())) {
+    return;
+  }
+  ShellExecuteW(nullptr, L"open", results_[static_cast<size_t>(index)].c_str(),
+                nullptr, nullptr, SW_SHOWNORMAL);
+}
+
+void SearchWindow::RevealAt(int index) {
+  if (index < 0 || index >= static_cast<int>(results_.size())) {
     return;
   }
   const std::wstring arg =
-      L"/select,\"" + results_[static_cast<size_t>(sel)] + L"\"";
+      L"/select,\"" + results_[static_cast<size_t>(index)] + L"\"";
   ShellExecuteW(nullptr, L"open", L"explorer.exe", arg.c_str(), nullptr,
                 SW_SHOWNORMAL);
 }
 
+void SearchWindow::ContextAt(int index, int screen_x, int screen_y) {
+  if (index < 0 || index >= static_cast<int>(results_.size())) {
+    return;
+  }
+  const std::wstring path = results_[static_cast<size_t>(index)];
+  POINT pt{screen_x, screen_y};
+  const int cmd = TrackIconShellMenu(hwnd_, pt, false);
+  if (cmd == 1) {
+    OpenAt(index);
+  } else if (cmd == 2) {
+    RevealAt(index);
+  } else if (cmd == 4 || cmd == 5) {
+    CopyOrCutShellPath(hwnd_, path, cmd == 5);
+  } else if (cmd == 6) {
+    CopyShellPathText(hwnd_, path);
+  } else if (cmd == 7) {
+    std::wstring dest;
+    if (RenameShellPath(hwnd_, path, &dest) == IconFsResult::Ok) {
+      results_[static_cast<size_t>(index)] = dest;
+      if (on_path_replaced_) {
+        on_path_replaced_(path, dest);
+      }
+      PushState();
+    }
+  } else if (cmd == 8) {
+    ShowShellPathProperties(hwnd_, path);
+  } else if (cmd == 9) {
+    if (RecycleShellPath(hwnd_, path) == IconFsResult::Ok) {
+      results_.erase(results_.begin() + index);
+      if (on_removed_) {
+        on_removed_(path);
+      }
+      PushState();
+    }
+  }
+}
+
 void SearchWindow::Destroy() {
+  DestroyWebView();
   if (hwnd_) {
     DestroyWindow(hwnd_);
     hwnd_ = nullptr;
@@ -183,8 +518,14 @@ void SearchWindow::Show() {
   if (!hwnd_) {
     return;
   }
+  if (!web_available_) {
+    CreateWebView();
+  }
   ShowWindow(hwnd_, SW_SHOW);
+  SetWindowPos(hwnd_, HWND_TOPMOST, 0, 0, 0, 0,
+               SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
   SetForegroundWindow(hwnd_);
+  PushState();
 }
 
 void SearchWindow::Hide() {
@@ -193,30 +534,89 @@ void SearchWindow::Hide() {
   }
 }
 
-void SearchWindow::RunSearch() {
-  if (!edit_ || !list_) {
+void SearchWindow::RunSearch(const std::wstring& needle) {
+  results_.clear();
+  if (needle.empty()) {
+    PushState(Tr("search_hint"));
     return;
   }
-  wchar_t needle[256] = {};
-  GetWindowTextW(edit_, needle, 256);
-  results_.clear();
-  SendMessageW(list_, LB_RESETCONTENT, 0, 0);
-  if (needle[0] == L'\0') {
-    return;
+  PushState(L"搜索中…");
+
+  std::vector<std::wstring> roots;
+  if (options_.all_drives) {
+    const DWORD mask = GetLogicalDrives();
+    for (int i = 0; i < 26; ++i) {
+      if ((mask & (1u << i)) == 0) {
+        continue;
+      }
+      const wchar_t letter = static_cast<wchar_t>(L'A' + i);
+      const std::wstring root = std::wstring(1, letter) + L":\\";
+      const UINT type = GetDriveTypeW(root.c_str());
+      if (type == DRIVE_FIXED || type == DRIVE_REMOVABLE) {
+        roots.push_back(root);
+      }
+    }
+  } else {
+    if (options_.desktop) {
+      const std::wstring p = KnownFolder(FOLDERID_Desktop);
+      if (!p.empty()) {
+        roots.push_back(p);
+      }
+    }
+    if (options_.documents) {
+      const std::wstring p = KnownFolder(FOLDERID_Documents);
+      if (!p.empty()) {
+        roots.push_back(p);
+      }
+    }
+    if (options_.downloads) {
+      const std::wstring p = KnownFolder(FOLDERID_Downloads);
+      if (!p.empty()) {
+        roots.push_back(p);
+      }
+    }
+  }
+  if (!options_.all_drives && options_.include_open_folders) {
+    for (const auto& p : OpenExplorerFolders()) {
+      bool dup = false;
+      for (const auto& r : roots) {
+        if (_wcsicmp(r.c_str(), p.c_str()) == 0) {
+          dup = true;
+          break;
+        }
+      }
+      if (!dup) {
+        roots.push_back(p);
+      }
+    }
   }
 
-  // Prefer fd.exe when available.
-  const std::wstring fd = FindFdExe();
-  if (!fd.empty()) {
-    PWSTR profile = nullptr;
-    std::wstring root = L".";
-    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Profile, 0, nullptr, &profile)) &&
-        profile) {
-      root = profile;
-      CoTaskMemFree(profile);
+  if (roots.empty()) {
+    const std::wstring p = KnownFolder(FOLDERID_Desktop);
+    if (!p.empty()) {
+      roots.push_back(p);
     }
-    std::wstring cmd = L"\"" + fd + L"\" -i -a --max-results 200 " + needle +
-                       L" \"" + root + L"\"";
+  }
+
+  const int max_results =
+      options_.max_results > 0 ? options_.max_results : 50;
+  const int max_depth = options_.max_depth > 0 ? options_.max_depth : 12;
+  const int threads = options_.threads < 1 ? 1
+                      : (options_.threads > 64 ? 64 : options_.threads);
+
+  const std::wstring fd = FindFdExe();
+  if (!fd.empty() && !roots.empty()) {
+    std::wstring cmd = L"\"" + fd + L"\" -i -a --max-results " +
+                       std::to_wstring(max_results) + L" --max-depth " +
+                       std::to_wstring(max_depth) + L" --threads " +
+                       std::to_wstring(threads);
+    if (options_.include_hidden) {
+      cmd += L" --hidden --no-ignore-vcs";
+    }
+    cmd += L" " + needle;
+    for (const auto& root : roots) {
+      cmd += L" \"" + root + L"\"";
+    }
     SECURITY_ATTRIBUTES sa{sizeof(sa), nullptr, TRUE};
     HANDLE rd = nullptr, wr = nullptr;
     if (CreatePipe(&rd, &wr, &sa, 0)) {
@@ -260,12 +660,11 @@ void SearchWindow::RunSearch() {
               MultiByteToWideChar(CP_UTF8, 0, line.c_str(), -1, wide.data(), wn);
             }
             results_.push_back(wide);
-            SendMessageW(list_, LB_ADDSTRING, 0,
-                         reinterpret_cast<LPARAM>(wide.c_str()));
           }
           pos = eol + 1;
         }
         CloseHandle(rd);
+        PushState();
         return;
       }
       if (wr) {
@@ -275,16 +674,15 @@ void SearchWindow::RunSearch() {
     }
   }
 
-  int budget = 200;
-  PWSTR profile = nullptr;
-  if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Profile, 0, nullptr, &profile)) &&
-      profile) {
-    SearchRecursive(profile, needle, &results_, &budget);
-    CoTaskMemFree(profile);
+  int budget = max_results;
+  for (const auto& root : roots) {
+    if (budget <= 0) {
+      break;
+    }
+    SearchRecursive(root, needle, &results_, &budget, 0, max_depth,
+                    options_.include_hidden);
   }
-  for (const auto& r : results_) {
-    SendMessageW(list_, LB_ADDSTRING, 0, reinterpret_cast<LPARAM>(r.c_str()));
-  }
+  PushState();
 }
 
 LRESULT CALLBACK SearchWindow::WndProc(HWND hwnd, UINT msg, WPARAM wparam,
@@ -307,99 +705,20 @@ LRESULT CALLBACK SearchWindow::WndProc(HWND hwnd, UINT msg, WPARAM wparam,
 
 LRESULT SearchWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
   switch (msg) {
-    case WM_COMMAND:
-      if (LOWORD(wparam) == kBtn) {
-        RunSearch();
-        return 0;
-      }
-      if (LOWORD(wparam) == kOpen) {
-        OpenSelected();
-        return 0;
-      }
-      if (LOWORD(wparam) == kReveal) {
-        RevealSelected();
-        return 0;
-      }
-      if (LOWORD(wparam) == kList && HIWORD(wparam) == LBN_DBLCLK) {
-        OpenSelected();
-        return 0;
-      }
-      if (LOWORD(wparam) == kEdit && HIWORD(wparam) == EN_CHANGE) {
-        break;
-      }
-      break;
-    case WM_CONTEXTMENU:
-      if (reinterpret_cast<HWND>(wparam) == list_ ||
-          GetFocus() == list_) {
-        POINT pt{GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
-        if (pt.x == -1 && pt.y == -1) {
-          GetCursorPos(&pt);
-        }
-        const int sel = SelectedIndex();
-        if (sel < 0 || sel >= static_cast<int>(results_.size())) {
-          return 0;
-        }
-        const std::wstring path = results_[static_cast<size_t>(sel)];
-        const int cmd = TrackIconShellMenu(hwnd_, pt, false);
-        if (cmd == 1) {
-          OpenSelected();
-        } else if (cmd == 2) {
-          RevealSelected();
-        } else if (cmd == 4 || cmd == 5) {
-          CopyOrCutShellPath(hwnd_, path, cmd == 5);
-        } else if (cmd == 6) {
-          CopyShellPathText(hwnd_, path);
-        } else if (cmd == 7) {
-          std::wstring dest;
-          if (RenameShellPath(hwnd_, path, &dest) == IconFsResult::Ok) {
-            results_[static_cast<size_t>(sel)] = dest;
-            SendMessageW(list_, LB_DELETESTRING, static_cast<WPARAM>(sel), 0);
-            SendMessageW(list_, LB_INSERTSTRING, static_cast<WPARAM>(sel),
-                         reinterpret_cast<LPARAM>(dest.c_str()));
-            SendMessageW(list_, LB_SETCURSEL, static_cast<WPARAM>(sel), 0);
-            if (on_path_replaced_) {
-              on_path_replaced_(path, dest);
-            }
-          }
-        } else if (cmd == 8) {
-          ShowShellPathProperties(hwnd_, path);
-        } else if (cmd == 9) {
-          if (RecycleShellPath(hwnd_, path) == IconFsResult::Ok) {
-            results_.erase(results_.begin() + sel);
-            SendMessageW(list_, LB_DELETESTRING, static_cast<WPARAM>(sel), 0);
-            if (on_removed_) {
-              on_removed_(path);
-            }
-          }
-        }
-        return 0;
-      }
-      break;
-    case WM_KEYDOWN:
-      if (wparam == VK_RETURN) {
-        if (GetFocus() == edit_) {
-          RunSearch();
-        } else {
-          OpenSelected();
-        }
-        return 0;
-      }
-      break;
     case WM_SIZE:
-      if (edit_ && list_ && btn_ && btn_open_ && btn_reveal_) {
-        RECT rc{};
-        GetClientRect(hwnd_, &rc);
-        MoveWindow(edit_, 12, 12, rc.right - 140, 26, TRUE);
-        MoveWindow(btn_, rc.right - 116, 10, 100, 30, TRUE);
-        MoveWindow(list_, 12, 50, rc.right - 24, rc.bottom - 90, TRUE);
-        MoveWindow(btn_open_, 12, rc.bottom - 36, 100, 28, TRUE);
-        MoveWindow(btn_reveal_, 122, rc.bottom - 36, 160, 28, TRUE);
-      }
+      ResizeWebView();
       return 0;
+    case WM_KEYDOWN:
+      if (wparam == VK_ESCAPE) {
+        Hide();
+        return 0;
+      }
+      break;
     case WM_CLOSE:
       Hide();
       return 0;
     case WM_DESTROY:
+      DestroyWebView();
       hwnd_ = nullptr;
       return 0;
     default:

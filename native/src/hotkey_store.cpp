@@ -1,5 +1,6 @@
 #include "hotkey_store.h"
 
+#include "i18n.h"
 #include "paths_util.h"
 #include "prompt_text.h"
 
@@ -110,15 +111,16 @@ bool CaptureChord(HWND owner, UINT* mods, UINT* vk) {
 
   CapState st{};
   HWND hwnd = CreateWindowExW(
-      WS_EX_TOPMOST | WS_EX_DLGMODALFRAME, kCaptureClass, L"按下新快捷键…",
-      WS_POPUP | WS_CAPTION | WS_SYSMENU, 0, 0, 320, 120, owner, nullptr,
-      GetModuleHandleW(nullptr), nullptr);
+      WS_EX_TOPMOST | WS_EX_DLGMODALFRAME, kCaptureClass,
+      Tr("hk_capture_title").c_str(), WS_POPUP | WS_CAPTION | WS_SYSMENU, 0, 0,
+      320, 120, owner, nullptr, GetModuleHandleW(nullptr), nullptr);
   if (!hwnd) {
     return false;
   }
   SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(&st));
-  CreateWindowW(L"STATIC", L"请按下组合键（Esc 取消）", WS_CHILD | WS_VISIBLE, 20,
-                30, 280, 24, hwnd, nullptr, GetModuleHandleW(nullptr), nullptr);
+  CreateWindowW(L"STATIC", Tr("hk_capture_hint").c_str(),
+                WS_CHILD | WS_VISIBLE, 20, 30, 280, 24, hwnd, nullptr,
+                GetModuleHandleW(nullptr), nullptr);
   const int sw = GetSystemMetrics(SM_CXSCREEN);
   const int sh = GetSystemMetrics(SM_CYSCREEN);
   SetWindowPos(hwnd, nullptr, (sw - 320) / 2, (sh - 120) / 2, 320, 120,
@@ -148,25 +150,38 @@ bool CaptureChord(HWND owner, UINT* mods, UINT* vk) {
 }  // namespace
 
 std::vector<HotkeyDef> DefaultHotkeys() {
+  // Match config/default_settings.json + HOTKEY_LABELS (Python).
+  // Extra entries (settings/notes/…) ship unbound so用户可在设置里自行绑定.
+  auto H = [](const char* id, const char* tr_key, UINT mods, UINT vk) {
+    return HotkeyDef{id, Tr(tr_key), mods, vk};
+  };
   return {
-      {"settings", L"设置", MOD_CONTROL | MOD_SHIFT, 'S'},
-      {"notes", L"便签", MOD_CONTROL | MOD_SHIFT, 'N'},
-      {"fences", L"显示/隐藏分区", MOD_CONTROL | MOD_SHIFT, 'F'},
-      {"peek", L"Peek", MOD_CONTROL, VK_SPACE},
-      {"page1", L"第 1 页", MOD_CONTROL | MOD_ALT, '1'},
-      {"page2", L"第 2 页", MOD_CONTROL | MOD_ALT, '2'},
-      {"search", L"文件搜索", MOD_CONTROL | MOD_ALT, '4'},
-      {"shot", L"区域截图", MOD_CONTROL | MOD_SHIFT, '1'},
-      {"fullscreen", L"全屏截图", MOD_CONTROL | MOD_SHIFT, '2'},
-      {"record", L"录屏开/关", MOD_CONTROL | MOD_SHIFT, 'R'},
-      {"organize", L"虚拟整理", MOD_CONTROL | MOD_SHIFT, 'O'},
-      {"vault", L"保险库", MOD_CONTROL | MOD_SHIFT, 'V'},
-      {"todos", L"待办", MOD_CONTROL | MOD_SHIFT, 'T'},
+      H("organize", "hk_organize", MOD_CONTROL | MOD_SHIFT, 'O'),
+      H("toggle_fences", "hk_toggle_fences", MOD_CONTROL | MOD_SHIFT, 'F'),
+      H("toggle_icons", "hk_toggle_icons", MOD_CONTROL | MOD_SHIFT, 'H'),
+      H("peek_fences", "hk_peek_fences", MOD_CONTROL, VK_SPACE),
+      H("page_next", "hk_page_next", MOD_CONTROL | MOD_SHIFT, VK_RIGHT),
+      H("page_prev", "hk_page_prev", MOD_CONTROL | MOD_SHIFT, VK_LEFT),
+      H("screenshot", "hk_screenshot", MOD_CONTROL | MOD_ALT, '1'),
+      H("show_screenshot", "hk_show_screenshot", MOD_CONTROL | MOD_ALT, '2'),
+      H("screen_record", "hk_screen_record", MOD_CONTROL | MOD_ALT, '3'),
+      H("file_search", "hk_file_search", MOD_CONTROL | MOD_ALT, '4'),
+      H("calculator", "hk_calculator", MOD_CONTROL | MOD_ALT, 'C'),
+      H("settings", "hk_settings", 0, 0),
+      H("notes", "hk_notes", 0, 0),
+      H("todos", "hk_todos", 0, 0),
+      H("vault", "hk_vault", 0, 0),
   };
 }
 
 std::wstring FormatHotkey(UINT modifiers, UINT vk) {
+  if (vk == 0) {
+    return {};
+  }
   std::wstring s;
+  if (modifiers & MOD_WIN) {
+    s += L"Win+";
+  }
   if (modifiers & MOD_CONTROL) {
     s += L"Ctrl+";
   }
@@ -178,6 +193,16 @@ std::wstring FormatHotkey(UINT modifiers, UINT vk) {
   }
   if (vk == VK_SPACE) {
     s += L"Space";
+  } else if (vk == VK_LEFT) {
+    s += L"Left";
+  } else if (vk == VK_RIGHT) {
+    s += L"Right";
+  } else if (vk == VK_UP) {
+    s += L"Up";
+  } else if (vk == VK_DOWN) {
+    s += L"Down";
+  } else if (vk >= VK_F1 && vk <= VK_F12) {
+    s += L"F" + std::to_wstring(vk - VK_F1 + 1);
   } else if (vk >= '0' && vk <= '9') {
     s.push_back(static_cast<wchar_t>(vk));
   } else if (vk >= 'A' && vk <= 'Z') {
@@ -263,8 +288,10 @@ bool ParseHotkey(const std::wstring& text, UINT* modifiers, UINT* vk) {
     }
     return false;
   };
-  while (eat(L"Ctrl+", MOD_CONTROL) || eat(L"Alt+", MOD_ALT) ||
-         eat(L"Shift+", MOD_SHIFT)) {
+  while (eat(L"Win+", MOD_WIN) || eat(L"Windows+", MOD_WIN) ||
+         eat(L"Meta+", MOD_WIN) || eat(L"Super+", MOD_WIN) ||
+         eat(L"Ctrl+", MOD_CONTROL) || eat(L"Control+", MOD_CONTROL) ||
+         eat(L"Alt+", MOD_ALT) || eat(L"Shift+", MOD_SHIFT)) {
   }
   if (t.empty()) {
     return false;
@@ -272,6 +299,29 @@ bool ParseHotkey(const std::wstring& text, UINT* modifiers, UINT* vk) {
   if (_wcsicmp(t.c_str(), L"Space") == 0) {
     *vk = VK_SPACE;
     return true;
+  }
+  if (_wcsicmp(t.c_str(), L"Left") == 0) {
+    *vk = VK_LEFT;
+    return true;
+  }
+  if (_wcsicmp(t.c_str(), L"Right") == 0) {
+    *vk = VK_RIGHT;
+    return true;
+  }
+  if (_wcsicmp(t.c_str(), L"Up") == 0) {
+    *vk = VK_UP;
+    return true;
+  }
+  if (_wcsicmp(t.c_str(), L"Down") == 0) {
+    *vk = VK_DOWN;
+    return true;
+  }
+  if (t.size() >= 2 && (t[0] == L'F' || t[0] == L'f')) {
+    const int n = _wtoi(t.c_str() + 1);
+    if (n >= 1 && n <= 12) {
+      *vk = static_cast<UINT>(VK_F1 + n - 1);
+      return true;
+    }
   }
   if (t.size() == 1) {
     wchar_t c = t[0];
@@ -284,39 +334,40 @@ bool ParseHotkey(const std::wstring& text, UINT* modifiers, UINT* vk) {
   return false;
 }
 
+bool CaptureHotkeyChord(HWND owner, UINT* mods, UINT* vk) {
+  return CaptureChord(owner, mods, vk);
+}
+
+std::vector<std::wstring> HotkeyFallbacks(const std::string& id) {
+  // Mirror Python HOTKEY_FALLBACKS (hotkey_manager.py). Only actions whose
+  // binding commonly collides get alternates; the rest return empty.
+  if (id == "screenshot") {
+    return {L"Ctrl+Alt+1", L"Ctrl+Shift+S", L"Ctrl+Alt+S"};
+  }
+  if (id == "show_screenshot") {
+    return {L"Ctrl+Alt+2", L"Ctrl+Shift+P", L"Ctrl+Alt+P"};
+  }
+  if (id == "screen_record") {
+    return {L"Ctrl+Alt+3", L"Ctrl+Shift+R"};
+  }
+  if (id == "file_search") {
+    return {L"Ctrl+Alt+4", L"Ctrl+Alt+F", L"Ctrl+Alt+Space"};
+  }
+  if (id == "calculator") {
+    return {L"Ctrl+Alt+C"};
+  }
+  return {};
+}
+
 void EditHotkeysDialog(HWND owner, std::vector<HotkeyDef>* keys) {
+  // Legacy MessageBox editor — prefer settings UI. Keep for tray fallback:
+  // capture first item only if list empty path unused.
   if (!keys || keys->empty()) {
     return;
   }
-  std::wstring msg = L"当前快捷键：\n\n";
-  for (size_t i = 0; i < keys->size(); ++i) {
-    msg += std::to_wstring(i + 1) + L". " + (*keys)[i].label + L"  =  " +
-           FormatHotkey((*keys)[i].modifiers, (*keys)[i].vk) + L"\n";
+  std::wstring msg = L"请在「设置 → 快捷键」中修改。\n\n当前绑定：\n\n";
+  for (const auto& k : *keys) {
+    msg += k.label + L"  =  " + FormatHotkey(k.modifiers, k.vk) + L"\n";
   }
-  msg += L"\n是 = 修改某一项　否 = 关闭";
-  if (MessageBoxW(owner, msg.c_str(), L"快捷键", MB_YESNO | MB_ICONQUESTION) !=
-      IDYES) {
-    return;
-  }
-  const std::wstring prompt =
-      L"输入编号 (1-" + std::to_wstring(keys->size()) + L")：";
-  const std::wstring ans = PromptText(owner, L"修改快捷键", prompt.c_str(), L"1");
-  if (ans.empty()) {
-    return;
-  }
-  const int idx = _wtoi(ans.c_str()) - 1;
-  if (idx < 0 || idx >= static_cast<int>(keys->size())) {
-    MessageBoxW(owner, L"编号无效。", L"快捷键", MB_OK | MB_ICONWARNING);
-    return;
-  }
-  UINT mods = 0, vk = 0;
-  if (!CaptureChord(owner, &mods, &vk)) {
-    return;
-  }
-  (*keys)[static_cast<size_t>(idx)].modifiers = mods;
-  (*keys)[static_cast<size_t>(idx)].vk = vk;
-  SaveHotkeys(*keys);
-  MessageBoxW(owner,
-              (L"已更新为 " + FormatHotkey(mods, vk) + L"\n重启热键注册中…").c_str(),
-              L"快捷键", MB_OK | MB_ICONINFORMATION);
+  MessageBoxW(owner, msg.c_str(), L"快捷键", MB_OK | MB_ICONINFORMATION);
 }

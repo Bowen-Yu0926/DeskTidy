@@ -4,8 +4,43 @@
 
 #include <string>
 
+// Messages posted back to `owner` (the App message window) by the background
+// update workers. lParam carries a heap-allocated result the UI thread frees.
+constexpr UINT kMsgUpdateCheckDone = WM_APP + 101;
+constexpr UINT kMsgUpdateInstallDone = WM_APP + 102;
+constexpr UINT kMsgUpdateProgress = WM_APP + 103;
+
 // Current product version (matches version.rc FileVersion).
 std::wstring NativeProductVersion();
 
-// Query GitHub latest release; prompt to open page when newer.
+struct UpdateCheckResult {
+  // 0 = error, 1 = up-to-date, 2 = update available.
+  int status = 0;
+  bool interactive = false;  // manual check toasts progress / up-to-date.
+  std::wstring current;
+  std::wstring latest;
+  std::wstring html_url;
+  std::wstring error;
+};
+
+struct UpdateInstallResult {
+  bool ok = false;            // downloaded + verified + launched.
+  bool has_checksum = false;  // release published a sha256 digest.
+  bool verify_ok = false;     // digest (or size) verification passed.
+  std::wstring path;          // installer path — kept so failures can be shown.
+  std::wstring error;
+};
+
+// Start a background update check. Posts kMsgUpdateCheckDone with a heap
+// UpdateCheckResult*. force=true ignores the 6h disk cache.
+void StartUpdateCheckAsync(HWND owner, bool force, bool interactive);
+
+// Start background download → verify → post kMsgUpdateInstallDone. The caller
+// (UI thread) asks the user to confirm and then calls LaunchInstallerSilent.
+void StartUpdateInstallAsync(HWND owner);
+
+// Launch the downloaded installer silently (Inno Setup). Returns false + err.
+bool LaunchInstallerSilent(const std::wstring& path, std::wstring* err);
+
+// Legacy manual-check entry (tools_misc OpenUpdatePage): async + forced refresh.
 void CheckForUpdates(HWND owner);

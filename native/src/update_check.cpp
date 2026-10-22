@@ -3,17 +3,24 @@
 #include "paths_util.h"
 
 #include <Shellapi.h>
+#include <bcrypt.h>
 #include <winhttp.h>
 
+#include "log.h"
+#include "toast.h"
+
 #include <algorithm>
+#include <cctype>
 #include <cstdlib>
 #include <fstream>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <vector>
 
 #pragma comment(lib, "winhttp.lib")
 #pragma comment(lib, "version.lib")
+#pragma comment(lib, "bcrypt.lib")
 
 namespace {
 
@@ -22,6 +29,7 @@ constexpr wchar_t kPath[] =
     L"/repos/Bowen-Yu0926/DeskTidy-Releases/releases/latest";
 constexpr wchar_t kReleasesPage[] =
     L"https://github.com/Bowen-Yu0926/DeskTidy-Releases/releases/latest";
+constexpr const wchar_t* kInstallerPrefix = L"DeskTidy_Setup_";
 
 std::vector<int> ParseVersion(const std::wstring& raw) {
   std::wstring t = raw;
@@ -76,6 +84,97 @@ bool IsNewer(const std::wstring& latest, const std::wstring& current) {
     }
   }
   return false;
+}
+
+std::wstring Widen(const std::string& s) {
+  if (s.empty()) {
+    return {};
+  }
+  const int n = MultiByteToWideChar(CP_UTF8, 0, s.c_str(),
+                                    static_cast<int>(s.size()), nullptr, 0);
+  std::wstring out(n, L'\0');
+  MultiByteToWideChar(CP_UTF8, 0, s.c_str(), static_cast<int>(s.size()),
+                      out.data(), n);
+  return out;
+}
+
+std::wstring ToLowerW(const std::wstring& s) {
+  std::wstring o = s;
+  for (auto& c : o) {
+    if (c >= L'A' && c <= L'Z') {
+      c = c - L'A' + L'a';
+    }
+  }
+  return o;
+}
+
+std::wstring UrlFilename(const std::wstring& url) {
+  const size_t slash = url.find_last_of(L'/');
+  std::wstring name = (slash == std::wstring::npos) ? url : url.substr(slash + 1);
+  const size_t q = name.find_first_of(L"?#");
+  if (q != std::wstring::npos) {
+    name.resize(q);
+  }
+  return name;
+}
+
+// Whitelist hosts for installer/digest bytes (mirrors Python update_installer).
+bool AllowedDownloadHost(const std::wstring& url) {
+  URL_COMPONENTS uc{};
+  wchar_t host[256] = {};
+  uc.dwStructSize = sizeof(uc);
+  uc.lpszHostName = host;
+  uc.dwHostNameLength = 256;
+  if (!WinHttpCrackUrl(url.c_str(), 0, 0, &uc)) {
+    return false;
+  }
+  const std::wstring h = ToLowerW(host);
+  const std::wstring suffix = L".githubusercontent.com";
+  return h == L"github.com" || h == L"objects.githubusercontent.com" ||
+         (h.size() >= suffix.size() &&
+          h.compare(h.size() - suffix.size(), suffix.size(), suffix) == 0);
+}
+
+std::string JsonStringField(const std::string& json, const char* key) {
+  const std::string needle = std::string("\"") + key + "\"";
+  size_t p = json.find(needle);
+  if (p == std::string::npos) {
+    return {};
+  }
+  p = json.find('"', json.find(':', p) + 1);
+  if (p == std::string::npos) {
+    return {};
+  }
+  ++p;
+  std::string v;
+  while (p < json.size() && json[p] != '"') {
+    if (json[p] == '\\' && p + 1 < json.size()) {
+      ++p;
+    }
+    v.push_back(json[p++]);
+  }
+  return v;
+}
+
+std::string JsonNumberField(const std::string& json, const char* key) {
+  const std::string needle = std::string("\"") + key + "\"";
+  size_t p = json.find(needle);
+  if (p == std::string::npos) {
+    return {};
+  }
+  p = json.find(':', p + needle.size());
+  if (p == std::string::npos) {
+    return {};
+  }
+  size_t s = p + 1;
+  while (s < json.size() && (json[s] == ' ' || json[s] == '\t')) {
+    ++s;
+  }
+  size_t e = s;
+  while (e < json.size() && json[e] >= '0' && json[e] <= '9') {
+    ++e;
+  }
+  return json.substr(s, e - s);
 }
 
 bool HttpGetJson(std::string* body, std::wstring* err) {
@@ -145,69 +244,238 @@ bool HttpGetJson(std::string* body, std::wstring* err) {
   return true;
 }
 
-std::string JsonStringField(const std::string& json, const char* key) {
-  const std::string needle = std::string("\"") + key + "\"";
-  size_t p = json.find(needle);
-  if (p == std::string::npos) {
-    return {};
+// Generic HTTPS GET (text) restricted to the allow-list — used for digest files.
+bool HttpGetTextUrl(const std::wstring& url, std::string* body,
+                    std::wstring* err) {
+  if (!AllowedDownloadHost(url)) {
+    *err = L"拒绝从非白名单主机下载";
+    return false;
   }
-  p = json.find('"', json.find(':', p) + 1);
-  if (p == std::string::npos) {
-    return {};
+  URL_COMPONENTS uc{};
+  wchar_t host[256] = {};
+  wchar_t path[2048] = {};
+  uc.dwStructSize = sizeof(uc);
+  uc.lpszHostName = host;
+  uc.dwHostNameLength = 256;
+  uc.lpszUrlPath = path;
+  uc.dwUrlPathLength = 2048;
+  if (!WinHttpCrackUrl(url.c_str(), 0, 0, &uc)) {
+    *err = L"无法解析链接";
+    return false;
   }
-  ++p;
-  std::string v;
-  while (p < json.size() && json[p] != '"') {
-    if (json[p] == '\\' && p + 1 < json.size()) {
-      ++p;
+  HINTERNET session =
+      WinHttpOpen(L"DeskTidyNative-Updater", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
+                  WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+  if (!session) {
+    *err = L"WinHttpOpen failed";
+    return false;
+  }
+  WinHttpSetTimeouts(session, 8000, 8000, 8000, 8000);
+  HINTERNET conn =
+      WinHttpConnect(session, host, INTERNET_DEFAULT_HTTPS_PORT, 0);
+  HINTERNET req = conn ? WinHttpOpenRequest(
+                             conn, L"GET", path, nullptr, WINHTTP_NO_REFERER,
+                             WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_SECURE)
+                       : nullptr;
+  if (!req) {
+    *err = L"open request failed";
+    if (conn) {
+      WinHttpCloseHandle(conn);
     }
-    v.push_back(json[p++]);
+    WinHttpCloseHandle(session);
+    return false;
   }
-  return v;
-}
-
-std::wstring Widen(const std::string& s) {
-  if (s.empty()) {
-    return {};
+  if (!WinHttpSendRequest(req, WINHTTP_NO_ADDITIONAL_HEADERS, 0,
+                          WINHTTP_NO_REQUEST_DATA, 0, 0, 0) ||
+      !WinHttpReceiveResponse(req, nullptr)) {
+    *err = L"request failed";
+    WinHttpCloseHandle(req);
+    WinHttpCloseHandle(conn);
+    WinHttpCloseHandle(session);
+    return false;
   }
-  const int n = MultiByteToWideChar(CP_UTF8, 0, s.c_str(),
-                                    static_cast<int>(s.size()), nullptr, 0);
-  std::wstring out(n, L'\0');
-  MultiByteToWideChar(CP_UTF8, 0, s.c_str(), static_cast<int>(s.size()),
-                      out.data(), n);
-  return out;
-}
-
-std::wstring FindExeAssetUrl(const std::string& json) {
-  const std::string key = "browser_download_url";
-  size_t p = 0;
-  while ((p = json.find(key, p)) != std::string::npos) {
-    const size_t colon = json.find(':', p + key.size());
-    if (colon == std::string::npos) {
+  DWORD status = 0;
+  DWORD status_sz = sizeof(status);
+  WinHttpQueryHeaders(req, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+                      WINHTTP_HEADER_NAME_BY_INDEX, &status, &status_sz,
+                      WINHTTP_NO_HEADER_INDEX);
+  std::string out;
+  for (;;) {
+    DWORD avail = 0;
+    if (!WinHttpQueryDataAvailable(req, &avail) || avail == 0) {
       break;
     }
-    const size_t q1 = json.find('"', colon + 1);
-    if (q1 == std::string::npos) {
+    std::string chunk(avail, '\0');
+    DWORD read = 0;
+    if (!WinHttpReadData(req, chunk.data(), avail, &read)) {
       break;
     }
-    size_t q2 = q1 + 1;
-    std::string url;
-    while (q2 < json.size() && json[q2] != '"') {
-      if (json[q2] == '\\' && q2 + 1 < json.size()) {
-        ++q2;
+    chunk.resize(read);
+    out += chunk;
+  }
+  WinHttpCloseHandle(req);
+  WinHttpCloseHandle(conn);
+  WinHttpCloseHandle(session);
+  if (status < 200 || status >= 300) {
+    *err = L"HTTP " + std::to_wstring(status);
+    return false;
+  }
+  *body = std::move(out);
+  return true;
+}
+
+std::string FindHex64(const std::string& text) {
+  size_t i = 0;
+  while (i < text.size()) {
+    if (isxdigit(static_cast<unsigned char>(text[i]))) {
+      size_t j = i;
+      while (j < text.size() && isxdigit(static_cast<unsigned char>(text[j]))) {
+        ++j;
       }
-      url.push_back(json[q2++]);
+      if (j - i == 64) {
+        return text.substr(i, 64);
+      }
+      i = j;
+    } else {
+      ++i;
     }
-    if (url.size() > 4 && url.rfind(".exe") == url.size() - 4) {
-      return Widen(url);
-    }
-    p = q2;
   }
   return {};
 }
 
-bool DownloadToFile(const std::wstring& url, const std::wstring& dest,
-                    std::wstring* err) {
+std::string FindSha256InText(const std::string& text,
+                             const std::string& asset_name) {
+  if (!asset_name.empty()) {
+    size_t p = 0;
+    while ((p = text.find(asset_name, p)) != std::string::npos) {
+      const size_t end = (std::min)(text.size(), p + asset_name.size() + 512);
+      const std::string tok = FindHex64(text.substr(p, end - p));
+      if (!tok.empty()) {
+        return tok;
+      }
+      p += asset_name.size();
+    }
+  }
+  return FindHex64(text);
+}
+
+// Find the largest matching installer asset. Fills name/url/size.
+bool FindExeAsset(const std::string& json, std::string* name,
+                  std::wstring* url, long long* size) {
+  long long best = -1;
+  std::string best_name;
+  std::string best_url;
+  size_t pos = 0;
+  while (true) {
+    const size_t start = json.find('{', pos);
+    if (start == std::string::npos) {
+      break;
+    }
+    const size_t end = json.find('}', start);
+    if (end == std::string::npos) {
+      break;
+    }
+    pos = end + 1;
+    const std::string obj = json.substr(start, end - start + 1);
+    if (obj.find("browser_download_url") == std::string::npos) {
+      continue;
+    }
+    const std::string nm = JsonStringField(obj, "name");
+    const std::string ur = JsonStringField(obj, "browser_download_url");
+    if (nm.empty() || ur.empty()) {
+      continue;
+    }
+    if (nm.size() < 4 || nm.rfind(".exe") != nm.size() - 4) {
+      continue;
+    }
+    if (nm.rfind("DeskTidy_Setup_", 0) != 0) {
+      continue;
+    }
+    const std::string szs = JsonNumberField(obj, "size");
+    const long long sz = szs.empty() ? 0 : std::atoll(szs.c_str());
+    if (sz > best) {
+      best = sz;
+      best_name = nm;
+      best_url = ur;
+    }
+  }
+  if (best < 0) {
+    return false;
+  }
+  if (name) {
+    *name = best_name;
+  }
+  if (url) {
+    *url = Widen(best_url);
+  }
+  if (size) {
+    *size = best;
+  }
+  return true;
+}
+
+// sha256 for an asset: release body near the name, then a sidecar digest file.
+std::string FindChecksum(const std::string& json, const std::string& asset_name) {
+  const std::string body = JsonStringField(json, "body");
+  std::string tok = FindSha256InText(body, asset_name);
+  if (!tok.empty()) {
+    return tok;
+  }
+  const std::wstring sidecars[] = {
+      Widen(asset_name) + L".sha256", Widen(asset_name) + L".sha256sum",
+      Widen(asset_name) + L".sha256.txt"};
+  size_t pos = 0;
+  while (true) {
+    const size_t start = json.find('{', pos);
+    if (start == std::string::npos) {
+      break;
+    }
+    const size_t end = json.find('}', start);
+    if (end == std::string::npos) {
+      break;
+    }
+    pos = end + 1;
+    const std::string obj = json.substr(start, end - start + 1);
+    const std::string nm = JsonStringField(obj, "name");
+    if (nm.empty()) {
+      continue;
+    }
+    bool match = false;
+    for (const auto& s : sidecars) {
+      if (ToLowerW(Widen(nm)) == ToLowerW(s)) {
+        match = true;
+        break;
+      }
+    }
+    if (!match) {
+      continue;
+    }
+    const std::string ur = JsonStringField(obj, "browser_download_url");
+    if (ur.empty()) {
+      continue;
+    }
+    std::string txt;
+    std::wstring err;
+    if (HttpGetTextUrl(Widen(ur), &txt, &err)) {
+      tok = FindHex64(txt);
+      if (!tok.empty()) {
+        return tok;
+      }
+    } else {
+      LogLine(L"[update] sidecar digest fetch failed: %s", err.c_str());
+    }
+  }
+  return {};
+}
+
+// Chunked streaming download to dir (atomic .part rename) with progress posts.
+bool DownloadAsset(const std::wstring& url, const std::wstring& dir,
+                   HWND progress_hwnd, std::wstring* err,
+                   std::wstring* out_path, long long* out_bytes) {
+  if (!AllowedDownloadHost(url)) {
+    *err = L"拒绝从非白名单主机下载";
+    return false;
+  }
   URL_COMPONENTS uc{};
   wchar_t host[256] = {};
   wchar_t path[2048] = {};
@@ -220,6 +488,12 @@ bool DownloadToFile(const std::wstring& url, const std::wstring& dest,
     *err = L"无法解析下载地址";
     return false;
   }
+  std::wstring fname = UrlFilename(url);
+  if (fname.empty()) {
+    fname = L"DeskTidy_Setup_download.exe";
+  }
+  const std::wstring final_path = JoinPath(dir, fname);
+  const std::wstring tmp_path = final_path + L".part";
   HINTERNET session =
       WinHttpOpen(L"DeskTidyNative-Updater", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
                   WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
@@ -227,7 +501,7 @@ bool DownloadToFile(const std::wstring& url, const std::wstring& dest,
     *err = L"WinHttpOpen failed";
     return false;
   }
-  WinHttpSetTimeouts(session, 8000, 8000, 60000, 60000);
+  WinHttpSetTimeouts(session, 8000, 8000, 120000, 120000);
   HINTERNET conn =
       WinHttpConnect(session, host, INTERNET_DEFAULT_HTTPS_PORT, 0);
   HINTERNET req = conn ? WinHttpOpenRequest(
@@ -252,7 +526,13 @@ bool DownloadToFile(const std::wstring& url, const std::wstring& dest,
     WinHttpCloseHandle(session);
     return false;
   }
-  std::ofstream out(dest, std::ios::binary);
+  DWORD content_len = 0;
+  DWORD cl_sz = sizeof(content_len);
+  WinHttpQueryHeaders(req,
+                      WINHTTP_QUERY_CONTENT_LENGTH | WINHTTP_QUERY_FLAG_NUMBER,
+                      WINHTTP_HEADER_NAME_BY_INDEX, &content_len, &cl_sz,
+                      WINHTTP_NO_HEADER_INDEX);
+  std::ofstream out(tmp_path, std::ios::binary);
   if (!out) {
     *err = L"无法写入安装包";
     WinHttpCloseHandle(req);
@@ -260,9 +540,13 @@ bool DownloadToFile(const std::wstring& url, const std::wstring& dest,
     WinHttpCloseHandle(session);
     return false;
   }
+  long long done = 0;
+  int last_milestone = -1;
+  bool ok = true;
   for (;;) {
     DWORD avail = 0;
     if (!WinHttpQueryDataAvailable(req, &avail)) {
+      ok = false;
       break;
     }
     if (avail == 0) {
@@ -271,42 +555,76 @@ bool DownloadToFile(const std::wstring& url, const std::wstring& dest,
     std::string chunk(avail, '\0');
     DWORD read = 0;
     if (!WinHttpReadData(req, chunk.data(), avail, &read) || read == 0) {
+      ok = false;
       break;
     }
     out.write(chunk.data(), read);
+    done += read;
+    if (content_len > 0 && progress_hwnd) {
+      const int pct = static_cast<int>(done * 100 / content_len);
+      const int milestone = pct - (pct % 10);
+      if (milestone != last_milestone) {
+        last_milestone = milestone;
+        PostMessageW(progress_hwnd, kMsgUpdateProgress,
+                     static_cast<WPARAM>(pct), 0);
+      }
+    }
   }
+  out.close();
   WinHttpCloseHandle(req);
   WinHttpCloseHandle(conn);
   WinHttpCloseHandle(session);
+  if (!ok) {
+    DeleteFileW(tmp_path.c_str());
+    *err = L"下载中断";
+    return false;
+  }
+  MoveFileExW(tmp_path.c_str(), final_path.c_str(), MOVEFILE_REPLACE_EXISTING);
+  if (out_path) {
+    *out_path = final_path;
+  }
+  if (out_bytes) {
+    *out_bytes = done;
+  }
   return true;
 }
 
-}  // namespace
-
-std::wstring NativeProductVersion() {
-  wchar_t path[MAX_PATH] = {};
-  if (!GetModuleFileNameW(nullptr, path, MAX_PATH)) {
-    return L"0.0.0";
+bool ComputeSha256Hex(const std::wstring& path, std::string* hex) {
+  std::ifstream in(path, std::ios::binary);
+  if (!in) {
+    return false;
   }
-  DWORD handle = 0;
-  const DWORD size = GetFileVersionInfoSizeW(path, &handle);
-  if (!size) {
-    return L"4.0.30";
+  BCRYPT_ALG_HANDLE alg = nullptr;
+  if (BCryptOpenAlgorithmProvider(&alg, BCRYPT_SHA256_ALGORITHM, nullptr, 0) !=
+      0) {
+    return false;
   }
-  std::vector<BYTE> buf(size);
-  if (!GetFileVersionInfoW(path, 0, size, buf.data())) {
-    return L"4.0.30";
+  BCRYPT_HASH_HANDLE h = nullptr;
+  if (BCryptCreateHash(alg, &h, nullptr, 0, nullptr, 0, 0) != 0) {
+    BCryptCloseAlgorithmProvider(alg, 0);
+    return false;
   }
-  VS_FIXEDFILEINFO* fi = nullptr;
-  UINT len = 0;
-  if (!VerQueryValueW(buf.data(), L"\\", reinterpret_cast<void**>(&fi), &len) ||
-      !fi) {
-    return L"4.0.30";
+  char buf[65536];
+  while (in) {
+    in.read(buf, sizeof(buf));
+    const std::streamsize n = in.gcount();
+    if (n > 0) {
+      BCryptHashData(h, reinterpret_cast<PUCHAR>(buf), static_cast<ULONG>(n), 0);
+    }
   }
-  wchar_t ver[64];
-  swprintf_s(ver, L"%u.%u.%u", HIWORD(fi->dwFileVersionMS),
-             LOWORD(fi->dwFileVersionMS), HIWORD(fi->dwFileVersionLS));
-  return ver;
+  BYTE digest[32] = {};
+  BCryptFinishHash(h, digest, 32, 0);
+  BCryptDestroyHash(h);
+  BCryptCloseAlgorithmProvider(alg, 0);
+  static const char* kHex = "0123456789abcdef";
+  std::string out;
+  out.reserve(64);
+  for (int i = 0; i < 32; ++i) {
+    out.push_back(kHex[digest[i] >> 4]);
+    out.push_back(kHex[digest[i] & 15]);
+  }
+  *hex = out;
+  return true;
 }
 
 ULONGLONG NowFileTime() {
@@ -338,7 +656,8 @@ bool LoadUpdateCache(std::wstring* latest, std::wstring* html, bool* fresh) {
   if (p != std::string::npos) {
     const auto c = json.find(':', p);
     if (c != std::string::npos) {
-      const unsigned long long ticks = std::strtoull(json.c_str() + c + 1, nullptr, 10);
+      const unsigned long long ticks =
+          std::strtoull(json.c_str() + c + 1, nullptr, 10);
       const unsigned long long ttl = 6ULL * 3600ULL * 10000000ULL;
       *fresh = NowFileTime() < ticks + ttl;
     }
@@ -357,73 +676,153 @@ void SaveUpdateCache(const std::wstring& latest, const std::wstring& html) {
       << "\"\n}\n";
 }
 
-void CheckForUpdates(HWND owner) {
-  const std::wstring current = NativeProductVersion();
-  std::wstring latest;
-  std::wstring html;
-  bool fresh = false;
-  if (LoadUpdateCache(&latest, &html, &fresh) && fresh && !latest.empty()) {
-    // Use cached release within 6 hours.
-  } else {
+}  // namespace
+
+std::wstring NativeProductVersion() {
+  wchar_t path[MAX_PATH] = {};
+  if (!GetModuleFileNameW(nullptr, path, MAX_PATH)) {
+    return L"0.0.0";
+  }
+  DWORD handle = 0;
+  const DWORD size = GetFileVersionInfoSizeW(path, &handle);
+  if (!size) {
+    return L"4.0.30";
+  }
+  std::vector<BYTE> buf(size);
+  if (!GetFileVersionInfoW(path, 0, size, buf.data())) {
+    return L"4.0.30";
+  }
+  VS_FIXEDFILEINFO* fi = nullptr;
+  UINT len = 0;
+  if (!VerQueryValueW(buf.data(), L"\\", reinterpret_cast<void**>(&fi), &len) ||
+      !fi) {
+    return L"4.0.30";
+  }
+  wchar_t ver[64];
+  swprintf_s(ver, L"%u.%u.%u", HIWORD(fi->dwFileVersionMS),
+             LOWORD(fi->dwFileVersionMS), HIWORD(fi->dwFileVersionLS));
+  return ver;
+}
+
+void StartUpdateCheckAsync(HWND owner, bool force, bool interactive) {
+  std::thread([owner, force, interactive]() {
+    auto* r = new UpdateCheckResult;
+    r->interactive = interactive;
+    r->current = NativeProductVersion();
+    bool fresh = false;
+    if (!force && LoadUpdateCache(&r->latest, &r->html_url, &fresh) && fresh &&
+        !r->latest.empty()) {
+      LogLine(L"[update] served cached result tag=%s", r->latest.c_str());
+    } else {
+      std::string body;
+      std::wstring err;
+      if (HttpGetJson(&body, &err)) {
+        r->latest = Widen(JsonStringField(body, "tag_name"));
+        r->html_url = Widen(JsonStringField(body, "html_url"));
+        if (!r->latest.empty()) {
+          SaveUpdateCache(r->latest, r->html_url);
+        }
+      } else {
+        r->error = err;
+      }
+    }
+    if (r->latest.empty() || r->current.empty()) {
+      r->status = 0;
+      if (r->error.empty()) {
+        r->error = L"无法解析最新版本信息";
+      }
+    } else if (IsNewer(r->latest, r->current)) {
+      r->status = 2;
+    } else {
+      r->status = 1;
+    }
+    if (!PostMessageW(owner, kMsgUpdateCheckDone, 0, reinterpret_cast<LPARAM>(r))) {
+      delete r;
+    }
+  }).detach();
+}
+
+void StartUpdateInstallAsync(HWND owner) {
+  std::thread([owner]() {
+    auto* r = new UpdateInstallResult;
     std::string body;
     std::wstring err;
     if (!HttpGetJson(&body, &err)) {
-      MessageBoxW(owner, (L"检查更新失败：\n" + err).c_str(), L"检查更新",
-                  MB_OK | MB_ICONWARNING);
-      return;
+      r->error = L"获取更新信息失败：" + err;
+    } else {
+      std::string asset_name;
+      std::wstring asset_url;
+      long long asset_size = 0;
+      if (!FindExeAsset(body, &asset_name, &asset_url, &asset_size)) {
+        r->error = L"该版本未提供 Windows 安装包";
+      } else {
+        const std::string checksum = FindChecksum(body, asset_name);
+        const std::wstring dir = JoinPath(NativeDataDir(), L"updates");
+        CreateDirectoryW(dir.c_str(), nullptr);
+        std::wstring dest;
+        long long bytes = 0;
+        if (!DownloadAsset(asset_url, dir, owner, &err, &dest, &bytes)) {
+          r->error = L"下载失败：" + err;
+        } else {
+          r->path = dest;
+          if (!checksum.empty()) {
+            r->has_checksum = true;
+            std::string hex;
+            r->verify_ok = ComputeSha256Hex(dest, &hex) &&
+                           ToLowerW(Widen(hex)) == ToLowerW(Widen(checksum));
+            LogLine(L"[update] sha256 verify %s", r->verify_ok ? L"ok" : L"FAIL");
+          } else if (asset_size > 0) {
+            r->verify_ok = (bytes == asset_size);
+            LogLine(L"[update] no digest; size verify %s (got %lld, want %lld)",
+                    r->verify_ok ? L"ok" : L"FAIL", bytes, asset_size);
+          } else {
+            r->verify_ok = true;  // nothing to compare
+          }
+          if (!r->verify_ok) {
+            r->error = r->has_checksum ? L"安装包 sha256 校验未通过"
+                                       : L"安装包大小校验未通过";
+          }
+        }
+      }
     }
-    latest = Widen(JsonStringField(body, "tag_name"));
-    html = Widen(JsonStringField(body, "html_url"));
-    if (!latest.empty()) {
-      SaveUpdateCache(latest, html);
+    if (r->verify_ok && r->error.empty()) {
+      r->ok = true;
     }
+    if (!PostMessageW(owner, kMsgUpdateInstallDone, 0, reinterpret_cast<LPARAM>(r))) {
+      delete r;
+    }
+  }).detach();
+}
+
+bool LaunchInstallerSilent(const std::wstring& path, std::wstring* err) {
+  if (GetFileAttributesW(path.c_str()) == INVALID_FILE_ATTRIBUTES) {
+    if (err) {
+      *err = L"安装包不存在：" + path;
+    }
+    return false;
   }
-  if (latest.empty()) {
-    MessageBoxW(owner, L"无法解析最新版本信息。", L"检查更新",
-                MB_OK | MB_ICONWARNING);
-    return;
+  std::wstring args = L"\"" + path + L"\" /SILENT /NORESTART /CLOSEAPPLICATIONS";
+  SHELLEXECUTEINFOW sei{};
+  sei.cbSize = sizeof(sei);
+  sei.fMask = SEE_MASK_NOCLOSEPROCESS;
+  sei.lpVerb = L"open";
+  sei.lpFile = path.c_str();
+  sei.lpParameters = L"/SILENT /NORESTART /CLOSEAPPLICATIONS";
+  sei.nShow = SW_SHOWNORMAL;
+  if (!ShellExecuteExW(&sei)) {
+    if (err) {
+      *err = L"启动安装程序失败（错误码 " +
+             std::to_wstring(GetLastError()) + L"）";
+    }
+    return false;
   }
-  if (!IsNewer(latest, current)) {
-    MessageBoxW(owner,
-                (L"已是最新版本。\n当前：" + current + L"\n远端：" + latest)
-                    .c_str(),
-                L"检查更新", MB_OK | MB_ICONINFORMATION);
-    return;
+  if (sei.hProcess) {
+    CloseHandle(sei.hProcess);
   }
-  const std::wstring msg = L"发现新版本 " + latest + L"（当前 " + current +
-                           L"）。\n\n是：下载安装包并运行\n否：打开发布页";
-  const int answer = MessageBoxW(owner, msg.c_str(), L"检查更新",
-                                 MB_YESNOCANCEL | MB_ICONQUESTION);
-  if (answer == IDNO) {
-    ShellExecuteW(nullptr, L"open",
-                  html.empty() ? kReleasesPage : html.c_str(), nullptr, nullptr,
-                  SW_SHOWNORMAL);
-    return;
-  }
-  if (answer != IDYES) {
-    return;
-  }
-  std::string body;
-  std::wstring err;
-  if (!HttpGetJson(&body, &err)) {
-    MessageBoxW(owner, (L"下载信息获取失败：\n" + err).c_str(), L"检查更新",
-                MB_OK | MB_ICONWARNING);
-    return;
-  }
-  const std::wstring asset = FindExeAssetUrl(body);
-  if (asset.empty()) {
-    ShellExecuteW(nullptr, L"open",
-                  html.empty() ? kReleasesPage : html.c_str(), nullptr, nullptr,
-                  SW_SHOWNORMAL);
-    return;
-  }
-  wchar_t temp[MAX_PATH] = {};
-  GetTempPathW(MAX_PATH, temp);
-  const std::wstring dest = std::wstring(temp) + L"DeskTidyNativeSetup.exe";
-  if (!DownloadToFile(asset, dest, &err)) {
-    MessageBoxW(owner, (L"下载失败：\n" + err).c_str(), L"检查更新",
-                MB_OK | MB_ICONWARNING);
-    return;
-  }
-  ShellExecuteW(nullptr, L"open", dest.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+  return true;
+}
+
+void CheckForUpdates(HWND owner) {
+  // Manual entry (tools_misc OpenUpdatePage): forced refresh + interactive UI.
+  StartUpdateCheckAsync(owner, /*force=*/true, /*interactive=*/true);
 }

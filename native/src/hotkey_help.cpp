@@ -1,23 +1,35 @@
 #include "hotkey_help.h"
 
 #include "hotkey_store.h"
+#include "i18n.h"
+#include "paths_util.h"
 
 #include <string>
 
+namespace {
+
+std::wstring LabelFor(const HotkeyDef& k) {
+  const std::string key = std::string("hk_") + k.id;
+  const std::wstring tr = Tr(key.c_str());
+  if (!tr.empty() && tr != WidenUtf8(key)) {
+    return tr;
+  }
+  return k.label.empty() ? WidenUtf8(k.id) : k.label;
+}
+
+}  // namespace
+
 void ShowHotkeyHelp(HWND owner) {
   const auto keys = LoadHotkeys();
-  std::wstring body = L"DeskTidy Native 快捷键\n\n";
+  std::wstring body = Tr("hk_help_intro");
   for (const auto& k : keys) {
-    body += FormatHotkey(k.modifiers, k.vk);
+    const std::wstring chord = FormatHotkey(k.modifiers, k.vk);
+    body += chord.empty() ? Tr("hk_unbound") : chord;
     body += L"　　";
-    body += k.label;
+    body += LabelFor(k);
     body += L"\n";
   }
-  body +=
-      L"\n托盘 →「修改快捷键」可重新绑定（写入 %LocalAppData%\\DeskTidyNative\\hotkeys.json）\n\n"
-      L"分区右键：重命名 / 换页\n"
-      L"图标右键：打开 / 资源管理器 / 取消钉选\n"
-      L"宠物：拖入文件 → 回收站（可选 pet.png）\n"
-      L"贴图：右键关闭";
-  MessageBoxW(owner, body.c_str(), L"快捷键说明", MB_OK | MB_ICONINFORMATION);
+  body += Tr("hk_help_footer");
+  MessageBoxW(owner, body.c_str(), Tr("hk_help_title").c_str(),
+              MB_OK | MB_ICONINFORMATION);
 }
