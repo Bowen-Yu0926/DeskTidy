@@ -2,20 +2,25 @@
 
 #include "app_prefs.h"
 #include "display_geom.h"
+#include "help_center.h"
+#include "i18n.h"
+#include "log.h"
+#include "mist_webview.h"
 #include "paths_util.h"
 #include "prompt_text.h"
-#include "help_center.h"
 #include "screen_record.h"
 #include "tool_paths.h"
 #include "update_check.h"
 
 #include <Shellapi.h>
 #include <ShlObj.h>
+#include <shobjidl.h>
 #include <commdlg.h>
 #include <objidl.h>
 #include <gdiplus.h>
 
 #include <fstream>
+#include <random>
 #include <sstream>
 #include <vector>
 
@@ -101,7 +106,8 @@ std::wstring ReadCfgField(const char* key) {
   return WidenUtf8(val);
 }
 
-void WriteCfg(const std::wstring& folder, const std::wstring& previous) {
+void WriteCfgFull(const std::wstring& folder, const std::wstring& previous,
+                  const std::wstring& last_image) {
   std::ofstream out(WallpaperCfgPath(), std::ios::binary);
   if (!out) {
     return;
@@ -118,21 +124,119 @@ void WriteCfg(const std::wstring& folder, const std::wstring& previous) {
     return o;
   };
   out << "{\n  \"folder\":\"" << esc(folder) << "\",\n  \"previous\":\""
-      << esc(previous) << "\"\n}\n";
+      << esc(previous) << "\",\n  \"last_image\":\"" << esc(last_image)
+      << "\"\n}\n";
+}
+
+void WriteCfg(const std::wstring& folder, const std::wstring& previous) {
+  WriteCfgFull(folder, previous, ReadCfgField("last_image"));
+}
+
+void RememberLastImage(const std::wstring& path) {
+  WriteCfgFull(ReadCfgField("folder"), ReadCfgField("previous"), path);
+}
+
+std::wstring WallpapersCacheDir() {
+  const std::wstring dir = JoinPath(NativeDataDir(), L"wallpapers");
+  CreateDirectoryW(dir.c_str(), nullptr);
+  return dir;
+}
+
+std::wstring OriginalWallpaperMarker() {
+  return JoinPath(WallpapersCacheDir(), L"previous_wallpaper.txt");
+}
+
+bool IsUnderWallpapersCache(const std::wstring& path) {
+  const std::wstring cache = WallpapersCacheDir();
+  if (path.size() < cache.size()) {
+    return false;
+  }
+  return _wcsnicmp(path.c_str(), cache.c_str(), cache.size()) == 0;
+}
+
+void RememberOriginalWallpaperOnce() {
+  if (GetFileAttributesW(OriginalWallpaperMarker().c_str()) !=
+      INVALID_FILE_ATTRIBUTES) {
+    return;
+  }
+  wchar_t current[MAX_PATH] = {};
+  SystemParametersInfoW(SPI_GETDESKWALLPAPER, MAX_PATH, current, 0);
+  if (!current[0] || IsUnderWallpapersCache(current)) {
+    return;
+  }
+  std::ofstream out(OriginalWallpaperMarker(), std::ios::binary);
+  if (out) {
+    out << NarrowUtf8(current);
+  }
+  // Keep wallpaper.json "previous" in sync for older restore paths.
+  WriteCfg(ReadCfgField("folder"), current);
+}
+
+void SetWallpaperStyleFill() {
+  HKEY key = nullptr;
+  if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Control Panel\\Desktop", 0,
+                    KEY_SET_VALUE, &key) != ERROR_SUCCESS) {
+    return;
+  }
+  const wchar_t style[] = L"10";
+  const wchar_t tile[] = L"0";
+  RegSetValueExW(key, L"WallpaperStyle", 0, REG_SZ,
+                 reinterpret_cast<const BYTE*>(style),
+                 static_cast<DWORD>((wcslen(style) + 1) * sizeof(wchar_t)));
+  RegSetValueExW(key, L"TileWallpaper", 0, REG_SZ,
+                 reinterpret_cast<const BYTE*>(tile),
+                 static_cast<DWORD>((wcslen(tile) + 1) * sizeof(wchar_t)));
+  RegCloseKey(key);
+}
+
+std::wstring StageWallpaper(const std::wstring& path) {
+  const size_t dot = path.find_last_of(L'.');
+  std::wstring ext = (dot != std::wstring::npos) ? path.substr(dot) : L".jpg";
+  for (auto& c : ext) {
+    c = static_cast<wchar_t>(towlower(c));
+  }
+  if (ext != L".jpg" && ext != L".jpeg" && ext != L".png" && ext != L".bmp") {
+    ext = L".jpg";
+  }
+  const std::wstring dest = JoinPath(WallpapersCacheDir(), L"current" + ext);
+  if (_wcsicmp(path.c_str(), dest.c_str()) != 0) {
+    if (!CopyFileW(path.c_str(), dest.c_str(), FALSE)) {
+      return path;
+    }
+  }
+  return dest;
+}
+
+bool ApplyWallpaperPath(const std::wstring& path, bool stage, bool remember) {
+  if (path.empty() ||
+      GetFileAttributesW(path.c_str()) == INVALID_FILE_ATTRIBUTES) {
+    return false;
+  }
+  if (remember) {
+    RememberOriginalWallpaperOnce();
+  }
+  std::wstring target = stage ? StageWallpaper(path) : path;
+  SetWallpaperStyleFill();
+  return SystemParametersInfoW(SPI_SETDESKWALLPAPER, 0, target.data(),
+                               SPIF_UPDATEINIFILE | SPIF_SENDWININICHANGE) != 0;
 }
 
 bool RememberAndSet(const std::wstring& path) {
-  wchar_t current[MAX_PATH] = {};
-  SystemParametersInfoW(SPI_GETDESKWALLPAPER, MAX_PATH, current, 0);
-  const std::wstring folder = ReadCfgField("folder");
-  std::wstring previous = current;
-  if (previous.empty()) {
-    previous = ReadCfgField("previous");
+  return ApplyWallpaperPath(path, true, true);
+}
+
+std::wstring ReadOriginalWallpaper() {
+  std::ifstream in(OriginalWallpaperMarker());
+  if (in) {
+    std::ostringstream ss;
+    ss << in.rdbuf();
+    const std::wstring path = WidenUtf8(ss.str());
+    if (!path.empty() &&
+        GetFileAttributesW(path.c_str()) != INVALID_FILE_ATTRIBUTES) {
+      return path;
+    }
   }
-  WriteCfg(folder, previous);
-  std::wstring mutable_path = path;
-  return SystemParametersInfoW(SPI_SETDESKWALLPAPER, 0, mutable_path.data(),
-                               SPIF_UPDATEINIFILE | SPIF_SENDWININICHANGE) != 0;
+  return ReadCfgField("previous");
 }
 
 std::vector<std::wstring> ListImagesInFolder(const std::wstring& folder) {
@@ -158,7 +262,225 @@ std::vector<std::wstring> ListImagesInFolder(const std::wstring& folder) {
   return out;
 }
 
+// True RNG (std::random_device → mt19937), never GetTickCount, so consecutive
+// calls don't produce a predictable sequence.
+size_t RandomIndex(size_t n) {
+  if (n <= 1) {
+    return 0;
+  }
+  thread_local std::mt19937 rng = [] {
+    unsigned seed = 0;
+    try {
+      std::random_device rd;
+      seed = rd();
+    } catch (...) {
+      seed = static_cast<unsigned>(GetTickCount()) ^
+             static_cast<unsigned>(reinterpret_cast<uintptr_t>(&seed));
+    }
+    return std::mt19937(seed);
+  }();
+  std::uniform_int_distribution<size_t> dist(0, n - 1);
+  return dist(rng);
+}
+
+// Pick a random image, skipping the previously-applied one when alternatives
+// exist (so a library of 2+ images never repeats the same picture twice).
+bool PickRandomImage(const std::vector<std::wstring>& images,
+                     std::wstring* chosen) {
+  if (!chosen || images.empty()) {
+    return false;
+  }
+  if (images.size() == 1) {
+    *chosen = images[0];
+    return true;
+  }
+  const std::wstring last = ReadCfgField("last_image");
+  std::vector<size_t> cand;
+  for (size_t i = 0; i < images.size(); ++i) {
+    if (_wcsicmp(images[i].c_str(), last.c_str()) != 0) {
+      cand.push_back(i);
+    }
+  }
+  if (cand.empty()) {
+    cand.push_back(RandomIndex(images.size()));
+  }
+  *chosen = images[cand[RandomIndex(cand.size())]];
+  return true;
+}
+
 }  // namespace
+
+std::wstring BrowseFolderDialog(HWND owner, const wchar_t* title) {
+  BROWSEINFOW bi{};
+  bi.hwndOwner = owner;
+  bi.lpszTitle = title ? title : L"选择文件夹";
+  bi.ulFlags = BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE;
+  LPITEMIDLIST pidl = SHBrowseForFolderW(&bi);
+  if (!pidl) {
+    return {};
+  }
+  wchar_t path[MAX_PATH] = {};
+  SHGetPathFromIDListW(pidl, path);
+  CoTaskMemFree(pidl);
+  return path;
+}
+
+std::wstring WallpaperLibraryFolder() { return ReadCfgField("folder"); }
+
+void SetWallpaperLibraryFolder(const std::wstring& folder) {
+  WriteCfg(folder, ReadCfgField("previous"));
+}
+
+std::wstring ResolveRecordOutputDir() {
+  AppPrefs prefs = LoadAppPrefs();
+  if (!prefs.record_output_dir.empty()) {
+    return prefs.record_output_dir;
+  }
+  const std::wstring dir = JoinPath(ExeDir(), L"录屏");
+  CreateDirectoryW(dir.c_str(), nullptr);
+  return dir;
+}
+
+namespace {
+
+bool WriteShellLink(const std::wstring& link, const std::wstring& target,
+                    const std::wstring& args, const std::wstring& workdir,
+                    const wchar_t* desc) {
+  IShellLinkW* psl = nullptr;
+  HRESULT hr =
+      CoCreateInstance(CLSID_ShellLink, nullptr, CLSCTX_INPROC_SERVER,
+                       IID_IShellLinkW, reinterpret_cast<void**>(&psl));
+  if (FAILED(hr) || !psl) {
+    return false;
+  }
+  psl->SetPath(target.c_str());
+  if (!args.empty()) {
+    psl->SetArguments(args.c_str());
+  }
+  if (!workdir.empty()) {
+    psl->SetWorkingDirectory(workdir.c_str());
+  }
+  if (desc) {
+    psl->SetDescription(desc);
+  }
+  IPersistFile* ppf = nullptr;
+  hr = psl->QueryInterface(IID_IPersistFile, reinterpret_cast<void**>(&ppf));
+  bool ok = false;
+  if (SUCCEEDED(hr) && ppf) {
+    ok = SUCCEEDED(ppf->Save(link.c_str(), TRUE));
+    ppf->Release();
+  }
+  psl->Release();
+  return ok;
+}
+
+}  // namespace
+
+void SyncDeskNoteShortcuts(bool enabled) {
+  PWSTR desktop = nullptr;
+  PWSTR programs = nullptr;
+  std::wstring desk_link;
+  std::wstring start_link;
+  if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Desktop, 0, nullptr, &desktop)) &&
+      desktop) {
+    desk_link = JoinPath(desktop, L"DeskNote.lnk");
+    CoTaskMemFree(desktop);
+  }
+  if (SUCCEEDED(
+          SHGetKnownFolderPath(FOLDERID_Programs, 0, nullptr, &programs)) &&
+      programs) {
+    start_link = JoinPath(programs, L"DeskNote.lnk");
+    CoTaskMemFree(programs);
+  }
+  if (!enabled) {
+    if (!desk_link.empty()) {
+      DeleteFileW(desk_link.c_str());
+    }
+    if (!start_link.empty()) {
+      DeleteFileW(start_link.c_str());
+    }
+    // Legacy casing.
+    if (!desk_link.empty()) {
+      const size_t slash = desk_link.find_last_of(L'\\');
+      if (slash != std::wstring::npos) {
+        DeleteFileW((desk_link.substr(0, slash + 1) + L"deskNote.lnk").c_str());
+      }
+    }
+    return;
+  }
+  wchar_t exe[MAX_PATH] = {};
+  GetModuleFileNameW(nullptr, exe, MAX_PATH);
+  std::wstring work = exe;
+  const size_t slash = work.find_last_of(L'\\');
+  if (slash != std::wstring::npos) {
+    work.resize(slash);
+  }
+  if (!desk_link.empty()) {
+    WriteShellLink(desk_link, exe, L"--notes", work, L"DeskNote 记事本");
+  }
+  if (!start_link.empty()) {
+    WriteShellLink(start_link, exe, L"--notes", work, L"DeskNote 记事本");
+  }
+}
+
+bool BrowseWallpaperLibrary(HWND owner) {
+  const std::wstring path =
+      BrowseFolderDialog(owner, L"选择壁纸库文件夹");
+  if (path.empty()) {
+    return false;
+  }
+  WriteCfg(path, ReadCfgField("previous"));
+  return true;
+}
+
+bool RandomWallpaperFromLibrary(HWND owner) {
+  std::wstring folder = ReadCfgField("folder");
+  if (folder.empty()) {
+    if (!BrowseWallpaperLibrary(owner)) {
+      return false;
+    }
+    folder = ReadCfgField("folder");
+  }
+  auto images = ListImagesInFolder(folder);
+  if (images.empty()) {
+    MessageBoxW(owner, Tr("wallpaper_no_images").c_str(),
+                Tr("wallpaper_title").c_str(), MB_OK | MB_ICONWARNING);
+    return false;
+  }
+  std::wstring chosen;
+  if (!PickRandomImage(images, &chosen)) {
+    return false;
+  }
+  const std::wstring last = ReadCfgField("last_image");
+  LogLine(L"[wallpaper] random pick: %s (last=%s)", chosen.c_str(),
+          last.empty() ? L"(none)" : last.c_str());
+  const bool ok = RememberAndSet(chosen);
+  if (ok) {
+    RememberLastImage(chosen);
+  } else {
+    MessageBoxW(owner, L"设置壁纸失败。", Tr("wallpaper_title").c_str(),
+                MB_OK | MB_ICONERROR);
+  }
+  return ok;
+}
+
+bool BrowseRecordOutputDir(HWND owner) {
+  AppPrefs prefs = LoadAppPrefs();
+  const std::wstring path =
+      BrowseFolderDialog(owner, L"选择录屏保存文件夹");
+  if (path.empty()) {
+    return false;
+  }
+  prefs.record_output_dir = path;
+  SaveAppPrefs(prefs);
+  return true;
+}
+
+void ResetRecordOutputDir() {
+  AppPrefs prefs = LoadAppPrefs();
+  prefs.record_output_dir.clear();
+  SaveAppPrefs(prefs);
+}
 
 bool PickAndSetWallpaper(HWND owner) {
   wchar_t file[MAX_PATH] = {};
@@ -182,23 +504,20 @@ bool PickAndSetWallpaper(HWND owner) {
 }
 
 bool WallpaperMenu(HWND owner) {
-  const int choice = MessageBoxW(
-      owner,
-      L"壁纸：\n\n是 = 选择图片\n否 = 从库目录随机\n取消 = 恢复上一张",
-      L"壁纸", MB_YESNOCANCEL | MB_ICONQUESTION);
+  const int choice = MessageBoxW(owner, Tr("wallpaper_prompt").c_str(),
+                                 Tr("wallpaper_title").c_str(),
+                                 MB_YESNOCANCEL | MB_ICONQUESTION);
   if (choice == IDYES) {
     return PickAndSetWallpaper(owner);
   }
   if (choice == IDCANCEL) {
-    const std::wstring prev = ReadCfgField("previous");
+    const std::wstring prev = ReadOriginalWallpaper();
     if (prev.empty()) {
-      MessageBoxW(owner, L"没有可恢复的上一张壁纸记录。", L"壁纸",
-                  MB_OK | MB_ICONINFORMATION);
+      MessageBoxW(owner, Tr("wallpaper_no_original").c_str(),
+                  Tr("wallpaper_title").c_str(), MB_OK | MB_ICONINFORMATION);
       return false;
     }
-    std::wstring mutable_prev = prev;
-    return SystemParametersInfoW(SPI_SETDESKWALLPAPER, 0, mutable_prev.data(),
-                                 SPIF_UPDATEINIFILE | SPIF_SENDWININICHANGE) != 0;
+    return ApplyWallpaperPath(prev, false, false);
   }
   // Random from folder
   std::wstring folder = ReadCfgField("folder");
@@ -219,24 +538,41 @@ bool WallpaperMenu(HWND owner) {
   }
   auto images = ListImagesInFolder(folder);
   if (images.empty()) {
-    MessageBoxW(owner, L"库目录中没有 jpg/png/bmp。", L"壁纸",
-                MB_OK | MB_ICONWARNING);
+    MessageBoxW(owner, Tr("wallpaper_no_images").c_str(),
+                Tr("wallpaper_title").c_str(), MB_OK | MB_ICONWARNING);
     return false;
   }
-  const size_t idx = static_cast<size_t>(GetTickCount()) % images.size();
-  return RememberAndSet(images[idx]);
+  std::wstring chosen;
+  if (!PickRandomImage(images, &chosen)) {
+    return false;
+  }
+  const std::wstring last = ReadCfgField("last_image");
+  LogLine(L"[wallpaper] random pick: %s (last=%s)", chosen.c_str(),
+          last.empty() ? L"(none)" : last.c_str());
+  const bool ok = RememberAndSet(chosen);
+  if (ok) {
+    RememberLastImage(chosen);
+  } else {
+    MessageBoxW(owner, L"设置壁纸失败。", Tr("wallpaper_title").c_str(),
+                MB_OK | MB_ICONERROR);
+  }
+  return ok;
 }
 
 bool CaptureRegionToPng(HWND owner) {
   // Fallback fullscreen capture (region overlay is preferred via App).
+  // Capture the whole VIRTUAL desktop so multi-monitor setups (incl. negative
+  // coordinates) are covered, not just the primary screen.
   Gdi();
-  const int w = GetSystemMetrics(SM_CXSCREEN);
-  const int h = GetSystemMetrics(SM_CYSCREEN);
+  const int left = GetSystemMetrics(SM_XVIRTUALSCREEN);
+  const int top = GetSystemMetrics(SM_YVIRTUALSCREEN);
+  const int w = GetSystemMetrics(SM_CXVIRTUALSCREEN);
+  const int h = GetSystemMetrics(SM_CYVIRTUALSCREEN);
   HDC screen = GetDC(nullptr);
   HDC mem = CreateCompatibleDC(screen);
   HBITMAP bmp = CreateCompatibleBitmap(screen, w, h);
   HGDIOBJ old = SelectObject(mem, bmp);
-  BitBlt(mem, 0, 0, w, h, screen, 0, 0, SRCCOPY);
+  BitBlt(mem, 0, 0, w, h, screen, left, top, SRCCOPY);
 
   PWSTR pics = nullptr;
   std::wstring dir = NativeDataDir();
@@ -274,55 +610,102 @@ bool StartScreenRecord(HWND owner) { return ToggleScreenRecord(owner); }
 
 void ConfigureScreenRecord(HWND owner) {
   AppPrefs prefs = LoadAppPrefs();
-  const std::wstring sec = PromptText(
-      owner, L"录屏时长",
-      L"自动停止秒数（0 = 手动点徽章停止）：",
-      std::to_wstring(prefs.record_seconds).c_str());
-  if (!sec.empty()) {
-    prefs.record_seconds = _wtoi(sec.c_str());
-    if (prefs.record_seconds < 0) {
-      prefs.record_seconds = 0;
+  bool ok = false;
+
+  MistWebDialog dlg;
+  dlg.owner = owner;
+  dlg.user_data_subdir = L"webview2-rec-cfg";
+  dlg.html_path = MistFindAssetHtml(L"dialogs\\record_cfg.html");
+  if (dlg.html_path.empty()) {
+    MessageBoxW(owner, L"找不到 record_cfg.html", Tr("record_title").c_str(),
+                MB_OK | MB_ICONWARNING);
+    return;
+  }
+  dlg.build_state = [&]() {
+    int q = prefs.record_quality;
+    if (q < 0 || q > 2) {
+      q = 1;
     }
-  }
-  const std::wstring dir = PromptText(
-      owner, L"录屏目录",
-      L"输出目录（留空 = Videos\\DeskTidyNative）：",
-      prefs.record_output_dir.c_str());
-  // Empty answer keeps previous; single space clears to default.
-  if (!dir.empty()) {
-    std::wstring trimmed = dir;
-    while (!trimmed.empty() && trimmed.back() == L' ') {
-      trimmed.pop_back();
+    int fps = prefs.record_fps;
+    if (fps < 15 || fps > 60) {
+      fps = 30;
     }
-    prefs.record_output_dir = trimmed;
-  }
-  const wchar_t* quality_now = L"1";
-  if (prefs.record_quality == 0) {
-    quality_now = L"0";
-  } else if (prefs.record_quality == 2) {
-    quality_now = L"2";
-  }
-  const std::wstring quality = PromptText(
-      owner, L"录屏画质", L"画质：0 低，1 中，2 高：", quality_now);
-  if (!quality.empty()) {
-    prefs.record_quality = _wtoi(quality.c_str());
-    if (prefs.record_quality < 0 || prefs.record_quality > 2) {
-      prefs.record_quality = 1;
+    const std::vector<std::wstring> mics = ListAudioCaptureDevices();
+    std::wstring json = L"{\"type\":\"state\",\"seconds\":";
+    json += std::to_wstring(prefs.record_seconds);
+    json += L",\"fps\":";
+    json += std::to_wstring(fps);
+    json += L",\"dir\":\"";
+    json += MistJsonEscape(prefs.record_output_dir);
+    json += L"\",\"quality\":";
+    json += std::to_wstring(q);
+    json += L",\"mic\":\"";
+    json += MistJsonEscape(prefs.record_mic);
+    json += L"\",\"mics\":[";
+    for (size_t i = 0; i < mics.size(); ++i) {
+      if (i) {
+        json += L',';
+      }
+      json += L'"';
+      json += MistJsonEscape(mics[i]);
+      json += L'"';
     }
-  }
-  const std::wstring mic = PromptText(
-      owner, L"麦克风",
-      L"DirectShow 设备名（留空不录音，单个空格清除）：",
-      prefs.record_mic.c_str());
-  if (!mic.empty()) {
-    std::wstring trimmed = mic;
-    while (!trimmed.empty() && trimmed.back() == L' ') {
-      trimmed.pop_back();
+    json += L"]}";
+    return json;
+  };
+  dlg.on_message = [&](const std::wstring& json) -> bool {
+    const std::wstring type = MistJsonStringField(json, L"type");
+    if (type != L"action") {
+      return false;
     }
-    prefs.record_mic = trimmed;
+    const std::wstring id = MistJsonStringField(json, L"id");
+    HWND parent = dlg.hwnd ? dlg.hwnd : owner;
+    if (id == L"ready") {
+      MistWebDialogPushState(&dlg);
+      return false;
+    }
+    if (id == L"browse") {
+      const std::wstring path =
+          BrowseFolderDialog(parent, L"选择录屏保存文件夹");
+      if (!path.empty()) {
+        prefs.record_output_dir = path;
+        std::wstring msg = L"{\"type\":\"dir_picked\",\"path\":\"";
+        msg += MistJsonEscape(path);
+        msg += L"\"}";
+        MistWebDialogPostJson(&dlg, msg);
+      }
+      return false;
+    }
+    if (id == L"save") {
+      prefs.record_seconds = MistJsonIntField(json, L"seconds", 0);
+      if (prefs.record_seconds < 0) {
+        prefs.record_seconds = 0;
+      }
+      prefs.record_output_dir = MistJsonStringField(json, L"dir");
+      prefs.record_quality = MistJsonIntField(json, L"quality", 1);
+      if (prefs.record_quality < 0 || prefs.record_quality > 2) {
+        prefs.record_quality = 1;
+      }
+      prefs.record_fps = MistJsonIntField(json, L"fps", 30);
+      if (prefs.record_fps < 15 || prefs.record_fps > 60) {
+        prefs.record_fps = 30;
+      }
+      prefs.record_mic = MistJsonStringField(json, L"mic");
+      ok = true;
+      return true;
+    }
+    if (id == L"cancel") {
+      return true;
+    }
+    return false;
+  };
+
+  MistWebDialogRun(&dlg, Tr("record_settings").c_str(), 460, 420);
+  if (ok) {
+    SaveAppPrefs(prefs);
+    MessageBoxW(owner, Tr("record_saved").c_str(), Tr("record_title").c_str(),
+                MB_OK | MB_ICONINFORMATION);
   }
-  SaveAppPrefs(prefs);
-  MessageBoxW(owner, L"录屏设置已保存。", L"录屏", MB_OK | MB_ICONINFORMATION);
 }
 
 void OpenCalculator() {
@@ -358,7 +741,7 @@ void OpenCalculator() {
 
 void ShowAppHelp(HWND owner) { ShowAppHelpCenter(owner); }
 
-void OpenUpdatePage() { CheckForUpdates(nullptr); }
+void OpenUpdatePage(HWND owner) { CheckForUpdates(owner); }
 
 bool SendPathsToRecycleBin(const std::vector<std::wstring>& paths) {
   if (paths.empty()) {

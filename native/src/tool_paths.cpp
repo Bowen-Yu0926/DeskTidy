@@ -37,10 +37,10 @@ std::wstring FindFfmpegExe() {
   const std::wstring dir = ExeDir();
   // Walk up a few levels for repo layout: native\build\Release -> repo\assets
   std::wstring up = dir;
-  std::wstring candidates_storage[12];
+  std::wstring candidates_storage[24];
   size_t n = 0;
   auto add = [&](std::wstring p) {
-    if (n < 12) {
+    if (n < 24) {
       candidates_storage[n++] = std::move(p);
     }
   };
@@ -54,6 +54,27 @@ std::wstring FindFfmpegExe() {
     up.resize(slash);
     add(up + L"\\assets\\ffmpeg\\ffmpeg.exe");
     add(up + L"\\ffmpeg\\ffmpeg.exe");
+  }
+  // Runtime on-demand fetch location (Python ffmpeg_fetch parity).
+  const wchar_t* profile = _wgetenv(L"USERPROFILE");
+  if (profile && profile[0]) {
+    add((std::wstring(profile) + L"\\.desktidy\\ffmpeg\\ffmpeg.exe"));
+  }
+  const wchar_t* local = _wgetenv(L"LOCALAPPDATA");
+  if (local && local[0]) {
+    add((std::wstring(local) + L"\\DeskTidyNative\\ffmpeg\\ffmpeg.exe"));
+  }
+  const wchar_t* pf = _wgetenv(L"ProgramFiles");
+  if (pf && pf[0]) {
+    add((std::wstring(pf) + L"\\ffmpeg\\bin\\ffmpeg.exe"));
+  }
+  const wchar_t* pfx = _wgetenv(L"ProgramFiles(x86)");
+  if (pfx && pfx[0]) {
+    add((std::wstring(pfx) + L"\\ffmpeg\\bin\\ffmpeg.exe"));
+  }
+  if (local && local[0]) {
+    add((std::wstring(local) +
+         L"\\Microsoft\\WinGet\\Links\\ffmpeg.exe"));
   }
   // PATH lookup via SearchPath
   wchar_t found[MAX_PATH] = {};
