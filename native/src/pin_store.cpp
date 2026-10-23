@@ -1,5 +1,7 @@
 #include "pin_store.h"
 
+#include "paths_util.h"
+
 #include <Windows.h>
 #include <ShlObj.h>
 
@@ -68,16 +70,7 @@ std::wstring NormalizePinKey(const std::wstring& path) {
 }
 
 std::wstring PinFilePath() {
-  wchar_t* appdata = nullptr;
-  if (FAILED(SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, nullptr, &appdata)) ||
-      !appdata) {
-    return L"pins.json";
-  }
-  std::wstring dir = appdata;
-  CoTaskMemFree(appdata);
-  dir += L"\\DeskTidyNative";
-  CreateDirectoryW(dir.c_str(), nullptr);
-  return dir + L"\\pins.json";
+  return JoinPath(NativeDataDir(), L"pins.json");
 }
 
 PinMap LoadPins() {
@@ -154,10 +147,7 @@ PinMap LoadPins() {
 }
 
 bool SavePins(const PinMap& pins) {
-  std::ofstream out(PinFilePath(), std::ios::binary);
-  if (!out) {
-    return false;
-  }
+  std::ostringstream out;
   out << "{\n  \"pins\": {\n";
   size_t i = 0;
   for (const auto& kv : pins) {
@@ -169,7 +159,7 @@ bool SavePins(const PinMap& pins) {
     out << "\n";
   }
   out << "  }\n}\n";
-  return true;
+  return AtomicWriteUtf8File(PinFilePath(), out.str());
 }
 
 void SetPin(PinMap* pins, const std::wstring& path, const std::string& fence_id) {

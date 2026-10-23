@@ -369,7 +369,7 @@ void MistWebDialogRun(MistWebDialog* dlg, const wchar_t* title, int width,
     dlg->done = true;
     return;
   }
-  if (dlg->owner) {
+  if (dlg->disable_owner && dlg->owner) {
     EnableWindow(dlg->owner, FALSE);
   }
   ShowWindow(hwnd, SW_SHOW);
@@ -377,12 +377,16 @@ void MistWebDialogRun(MistWebDialog* dlg, const wchar_t* title, int width,
 
   MSG msg{};
   while (!dlg->done && GetMessageW(&msg, nullptr, 0, 0) > 0) {
+    if (dlg->owner && dlg->owner_accel &&
+        TranslateAcceleratorW(dlg->owner, dlg->owner_accel, &msg)) {
+      continue;
+    }
     if (!IsDialogMessageW(hwnd, &msg)) {
       TranslateMessage(&msg);
       DispatchMessageW(&msg);
     }
   }
-  if (dlg->owner) {
+  if (dlg->disable_owner && dlg->owner) {
     EnableWindow(dlg->owner, TRUE);
     SetForegroundWindow(dlg->owner);
   }

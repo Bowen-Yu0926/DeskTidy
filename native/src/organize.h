@@ -9,12 +9,13 @@
 #include <unordered_map>
 #include <vector>
 
-// Virtual organize: pin unpinned items using rules (same ResolveFenceId as
-// RefreshDesktopIcons). Returns how many pins were written.
+// Virtual organize: prefer fence organize_kinds (P1-4), then legacy
+// ResolveFenceId. Returns how many pins were written.
 int OrganizeApplyDefaultPins(PinMap* pins, const std::vector<DesktopItem>& items,
                              const RuleMap& rules,
                              const std::string& software_id,
-                             const std::string& common_id);
+                             const std::string& common_id,
+                             const std::vector<FenceLayout>* fences = nullptr);
 
 // Physical organize: move unpinned desktop files into DeskTidy subfolders.
 int OrganizeMoveIntoFolders(const std::vector<DesktopItem>& items);
@@ -29,7 +30,8 @@ std::vector<std::wstring> OrganizePreviewVirtualPins(
     const RuleMap& rules,
     const std::unordered_map<std::string, std::wstring>& fence_titles,
     const std::string& software_id = "system_software",
-    const std::string& common_id = "system_common");
+    const std::string& common_id = "system_common",
+    const std::vector<FenceLayout>* fences = nullptr);
 // Show preview MessageBox; returns true if user confirms.
 bool OrganizeConfirmPhysical(HWND owner, const std::vector<DesktopItem>& items);
 

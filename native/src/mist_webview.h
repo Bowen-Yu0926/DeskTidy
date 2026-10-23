@@ -17,6 +17,11 @@ struct MistWebDialog {
   bool done = false;
   bool web_ready = false;
   bool web_available = false;
+  // When false, owner stays enabled so the user can edit while the dialog is
+  // open (DeskNote find/replace — Python setModal(False)).
+  bool disable_owner = true;
+  // Optional: translate owner accelerators (F3, etc.) while the dialog loop runs.
+  HACCEL owner_accel = nullptr;
   std::wstring html_path;
   std::wstring user_data_subdir;
   void* user = nullptr;

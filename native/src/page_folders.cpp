@@ -77,10 +77,7 @@ std::vector<PageFolderItem> LoadPageFolders() {
 }
 
 bool SavePageFolders(const std::vector<PageFolderItem>& items) {
-  std::ofstream out(CfgPath(), std::ios::binary);
-  if (!out) {
-    return false;
-  }
+  std::ostringstream out;
   out << "{\n  \"folders\": [\n";
   for (size_t i = 0; i < items.size(); ++i) {
     out << "    {\"name\":\"" << NarrowUtf8(items[i].name) << "\",\"path\":\""
@@ -91,7 +88,7 @@ bool SavePageFolders(const std::vector<PageFolderItem>& items) {
     out << "\n";
   }
   out << "  ]\n}\n";
-  return true;
+  return AtomicWriteUtf8File(CfgPath(), out.str());
 }
 
 namespace {

@@ -275,10 +275,7 @@ std::vector<std::wstring> LoadWhitelist() {
 bool SaveWhitelist(const std::vector<std::wstring>& names) {
   std::vector<std::wstring> dedup = names;
   Dedup(&dedup);
-  std::ofstream out(WhitelistFile(), std::ios::binary);
-  if (!out) {
-    return false;
-  }
+  std::ostringstream out;
   out << "{\n  \"names\": [\n";
   for (size_t i = 0; i < dedup.size(); ++i) {
     out << "    \"" << NarrowUtf8(dedup[i]) << "\"";
@@ -288,7 +285,7 @@ bool SaveWhitelist(const std::vector<std::wstring>& names) {
     out << "\n";
   }
   out << "  ]\n}\n";
-  return true;
+  return AtomicWriteUtf8File(WhitelistFile(), out.str());
 }
 
 bool IsWhitelisted(const std::wstring& path_or_name,

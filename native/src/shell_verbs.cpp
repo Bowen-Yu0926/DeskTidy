@@ -1,6 +1,7 @@
 #include "shell_verbs.h"
 
 #include "autostart.h"
+#include "desknote_launch.h"
 
 #include <Windows.h>
 
@@ -9,7 +10,8 @@
 namespace {
 constexpr wchar_t kRoot[] =
     L"Software\\Classes\\Directory\\Background\\shell";
-constexpr wchar_t kParent[] = L"DeskTidyNative";
+// P2-19: share the Python cascade key so only one DeskTidy submenu appears.
+constexpr wchar_t kParent[] = L"DeskTidy";
 
 struct ChildVerb {
   const wchar_t* key;
@@ -25,7 +27,7 @@ constexpr ChildVerb kChildren[] = {
     {L"refresh_fences", L"刷新所有分区", L"--refresh-fences"},
     {L"show_window", L"显示主窗口", L"--show-window"},
     {L"organize", L"一键整理", L"--organize"},
-    {L"notes", L"打开便签", L"--notes"},
+    {L"notes", L"用记事本打开", L"--notes"},
     {L"search", L"文件搜索", L"--search"},
     {L"shot", L"区域截图", L"--shot"},
     {L"todos", L"打开待办", L"--todos"},
@@ -69,7 +71,7 @@ void DeleteFlatObsolete() {
     RegDeleteTreeW(HKEY_CURRENT_USER, (path + L"\\command").c_str());
     RegDeleteTreeW(HKEY_CURRENT_USER, path.c_str());
   }
-  // Also wipe old parent root key used by early Native builds.
+  // Wipe early Native parent keys so they do not sit beside DeskTidy.
   RegDeleteTreeW(HKEY_CURRENT_USER,
                  L"Software\\Classes\\Directory\\Background\\shell\\"
                  L"DeskTidyNative");
@@ -96,7 +98,12 @@ bool WriteChild(const std::wstring& parent, const ChildVerb& c) {
                       nullptr) != ERROR_SUCCESS) {
     return false;
   }
-  const std::wstring cmdline = L"\"" + NativeExePath() + L"\" " + c.args;
+  std::wstring cmdline;
+  if (wcscmp(c.key, L"notes") == 0 && DeskNoteExeExists()) {
+    cmdline = L"\"" + DeskNoteExePath() + L"\"";
+  } else {
+    cmdline = L"\"" + NativeExePath() + L"\" " + c.args;
+  }
   RegSetValueExW(cmd, nullptr, 0, REG_SZ,
                  reinterpret_cast<const BYTE*>(cmdline.c_str()),
                  static_cast<DWORD>((cmdline.size() + 1) * sizeof(wchar_t)));

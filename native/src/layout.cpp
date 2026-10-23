@@ -416,6 +416,44 @@ AppState LoadAppStateFromPath(const std::wstring& path, bool inject_defaults) {
     FindBool(obj, "visible", &visible);
     std::vector<std::string> organize_kinds;
     FindStringArray(obj, "organize_kinds", &organize_kinds);
+    std::vector<int> fence_pages;
+    {
+      const size_t arr = obj.find("\"pages\"");
+      if (arr != std::string::npos) {
+        size_t lb = obj.find('[', arr);
+        size_t rb = obj.find(']', lb == std::string::npos ? 0 : lb);
+        if (lb != std::string::npos && rb != std::string::npos && rb > lb) {
+          size_t p = lb + 1;
+          while (p < rb) {
+            while (p < rb && (obj[p] == ' ' || obj[p] == ',' || obj[p] == '\t' ||
+                              obj[p] == '\n' || obj[p] == '\r')) {
+              ++p;
+            }
+            if (p >= rb || obj[p] < '0' || obj[p] > '9') {
+              break;
+            }
+            int v = 0;
+            while (p < rb && obj[p] >= '0' && obj[p] <= '9') {
+              v = v * 10 + (obj[p] - '0');
+              ++p;
+            }
+            fence_pages.push_back(v);
+          }
+        }
+      }
+    }
+    int radius = -1;
+    FindNumber(obj, "radius", &radius);
+    bool show_title = true;
+    FindBool(obj, "show_title", &show_title);
+    bool collapsible = true;
+    FindBool(obj, "collapsible", &collapsible);
+    bool has_custom = false;
+    FindBool(obj, "has_custom_colors", &has_custom);
+    int custom_bg = 0;
+    int custom_accent = 0;
+    FindNumber(obj, "custom_bg", &custom_bg);
+    FindNumber(obj, "custom_accent", &custom_accent);
     if (w < 120) {
       w = 280;
     }
@@ -430,6 +468,10 @@ AppState LoadAppStateFromPath(const std::wstring& path, bool inject_defaults) {
     fl.w = w;
     fl.h = h;
     fl.page = page;
+    fl.pages = fence_pages.empty() ? std::vector<int>{page} : fence_pages;
+    if (!fl.pages.empty()) {
+      fl.page = fl.pages[0];
+    }
     fl.style_id = style_id.empty() ? "charcoal" : style_id;
     fl.portal_path = Widen(portal);
     fl.collapsed = collapsed;
@@ -439,6 +481,12 @@ AppState LoadAppStateFromPath(const std::wstring& path, bool inject_defaults) {
     if (opacity >= 0 && opacity <= 255) {
       fl.opacity = opacity;
     }
+    fl.radius = radius;
+    fl.show_title = show_title;
+    fl.collapsible = collapsible;
+    fl.has_custom_colors = has_custom;
+    fl.custom_bg = static_cast<COLORREF>(custom_bg);
+    fl.custom_accent = static_cast<COLORREF>(custom_accent);
     fl.visible = visible;
     fl.organize_kinds = organize_kinds;
     int icon_zoom = 100;
@@ -786,6 +834,18 @@ bool SaveAppState(const AppState& state) {
         << "\"w\":" << f.w << ","
         << "\"h\":" << f.h << ","
         << "\"page\":" << f.page << ","
+        << "\"pages\":[";
+    {
+      const auto& pg =
+          f.pages.empty() ? std::vector<int>{f.page} : f.pages;
+      for (size_t pi = 0; pi < pg.size(); ++pi) {
+        if (pi) {
+          out << ",";
+        }
+        out << pg[pi];
+      }
+    }
+    out << "],"
         << "\"style\":\""
         << EscapeJson(f.style_id.empty() ? "charcoal" : f.style_id) << "\","
         << "\"portal\":\"" << EscapeJson(Narrow(f.portal_path)) << "\","
@@ -798,6 +858,14 @@ bool SaveAppState(const AppState& state) {
         << EscapeJson(f.view_mode == "list" ? "list" : "grid") << "\","
         << "\"visible\":" << (f.visible ? "true" : "false") << ","
         << "\"opacity\":" << f.opacity << ","
+        << "\"radius\":" << f.radius << ","
+        << "\"show_title\":" << (f.show_title ? "true" : "false") << ","
+        << "\"collapsible\":" << (f.collapsible ? "true" : "false") << ","
+        << "\"has_custom_colors\":"
+        << (f.has_custom_colors ? "true" : "false") << ","
+        << "\"custom_bg\":" << static_cast<unsigned>(f.custom_bg) << ","
+        << "\"custom_accent\":" << static_cast<unsigned>(f.custom_accent)
+        << ","
         << "\"organize_kinds\":[";
     for (size_t k = 0; k < f.organize_kinds.size(); ++k) {
       if (k) {

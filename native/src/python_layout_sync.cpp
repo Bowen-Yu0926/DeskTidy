@@ -1,15 +1,19 @@
 #include "python_layout_sync.h"
 
+#include "app_prefs.h"
 #include "fence_style.h"
+#include "hotkey_store.h"
 #include "layout.h"
 #include "page_folders.h"
 #include "paths_util.h"
 #include "pin_store.h"
+#include "whitelist.h"
 
 #include <Windows.h>
 #include <ShlObj.h>
 
 #include <cmath>
+#include <cstdio>
 #include <fstream>
 #include <sstream>
 #include <string>
@@ -204,6 +208,32 @@ bool FindStringArray(const std::string& json, const char* key,
     }
   }
   return any;
+}
+
+std::string ExtractObject(const std::string& json, size_t start, size_t* end_out);
+
+// Locate `"key": { ... }` and return the balanced object body (inclusive braces).
+std::string FindNestedObject(const std::string& json, const char* key) {
+  const std::string needle = std::string("\"") + key + "\"";
+  size_t p = json.find(needle);
+  if (p == std::string::npos) {
+    return {};
+  }
+  p = json.find(':', p + needle.size());
+  if (p == std::string::npos) {
+    return {};
+  }
+  ++p;
+  while (p < json.size() &&
+         (json[p] == ' ' || json[p] == '\t' || json[p] == '\r' ||
+          json[p] == '\n')) {
+    ++p;
+  }
+  if (p >= json.size() || json[p] != '{') {
+    return {};
+  }
+  size_t end = 0;
+  return ExtractObject(json, p, &end);
 }
 
 // Extract balanced {...} starting at `start` (must point at '{').
@@ -407,12 +437,29 @@ bool ApplyLayoutsByPage(const std::string& json, const std::string& fence_id,
   return true;
 }
 
+void MigratePythonPrefs(const std::string& json);
+
 bool ParseAndWrite(const std::string& json) {
   AppState state;
   state.dock_visible = false;
   state.pet_visible = true;
   FindNumber(json, "current_page", &state.current_page);
   FindBool(json, "pet_visible", &state.pet_visible);
+  {
+    const std::string pet = FindNestedObject(json, "desktop_pet");
+    if (!pet.empty()) {
+      bool vis = false;
+      if (FindBool(pet, "visible", &vis)) {
+        state.pet_visible = vis;
+      } else if (FindBool(pet, "enabled", &vis)) {
+        state.pet_visible = vis;
+      }
+    }
+    const std::string dock = FindNestedObject(json, "dock");
+    if (!dock.empty()) {
+      FindBool(dock, "enabled", &state.dock_visible);
+    }
+  }
 
   // desktop_pages → page names (ordered by appearance).
   const size_t pages_arr = FindArrayStart(json, "desktop_pages");
@@ -507,6 +554,87 @@ bool ParseAndWrite(const std::string& json) {
       FindString(json, "fence_style_preset", &fl.style_id);
       fl.style_id = NormalizeFenceStyleId(fl.style_id);
     }
+    // P2-12: Python style dict → opacity / colors / radius / title / collapse.
+    {
+      const std::string style_obj = FindNestedObject(obj, "style");
+      if (!style_obj.empty()) {
+        double opacity = 0.0;
+        if (FindFloat(style_obj, "opacity", &opacity) && opacity > 0.0) {
+          fl.opacity = (std::min)(
+              255, (std::max)(40, static_cast<int>(opacity * 255.0 + 0.5)));
+        }
+        double radius = 0.0;
+        if (FindFloat(style_obj, "border_radius", &radius) && radius >= 0.0) {
+          fl.radius = static_cast<int>(radius + 0.5);
+        }
+        FindBool(style_obj, "show_title", &fl.show_title);
+        FindBool(style_obj, "collapsible", &fl.collapsible);
+        auto parse_hex = [](const std::string& hex, COLORREF* out) -> bool {
+          if (!out || hex.size() < 7 || hex[0] != '#') {
+            return false;
+          }
+          unsigned r = 0, g = 0, b = 0;
+          if (sscanf_s(hex.c_str() + 1, "%02x%02x%02x", &r, &g, &b) != 3) {
+            return false;
+          }
+          *out = RGB(r, g, b);
+          return true;
+        };
+        std::string bg_hex;
+        std::string accent_hex;
+        COLORREF bg = 0;
+        COLORREF accent = 0;
+        bool got = false;
+        if (FindString(style_obj, "background", &bg_hex) &&
+            parse_hex(bg_hex, &bg)) {
+          fl.custom_bg = bg;
+          got = true;
+        }
+        if (FindString(style_obj, "accent", &accent_hex) &&
+            parse_hex(accent_hex, &accent)) {
+          fl.custom_accent = accent;
+          got = true;
+        }
+        fl.has_custom_colors = got;
+        std::string vm;
+        if (FindString(style_obj, "view_mode", &vm) && !vm.empty()) {
+          fl.view_mode = (vm == "list") ? "list" : "grid";
+        }
+      }
+    }
+    // P2-11: Python fence["pages"] multi-page membership.
+    {
+      const size_t arr = FindArrayStart(obj, "pages");
+      if (arr != std::string::npos) {
+        size_t lb = arr;
+        // FindArrayStart returns index of '['.
+        size_t rb = obj.find(']', lb);
+        if (rb != std::string::npos) {
+          size_t p = lb + 1;
+          while (p < rb) {
+            while (p < rb &&
+                   (obj[p] == ' ' || obj[p] == ',' || obj[p] == '\t' ||
+                    obj[p] == '\n' || obj[p] == '\r')) {
+              ++p;
+            }
+            if (p >= rb || obj[p] < '0' || obj[p] > '9') {
+              break;
+            }
+            int v = 0;
+            while (p < rb && obj[p] >= '0' && obj[p] <= '9') {
+              v = v * 10 + (obj[p] - '0');
+              ++p;
+            }
+            fl.pages.push_back(v);
+          }
+        }
+      }
+      if (fl.pages.empty()) {
+        fl.pages.push_back(fl.page);
+      } else {
+        fl.page = fl.pages[0];
+      }
+    }
     std::string portal;
     // Folder Portal mirrors a real directory (Python fence_rules.is_portal_fence:
     // portal_path or type=="portal"). `folder` is only a storage name, NOT a
@@ -517,6 +645,7 @@ bool ParseAndWrite(const std::string& json) {
     }
     FindBool(obj, "collapsed", &fl.collapsed);
     FindBool(obj, "position_locked", &fl.position_locked);
+    FindBool(obj, "visible", &fl.visible);
 
     // R6: sort_by / view_mode / organize_kinds / icon_zoom per fence.
     std::string sort_by;
@@ -587,7 +716,282 @@ bool ParseAndWrite(const std::string& json) {
       SavePageFolders(folders);
     }
   }
+
+  // P1-30: also migrate prefs / hotkeys / pet.json (not only layout+pins).
+  MigratePythonPrefs(json);
+  // P2-14: organize_whitelist → whitelist.json
+  {
+    std::vector<std::string> wl;
+    if (FindStringArray(json, "organize_whitelist", &wl) && !wl.empty()) {
+      std::vector<std::wstring> names;
+      names.reserve(wl.size());
+      for (const auto& s : wl) {
+        names.push_back(WidenUtf8(s));
+      }
+      SaveWhitelist(names);
+    }
+  }
   return true;
+}
+
+void MigratePythonPrefs(const std::string& json) {
+  AppPrefs prefs = LoadAppPrefs();
+
+  FindBool(json, "auto_organize_on_startup", &prefs.auto_organize_on_startup);
+  FindBool(json, "auto_organize_watch", &prefs.auto_organize_watch);
+  FindBool(json, "auto_snapshot_on_change", &prefs.auto_snapshot_on_change);
+  FindBool(json, "check_update_on_startup", &prefs.check_update_on_startup);
+  FindBool(json, "show_fences", &prefs.show_fences);
+  FindBool(json, "show_page_indicator", &prefs.show_page_indicator);
+  FindBool(json, "double_click_hide", &prefs.double_click_hide);
+  FindBool(json, "close_to_tray", &prefs.close_to_tray);
+  FindBool(json, "close_behavior_prompted", &prefs.close_behavior_prompted);
+  FindBool(json, "desktop_right_click_menu", &prefs.desktop_right_click_menu);
+  FindBool(json, "enable_public_desktop", &prefs.enable_public_desktop);
+  // Existing Python profiles: treat missing first-run keys as already done.
+  if (!FindBool(json, "first_run_guide_done", &prefs.first_run_guide_done)) {
+    prefs.first_run_guide_done = true;
+  }
+  if (!FindBool(json, "first_run_organize_done",
+                &prefs.first_run_organize_done)) {
+    prefs.first_run_organize_done = true;
+  }
+
+  std::string theme;
+  if (FindString(json, "theme", &theme) && !theme.empty()) {
+    if (theme == "mist" || theme == "graphite" || theme == "sky" ||
+        theme == "mint" || theme == "lavender" || theme == "peach") {
+      prefs.ui_theme = theme;
+    }
+  }
+  std::string fence_preset;
+  if (FindString(json, "fence_style_preset", &fence_preset) &&
+      !fence_preset.empty()) {
+    prefs.theme_id = NormalizeFenceStyleId(fence_preset);
+  }
+  std::string update_tag;
+  if (FindString(json, "update_notified_tag", &update_tag)) {
+    prefs.update_notified_tag = WidenUtf8(update_tag);
+  }
+
+  const std::string shot = FindNestedObject(json, "screenshot");
+  if (!shot.empty()) {
+    FindBool(shot, "auto_pin_after_copy", &prefs.screenshot_auto_pin);
+    FindNumber(shot, "max_pins", &prefs.screenshot_max_pins);
+  }
+
+  const std::string rec = FindNestedObject(json, "screen_record");
+  if (!rec.empty()) {
+    FindBool(rec, "enabled", &prefs.record_enabled);
+    FindNumber(rec, "fps", &prefs.record_fps);
+    std::string out_dir;
+    if (FindString(rec, "output_dir", &out_dir) && !out_dir.empty()) {
+      prefs.record_output_dir = WidenUtf8(out_dir);
+    }
+    std::string mic;
+    if (FindString(rec, "audio_device", &mic)) {
+      prefs.record_mic = WidenUtf8(mic);
+    }
+    std::string q;
+    if (FindString(rec, "quality_preset", &q)) {
+      if (q == "low") {
+        prefs.record_quality = 0;
+      } else if (q == "high") {
+        prefs.record_quality = 2;
+      } else {
+        prefs.record_quality = 1;
+      }
+    }
+  }
+
+  const std::string search = FindNestedObject(json, "file_search");
+  if (!search.empty()) {
+    FindBool(search, "search_all_drives", &prefs.search_all_drives);
+    FindBool(search, "include_open_folders", &prefs.search_include_open_folders);
+    FindBool(search, "include_hidden", &prefs.search_include_hidden);
+    FindNumber(search, "max_results", &prefs.search_max_results);
+    FindNumber(search, "max_depth", &prefs.search_max_depth);
+    FindNumber(search, "threads", &prefs.search_threads);
+    std::vector<std::string> roots;
+    if (FindStringArray(search, "roots", &roots)) {
+      prefs.search_desktop = false;
+      prefs.search_documents = false;
+      prefs.search_downloads = false;
+      for (const auto& r : roots) {
+        if (r == "desktop") {
+          prefs.search_desktop = true;
+        } else if (r == "documents") {
+          prefs.search_documents = true;
+        } else if (r == "downloads") {
+          prefs.search_downloads = true;
+        }
+      }
+    }
+  }
+
+  const std::string notepad = FindNestedObject(json, "notepad");
+  if (!notepad.empty()) {
+    FindBool(notepad, "enabled", &prefs.notepad_enabled);
+    std::string folder;
+    if (FindString(notepad, "folder", &folder) && !folder.empty()) {
+      prefs.notepad_folder = WidenUtf8(folder);
+    }
+  }
+  const std::string minutes = FindNestedObject(json, "meeting_minutes");
+  if (!minutes.empty()) {
+    FindBool(minutes, "enabled", &prefs.minutes_enabled);
+  }
+  const std::string calc = FindNestedObject(json, "calculator");
+  if (!calc.empty()) {
+    FindBool(calc, "enabled", &prefs.calculator_enabled);
+  }
+  const std::string todos = FindNestedObject(json, "desktop_todos");
+  if (!todos.empty()) {
+    FindBool(todos, "enabled", &prefs.todos_enabled);
+  }
+
+  const std::string vault = FindNestedObject(json, "account_vault");
+  if (!vault.empty()) {
+    FindBool(vault, "enabled", &prefs.vault_enabled);
+    std::string api;
+    if (FindString(vault, "api_base", &api) && !api.empty()) {
+      prefs.vault_api_base = WidenUtf8(api);
+    }
+    FindNumber(vault, "refresh_interval_hours", &prefs.vault_refresh_hours);
+    FindNumber(vault, "clipboard_clear_seconds",
+               &prefs.vault_clipboard_clear_seconds);
+  }
+
+  const std::string dock = FindNestedObject(json, "dock");
+  if (!dock.empty()) {
+    FindBool(dock, "enabled", &prefs.dock_visible);
+    double opacity = 0.0;
+    if (FindFloat(dock, "opacity", &opacity) && opacity > 0.0) {
+      prefs.dock_opacity =
+          (std::min)(100, (std::max)(50, static_cast<int>(opacity * 100.0)));
+    }
+    std::string pos;
+    if (FindString(dock, "position", &pos)) {
+      if (pos == "left") {
+        prefs.dock_edge = 1;
+      } else if (pos == "right") {
+        prefs.dock_edge = 2;
+      } else {
+        prefs.dock_edge = 0;
+      }
+    }
+    std::vector<std::string> items;
+    if (FindStringArray(dock, "items", &items)) {
+      prefs.dock_items.clear();
+      for (const auto& it : items) {
+        prefs.dock_items.push_back(WidenUtf8(it));
+      }
+    }
+  }
+
+  std::vector<std::string> excludes;
+  if (FindStringArray(json, "exclude_patterns", &excludes)) {
+    prefs.exclude_patterns.clear();
+    for (const auto& e : excludes) {
+      prefs.exclude_patterns.push_back(WidenUtf8(e));
+    }
+  }
+
+  if (prefs.record_fps < 15 || prefs.record_fps > 60) {
+    prefs.record_fps = 30;
+  }
+  if (prefs.screenshot_max_pins < 1) {
+    prefs.screenshot_max_pins = 1;
+  }
+  if (prefs.screenshot_max_pins > 5) {
+    prefs.screenshot_max_pins = 5;
+  }
+  SaveAppPrefs(prefs);
+
+  // Hotkeys: Python `"hotkeys":{"organize":"Ctrl+Shift+O",...}` → hotkeys.json.
+  const std::string hk = FindNestedObject(json, "hotkeys");
+  if (!hk.empty()) {
+    auto defs = DefaultHotkeys();
+    for (auto& d : defs) {
+      std::string chord;
+      if (FindString(hk, d.id.c_str(), &chord) && !chord.empty()) {
+        // Upgrade legacy Ctrl+Alt+F → Ctrl+Alt+4 (Python apply_file_search…).
+        if (d.id == "file_search") {
+          std::string lower = chord;
+          for (char& c : lower) {
+            if (c >= 'A' && c <= 'Z') {
+              c = static_cast<char>(c - 'A' + 'a');
+            }
+          }
+          if (lower == "ctrl+alt+f" || lower == "ctrl + alt + f") {
+            chord = "Ctrl+Alt+4";
+          }
+        }
+        UINT mods = 0, vk = 0;
+        if (ParseHotkey(WidenUtf8(chord), &mods, &vk)) {
+          d.modifiers = mods;
+          d.vk = vk;
+        }
+      }
+    }
+    SaveHotkeys(defs);
+  }
+
+  // Pet: Python desktop_pet → pet.json (native PetWindow::PersistPrefs shape).
+  const std::string pet = FindNestedObject(json, "desktop_pet");
+  if (!pet.empty()) {
+    bool auto_wander = true;
+    bool show_bubbles = true;
+    FindBool(pet, "auto_wander", &auto_wander);
+    FindBool(pet, "show_page_bubbles", &show_bubbles);
+    double scale = 1.0;
+    FindFloat(pet, "size_scale", &scale);
+    if (scale < 0.5 || scale > 2.0) {
+      scale = 1.0;
+    }
+    std::string character = "hoodie";
+    FindString(pet, "character", &character);
+    if (character.empty()) {
+      character = "hoodie";
+    }
+    auto join_acts = [](const std::vector<std::string>& acts) {
+      std::string s;
+      for (size_t i = 0; i < acts.size(); ++i) {
+        if (i) {
+          s += ',';
+        }
+        s += acts[i];
+      }
+      return s;
+    };
+    std::vector<std::string> hoodie_acts;
+    std::vector<std::string> voyage_acts;
+    const std::string by_char =
+        FindNestedObject(pet, "enabled_actions_by_character");
+    if (!by_char.empty()) {
+      FindStringArray(by_char, "hoodie", &hoodie_acts);
+      FindStringArray(by_char, "voyage", &voyage_acts);
+    } else {
+      FindStringArray(pet, "enabled_actions", &hoodie_acts);
+    }
+    if (hoodie_acts.empty()) {
+      hoodie_acts = {"pet", "wait", "sleep", "fall"};
+    }
+    if (voyage_acts.empty()) {
+      voyage_acts = {"pet", "wait", "fall"};
+    }
+    std::ofstream out(JoinPath(NativeDataDir(), L"pet.json"), std::ios::binary);
+    if (out) {
+      out << "{\n  \"character\":\"" << character << "\",\n  \"pose\":\"idle\","
+          << "\n  \"auto_wander\": " << (auto_wander ? "true" : "false")
+          << ",\n  \"show_page_bubbles\": " << (show_bubbles ? "true" : "false")
+          << ",\n  \"size_scale\": " << scale
+          << ",\n  \"pos_x\": 0,\n  \"pos_y\": 0"
+          << ",\n  \"actions_hoodie\":\"" << join_acts(hoodie_acts)
+          << "\",\n  \"actions_voyage\":\"" << join_acts(voyage_acts)
+          << "\"\n}\n";
+    }
+  }
 }
 
 }  // namespace

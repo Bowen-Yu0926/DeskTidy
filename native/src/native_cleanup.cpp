@@ -1,6 +1,7 @@
 #include "native_cleanup.h"
 
 #include "autostart.h"
+#include "file_assoc.h"
 #include "log.h"
 #include "namespace_icons.h"
 #include "paths_util.h"
@@ -16,7 +17,9 @@
 namespace {
 
 bool WipeDirectory(const std::wstring& dir) {
-  if (dir.empty() || dir.find(L"DeskTidyNative") == std::wstring::npos) {
+  if (dir.empty() ||
+      (dir.find(L"DeskTidyNative") == std::wstring::npos &&
+       !IsPortableMode())) {
     return false;
   }
   std::wstring from = dir;
@@ -152,7 +155,10 @@ void DeleteFileBestEffort(const std::wstring& path) {
 // documents (笔记 / 录屏 / 纪要 / notes / todos / vault).
 void CleanNativeDataDir() {
   const std::wstring base = NativeDataDir();
-  if (base.empty() || base.find(L"DeskTidyNative") == std::wstring::npos) {
+  // P2-2: portable mode uses `<exe>\data` (no DeskTidyNative in path).
+  if (base.empty() ||
+      (base.find(L"DeskTidyNative") == std::wstring::npos &&
+       !IsPortableMode())) {
     LogLineA("[cleanup] refuse to clean suspicious data dir");
     return;
   }
@@ -241,6 +247,8 @@ int RunUninstallCleanup() {
   LogLineA("[uninstall] namespace icons restored (HideDesktopIcons registry)");
   UnregisterNativeShellVerbs();
   LogLineA("[uninstall] shell verbs unregistered");
+  UnregisterNoteFileAssociations();
+  LogLineA("[uninstall] note file associations unregistered");
   SetNativeAutostart(false);
   LogLineA("[uninstall] autostart disabled");
   DeleteRunValues();

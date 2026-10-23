@@ -54,6 +54,14 @@ class PageBar {
   void SetOnRenamePageAt(PageFn fn) { on_rename_page_at_ = std::move(fn); }
   // U7 page.locked — toggle lock for a page via the bar's right-click menu.
   void SetOnTogglePageLock(PageFn fn) { on_toggle_page_lock_ = std::move(fn); }
+  // P1-16: "移动分区到该页" — list all fences so the user can move one onto the
+  // right-clicked page. Titles are refreshed via SyncPageChrome.
+  void SetFenceTitles(const std::vector<std::wstring>& titles) {
+    fence_titles_ = titles;
+  }
+  void SetOnMoveFenceToPage(std::function<void(int page, int fence)> fn) {
+    on_move_fence_to_page_ = std::move(fn);
+  }
   // Page count ceiling (Python semantics: callers prompt, never silently cut).
   static constexpr int kMaxPages = 12;
   void AttachToDesktopLayer();
@@ -119,4 +127,6 @@ class PageBar {
   PageFn on_delete_page_;
   PageFn on_rename_page_at_;
   PageFn on_toggle_page_lock_;
+  std::vector<std::wstring> fence_titles_;
+  std::function<void(int, int)> on_move_fence_to_page_;
 };

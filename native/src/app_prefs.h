@@ -8,6 +8,8 @@ struct AppPrefs {
   bool auto_organize_watch = false;
   // 0 = record until toggle/stop; >0 = ffmpeg -t seconds auto-stop.
   int record_seconds = 0;
+  // Soft file-size cap in MiB (P2-38). 0 = unlimited; default 2048.
+  int record_max_mb = 2048;
   // 0 low, 1 medium, 2 high (libx264 CRF).
   int record_quality = 1;
   // Capture frame rate (Python screen_record.fps). Clamped 15–60 at load.

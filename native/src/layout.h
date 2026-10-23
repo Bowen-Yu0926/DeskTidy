@@ -1,5 +1,7 @@
 #pragma once
 
+#include <Windows.h>
+
 #include <map>
 #include <string>
 #include <vector>
@@ -47,6 +49,8 @@ struct FenceLayout {
   int w = 280;
   int h = 360;
   int page = 0;
+  // P2-11: multi-page membership (Python fence["pages"]). Empty → {page}.
+  std::vector<int> pages;
   std::string style_id = "charcoal";
   std::wstring portal_path;
   // When true, window height is collapsed chrome; h still stores expanded height.
@@ -59,6 +63,13 @@ struct FenceLayout {
   std::string view_mode = "grid";
   // Panel alpha 0–255; -1 = inherit from style preset.
   int opacity = -1;
+  // P2-12: optional overrides from Python style dict (-1 / empty = use preset).
+  int radius = -1;
+  bool show_title = true;
+  bool collapsible = true;
+  bool has_custom_colors = false;
+  COLORREF custom_bg = 0;
+  COLORREF custom_accent = 0;
   // Fence shown on its page(s) (Python fence["visible"]).
   bool visible = true;
   // Per-fence organize kinds (G4): "icon" (.lnk/.url/.exe) / "file" (文档).

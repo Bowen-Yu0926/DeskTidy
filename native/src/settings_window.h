@@ -166,6 +166,8 @@ class SettingsWindow {
   };
   void SetExtensionState(const ExtState& ext);
   void SetOnExit(VoidFn fn) { on_exit_ = std::move(fn); }
+  // Fired when close-to-tray hides the window (P2-1 tray tip + trim).
+  void SetOnHideToTray(VoidFn fn) { on_hide_to_tray_ = std::move(fn); }
   // Fired after settings.html is ready (each Navigate). App should re-push
   // extension state so snapshot/fence cards are not lost across reloads.
   void SetOnReady(VoidFn fn) { on_ready_ = std::move(fn); }
@@ -269,6 +271,7 @@ class SettingsWindow {
   VoidFn on_hotkeys_;
   VoidFn on_hotkey_help_;
   VoidFn on_exit_;
+  VoidFn on_hide_to_tray_;
   VoidFn on_ready_;
   std::function<void(const std::wstring&)> on_command_;
   std::function<void(const std::wstring&, bool)> on_ext_toggle_;

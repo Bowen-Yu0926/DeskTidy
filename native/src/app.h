@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include "app_prefs.h"
 #include "capture_overlay.h"
@@ -6,9 +6,9 @@
 #include "desktop_watch.h"
 #include "dock_window.h"
 #include "fence_window.h"
+#include "hotkey_relay.h"
 #include "hotkey_store.h"
 #include "layout.h"
-#include "notes_window.h"
 #include "page_bar.h"
 #include "pet_window.h"
 #include "pin_store.h"
@@ -50,6 +50,7 @@ class App {
   void RefreshSettingsList();
   void RefreshOrganizeSettingsPage();
   void RefreshDesktopIcons();
+  void RefreshIconGrids();
   void AddFence();
   void AddFenceAtRect(const RECT& screen);
   void MoveDesktopItemsToFence(const std::vector<std::wstring>& paths,
@@ -63,7 +64,9 @@ class App {
   void AddPage();
   void RemoveCurrentPage();
   void RenameCurrentPage();
-  void CreateFenceOnPage(int page);
+  void CreateFenceOnPage(int page, bool switch_to_page = true);
+  // P2-9: empty pages get a document fence during virtual organize.
+  void EnsureOrganizeFencesForEmptyPages();
   void DeletePageAt(int page);
   void RenamePageAt(int page);
   void OpenLayoutEditor();
@@ -83,6 +86,7 @@ class App {
   void OnUpdateInstallDone(UpdateInstallResult* r);
   void OnUpdateProgress(int pct);
   void OrganizeVirtual(bool quiet = false);
+  void OnOrganizeDone(struct OrganizeJobResult* job);
   void OrganizePhysical();
   void SetOrganizeStartup(bool on);
   void SetOrganizeWatch(bool on);
@@ -111,6 +115,9 @@ class App {
   void DispatchSettingsCommand(const std::wstring& id);
   void PinImage(const std::wstring& path);
   void ReregisterHotkeys();
+  // P1-28: start/update elevated hotkey helper relay.
+  void SyncHotkeyRelay();
+  void OnRelayHotkeyAction(const std::string& action);
   void PushExtensionSettings();
   void PushHotkeyState();
   void ApplyUiLanguage();
@@ -119,6 +126,16 @@ class App {
   void ImportPrefs();
   void ApplyLoadedGeneralPrefs();
   void OnDesktopBlankDoubleClick();
+  // P1-6: double-click toggles stock Explorer desktop ↔ organized DeskTidy view.
+  void ShowStockDesktopView();
+  void ShowOrganizedDesktopView();
+  // Single source of truth for Explorer icon visibility: Shell applies the
+  // toggle asynchronously, so loose floats must follow our intent, not the
+  // (lagging) live window state.
+  void SetIconsVisible(bool visible, bool toast);
+  HWND MessageHwnd() const { return message_hwnd_; }
+  // P1-28: LL-hook fallback when WM_HOTKEY is swallowed (exclusive fullscreen).
+  void TryDispatchLlHotkey(UINT vk);
 
  private:
   static LRESULT CALLBACK TrayWndProc(HWND, UINT, WPARAM, LPARAM);
@@ -131,6 +148,7 @@ class App {
   void ApplyChromeTheme();
   void ApplyTrayThemeIcon();
   void TrimMemory();
+  void ShowTrayBalloon(const std::wstring& title, const std::wstring& text);
   COLORREF TrayAccentColor() const;
   void OnPathsDropped(FenceWindow* fence, const std::vector<std::wstring>& paths);
   void OnPathsPasted(FenceWindow* fence, const std::vector<std::wstring>& paths,
@@ -145,10 +163,6 @@ class App {
   void ReloadFencesFromState(const AppState& state);
   void HealLayoutsNow(bool toast);
   void OnDisplayTopologyMaybeChanged();
-  // U7: fence create/move/delete gate — true when the page is locked. System
-  // pages 0/1 are always locked (Python is_locked_page_id); user pages honor
-  // their page_locked flag. Mirrors PageBar::PageLockedAt / IsPageLocked.
-  bool PageLockedForFences(int page) const;
   void TogglePageLock(int page);
   // U4: single converge action for WM_DISPLAYCHANGE (scale + reload).
   void ConvergeDisplayChange();
@@ -165,7 +179,6 @@ class App {
   int band_restore_left_ = 0;
   std::vector<std::unique_ptr<FenceWindow>> fences_;
   SettingsWindow settings_;
-  NotesWindow notes_;
   TodoWindow todos_;
   SearchWindow search_;
   VaultWindow vault_;
@@ -183,6 +196,7 @@ class App {
   PinMap pins_;
   RuleMap rules_;
   std::vector<HotkeyDef> hotkeys_;
+  HotkeyRelay hotkey_relay_;
   DesktopWatch desktop_watch_;
   AppPrefs prefs_;
   std::string display_fp_;
@@ -198,12 +212,16 @@ class App {
   bool pet_visible_ = true;
   // Public desktop strip visibility mirrors prefs_.enable_public_desktop.
   bool public_visible_ = false;
+  // Intended Explorer-icon visibility. Shell applies toggles asynchronously,
+  // so AreDesktopIconsVisible() can lag and must not drive float visibility.
+  bool icons_visible_intent_ = true;
   bool peek_active_ = false;
   bool fences_hidden_ = false;
   NOTIFYICONDATAW nid_{};
   bool tray_added_ = false;
   UINT_PTR restore_timer_ = 0;
   UINT_PTR pet_timer_ = 0;
+  UINT pet_tick_ms_ = 50;
   UINT_PTR watch_timer_ = 0;
   UINT_PTR update_timer_ = 0;
   UINT_PTR vault_timer_ = 0;

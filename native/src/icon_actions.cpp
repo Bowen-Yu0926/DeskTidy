@@ -1,5 +1,7 @@
 #include "icon_actions.h"
 
+#include "namespace_icons.h"
+
 #include "i18n.h"
 #include "prompt_text.h"
 #include "shell_clipboard.h"
@@ -274,6 +276,12 @@ IconFsResult RecycleShellPaths(HWND owner,
       IDYES) {
     return IconFsResult::Cancelled;
   }
+  // P1-11: capture namespace CLSID before delete so Explorer icons can return.
+  std::vector<std::wstring> ns_clsids;
+  ns_clsids.reserve(paths.size());
+  for (const auto& p : paths) {
+    ns_clsids.push_back(GetLnkNamespaceClsid(p));
+  }
   std::wstring from;
   for (const auto& p : paths) {
     from += p;
@@ -290,6 +298,11 @@ IconFsResult RecycleShellPaths(HWND owner,
     ShowToast(L"未能移到回收站");
     return IconFsResult::Failed;
   }
+  for (const auto& clsid : ns_clsids) {
+    if (!clsid.empty()) {
+      ReturnNamespaceIconToDesktop(clsid);
+    }
+  }
   return IconFsResult::Ok;
 }
 
@@ -298,6 +311,7 @@ IconFsResult RecycleShellPath(HWND owner, const std::wstring& path) {
                   MB_YESNO | MB_ICONQUESTION) != IDYES) {
     return IconFsResult::Cancelled;
   }
+  const std::wstring ns_clsid = GetLnkNamespaceClsid(path);
   std::wstring from = path;
   from.push_back(L'\0');
   SHFILEOPSTRUCTW op{};
@@ -309,6 +323,9 @@ IconFsResult RecycleShellPath(HWND owner, const std::wstring& path) {
   if (rc != 0 || op.fAnyOperationsAborted) {
     ShowToast(L"未能移到回收站");
     return IconFsResult::Failed;
+  }
+  if (!ns_clsid.empty()) {
+    ReturnNamespaceIconToDesktop(ns_clsid);
   }
   return IconFsResult::Ok;
 }

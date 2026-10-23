@@ -415,18 +415,37 @@ void PageBar::ShowPageContextMenu(int page_index) {
     return;
   }
   const bool locked = PageLockedAt(page_index);
-  enum { CmdCreateFence = 1, CmdRename, CmdDelete, CmdNote, CmdToggleLock };
+  enum { CmdCreateFence = 1, CmdRename, CmdDelete, CmdNote, CmdToggleLock,
+         CmdMoveBase = 100 };
   HMENU menu = CreatePopupMenu();
-  AppendMenuW(menu, MF_STRING | (locked ? MF_GRAYED : 0), CmdCreateFence,
-              L"新建分区");
-  AppendMenuW(menu, MF_STRING | (locked ? MF_GRAYED : 0), CmdRename,
-              L"重命名页面");
+  // P0-11: locked system pages still allow create / rename / move — only the
+  // page delete is gated (Python is_locked_page_id).
+  AppendMenuW(menu, MF_STRING, CmdCreateFence, L"新建分区");
+  AppendMenuW(menu, MF_STRING, CmdRename, L"重命名页面");
+  // P1-16: "移动分区到该页" — list every fence, move the chosen one here.
+  HMENU move_menu = CreatePopupMenu();
+  int move_count = 0;
+  for (size_t i = 0; i < fence_titles_.size(); ++i) {
+    std::wstring label = fence_titles_[i];
+    if (label.empty()) {
+      label = L"分区 " + std::to_wstring(i + 1);
+    }
+    AppendMenuW(move_menu, MF_STRING, CmdMoveBase + static_cast<int>(i),
+                label.c_str());
+    ++move_count;
+  }
+  if (move_count > 0) {
+    AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(move_menu),
+                L"移动分区到该页");
+  } else {
+    DestroyMenu(move_menu);
+  }
   AppendMenuW(menu, MF_STRING | (locked ? MF_GRAYED : 0), CmdDelete,
               L"删除页面");
   AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
   AppendMenuW(menu, MF_STRING, CmdToggleLock, locked ? L"解锁页面" : L"锁定页面");
   AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-  AppendMenuW(menu, MF_STRING, CmdNote, L"页面便签");
+  AppendMenuW(menu, MF_STRING, CmdNote, L"打开记事本");
   POINT pt{};
   GetCursorPos(&pt);
   SetForegroundWindow(hwnd_);
@@ -435,11 +454,19 @@ void PageBar::ShowPageContextMenu(int page_index) {
       hwnd_, nullptr);
   DestroyMenu(menu);
   PostMessageW(hwnd_, WM_NULL, 0, 0);
+  if (cmd >= CmdMoveBase) {
+    const int fence = cmd - CmdMoveBase;
+    if (on_move_fence_to_page_ && fence >= 0 &&
+        fence < static_cast<int>(fence_titles_.size())) {
+      on_move_fence_to_page_(page_index, fence);
+    }
+    return;
+  }
   if (cmd == CmdCreateFence) {
     if (on_create_fence_) {
       on_create_fence_(page_index);
     }
-  } else if (cmd == CmdRename && !locked) {
+  } else if (cmd == CmdRename) {
     if (on_rename_page_at_) {
       on_rename_page_at_(page_index);
     } else if (on_rename_page_) {

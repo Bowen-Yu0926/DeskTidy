@@ -22,6 +22,11 @@ void AppendPublicSystemItems(std::vector<DesktopItem>* out);
 // the "hide desktop icons off" toggle, and --uninstall-cleanup.
 void RestoreDesktopIconsIfHidden();
 
+// P1-11: read DeskTidyNS:{CLSID} from a hosted .lnk description (empty = none).
+std::wstring GetLnkNamespaceClsid(const std::wstring& lnk_path);
+// Show the Explorer namespace icon again after the hosted .lnk is deleted.
+void ReturnNamespaceIconToDesktop(const std::wstring& clsid);
+
 // Re-apply hidden state after an Explorer rebuild (only when currently hosted).
 void ReapplyNamespaceIconHiddenState();
 

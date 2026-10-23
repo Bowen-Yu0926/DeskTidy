@@ -1,4 +1,4 @@
-#include "app.h"
+﻿#include "app.h"
 
 #include "autostart.h"
 #include "desktop_dblclick.h"
@@ -32,6 +32,7 @@
 #include "namespace_icons.h"
 #include "shell_icons.h"
 #include "shell_verbs.h"
+#include "desknote_launch.h"
 #include "file_assoc.h"
 #include "snapshot.h"
 #include "tool_paths.h"
@@ -47,6 +48,7 @@
 #include <Shellapi.h>
 #include <ShlObj.h>
 
+#include <algorithm>
 #include <fstream>
 #include <memory>
 #include <thread>
@@ -62,6 +64,8 @@ namespace {
 constexpr UINT kTrayMsg = WM_APP + 1;
 constexpr UINT kMsgBandRestore = WM_APP + 40;
 constexpr UINT kMsgDesktopDblClick = WM_APP + 41;
+constexpr UINT kMsgLlHotkey = WM_APP + 42;
+constexpr UINT kMsgRelayHotkey = WM_APP + 43;  // LPARAM = new std::string*
 constexpr UINT kHotkeyBase = 100;
 constexpr UINT kTimerRestore = 40;
 constexpr UINT kTimerPet = 41;
@@ -72,9 +76,13 @@ constexpr UINT kTimerVault = 45;
 constexpr UINT kTimerOpenSettingsVault = 46;
 constexpr UINT kTimerOpenSettingsOrg = 47;
 constexpr UINT kTimerDisplayChange = 49;
+constexpr UINT kTimerIconsRefresh = 50;
+constexpr UINT kTimerMemTrim = 51;
 constexpr UINT kMsgVaultPullDone = WM_APP + 48;
+constexpr UINT kMsgOrganizeDone = WM_APP + 49;
 constexpr DWORD kTrayOpenDebounceMs = 450;
 constexpr wchar_t kMsgClass[] = L"DeskTidyNativeMsg";
+bool g_organize_busy = false;
 // Count monitors encoded in a DisplayFingerprint() string ("|"-joined panels).
 int CountMonitorsInFingerprint(const std::string& fp) {
   if (fp.empty()) {
@@ -93,17 +101,34 @@ HWND g_band_hwnd = nullptr;
 HHOOK g_kb_hook = nullptr;
 // Avoid overlapping WinHttp vault pulls from the periodic timer.
 bool g_vault_pull_busy = false;
+}  // namespace
+
+struct OrganizeJobResult {
+  PinMap pins;
+  int n = 0;
+  int hosted = 0;
+  bool quiet = false;
+};
+
+namespace {
 
 LRESULT CALLBACK LowLevelKeyboardProc(int code, WPARAM wparam, LPARAM lparam) {
   if (code == HC_ACTION &&
-      (wparam == WM_KEYDOWN || wparam == WM_SYSKEYDOWN) && g_band_hwnd) {
+      (wparam == WM_KEYDOWN || wparam == WM_SYSKEYDOWN)) {
     const auto* kb = reinterpret_cast<KBDLLHOOKSTRUCT*>(lparam);
-    if (kb && kb->vkCode == 'D') {
-      const bool win = (GetAsyncKeyState(VK_LWIN) & 0x8000) != 0 ||
-                       (GetAsyncKeyState(VK_RWIN) & 0x8000) != 0;
-      if (win) {
-        // Passthrough: still CallNextHookEx so Explorer gets Win+D.
-        PostMessageW(g_band_hwnd, kMsgBandRestore, 0, 0);
+    if (kb) {
+      if (g_band_hwnd && kb->vkCode == 'D') {
+        const bool win = (GetAsyncKeyState(VK_LWIN) & 0x8000) != 0 ||
+                         (GetAsyncKeyState(VK_RWIN) & 0x8000) != 0;
+        if (win) {
+          // Passthrough: still CallNextHookEx so Explorer gets Win+D.
+          PostMessageW(g_band_hwnd, kMsgBandRestore, 0, 0);
+        }
+      }
+      // P1-28 Tier A: when exclusive fullscreen swallows RegisterHotKey /
+      // WM_HOTKEY, still match configured chords via LL hook.
+      if (g_app_for_hook && g_app_for_hook->MessageHwnd()) {
+        g_app_for_hook->TryDispatchLlHotkey(kb->vkCode);
       }
     }
   }
@@ -222,24 +247,6 @@ void App::WireFence(FenceWindow* fence) {
       return;
     }
     const int page = moved->Page();
-    if (PageLockedForFences(page)) {
-      // Refuse: revert to the pre-move geometry (still in page_geometries_).
-      const auto& pg = moved->PageGeometries();
-      const auto it = pg.find(page);
-      if (it != pg.end()) {
-        moved->ApplyPageGeometry(it->second);
-      } else {
-        const AppState st = LoadAppState();
-        for (const auto& l : st.fences) {
-          if (l.id == moved->Id()) {
-            moved->ApplyPageGeometry(FenceGeometryForPage(l, page));
-            break;
-          }
-        }
-      }
-      ShowToast(L"该页面已锁定，无法移动分区");
-      return;
-    }
     std::vector<FenceWindow*> list;
     std::vector<LayoutRect> rects;
     for (auto& f : fences_) {
@@ -321,9 +328,13 @@ void App::WireFence(FenceWindow* fence) {
   });
   fence->SetOnPathsDroppedAt(
       [this](FenceWindow* f, const std::vector<std::wstring>& paths, int at) {
+        // Must SetPin / portal-import (HandleIncomingPaths). InsertPinOrder alone
+        // left membership empty — drop looked accepted then icons vanished (P0-1).
         if (f) {
+          f->SetSortBy("manual");
           f->InsertPinOrder(paths, at);
         }
+        OnPathsDropped(f, paths);
         PersistLayouts();
       });
   fence->SetOnPathsDropped(
@@ -440,6 +451,11 @@ bool App::Init(HINSTANCE instance) {
                     reinterpret_cast<LONG_PTR>(this));
   // Cut-ghost dimming tracks Explorer Preferred DropEffect changes.
   AddClipboardFormatListener(message_hwnd_);
+
+  // P1-29/P1-30: migrate Python settings/hotkeys/prefs/first_run BEFORE loading
+  // native values, otherwise the first launch loads stale defaults and the
+  // migrated values are overwritten by the in-memory copies.
+  MigratePythonLayoutOnce();
 
   hotkeys_ = LoadHotkeys();
   SaveHotkeys(hotkeys_);
@@ -749,7 +765,6 @@ bool App::Init(HINSTANCE instance) {
     PushExtensionSettings();
   });
 
-  notes_.Create(instance);
   todos_.Create(instance);
   search_.Create(instance);
   vault_.Create(instance);
@@ -767,9 +782,12 @@ bool App::Init(HINSTANCE instance) {
   pet_.SetOnTrash([this](const std::vector<std::wstring>& paths) {
     if (SendPathsToRecycleBin(paths)) {
       RefreshDesktopIcons();
+    } else {
+      ShowToast(L"移入回收站失败");
     }
   });
   pet_.SetOnPage([this](int page) { SetPage(page); });
+  pet_.SetOnCreateFence([this](int page) { CreateFenceOnPage(page); });
   pet_.SetOnHide([this]() { SetPetVisible(false); });
   auto activate_float_tool = [this](const std::wstring& id) {
     if (id == L"record") {
@@ -799,6 +817,8 @@ bool App::Init(HINSTANCE instance) {
   page_bar_.SetOnDeletePage([this](int page) { DeletePageAt(page); });
   page_bar_.SetOnRenamePageAt([this](int page) { RenamePageAt(page); });
   page_bar_.SetOnTogglePageLock([this](int page) { TogglePageLock(page); });
+  page_bar_.SetOnMoveFenceToPage(
+      [this](int page, int fence) { SetFencePageAt(fence, page); });
   page_bar_.SetOnTool(
       [this](const std::wstring& id) {
         if (id == L"record") {
@@ -850,6 +870,7 @@ bool App::Init(HINSTANCE instance) {
   prefs_.ui_theme = NormalizeUiTheme(prefs_.ui_theme);
   prefs_.session_active = true;
   SaveAppPrefs(prefs_);
+  todos_.ApplyUiTheme(prefs_.ui_theme);
   page_bar_.SetAnchorY(prefs_.page_bar_anchor_y);
   ApplyDockPrefs();
   RegisterNoteFileAssociations();
@@ -857,11 +878,9 @@ bool App::Init(HINSTANCE instance) {
   display_work_ = PrimaryWorkArea();
   app_dpi_ = SystemDpi();
   fences_hidden_ = !prefs_.show_fences;
-  public_visible_ = prefs_.enable_public_desktop;
+  // public_visible_ is set inside RefreshDesktopIcons (public toggle | loose).
 
-  // One-shot: pull pages/fences/pins from legacy Python ~/.desktidy if present.
-  // After the marker is written, native layout is the sole source of truth.
-  MigratePythonLayoutOnce();
+  // (Migration already ran above, before LoadHotkeys/LoadAppPrefs.)
 
   const AppState state = LoadAppState();
   current_page_ = state.current_page;
@@ -888,7 +907,8 @@ bool App::Init(HINSTANCE instance) {
     }
   }
   if (!prefs_.theme_id.empty()) {
-    for (auto& fence : fences_) {
+    LogLineA("[shutdown] step 9 fences");
+  for (auto& fence : fences_) {
       if (fence && fence->StyleId() == "charcoal") {
         // leave explicit styles; theme applies to new fences via prefs
       }
@@ -927,17 +947,34 @@ bool App::Init(HINSTANCE instance) {
   restore_timer_ = SetTimer(message_hwnd_, kTimerRestore, 4000, nullptr);
   pet_timer_ = SetTimer(message_hwnd_, kTimerPet, 50, nullptr);
   watch_timer_ = SetTimer(message_hwnd_, kTimerWatch, 2000, nullptr);
+  // P2-1: low-frequency background trim (Python ~60s while tray/background).
+  SetTimer(message_hwnd_, kTimerMemTrim, 60000, nullptr);
 
   CreateTrayIcon();
   ReregisterHotkeys();
+  // Refresh DeskNote.lnk → sibling deskNote.exe.
   SyncDeskNoteShortcuts(prefs_.notepad_enabled);
   // Organized mode: Explorer icons off so fence pins are not duplicated.
   ReconcileNamespaceIconsOnStartup(true);
   SetDesktopIconsVisible(false);
+  icons_visible_intent_ = false;
+  // Loose floats mirror the intent, not Explorer's (lagging) live state.
+  if (message_hwnd_) {
+    SetTimer(message_hwnd_, kTimerIconsRefresh, 600, nullptr);
+  }
   StartNamespaceIconRebuildGuard();
+  // Recover a recording interrupted by a crash: merge leftover segments.
+  if (RecoverInterruptedRecording()) {
+    ShowTrayBalloon(L"录屏", L"已恢复上次中断的录制，文件已保存到录屏目录。");
+  }
   StartForegroundHook();
   StartDesktopDblClickMonitor(message_hwnd_, kMsgDesktopDblClick);
   settings_.SetOnExit([this]() { HandleSettingsClose(); });
+  settings_.SetOnHideToTray([this]() {
+    // P2-1: tray balloon (Shell_NotifyIcon NIF_INFO), not the custom toast.
+    ShowTrayBalloon(L"DeskTidy", L"程序已最小化到系统托盘，继续在后台运行。");
+    TrimMemory();
+  });
   settings_.SetOnReady([this]() {
     // Push settings data only — do NOT SyncPageChrome here (that re-seats
     // fences/page bar and flashes the desktop every time settings.html loads).
@@ -956,17 +993,21 @@ bool App::Init(HINSTANCE instance) {
     PushHotkeyState();
   });
   ScheduleDesktopBandRestore();
+  MigratePythonAutostartOnce();
   MaybeShowFirstRun(settings_.Hwnd());
   // U6: one-time first-run organize (independent of auto_organize_on_startup).
-  // Run once when first_run_organize_done is false, then mark + persist.
+  // Startup auto-organize also requires auto_organize_watch (P1-29 / Python
+  // _startup_deferred_organize). Manual 「一键整理」is unaffected.
   const bool first_organize = !prefs_.first_run_organize_done;
-  if (prefs_.auto_organize_on_startup || first_organize) {
-    OrganizeVirtual(true);
-  }
   if (first_organize) {
+    OrganizeVirtual(true);
     prefs_.first_run_organize_done = true;
     SaveAppPrefs(prefs_);
+  } else if (prefs_.auto_organize_on_startup && prefs_.auto_organize_watch) {
+    OrganizeVirtual(true);
   }
+  // P1-25: reclaim orphan ffmpeg left by a previous crash.
+  AdoptOrphanScreenRecord();
   // Deferred quiet update check (Python _startup_deferred_update_check).
   if (prefs_.check_update_on_startup && message_hwnd_) {
     update_timer_ = SetTimer(message_hwnd_, kTimerUpdate, 4000, nullptr);
@@ -1010,10 +1051,12 @@ void App::ReregisterHotkeys() {
       }
       if (RegisterHotKey(message_hwnd_, hid, m | MOD_NOREPEAT, v) ||
           RegisterHotKey(message_hwnd_, hid, m, v)) {
+        // P2-4: persist fallback so settings UI matches the live binding.
+        hotkeys_[i].modifiers = m;
+        hotkeys_[i].vk = v;
         fell_back = true;
-        LogLine(L"[hotkey] %s primary (%s) occupied -> fallback %s",
-                WidenUtf8(k.id).c_str(), FormatHotkey(k.modifiers, k.vk).c_str(),
-                alt.c_str());
+        LogLine(L"[hotkey] %s primary occupied -> fallback %s (saved)",
+                WidenUtf8(k.id).c_str(), alt.c_str());
         break;
       }
     }
@@ -1024,6 +1067,9 @@ void App::ReregisterHotkeys() {
               FormatHotkey(k.modifiers, k.vk).c_str());
     }
   }
+  SaveHotkeys(hotkeys_);
+  PushHotkeyState();
+  SyncHotkeyRelay();
   if (!conflicts.empty()) {
     std::wstring msg = L"以下快捷键注册失败（可能被其他程序占用）：\n";
     for (const auto& c : conflicts) {
@@ -1033,14 +1079,97 @@ void App::ReregisterHotkeys() {
   }
 }
 
+void App::SyncHotkeyRelay() {
+  if (!message_hwnd_) {
+    return;
+  }
+  if (hotkey_relay_.Running()) {
+    hotkey_relay_.UpdateMapping(hotkeys_);
+    return;
+  }
+  if (!hotkey_relay_.Start(message_hwnd_, kMsgRelayHotkey, hotkeys_)) {
+    LogLineA("[hotkey_relay] Start failed");
+  }
+}
+
+void App::OnRelayHotkeyAction(const std::string& action) {
+  if (action == "show_desktop") {
+    MinimizeFullscreenCover();
+    ScheduleDesktopBandRestore();
+    return;
+  }
+  const ULONGLONG now = GetTickCount64();
+  const auto sit = hotkey_suppress_until_.find(action);
+  if (sit != hotkey_suppress_until_.end() && now < sit->second) {
+    return;
+  }
+  const auto lit = hotkey_last_fire_.find(action);
+  if (lit != hotkey_last_fire_.end() && now - lit->second < 300) {
+    return;
+  }
+  hotkey_last_fire_[action] = now;
+  DispatchHotkey(action);
+}
+
+void App::TryDispatchLlHotkey(UINT vk) {
+  if (!message_hwnd_ || vk == 0) {
+    return;
+  }
+  // Ignore pure modifier keys.
+  if (vk == VK_CONTROL || vk == VK_SHIFT || vk == VK_MENU || vk == VK_LWIN ||
+      vk == VK_RWIN || vk == VK_LCONTROL || vk == VK_RCONTROL ||
+      vk == VK_LSHIFT || vk == VK_RSHIFT || vk == VK_LMENU || vk == VK_RMENU) {
+    return;
+  }
+  UINT mods = 0;
+  if (GetAsyncKeyState(VK_CONTROL) & 0x8000) {
+    mods |= MOD_CONTROL;
+  }
+  if (GetAsyncKeyState(VK_SHIFT) & 0x8000) {
+    mods |= MOD_SHIFT;
+  }
+  if (GetAsyncKeyState(VK_MENU) & 0x8000) {
+    mods |= MOD_ALT;
+  }
+  if (GetAsyncKeyState(VK_LWIN) & 0x8000 ||
+      GetAsyncKeyState(VK_RWIN) & 0x8000) {
+    mods |= MOD_WIN;
+  }
+  // Win+D is handled separately for band restore — skip here.
+  if ((mods & MOD_WIN) && vk == 'D') {
+    return;
+  }
+  for (size_t i = 0; i < hotkeys_.size(); ++i) {
+    const HotkeyDef& k = hotkeys_[i];
+    if (k.vk == 0) {
+      continue;
+    }
+    if (k.vk == vk && k.modifiers == mods) {
+      PostMessageW(message_hwnd_, kMsgLlHotkey, static_cast<WPARAM>(i), 0);
+      return;
+    }
+  }
+}
+
+void App::SetIconsVisible(bool visible, bool toast) {
+  icons_visible_intent_ = visible;
+  SetDesktopIconsVisible(visible);
+  // Explorer applies the toggle asynchronously; defer the float refresh.
+  if (message_hwnd_) {
+    SetTimer(message_hwnd_, kTimerIconsRefresh, 400, nullptr);
+  }
+  if (toast) {
+    ShowToast(visible ? L"已显示桌面图标" : L"已隐藏桌面图标");
+  }
+}
+
 void App::DispatchHotkey(const std::string& id) {
   if (id == "organize") {
     OrganizeVirtual(true);
   } else if (id == "toggle_fences" || id == "fences") {
     ToggleFencesVisible();
   } else if (id == "toggle_icons") {
-    SetDesktopIconsVisible(!AreDesktopIconsVisible());
-    ShowToast(AreDesktopIconsVisible() ? L"已显示桌面图标" : L"已隐藏桌面图标");
+    SetIconsVisible(!icons_visible_intent_, true);
   } else if (id == "peek_fences" || id == "peek") {
     TogglePeek();
   } else if (id == "page_next") {
@@ -1179,6 +1308,8 @@ int App::Run() {
 }
 
 void App::Shutdown() {
+  LogLineA("[shutdown] step 1 hooks");
+  hotkey_relay_.Stop();
   RemoveFenceKeyHook();
   StopForegroundHook();
   StopDesktopDblClickMonitor();
@@ -1186,8 +1317,11 @@ void App::Shutdown() {
   SavePins(pins_);
   SaveRules(rules_);
   SaveAppPrefs(prefs_);
+  LogLineA("[shutdown] step 2 persist done");
   StopNamespaceIconRebuildGuard();
+  LogLineA("[shutdown] step 3 restore icons");
   RestoreDesktopIconsIfHidden();
+  LogLineA("[shutdown] step 4 icons restored");
   if (message_hwnd_) {
     KillTimer(message_hwnd_, kTimerRestore);
     KillTimer(message_hwnd_, kTimerPet);
@@ -1197,17 +1331,22 @@ void App::Shutdown() {
     KillTimer(message_hwnd_, kTimerVault);
     KillTimer(message_hwnd_, kTimerOpenSettingsVault);
     KillTimer(message_hwnd_, kTimerOpenSettingsOrg);
+    KillTimer(message_hwnd_, kTimerMemTrim);
     vault_timer_ = 0;
     open_settings_vault_timer_ = 0;
     restore_timer_ = pet_timer_ = watch_timer_ = 0;
   }
+  LogLineA("[shutdown] step 5 timers killed");
   RemoveTrayIcon();
+  LogLineA("[shutdown] step 6 tray removed");
   if (message_hwnd_) {
     RemoveClipboardFormatListener(message_hwnd_);
     for (size_t i = 0; i < 32; ++i) {
       UnregisterHotKey(message_hwnd_, static_cast<int>(kHotkeyBase + i));
     }
+    LogLineA("[shutdown] step 7 destroying msg hwnd");
     DestroyWindow(message_hwnd_);
+    LogLineA("[shutdown] step 8 msg hwnd destroyed");
     message_hwnd_ = nullptr;
   }
   for (auto& fence : fences_) {
@@ -1216,27 +1355,33 @@ void App::Shutdown() {
     }
   }
   fences_.clear();
+  LogLineA("[shutdown] step 10 panels");
   page_bar_.Destroy();
   public_host_.Destroy();
   dock_.Destroy();
   pet_.Destroy();
-  notes_.Destroy();
+  LogLineA("[shutdown] step 11 pet done");
   todos_.Destroy();
   search_.Destroy();
   vault_launcher_.Destroy();
   vault_.Destroy();
+  LogLineA("[shutdown] step 12 tools done");
   settings_.Destroy();
+  LogLineA("[shutdown] step 13 settings done");
   for (auto& p : pins_img_) {
     if (p) {
       p->Destroy();
     }
   }
   pins_img_.clear();
+  LogLineA("[shutdown] step 14 record reap");
   ReapScreenRecordOnExit();
+  LogLineA("[shutdown] step 15 record done");
   // Python *_ensure_shell_icons_restored*: overlays are torn down by now; reveal
   // Explorer icons. Toggled twice because Explorer sometimes misses the first
   // request while the desktop HWND tree is still being destroyed.
   InvalidateDefViewCache();
+  icons_visible_intent_ = true;
   if (!AreDesktopIconsVisible()) {
     SetDesktopIconsVisible(true);
   }
@@ -1842,18 +1987,6 @@ void App::ConvergeDisplayChange() {
   ShowToast(L"显示器变化：已按配置恢复分区");
 }
 
-bool App::PageLockedForFences(int page) const {
-  // System pages 0/1 are always locked (Python is_locked_page_id); user pages
-  // honor their page_locked flag. Mirrors PageBar::PageLockedAt / IsPageLocked.
-  if (page == 0 || page == 1) {
-    return true;
-  }
-  if (page < 0 || page >= static_cast<int>(page_locked_.size())) {
-    return false;
-  }
-  return page_locked_[static_cast<size_t>(page)];
-}
-
 void App::TogglePageLock(int page) {
   // System pages 0/1 cannot be unlocked (persisted as always locked).
   if (page < 2 || page >= static_cast<int>(page_names_.size())) {
@@ -1899,30 +2032,21 @@ void App::OpenMinutes() {
 }
 
 void App::RebuildPublicItems() {
+  // Python public_desktop: floats = desktop items NOT pinned to any fence.
+  // (Not C:\Users\Public\Desktop — that was a semantic miss, P0-2/P0-3.)
   std::vector<DesktopItem> pub;
-  // Python public area hosts the shared desktop (C:\Users\Public\Desktop).
-  std::wstring public_dir;
-  PWSTR raw = nullptr;
-  if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_PublicDesktop, 0, nullptr,
-                                     &raw)) &&
-      raw) {
-    public_dir = raw;
-    CoTaskMemFree(raw);
-  }
   const auto items = ScanDesktopItems();
+  pub.reserve(items.size());
   for (const auto& it : items) {
-    if (public_dir.empty() || it.path.size() <= public_dir.size()) {
-      continue;
-    }
-    // Only items physically inside the Public Desktop folder.
-    if (_wcsnicmp(it.path.c_str(), public_dir.c_str(), public_dir.size()) != 0) {
-      continue;
-    }
-    if (it.path[public_dir.size()] != L'\\') {
+    if (FindPin(pins_, it.path)) {
       continue;
     }
     pub.push_back(it);
   }
+  std::sort(pub.begin(), pub.end(),
+            [](const DesktopItem& a, const DesktopItem& b) {
+              return _wcsicmp(a.name.c_str(), b.name.c_str()) < 0;
+            });
   public_host_.SetItems(std::move(pub));
 }
 
@@ -2266,21 +2390,51 @@ void App::OnDesktopBlankDoubleClick() {
   if (!prefs_.double_click_hide) {
     return;
   }
-  SetDesktopIconsVisible(!AreDesktopIconsVisible());
-  ShowToast(AreDesktopIconsVisible() ? L"已显示桌面图标" : L"已隐藏桌面图标");
+  // Python: icons visible → organized; icons hidden → stock.
+  if (icons_visible_intent_) {
+    ShowOrganizedDesktopView();
+  } else {
+    ShowStockDesktopView();
+  }
+}
+
+void App::ShowStockDesktopView() {
+  // Hide DeskTidy chrome without permanently clearing prefs (Python stock view).
+  for (auto& f : fences_) {
+    if (f) {
+      f->Hide();
+    }
+  }
+  dock_.SetVisible(false);
+  page_bar_.Hide();
+  pet_.SetVisible(false);
+  public_host_.SetItems({});
+  public_host_.Hide();
+  RestoreDesktopIconsIfHidden();
+  SetIconsVisible(true, true);
+  LogLineA("[desktop_view] stock");
+}
+
+void App::ShowOrganizedDesktopView() {
+  SetIconsVisible(false, true);
+  ReapplyNamespaceIconHiddenState();
+  EnsureHostedSystemNamespaceIcons(&pins_);
+  SavePins(pins_);
+  if (!fences_hidden_) {
+    ApplyPageVisibility();
+  }
+  dock_.SetVisible(dock_visible_);
+  pet_.SetVisible(pet_visible_);
+  SyncPageChrome();
+  RefreshDesktopIcons();
+  LogLineA("[desktop_view] organized");
 }
 
 void App::ApplyLoadedGeneralPrefs() {
   fences_hidden_ = !prefs_.show_fences;
-  public_visible_ = prefs_.enable_public_desktop;
-  public_host_.SetVisible(public_visible_);
   SyncNativeShellVerbs(prefs_.desktop_right_click_menu);
-  if (public_visible_) {
-    RebuildPublicItems();
-  } else {
-    public_host_.SetItems({});
-    public_host_.Hide();
-  }
+  // Public/loose visibility is derived in RefreshDesktopIcons (pin-only + floats).
+  RefreshDesktopIcons();
   if (fences_hidden_) {
     for (auto& f : fences_) {
       if (f) {
@@ -2347,17 +2501,13 @@ void App::ImportPrefs() {
               MB_OK | MB_ICONINFORMATION);
 }
 
-void App::OpenNotes() { notes_.Show(); }
+void App::OpenNotes() { LaunchOrFocusDeskNote(); }
 
 void App::OpenPathsInNotes(const std::vector<std::wstring>& paths) {
-  notes_.OpenPaths(paths);
+  LaunchOrFocusDeskNote(paths);
 }
 
 void App::RequestQuit() {
-  // N4: prompt for unsaved notes before the whole app exits.
-  if (!notes_.ConfirmCloseAll()) {
-    return;
-  }
   // T4: confirm when a recording is in progress (exit would stop it).
   if (IsScreenRecording()) {
     const int r = MessageBoxW(
@@ -2427,6 +2577,7 @@ void App::SeatAllFencesUnderApps() {
   }
   // Organized mode: keep Explorer icons off so they cannot bleed through.
   SetDesktopIconsVisible(false);
+  icons_visible_intent_ = false;
   // Do not sink notes into the desktop band — it is a normal app window.
   if (settings_.Hwnd() && settings_.IsOpen()) {
     SetWindowPos(settings_.Hwnd(), HWND_TOP, 0, 0, 0, 0,
@@ -2604,6 +2755,13 @@ void App::SyncPageChrome() {
     }
     page_bar_.SetPageNames(page_names_);
     page_bar_.SetPageLocks(page_locked_);
+    std::vector<std::wstring> fence_titles;
+    fence_titles.reserve(fences_.size());
+    for (auto& fence : fences_) {
+      fence_titles.push_back(fence ? fence->CurrentLayout().title
+                                   : std::wstring{});
+    }
+    page_bar_.SetFenceTitles(fence_titles);
     page_bar_.SetPagesVisible(true);
     page_bar_.SetPage(current_page_);
     page_bar_.Show();
@@ -2683,14 +2841,10 @@ void App::RenameCurrentPage() {
   ShowToast(L"页面已重命名");
 }
 
-void App::CreateFenceOnPage(int page) {
+void App::CreateFenceOnPage(int page, bool switch_to_page) {
   const int max_page = (std::max)(0, static_cast<int>(page_names_.size()) - 1);
   if (page < 0 || page > max_page) {
     page = (std::min)(max_page, current_page_);
-  }
-  if (PageLockedForFences(page)) {
-    ShowToast(L"该页面已锁定，无法新建分区");
-    return;
   }
   const RECT work = PrimaryWorkArea();
   // Python DEFAULT_NEW_FENCE_WIDTH/HEIGHT = 320×360, clamped to the work area.
@@ -2702,21 +2856,78 @@ void App::CreateFenceOnPage(int page) {
   const int step = (static_cast<int>(fences_.size()) % 6) * gap;
   FenceLayout layout;
   layout.id = MakeFenceId();
-  layout.title = L"新建分区";
+  const std::wstring page_name =
+      (page >= 0 && page < static_cast<int>(page_names_.size()))
+          ? page_names_[static_cast<size_t>(page)]
+          : L"新建分区";
+  layout.title = page_name.empty() ? L"新建分区" : page_name;
   layout.x = work.left + 80 + step;
   layout.y = work.top + 80 + step;
   layout.w = w;
   layout.h = h;
   layout.page = page;
+  layout.pages = {page};
+  layout.organize_kinds = {"file"};
   layout.style_id = prefs_.theme_id.empty() ? "charcoal" : prefs_.theme_id;
   if (!SpawnFence(layout)) {
     return;
   }
   SeatAllFencesUnderApps();
-  SetPage(page);
+  if (switch_to_page) {
+    SetPage(page);
+  }
   PersistLayouts();
   RefreshSettingsList();
   LogLine(L"[page_bar] create fence on page %d", page);
+}
+
+void App::EnsureOrganizeFencesForEmptyPages() {
+  // Match Python ensure_organize_fence_for_page: prefer an existing file-capable
+  // fence, else adopt a kinds-empty fence, else create a document fence so
+  // virtual organize lands in a visible partition (not free floats).
+  auto has_file_kind = [](const std::vector<std::string>& kinds) {
+    for (const auto& k : kinds) {
+      if (k == "file") {
+        return true;
+      }
+    }
+    return false;
+  };
+  int created = 0;
+  int adopted = 0;
+  for (int p = 0; p < static_cast<int>(page_names_.size()); ++p) {
+    FenceWindow* adopt = nullptr;
+    bool has_file = false;
+    for (const auto& fence : fences_) {
+      if (!fence || !fence->OnPage(p)) {
+        continue;
+      }
+      const auto& kinds = fence->OrganizeKinds();
+      if (has_file_kind(kinds)) {
+        has_file = true;
+        break;
+      }
+      if (kinds.empty() && adopt == nullptr) {
+        adopt = fence.get();
+      }
+    }
+    if (has_file) {
+      continue;
+    }
+    if (adopt != nullptr) {
+      adopt->SetOrganizeKinds({"file"});
+      ++adopted;
+      continue;
+    }
+    CreateFenceOnPage(p, /*switch_to_page=*/false);
+    ++created;
+  }
+  if (created > 0 || adopted > 0) {
+    PersistLayouts();
+    RefreshSettingsList();
+    LogLine(L"[organize] empty-page fences created=%d adopted=%d", created,
+            adopted);
+  }
 }
 
 void App::DeletePageAt(int page) {
@@ -2858,6 +3069,7 @@ void App::ApplyUiThemeId(const std::string& ui_theme) {
   SaveAppPrefs(prefs_);
   const auto* opt = UiThemeById(prefs_.ui_theme);
   settings_.ApplyUiThemeVars(UiThemeCssVars(prefs_.ui_theme));
+  todos_.ApplyUiTheme(prefs_.ui_theme);
   PushExtensionSettings();
   ApplyTrayThemeIcon();
   if (opt) {
@@ -2909,14 +3121,49 @@ void App::ApplyTrayThemeIcon() {
 }
 
 void App::TrimMemory() {
-  LogLine(L"[mem] trim fences_hidden=%d", fences_hidden_ ? 1 : 0);
+  LogLine(L"[mem] trim fences_hidden=%d settings_open=%d",
+          fences_hidden_ ? 1 : 0, settings_.IsOpen() ? 1 : 0);
   if (fences_hidden_) {
     for (auto& f : fences_) {
       if (f) {
         f->ClearIcons();
       }
     }
+  } else {
+    // P2-1: non-current pages are invisible — lazily release their icon caches
+    // (rebuilt on page switch). The current page keeps its shell HICONs; the
+    // C++ path loads shell icons on demand (no persistent zoomed-pixmap cache),
+    // so this page-scoped release is the effective "display cache halving".
+    for (auto& f : fences_) {
+      if (f && f->Page() != current_page_) {
+        f->ClearIcons();
+      }
+    }
   }
+  // When the main settings window is closed (tray / background), ask the
+  // process to release unused pages — mirrors Python EmptyWorkingSet-ish trim.
+  if (!settings_.IsOpen()) {
+    SetProcessWorkingSetSize(GetCurrentProcess(),
+                             static_cast<SIZE_T>(-1),
+                             static_cast<SIZE_T>(-1));
+  }
+}
+
+void App::ShowTrayBalloon(const std::wstring& title,
+                          const std::wstring& text) {
+  if (!tray_added_) {
+    ShowToast(text);
+    return;
+  }
+  NOTIFYICONDATAW nid{};
+  nid.cbSize = sizeof(nid);
+  nid.hWnd = message_hwnd_;
+  nid.uID = 1;
+  nid.uFlags = NIF_INFO;
+  nid.dwInfoFlags = NIIF_INFO;
+  wcsncpy_s(nid.szInfoTitle, title.c_str(), _TRUNCATE);
+  wcsncpy_s(nid.szInfo, text.c_str(), _TRUNCATE);
+  Shell_NotifyIconW(NIM_MODIFY, &nid);
 }
 
 void App::CycleTheme() {
@@ -3126,13 +3373,16 @@ void App::SetWhitelistForPaths(const std::vector<std::wstring>& paths,
 
 void App::RefreshDesktopIcons() {
   const auto items = ScanDesktopItems();
+  // Pin-only fence membership (Python get_virtual_items_for_fence). Rule
+  // matching is for 一键整理 / auto-pin — not live display — so unpinned
+  // desktop files can surface as public/loose floats (P0-2/P0-3).
   std::unordered_map<std::string, std::vector<DesktopItem>> by_fence;
   for (const auto& it : items) {
-    std::string target =
-        ResolveFenceId(it.path, it.is_link, pins_, rules_, "system_software",
-                       "system_common");
-    // Rules still say ".lnk" → system_software; the live fence id is
-    // system_software_side.
+    const std::string* pin = FindPin(pins_, it.path);
+    if (!pin || pin->empty()) {
+      continue;
+    }
+    std::string target = *pin;
     if (target == "system_software") {
       target = "system_software_side";
     }
@@ -3167,30 +3417,79 @@ void App::RefreshDesktopIcons() {
     }
   }
   RebuildDockItems();
-  if (public_visible_) {
+  // Loose floats when Explorer icons are hidden; shared public when toggled.
+  const bool want_floats =
+      prefs_.enable_public_desktop || !icons_visible_intent_;
+  public_visible_ = want_floats;
+  if (want_floats) {
     RebuildPublicItems();
+    public_host_.SetVisible(true);
   } else {
     public_host_.SetItems({});
     public_host_.Hide();
   }
 }
 
+void App::RefreshIconGrids() {
+  // P2-17: Explorer icon size / spacing changed — re-read the live grid metrics
+  // and push them to every fence (public host re-queries inside SetItems).
+  const IconGridMetrics m = QueryIconGridMetrics();
+  for (auto& fence : fences_) {
+    if (fence) {
+      fence->SetIconGrid(m);
+    }
+  }
+}
+
 void App::RebuildDockItems() {
   std::vector<DesktopItem> dock_items;
-  const auto items = ScanDesktopItems();
-  for (const auto& it : items) {
-    if (!it.is_link) {
-      continue;
+  // P1-10: prefer prefs_.dock_items (Python dock.items); legacy pin scan fallback.
+  if (!prefs_.dock_items.empty()) {
+    for (const auto& path : prefs_.dock_items) {
+      if (path.empty() ||
+          GetFileAttributesW(path.c_str()) == INVALID_FILE_ATTRIBUTES) {
+        continue;
+      }
+      DesktopItem it;
+      it.path = path;
+      it.name = path;
+      const size_t slash = path.find_last_of(L"\\/");
+      if (slash != std::wstring::npos && slash + 1 < path.size()) {
+        it.name = path.substr(slash + 1);
+      }
+      const size_t dot = it.name.rfind(L'.');
+      if (dot != std::wstring::npos && dot > 0) {
+        const std::wstring ext = it.name.substr(dot);
+        if (_wcsicmp(ext.c_str(), L".lnk") == 0 ||
+            _wcsicmp(ext.c_str(), L".url") == 0) {
+          it.is_link = true;
+          it.name.resize(dot);
+        }
+      }
+      SHFILEINFOW sfi{};
+      if (SHGetFileInfoW(path.c_str(), 0, &sfi, sizeof(sfi),
+                         SHGFI_DISPLAYNAME) &&
+          sfi.szDisplayName[0]) {
+        it.name = sfi.szDisplayName;
+      }
+      dock_items.push_back(std::move(it));
     }
-    const std::string target =
-        ResolveFenceId(it.path, it.is_link, pins_, rules_, "system_software",
-                       "system_common");
-    if (target != "system_software" && target != "system_software_side") {
-      continue;
-    }
-    dock_items.push_back(it);
-    if (dock_items.size() >= 8) {
-      break;
+  } else {
+    const auto items = ScanDesktopItems();
+    for (const auto& it : items) {
+      if (!it.is_link) {
+        continue;
+      }
+      const std::string target =
+          ResolveFenceId(it.path, it.is_link, pins_, rules_, "system_software",
+                         "system_common");
+      if (target != "system_software" && target != "system_software_side") {
+        continue;
+      }
+      dock_items.push_back(it);
+      if (dock_items.size() >= 8) {
+        break;
+      }
     }
   }
   dock_.SetItems(std::move(dock_items));
@@ -3204,8 +3503,8 @@ void App::ApplyPageVisibility() {
     if (!fence) {
       continue;
     }
-    if (!fences_hidden_ && fence->Page() == current_page_ &&
-        fence->VisibleOnPage(current_page_)) {
+    // P2-11: show when membership includes current page (not only primary page_).
+    if (!fences_hidden_ && fence->VisibleOnPage(current_page_)) {
       fence->Show();
     } else {
       fence->Hide();
@@ -3249,6 +3548,23 @@ void App::SetPage(int page) {
     }
   }
   ApplyPageVisibility();
+  // P1-17: after page chrome settles, keep pet clear of fence bottoms.
+  if (pet_visible_) {
+    std::vector<RECT> fence_rects;
+    for (const auto& fence : fences_) {
+      if (!fence || !fence->Hwnd() || !IsWindowVisible(fence->Hwnd())) {
+        continue;
+      }
+      if (fence->Page() != current_page_) {
+        continue;
+      }
+      RECT wr{};
+      if (GetWindowRect(fence->Hwnd(), &wr)) {
+        fence_rects.push_back(wr);
+      }
+    }
+    pet_.NudgeClearOfFenceBottoms(fence_rects);
+  }
   PersistLayouts();
 }
 
@@ -3363,21 +3679,64 @@ void App::RestoreDesktopChrome() {
   if (prefs_.vault_enabled && vault_launcher_.Hwnd()) {
     reattach(vault_launcher_.Hwnd());
   }
-  if (notes_.IsOpen()) {
-    notes_.Show();
-  }
 }
 
 void App::OrganizeVirtual(bool quiet) {
+  // P2-16: heavy scan + pin resolve off the UI thread (Python organize worker).
+  if (g_organize_busy) {
+    if (!quiet) {
+      ShowToast(L"正在整理，请稍候…");
+    }
+    return;
+  }
+  if (!message_hwnd_) {
+    return;
+  }
+  g_organize_busy = true;
+  if (!quiet) {
+    ShowToast(L"正在整理…");
+  }
+  // Namespace hosting touches the shell — keep on the UI thread.
   const int hosted = EnsureHostedSystemNamespaceIcons(&pins_);
-  const auto items = ScanDesktopItems();
-  const int n =
-      OrganizeApplyDefaultPins(&pins_, items, rules_, "system_software",
-                               "system_common") +
-      hosted;
-  LogLine(L"[organize] virtual quiet=%d items=%zu pins_added=%d hosted=%d",
-          quiet ? 1 : 0, items.size(), n, hosted);
+  auto* job = new OrganizeJobResult{};
+  job->pins = pins_;
+  job->hosted = hosted;
+  job->quiet = quiet;
+  const RuleMap rules = rules_;
+  std::vector<FenceLayout> layouts;
+  layouts.reserve(fences_.size());
+  for (const auto& f : fences_) {
+    if (f) {
+      layouts.push_back(f->CurrentLayout());
+    }
+  }
+  HWND msg_hwnd = message_hwnd_;
+  std::thread([job, rules, msg_hwnd, layouts]() {
+    const auto items = ScanDesktopItems();
+    job->n = OrganizeApplyDefaultPins(&job->pins, items, rules,
+                                      "system_software", "system_common",
+                                      &layouts) +
+             job->hosted;
+    if (!PostMessageW(msg_hwnd, kMsgOrganizeDone, 0,
+                      reinterpret_cast<LPARAM>(job))) {
+      delete job;
+      g_organize_busy = false;
+    }
+  }).detach();
+}
+
+void App::OnOrganizeDone(OrganizeJobResult* job) {
+  g_organize_busy = false;
+  if (!job) {
+    return;
+  }
+  pins_ = std::move(job->pins);
+  const int n = job->n;
+  const bool quiet = job->quiet;
+  delete job;
+  LogLine(L"[organize] virtual quiet=%d pins_added=%d", quiet ? 1 : 0, n);
   SavePins(pins_);
+  EnsureOrganizeFencesForEmptyPages();
   RefreshDesktopIcons();
   PushOrganizePage(&settings_, pins_, rules_, fences_);
   if (quiet) {
@@ -3388,8 +3747,8 @@ void App::OrganizeVirtual(bool quiet) {
   }
   wchar_t buf[128];
   swprintf_s(buf, L"虚拟整理完成：写入 %d 条钉选。", n);
-  MessageBoxW(settings_.Hwnd(), buf, L"DeskTidy Native",
-              MB_OK | MB_ICONINFORMATION);
+  MessageBoxW(settings_.Hwnd() ? settings_.Hwnd() : message_hwnd_, buf,
+              L"DeskTidy Native", MB_OK | MB_ICONINFORMATION);
 }
 
 void App::SetOrganizeStartup(bool on) {
@@ -3427,18 +3786,12 @@ void App::SetDockVisible(bool on) {
 }
 
 void App::SetPublicVisible(bool on) {
-  public_visible_ = on;
   prefs_.enable_public_desktop = on;
   SaveAppPrefs(prefs_);
-  if (on) {
-    RebuildPublicItems();
-    public_host_.SetVisible(true);
-  } else {
-    public_host_.SetVisible(false);
-    public_host_.SetItems({});
-    public_host_.Hide();
-  }
-  LogLine(L"[public] visible=%d", on ? 1 : 0);
+  // Shared public toggle; loose floats still appear while Explorer icons hidden.
+  RefreshDesktopIcons();
+  LogLine(L"[public] enable=%d floats=%d", on ? 1 : 0,
+          public_visible_ ? 1 : 0);
 }
 
 void App::SetPetVisible(bool on) {
@@ -3478,10 +3831,6 @@ void App::EditRules() {
 }
 
 void App::AddFence() {
-  if (PageLockedForFences(current_page_)) {
-    ShowToast(L"该页面已锁定，无法新建分区");
-    return;
-  }
   if (!fence_region_.Begin(instance_, [this](const RECT& screen) {
         AddFenceAtRect(screen);
       })) {
@@ -3495,10 +3844,6 @@ void App::AddFence() {
 }
 
 void App::AddFenceAtRect(const RECT& screen) {
-  if (PageLockedForFences(current_page_)) {
-    ShowToast(L"该页面已锁定，无法新建分区");
-    return;
-  }
   FenceLayout layout;
   layout.id = MakeFenceId();
   layout.title = L"新建分区";
@@ -3525,10 +3870,6 @@ void App::RemoveFenceAt(int index) {
   if (index < 0 || index >= static_cast<int>(fences_.size())) {
     return;
   }
-  if (PageLockedForFences(fences_[static_cast<size_t>(index)]->Page())) {
-    ShowToast(L"该页面已锁定，无法删除分区");
-    return;
-  }
   fences_[static_cast<size_t>(index)]->Destroy();
   fences_.erase(fences_.begin() + index);
   PersistLayouts();
@@ -3539,8 +3880,19 @@ void App::DissolveFence(FenceWindow* fence) {
   if (!fence) {
     return;
   }
-  if (PageLockedForFences(fence->Page())) {
-    ShowToast(L"该页面已锁定，无法删除分区");
+  const std::string id = fence->Id();
+  // P2-13: system fences cannot be dissolved (Python protection tip).
+  if (id.rfind("system_", 0) == 0) {
+    MessageBoxW(settings_.Hwnd(),
+                L"系统分区不可解散。\n\n可清空内容或隐藏，但不会删除系统分区本身。",
+                L"解散分区", MB_OK | MB_ICONINFORMATION);
+    return;
+  }
+  const std::wstring tip =
+      L"确定解散分区「" + fence->Title() +
+      L"」？\n\n钉选图标将回到桌面，分区本身会被删除。";
+  if (MessageBoxW(settings_.Hwnd(), tip.c_str(), L"解散分区",
+                  MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) != IDYES) {
     return;
   }
   // Find and remove this fence from the live list.
@@ -3548,7 +3900,6 @@ void App::DissolveFence(FenceWindow* fence) {
     if (fences_[i].get() != fence) {
       continue;
     }
-    const std::string id = fence->Id();
     fences_[i]->Destroy();
     fences_.erase(fences_.begin() + static_cast<ptrdiff_t>(i));
     // Clear pins that pointed at the dissolved fence (icons fall back to the
@@ -3665,6 +4016,13 @@ LRESULT CALLBACK App::TrayWndProc(HWND hwnd, UINT msg, WPARAM wparam,
       }
       if (wparam == kTimerPet) {
         self->pet_.Tick();
+        // P2-24: match Python idle throttle (33ms active / 100ms idle+away).
+        const UINT want =
+            static_cast<UINT>((std::max)(16, self->pet_.WantedTickMs()));
+        if (want != self->pet_tick_ms_) {
+          self->pet_tick_ms_ = want;
+          SetTimer(hwnd, kTimerPet, want, nullptr);
+        }
         // Clear REC badge if ffmpeg exited (e.g. timed -t duration).
         (void)IsScreenRecording();
         return 0;
@@ -3726,6 +4084,19 @@ LRESULT CALLBACK App::TrayWndProc(HWND hwnd, UINT msg, WPARAM wparam,
         }
         return 0;
       }
+      if (wparam == kTimerIconsRefresh) {
+        KillTimer(hwnd, kTimerIconsRefresh);
+        self->RefreshIconGrids();
+        self->RefreshDesktopIcons();
+        return 0;
+      }
+      if (wparam == kTimerMemTrim) {
+        // Periodic background trim when settings is not the active UI.
+        if (!self->settings_.IsOpen()) {
+          self->TrimMemory();
+        }
+        return 0;
+      }
       if (wparam == kTimerDisplayChange) {
         KillTimer(hwnd, kTimerDisplayChange);
         self->display_change_timer_ = 0;
@@ -3758,6 +4129,9 @@ LRESULT CALLBACK App::TrayWndProc(HWND hwnd, UINT msg, WPARAM wparam,
       }
       return 0;
     }
+    case kMsgOrganizeDone:
+      self->OnOrganizeDone(reinterpret_cast<OrganizeJobResult*>(lparam));
+      return 0;
     case kMsgUpdateCheckDone:
       self->OnUpdateCheckDone(reinterpret_cast<UpdateCheckResult*>(lparam));
       return 0;
@@ -3805,8 +4179,8 @@ LRESULT CALLBACK App::TrayWndProc(HWND hwnd, UINT msg, WPARAM wparam,
         AppendMenuW(menu, MF_STRING, 13, Tr("peek").c_str());
         AppendMenuW(menu, MF_STRING, 14, Tr("toggle_fences").c_str());
         AppendMenuW(menu,
-                    MF_STRING | (AreDesktopIconsVisible() ? MF_CHECKED : 0), 40,
-                    L"显示桌面图标");
+                    MF_STRING | (self->icons_visible_intent_ ? MF_CHECKED : 0),
+                    40, L"显示桌面图标");
         AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
         AppendMenuW(menu, MF_STRING, 15, Tr("page1").c_str());
         AppendMenuW(menu, MF_STRING, 16, Tr("page2").c_str());
@@ -3891,9 +4265,7 @@ LRESULT CALLBACK App::TrayWndProc(HWND hwnd, UINT msg, WPARAM wparam,
             self->ToggleFencesVisible();
             break;
           case 40:
-            SetDesktopIconsVisible(!AreDesktopIconsVisible());
-            ShowToast(AreDesktopIconsVisible() ? L"已显示桌面图标"
-                                               : L"已隐藏桌面图标");
+            self->SetIconsVisible(!self->icons_visible_intent_, true);
             break;
           case 15:
             self->SetPage(0);
@@ -4035,6 +4407,19 @@ LRESULT CALLBACK App::TrayWndProc(HWND hwnd, UINT msg, WPARAM wparam,
       self->PersistLayouts();
       return 0;
     }
+    case WM_SETTINGCHANGE: {
+      // P2-17: Explorer icon size / spacing changes → refresh fence grids.
+      if (wparam == SPI_SETICONMETRICS || wparam == SPI_SETICONS ||
+          wparam == SPI_SETNONCLIENTMETRICS ||
+          (lparam &&
+           (_wcsicmp(reinterpret_cast<LPCWSTR>(lparam), L"WindowMetrics") ==
+                0 ||
+            _wcsicmp(reinterpret_cast<LPCWSTR>(lparam), L"Environment") ==
+                0))) {
+        SetTimer(hwnd, kTimerIconsRefresh, 300, nullptr);
+      }
+      break;
+    }
     case WM_DISPLAYCHANGE: {
       const std::string fp = DisplayFingerprint();
       if (FingerprintIsTransient(fp) || fp == self->display_fp_) {
@@ -4070,8 +4455,22 @@ LRESULT CALLBACK App::TrayWndProc(HWND hwnd, UINT msg, WPARAM wparam,
       }
       break;
     }
+    case kMsgRelayHotkey: {
+      auto* action = reinterpret_cast<std::string*>(lparam);
+      if (action) {
+        self->OnRelayHotkeyAction(*action);
+        delete action;
+      }
+      return 0;
+    }
+    case kMsgLlHotkey:
     case WM_HOTKEY: {
-      const int idx = static_cast<int>(wparam) - static_cast<int>(kHotkeyBase);
+      int idx = -1;
+      if (msg == kMsgLlHotkey) {
+        idx = static_cast<int>(wparam);
+      } else {
+        idx = static_cast<int>(wparam) - static_cast<int>(kHotkeyBase);
+      }
       if (idx >= 0 && idx < static_cast<int>(self->hotkeys_.size())) {
         const std::string& id = self->hotkeys_[static_cast<size_t>(idx)].id;
         const ULONGLONG now = GetTickCount64();
@@ -4081,7 +4480,7 @@ LRESULT CALLBACK App::TrayWndProc(HWND hwnd, UINT msg, WPARAM wparam,
         }
         const auto lit = self->hotkey_last_fire_.find(id);
         if (lit != self->hotkey_last_fire_.end() && now - lit->second < 300) {
-          return 0;  // 300ms debounce against double-fire
+          return 0;  // 300ms debounce against double-fire / LL+RegisterHotKey
         }
         self->hotkey_last_fire_[id] = now;
         self->DispatchHotkey(id);

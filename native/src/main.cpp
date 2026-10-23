@@ -1,5 +1,7 @@
 #include "app.h"
 #include "cli_ipc.h"
+#include "desknote_launch.h"
+#include "hotkey_helper.h"
 #include "instance_lock.h"
 #include "log.h"
 #include "native_cleanup.h"
@@ -19,12 +21,18 @@ std::wstring FindCliAction(LPWSTR cmd) {
   }
   const wchar_t* keys[] = {
       L"--settings",        L"--refresh-fences", L"--refresh",
-      L"--organize",        L"--notes",          L"--search",
+      L"--organize",        L"--notes",          L"--notepad",
+      L"--desknote",        L"--desk-note",      L"--search",
       L"--shot",            L"--todos",          L"--peek",
       L"--new-fence",       L"--vault",          L"--show-window",
       L"--quit-silent",     L"--quit",           L"--status"};
   for (const wchar_t* k : keys) {
     if (wcsstr(cmd, k)) {
+      // Normalize legacy DeskNote launchers to --notes.
+      if (wcscmp(k, L"--notepad") == 0 || wcscmp(k, L"--desknote") == 0 ||
+          wcscmp(k, L"--desk-note") == 0) {
+        return L"--notes";
+      }
       return k;
     }
   }
@@ -131,6 +139,7 @@ void PrintStatus() {
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR cmd_line, int) {
   LogInit();
   LogInstallCrashHandler();
+  SetProcessAppUserModelId(kDeskTidyAumid);
 
   const std::wstring full_cmd = cmd_line ? cmd_line : L"";
   LogLine(L"[boot] DeskTidy Native %s cmdline=%s",
@@ -143,6 +152,15 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR cmd_line, int) {
     const int rc = RunUninstallCleanup();
     LogLine(L"[uninstall] cleanup finished rc=%d", rc);
     LogLine(L"[boot] exit (uninstall-cleanup)");
+    LogShutdown();
+    return rc;
+  }
+
+  // P1-28: elevated hotkey sidecar — separate process, no instance lock / UI.
+  if (full_cmd.find(L"--hotkey-helper") != std::wstring::npos) {
+    LogLineA("[boot] --hotkey-helper");
+    const int rc = RunHotkeyHelperFromCmd(full_cmd);
+    LogLine(L"[boot] hotkey-helper exit rc=%d", rc);
     LogShutdown();
     return rc;
   }

@@ -5,6 +5,8 @@
 #include "fence_style.h"
 #include "icon_actions.h"
 #include "log.h"
+#include "namespace_icons.h"
+#include "pin_store.h"
 #include "shell_clipboard.h"
 #include "i18n.h"
 #include "shell_context_menu.h"
@@ -44,6 +46,7 @@ constexpr int kEdge = 8;
 constexpr int kExtFenceRefresh = 1;
 constexpr int kExtFenceHide = 2;
 constexpr int kExtFenceDissolve = 3;
+constexpr int kExtFenceLock = 4;
 constexpr int kExtUnpin = 1;
 constexpr int kExtWhitelist = 2;
 constexpr int kExtMoveFence = 3;
@@ -187,8 +190,10 @@ void DrawIconSharp(Gdiplus::Graphics& g, HICON icon, int x, int y, int dest,
 void FenceWindow::ApplyStyle() {
   const auto* preset = FenceStyleById(style_id_);
   style_id_ = preset->id;
-  bg_ = preset->background;
-  accent_ = preset->accent;
+  if (!has_custom_colors_) {
+    bg_ = preset->background;
+    accent_ = preset->accent;
+  }
   title_color_ = preset->title;
   caption_color_ = preset->title;
   panel_alpha_ = preset->alpha;
@@ -196,12 +201,61 @@ void FenceWindow::ApplyStyle() {
     panel_alpha_ =
         static_cast<BYTE>((std::min)(255, (std::max)(40, opacity_override_)));
   }
-  radius_ = preset->radius;
+  radius_ = radius_override_ >= 0 ? radius_override_ : preset->radius;
   light_panel_ = preset->light;
   if (hwnd_) {
     // Per-pixel alpha via UpdateLayeredWindow only — do not call
     // SetLayeredWindowAttributes (it disables subsequent ULW updates).
     PresentLayered();
+  }
+}
+
+void FenceWindow::SetPages(std::vector<int> pages) {
+  pages_.clear();
+  std::vector<char> seen(64, 0);
+  for (int p : pages) {
+    if (p < 0 || p >= 64 || seen[static_cast<size_t>(p)]) {
+      continue;
+    }
+    seen[static_cast<size_t>(p)] = 1;
+    pages_.push_back(p);
+  }
+  if (pages_.empty()) {
+    pages_.push_back(page_);
+  }
+  page_ = pages_[0];
+}
+
+bool FenceWindow::OnPage(int page) const {
+  if (pages_.empty()) {
+    return page == page_;
+  }
+  for (int p : pages_) {
+    if (p == page) {
+      return true;
+    }
+  }
+  return false;
+}
+
+void FenceWindow::TogglePageMembership(int page) {
+  if (page < 0) {
+    return;
+  }
+  if (OnPage(page)) {
+    if (pages_.size() <= 1) {
+      return;  // keep at least one page
+    }
+    pages_.erase(std::remove(pages_.begin(), pages_.end(), page),
+                 pages_.end());
+    if (!OnPage(page_)) {
+      page_ = pages_.empty() ? 0 : pages_[0];
+    }
+  } else {
+    pages_.push_back(page);
+  }
+  if (on_moved_) {
+    on_moved_(this);
   }
 }
 
@@ -420,6 +474,9 @@ void FenceWindow::ApplyPageGeometry(const FencePageGeometry& geo) {
 }
 
 bool FenceWindow::VisibleOnPage(int page) const {
+  if (!OnPage(page)) {
+    return false;
+  }
   const auto it = page_geometries_.find(page);
   return it != page_geometries_.end() ? it->second.visible : visible_;
 }
@@ -464,12 +521,25 @@ bool FenceWindow::Create(HINSTANCE instance, const FenceLayout& layout) {
   id_ = layout.id;
   title_ = layout.title;
   page_ = layout.page;
+  if (!layout.pages.empty()) {
+    SetPages(layout.pages);
+  } else {
+    pages_ = {layout.page};
+  }
   style_id_ = NormalizeFenceStyleId(layout.style_id);
   portal_path_ = layout.portal_path;
   collapsed_ = layout.collapsed;
   position_locked_ = layout.position_locked;
   sort_by_ = layout.sort_by.empty() ? "name" : layout.sort_by;
   view_mode_ = (layout.view_mode == "list") ? "list" : "grid";
+  show_title_ = layout.show_title;
+  collapsible_ = layout.collapsible;
+  radius_override_ = layout.radius;
+  has_custom_colors_ = layout.has_custom_colors;
+  if (has_custom_colors_) {
+    bg_ = layout.custom_bg;
+    accent_ = layout.custom_accent;
+  }
   opacity_override_ =
       (layout.opacity >= 0 && layout.opacity <= 255) ? layout.opacity : -1;
   visible_ = layout.visible;
@@ -546,7 +616,12 @@ void FenceWindow::SetCollapsed(bool collapsed) {
   }
 }
 
-void FenceWindow::ToggleCollapsed() { SetCollapsed(!collapsed_); }
+void FenceWindow::ToggleCollapsed() {
+  if (!collapsible_) {
+    return;
+  }
+  SetCollapsed(!collapsed_);
+}
 
 void FenceWindow::SetPositionLocked(bool locked) {
   if (position_locked_ == locked) {
@@ -696,6 +771,7 @@ FenceLayout FenceWindow::CurrentLayout() const {
   fl.id = id_;
   fl.title = title_;
   fl.page = page_;
+  fl.pages = pages_.empty() ? std::vector<int>{page_} : pages_;
   fl.style_id = style_id_;
   fl.portal_path = portal_path_;
   fl.collapsed = collapsed_;
@@ -703,6 +779,12 @@ FenceLayout FenceWindow::CurrentLayout() const {
   fl.sort_by = sort_by_;
   fl.view_mode = view_mode_;
   fl.opacity = opacity_override_;
+  fl.radius = radius_override_;
+  fl.show_title = show_title_;
+  fl.collapsible = collapsible_;
+  fl.has_custom_colors = has_custom_colors_;
+  fl.custom_bg = bg_;
+  fl.custom_accent = accent_;
   fl.visible = visible_;
   fl.organize_kinds = organize_kinds_;
   fl.page_geometries = page_geometries_;
@@ -725,6 +807,15 @@ void FenceWindow::Show() {
   if (!hwnd_) {
     return;
   }
+  // Page switch Show must not override an explicit user-hide (visible_=false).
+  if (!VisibleOnPage(page_)) {
+    return;
+  }
+  visible_ = true;
+  auto it = page_geometries_.find(page_);
+  if (it != page_geometries_.end()) {
+    it->second.visible = true;
+  }
   const bool was_visible = IsWindowVisible(hwnd_) != FALSE;
   if (!was_visible) {
     ShowWindow(hwnd_, SW_SHOWNOACTIVATE);
@@ -740,8 +831,21 @@ void FenceWindow::Show() {
 }
 
 void FenceWindow::Hide() {
+  // Persist user-hide so ApplyPageVisibility does not resurrect (P1-2).
+  visible_ = false;
+  auto it = page_geometries_.find(page_);
+  if (it != page_geometries_.end()) {
+    it->second.visible = false;
+  } else {
+    FencePageGeometry geo = GeometryForPage(page_);
+    geo.visible = false;
+    page_geometries_[page_] = geo;
+  }
   if (hwnd_) {
     ShowWindow(hwnd_, SW_HIDE);
+  }
+  if (on_moved_) {
+    on_moved_(this);
   }
 }
 
@@ -790,7 +894,40 @@ void FenceWindow::SetItems(std::vector<DesktopItem> items) {
     cell.icon = LoadItemIcon(cell.item.path, icon_sz);
     cells_.push_back(std::move(cell));
   }
-  SortCells();
+  // Manual: honor pin_order_ (drop insert / drag reorder). Else name/date/…
+  if (sort_by_ == "manual" && !pin_order_.empty() && cells_.size() > 1) {
+    std::vector<Cell> ordered;
+    ordered.reserve(cells_.size());
+    std::vector<char> used(cells_.size(), 0);
+    auto match = [&](const std::wstring& want) -> int {
+      const std::wstring key = NormalizePinKey(want);
+      for (size_t i = 0; i < cells_.size(); ++i) {
+        if (used[i]) {
+          continue;
+        }
+        if (NormalizePinKey(cells_[i].item.path) == key) {
+          return static_cast<int>(i);
+        }
+      }
+      return -1;
+    };
+    for (const auto& p : pin_order_) {
+      const int i = match(p);
+      if (i < 0) {
+        continue;
+      }
+      used[static_cast<size_t>(i)] = 1;
+      ordered.push_back(std::move(cells_[static_cast<size_t>(i)]));
+    }
+    for (size_t i = 0; i < cells_.size(); ++i) {
+      if (!used[i]) {
+        ordered.push_back(std::move(cells_[i]));
+      }
+    }
+    cells_ = std::move(ordered);
+  } else {
+    SortCells();
+  }
   scroll_y_ = 0;
   selected_.assign(cells_.size(), 0);
   selection_anchor_ = -1;
@@ -1380,8 +1517,29 @@ void FenceWindow::FinishManualIconDrag(int x, int y) {
   const bool outside =
       x < 0 || y < 0 || x >= rc.right || y >= rc.bottom;
   if (outside) {
-    CommitDragOutUnpin();
-  } else if (y >= S(hwnd_, kHeaderH0)) {
+    // P1-3: hand off to shell OLE (Explorer / other apps / Recycle Bin).
+    // P1-12: always unpin afterward so wallpaper / cancel lands as public floats
+    // (Python virtual unpin → public), instead of icons vanishing from the fence.
+    const std::vector<std::wstring> paths = drag_paths_;
+    drag_paths_.clear();
+    drag_indices_.clear();
+    drag_insert_ = -1;
+    drag_left_ = false;
+    PresentLayered();
+    if (!paths.empty()) {
+      ShellDoDragFiles(paths);
+      for (const auto& p : paths) {
+        if (on_unpin_) {
+          on_unpin_(this, p);
+        }
+      }
+    }
+    if (on_drag_done_) {
+      on_drag_done_(this);
+    }
+    return;
+  }
+  if (y >= S(hwnd_, kHeaderH0)) {
     const int at = InsertIndexAt(x, y);
     CommitReorder(at);
   }
@@ -1671,6 +1829,13 @@ void FenceWindow::ShowIconMenu(int index, POINT screen) {
       {Tr("menu_move_page"), kExtMovePage},
       {Tr("notes_open_in_notepad"), kExtOpenNotes},
   };
+  // P1-11: capture hosted namespace CLSIDs before the shell verb runs so a
+  // "delete" of a managed .lnk can return the Explorer icon to the desktop.
+  std::vector<std::wstring> ns_clsids;
+  ns_clsids.reserve(paths.size());
+  for (const auto& p : paths) {
+    ns_clsids.push_back(GetLnkNamespaceClsid(p));
+  }
   const int shell_cmd =
       TrackShellContextMenu(hwnd_, screen, paths, extras);
   if (shell_cmd == kExtUnpin) {
@@ -1698,10 +1863,17 @@ void FenceWindow::ShowIconMenu(int index, POINT screen) {
     return;
   }
   if (shell_cmd == 0) {
-    // Shell verb ran (or cancel). Drop pins for paths that vanished.
-    for (const auto& p : paths) {
-      if (GetFileAttributesW(p.c_str()) == INVALID_FILE_ATTRIBUTES &&
-          on_unpin_) {
+    // Shell verb ran (or cancel). Drop pins for paths that vanished, and
+    // restore the Explorer icon for any deleted hosted namespace .lnk (P1-11).
+    for (size_t i = 0; i < paths.size(); ++i) {
+      const auto& p = paths[i];
+      if (GetFileAttributesW(p.c_str()) != INVALID_FILE_ATTRIBUTES) {
+        continue;
+      }
+      if (i < ns_clsids.size() && !ns_clsids[i].empty()) {
+        ReturnNamespaceIconToDesktop(ns_clsids[i]);
+      }
+      if (on_unpin_) {
         on_unpin_(this, p);
       }
     }
@@ -1943,6 +2115,7 @@ void FenceWindow::ShowFenceMenu(POINT screen) {
   const std::vector<ShellMenuExtra> extras{
       {Tr("fence_refresh"), kExtFenceRefresh},
       {Tr("fence_hide"), kExtFenceHide},
+      {position_locked_ ? Tr("fence_unlock") : Tr("fence_lock"), kExtFenceLock},
       {Tr("fence_dissolve"), kExtFenceDissolve},
   };
   ShellVerbFn on_verb = [this](const std::wstring& verb) {
@@ -1959,6 +2132,8 @@ void FenceWindow::ShowFenceMenu(POINT screen) {
       }
     } else if (rc == kExtFenceHide) {
       Hide();
+    } else if (rc == kExtFenceLock) {
+      SetPositionLocked(!position_locked_);
     } else if (rc == kExtFenceDissolve) {
       if (on_dissolve_) {
         on_dissolve_(this);
@@ -1987,7 +2162,8 @@ void FenceWindow::ShowFenceMenu(POINT screen) {
     page_names_ = {L"工作", L"文档"};
   }
   for (size_t i = 0; i < page_names_.size() && i < 12; ++i) {
-    const UINT flags = MF_STRING | (page_ == static_cast<int>(i) ? MF_CHECKED : 0);
+    const UINT flags =
+        MF_STRING | (OnPage(static_cast<int>(i)) ? MF_CHECKED : 0);
     AppendMenuW(pages, flags, 400 + static_cast<UINT>(i), page_names_[i].c_str());
   }
   AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(pages), L"所在页面");
@@ -2002,6 +2178,7 @@ void FenceWindow::ShowFenceMenu(POINT screen) {
   sort_item(501, "date", L"按修改日期");
   sort_item(502, "size", L"按大小");
   sort_item(503, "type", L"按类型");
+  sort_item(504, "manual", L"手动");
   AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(sortm),
               Tr("fence_sort").c_str());
   HMENU viewm = CreatePopupMenu();
@@ -2065,6 +2242,8 @@ void FenceWindow::ShowFenceMenu(POINT screen) {
     SetSortBy("size");
   } else if (cmd == 503) {
     SetSortBy("type");
+  } else if (cmd == 504) {
+    SetSortBy("manual");
   } else if (cmd == 510) {
     SetViewMode("grid");
   } else if (cmd == 511) {
@@ -2122,9 +2301,10 @@ void FenceWindow::ShowFenceMenu(POINT screen) {
         CoTaskMemFree(pidl);
       }
     }
-  } else if (cmd >= 400 && cmd < 400 + static_cast<int>(page_names_.size()) &&
-             on_set_page_) {
-    on_set_page_(this, cmd - 400);
+  } else if (cmd >= 400 &&
+             cmd < 400 + static_cast<int>(page_names_.size())) {
+    // P2-11: toggle multi-page membership (keep ≥1 page).
+    TogglePageMembership(cmd - 400);
   } else if (cmd >= 100 && cmd < 100 + static_cast<int>(all.size())) {
     SetStyleId(all[static_cast<size_t>(cmd - 100)]->id);
     style_preview_active_ = false;
@@ -2448,6 +2628,18 @@ LRESULT FenceWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
       const int x = GET_X_LPARAM(lparam);
       const int y = GET_Y_LPARAM(lparam);
       ReleaseCapture();
+      // P2-16: title-bar collapse control (right edge).
+      if (collapsible_) {
+        RECT rc{};
+        GetClientRect(hwnd_, &rc);
+        const int collapse_btn = S(hwnd_, 22);
+        if (y < S(hwnd_, kHeaderH0) && x >= rc.right - collapse_btn &&
+            HitTestEdge(x, y) == Edge::None && !dragging_ && !rubber_ &&
+            !icon_dragging_ && !thumb_dragging_ && !resizing_) {
+          ToggleCollapsed();
+          return 0;
+        }
+      }
       if (thumb_dragging_) {
         thumb_dragging_ = false;
         return 0;
@@ -2626,21 +2818,34 @@ void FenceWindow::Paint(HDC hdc) {
   title_fmt.SetTrimming(Gdiplus::StringTrimmingEllipsisCharacter);
   title_fmt.SetFormatFlags(Gdiplus::StringFormatFlagsNoWrap);
   const int title_top = S(hwnd_, 6);
-  {
+  const int collapse_btn = collapsible_ ? S(hwnd_, 22) : 0;
+  if (show_title_) {
     std::wstring caption;
-    if (collapsed_) {
-      caption += L"▸  ";
-    }
     // F6: on narrow fences drop the lock prefix so the title keeps room.
     if (position_locked_ && rc.right >= S(hwnd_, 132)) {
       caption += L"[锁] ";
     }
     caption += title_;
-    Gdiplus::RectF title_box(0.f, static_cast<Gdiplus::REAL>(title_top),
-                             static_cast<Gdiplus::REAL>(rc.right),
-                             static_cast<Gdiplus::REAL>(title_px + 6));
+    Gdiplus::RectF title_box(
+        0.f, static_cast<Gdiplus::REAL>(title_top),
+        static_cast<Gdiplus::REAL>(
+            (std::max)(0, static_cast<int>(rc.right) - collapse_btn - 4)),
+        static_cast<Gdiplus::REAL>(title_px + 6));
     g.DrawString(caption.c_str(), -1, &title_font, title_box, &title_fmt,
                  &title_brush);
+  }
+  // P2-16: dedicated collapse/expand control on the title bar.
+  if (collapsible_) {
+    const wchar_t* glyph = collapsed_ ? L"▸" : L"▾";
+    Gdiplus::StringFormat btn_fmt;
+    btn_fmt.SetAlignment(Gdiplus::StringAlignmentCenter);
+    btn_fmt.SetLineAlignment(Gdiplus::StringAlignmentCenter);
+    Gdiplus::RectF btn_box(
+        static_cast<Gdiplus::REAL>(rc.right - collapse_btn),
+        static_cast<Gdiplus::REAL>(2),
+        static_cast<Gdiplus::REAL>(collapse_btn),
+        static_cast<Gdiplus::REAL>(header - 4));
+    g.DrawString(glyph, -1, &title_font, btn_box, &btn_fmt, &title_brush);
   }
   if (collapsed_) {
     return;

@@ -70,7 +70,8 @@ bool ShouldSkipVirtual(const DesktopItem& it, const PinMap& pins,
 int OrganizeApplyDefaultPins(PinMap* pins, const std::vector<DesktopItem>& items,
                              const RuleMap& rules,
                              const std::string& software_id,
-                             const std::string& common_id) {
+                             const std::string& common_id,
+                             const std::vector<FenceLayout>* fences) {
   if (!pins) {
     return 0;
   }
@@ -80,9 +81,15 @@ int OrganizeApplyDefaultPins(PinMap* pins, const std::vector<DesktopItem>& items
     if (ShouldSkipVirtual(it, *pins, wl)) {
       continue;
     }
-    std::string target =
-        ResolveFenceId(it.path, it.is_link, *pins, rules, software_id,
-                       common_id);
+    // P1-4: kinds-aware fence first (Python resolve_organize_target).
+    std::string target;
+    if (fences && !fences->empty()) {
+      target = ResolveFenceByKind(it, *fences);
+    }
+    if (target.empty()) {
+      target = ResolveFenceId(it.path, it.is_link, *pins, rules, software_id,
+                             common_id);
+    }
     target = NormalizeOrganizeTarget(std::move(target));
     SetPin(pins, it.path, target);
     ++n;
@@ -117,16 +124,22 @@ std::vector<std::wstring> OrganizePreviewVirtualPins(
     const PinMap& pins, const std::vector<DesktopItem>& items,
     const RuleMap& rules,
     const std::unordered_map<std::string, std::wstring>& fence_titles,
-    const std::string& software_id, const std::string& common_id) {
+    const std::string& software_id, const std::string& common_id,
+    const std::vector<FenceLayout>* fences) {
   std::vector<std::wstring> lines;
   const auto wl = LoadWhitelist();
   for (const auto& it : items) {
     if (ShouldSkipVirtual(it, pins, wl)) {
       continue;
     }
-    std::string target =
-        ResolveFenceId(it.path, it.is_link, pins, rules, software_id,
-                       common_id);
+    std::string target;
+    if (fences && !fences->empty()) {
+      target = ResolveFenceByKind(it, *fences);
+    }
+    if (target.empty()) {
+      target = ResolveFenceId(it.path, it.is_link, pins, rules, software_id,
+                             common_id);
+    }
     target = NormalizeOrganizeTarget(std::move(target));
     const std::wstring name = it.name.empty() ? it.path : it.name;
     lines.push_back(name + L" → " + TitleForFence(target, fence_titles));

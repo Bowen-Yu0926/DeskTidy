@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cstdlib>
+#include <cwctype>
 #include <fstream>
 #include <map>
 #include <mutex>
@@ -552,6 +553,57 @@ void RestoreDesktopIconsIfHidden() {
   DeleteIconStateFile();
   RefreshDesktopNamespaceIcons();
   LogLineA("[namespace] restored desktop namespace icons from state file");
+}
+
+std::wstring GetLnkNamespaceClsid(const std::wstring& lnk_path) {
+  if (lnk_path.size() < 5) {
+    return {};
+  }
+  const size_t dot = lnk_path.rfind(L'.');
+  if (dot == std::wstring::npos) {
+    return {};
+  }
+  std::wstring ext = lnk_path.substr(dot);
+  for (auto& c : ext) {
+    c = static_cast<wchar_t>(towlower(c));
+  }
+  if (ext != L".lnk") {
+    return {};
+  }
+  IShellLinkW* psl = nullptr;
+  HRESULT hr =
+      CoCreateInstance(CLSID_ShellLink, nullptr, CLSCTX_INPROC_SERVER,
+                       IID_IShellLinkW, reinterpret_cast<void**>(&psl));
+  if (FAILED(hr) || !psl) {
+    return {};
+  }
+  IPersistFile* ppf = nullptr;
+  hr = psl->QueryInterface(IID_IPersistFile, reinterpret_cast<void**>(&ppf));
+  std::wstring clsid;
+  if (SUCCEEDED(hr) && ppf) {
+    if (SUCCEEDED(ppf->Load(lnk_path.c_str(), STGM_READ))) {
+      wchar_t desc[INFOTIPSIZE]{};
+      if (SUCCEEDED(psl->GetDescription(desc, INFOTIPSIZE)) && desc[0]) {
+        constexpr wchar_t kPrefix[] = L"DeskTidyNS:";
+        const size_t plen = wcslen(kPrefix);
+        if (wcsncmp(desc, kPrefix, plen) == 0 && desc[plen] == L'{') {
+          clsid = desc + plen;
+        }
+      }
+    }
+    ppf->Release();
+  }
+  psl->Release();
+  return clsid;
+}
+
+void ReturnNamespaceIconToDesktop(const std::wstring& clsid) {
+  if (clsid.empty() || clsid.front() != L'{') {
+    return;
+  }
+  SetDesktopNamespaceIconVisible(clsid.c_str(), true);
+  RefreshDesktopNamespaceIcons();
+  LogLine(L"[namespace] returned Explorer icon %s", clsid.c_str());
 }
 
 void ReapplyNamespaceIconHiddenState() {

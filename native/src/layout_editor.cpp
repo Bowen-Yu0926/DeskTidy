@@ -39,7 +39,7 @@ SIZE g_start_size{};
 bool g_ok = false;
 HWND g_hwnd = nullptr;
 
-RECT g_footer_btns[6]{};
+RECT g_footer_btns[7]{};
 RECT g_toggle_btns[3]{};
 RECT g_opacity_slider{};
 RECT g_new_page_tab{};
@@ -156,12 +156,12 @@ void LayoutChrome(HWND hwnd) {
   cx += 48 + 6;
   g_toggle_btns[2] = {cx, cy, cx + 48, cy + chh};
 
-  // Footer buttons.
+  // Footer buttons (+ P1-4 整理规则).
   const int by = rc.bottom - 56;
   const int bh = 30;
   int bx = 12;
-  const int bw[6] = {80, 72, 72, 72, 80, 80};
-  for (int i = 0; i < 6; ++i) {
+  const int bw[7] = {72, 64, 64, 64, 72, 72, 88};
+  for (int i = 0; i < 7; ++i) {
     g_footer_btns[i] = {bx, by, bx + bw[i], by + bh};
     bx += bw[i] + 8;
   }
@@ -198,7 +198,7 @@ int HitStyleChip(POINT pt) {
 }
 
 int HitFooter(POINT pt) {
-  for (int i = 0; i < 6; ++i) {
+  for (int i = 0; i < 7; ++i) {
     if (PtInRect(&g_footer_btns[i], pt)) {
       return i + 1;
     }
@@ -445,6 +445,32 @@ void BrowsePortal() {
   if (!g_state || g_sel.empty()) {
     return;
   }
+  // P2-15: if any selected fence is already a portal, offer clear / replace.
+  bool any_portal = false;
+  for (int idx : g_sel) {
+    if (idx >= 0 && idx < static_cast<int>(g_state->fences.size()) &&
+        !g_state->fences[static_cast<size_t>(idx)].portal_path.empty()) {
+      any_portal = true;
+      break;
+    }
+  }
+  if (any_portal) {
+    const int r = MessageBoxW(
+        g_hwnd,
+        L"所选分区已是门户。\n\n是 = 更换门户文件夹\n否 = 取消门户（转回普通分区）\n取消 = 返回",
+        L"门户文件夹", MB_YESNOCANCEL | MB_ICONQUESTION);
+    if (r == IDCANCEL) {
+      return;
+    }
+    if (r == IDNO) {
+      for (int idx : g_sel) {
+        if (idx >= 0 && idx < static_cast<int>(g_state->fences.size())) {
+          g_state->fences[static_cast<size_t>(idx)].portal_path.clear();
+        }
+      }
+      return;
+    }
+  }
   BROWSEINFOW bi{};
   bi.hwndOwner = g_hwnd;
   bi.lpszTitle = L"门户文件夹";
@@ -471,6 +497,61 @@ void MoveFenceToPage(int idx, int from, int to) {
   f.page_geometries.erase(from);
   f.page_geometries[to] = geo;
   f.page = to;
+}
+
+void EditOrganizeKindsMenu(HWND hwnd) {
+  if (!g_state || g_sel.empty()) {
+    return;
+  }
+  // Seed from first selection.
+  bool has_icon = false;
+  bool has_file = false;
+  for (int idx : g_sel) {
+    if (idx < 0 || idx >= static_cast<int>(g_state->fences.size())) {
+      continue;
+    }
+    const auto& kinds =
+        g_state->fences[static_cast<size_t>(idx)].organize_kinds;
+    for (const auto& k : kinds) {
+      if (k == "icon") {
+        has_icon = true;
+      }
+      if (k == "file") {
+        has_file = true;
+      }
+    }
+    break;
+  }
+  HMENU m = CreatePopupMenu();
+  AppendMenuW(m, MF_STRING | (has_icon ? MF_CHECKED : 0), 1, L"图标（.lnk/.exe）");
+  AppendMenuW(m, MF_STRING | (has_file ? MF_CHECKED : 0), 2, L"文档（其他文件）");
+  AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
+  AppendMenuW(m, MF_STRING, 3, L"两者皆可");
+  AppendMenuW(m, MF_STRING, 4, L"清除（沿用扩展名规则）");
+  POINT pt{};
+  GetCursorPos(&pt);
+  SetForegroundWindow(hwnd);
+  const int cmd =
+      TrackPopupMenu(m, TPM_RETURNCMD | TPM_NONOTIFY | TPM_RIGHTBUTTON, pt.x,
+                     pt.y, 0, hwnd, nullptr);
+  DestroyMenu(m);
+  PostMessageW(hwnd, WM_NULL, 0, 0);
+  if (cmd < 1) {
+    return;
+  }
+  std::vector<std::string> kinds;
+  if (cmd == 1) {
+    kinds = {"icon"};
+  } else if (cmd == 2) {
+    kinds = {"file"};
+  } else if (cmd == 3) {
+    kinds = {"icon", "file"};
+  }  // cmd == 4 → empty
+  for (int idx : g_sel) {
+    if (idx >= 0 && idx < static_cast<int>(g_state->fences.size())) {
+      g_state->fences[static_cast<size_t>(idx)].organize_kinds = kinds;
+    }
+  }
 }
 
 void MoveToPageMenu(HWND hwnd) {
@@ -819,6 +900,7 @@ void PaintEditor(HWND hwnd, HDC hdc) {
   DrawMistBtn(hdc, g_footer_btns[3], Tr("layout_delete").c_str(), false);
   DrawMistBtn(hdc, g_footer_btns[4], L"门户…", false);
   DrawMistBtn(hdc, g_footer_btns[5], L"移到页…", false);
+  DrawMistBtn(hdc, g_footer_btns[6], L"整理规则…", false);
 }
 
 // ---------------------------------------------------------------------------
@@ -916,6 +998,11 @@ LRESULT CALLBACK EditorProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
       }
       if (btn == 6) {
         MoveToPageMenu(hwnd);
+        InvalidateRect(hwnd, nullptr, FALSE);
+        return 0;
+      }
+      if (btn == 7) {
+        EditOrganizeKindsMenu(hwnd);
         InvalidateRect(hwnd, nullptr, FALSE);
         return 0;
       }

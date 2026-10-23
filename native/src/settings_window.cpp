@@ -1424,6 +1424,9 @@ LRESULT SettingsWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
     case WM_CLOSE:
       if (ext_.close_to_tray) {
         Hide();
+        if (on_hide_to_tray_) {
+          on_hide_to_tray_();
+        }
       } else if (on_exit_) {
         on_exit_();
       } else {

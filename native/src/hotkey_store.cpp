@@ -168,7 +168,8 @@ std::vector<HotkeyDef> DefaultHotkeys() {
       H("file_search", "hk_file_search", MOD_CONTROL | MOD_ALT, '4'),
       H("calculator", "hk_calculator", MOD_CONTROL | MOD_ALT, 'C'),
       H("settings", "hk_settings", 0, 0),
-      H("notes", "hk_notes", 0, 0),
+      // DeskNote / 记事本 — match docs + Python Ctrl+Shift+N.
+      H("notes", "hk_notes", MOD_CONTROL | MOD_SHIFT, 'N'),
       H("todos", "hk_todos", 0, 0),
       H("vault", "hk_vault", 0, 0),
   };
@@ -243,10 +244,11 @@ std::vector<HotkeyDef> LoadHotkeys() {
       }
       if (FindStringField(obj, "chord", &chord)) {
         UINT mods = 0, vk = 0;
-        if (ParseHotkey(WidenUtf8(chord), &mods, &vk)) {
+        if (ParseHotkey(WidenUtf8(chord), &mods, &vk) && vk != 0) {
           d.modifiers = mods;
           d.vk = vk;
         }
+        // Empty / unbound chord in file: keep DefaultHotkeys() (notes = Ctrl+Shift+N).
       }
     }
   }
@@ -254,10 +256,7 @@ std::vector<HotkeyDef> LoadHotkeys() {
 }
 
 bool SaveHotkeys(const std::vector<HotkeyDef>& keys) {
-  std::ofstream out(HotkeyFile(), std::ios::binary);
-  if (!out) {
-    return false;
-  }
+  std::ostringstream out;
   out << "{\n  \"hotkeys\": [\n";
   for (size_t i = 0; i < keys.size(); ++i) {
     const auto& k = keys[i];
@@ -269,7 +268,7 @@ bool SaveHotkeys(const std::vector<HotkeyDef>& keys) {
     out << "\n";
   }
   out << "  ]\n}\n";
-  return true;
+  return AtomicWriteUtf8File(HotkeyFile(), out.str());
 }
 
 bool ParseHotkey(const std::wstring& text, UINT* modifiers, UINT* vk) {

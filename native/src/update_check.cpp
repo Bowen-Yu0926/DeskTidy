@@ -759,29 +759,54 @@ void StartUpdateInstallAsync(HWND owner) {
         const std::string checksum = FindChecksum(body, asset_name);
         const std::wstring dir = JoinPath(NativeDataDir(), L"updates");
         CreateDirectoryW(dir.c_str(), nullptr);
+        // P2-7: purge stale packages before a new download.
+        {
+          WIN32_FIND_DATAW fd{};
+          const HANDLE h = FindFirstFileW((dir + L"\\*").c_str(), &fd);
+          if (h != INVALID_HANDLE_VALUE) {
+            do {
+              if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+                continue;
+              }
+              DeleteFileW((dir + L"\\" + fd.cFileName).c_str());
+            } while (FindNextFileW(h, &fd));
+            FindClose(h);
+          }
+        }
         std::wstring dest;
         long long bytes = 0;
         if (!DownloadAsset(asset_url, dir, owner, &err, &dest, &bytes)) {
           r->error = L"下载失败：" + err;
+          if (!dest.empty()) {
+            DeleteFileW(dest.c_str());
+          }
         } else {
           r->path = dest;
-          if (!checksum.empty()) {
+          // Python: no published checksum → refuse install and delete the file
+          // (never fall back to size-only / unconditional pass) — P0-10.
+          if (checksum.empty()) {
+            r->verify_ok = false;
+            r->has_checksum = false;
+            DeleteFileW(dest.c_str());
+            r->path.clear();
+            r->error =
+                L"该版本未提供 sha256 校验值，已取消安装并删除下载文件";
+            LogLine(L"[update] no digest — refuse install, deleted package");
+          } else {
             r->has_checksum = true;
             std::string hex;
             r->verify_ok = ComputeSha256Hex(dest, &hex) &&
                            ToLowerW(Widen(hex)) == ToLowerW(Widen(checksum));
-            LogLine(L"[update] sha256 verify %s", r->verify_ok ? L"ok" : L"FAIL");
-          } else if (asset_size > 0) {
-            r->verify_ok = (bytes == asset_size);
-            LogLine(L"[update] no digest; size verify %s (got %lld, want %lld)",
-                    r->verify_ok ? L"ok" : L"FAIL", bytes, asset_size);
-          } else {
-            r->verify_ok = true;  // nothing to compare
+            LogLine(L"[update] sha256 verify %s",
+                    r->verify_ok ? L"ok" : L"FAIL");
+            if (!r->verify_ok) {
+              DeleteFileW(dest.c_str());
+              r->path.clear();
+              r->error = L"安装包 sha256 校验未通过，已删除文件";
+            }
           }
-          if (!r->verify_ok) {
-            r->error = r->has_checksum ? L"安装包 sha256 校验未通过"
-                                       : L"安装包大小校验未通过";
-          }
+          (void)asset_size;
+          (void)bytes;
         }
       }
     }
@@ -801,7 +826,6 @@ bool LaunchInstallerSilent(const std::wstring& path, std::wstring* err) {
     }
     return false;
   }
-  std::wstring args = L"\"" + path + L"\" /SILENT /NORESTART /CLOSEAPPLICATIONS";
   SHELLEXECUTEINFOW sei{};
   sei.cbSize = sizeof(sei);
   sei.fMask = SEE_MASK_NOCLOSEPROCESS;
@@ -814,11 +838,15 @@ bool LaunchInstallerSilent(const std::wstring& path, std::wstring* err) {
       *err = L"启动安装程序失败（错误码 " +
              std::to_wstring(GetLastError()) + L"）";
     }
+    // P2-7: failed launch — drop the package so it cannot accumulate.
+    DeleteFileW(path.c_str());
     return false;
   }
   if (sei.hProcess) {
     CloseHandle(sei.hProcess);
   }
+  // Installer has its own copy path; remove our download cache entry.
+  DeleteFileW(path.c_str());
   return true;
 }
 

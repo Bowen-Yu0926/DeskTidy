@@ -159,6 +159,10 @@ AppPrefs LoadAppPrefsFromPath(const std::wstring& path) {
   if (prefs.record_seconds < 0) {
     prefs.record_seconds = 0;
   }
+  prefs.record_max_mb = ParseIntField(json, "record_max_mb", 2048);
+  if (prefs.record_max_mb < 0) {
+    prefs.record_max_mb = 0;
+  }
   prefs.record_quality = ParseIntField(json, "record_quality", 1);
   if (prefs.record_quality < 0 || prefs.record_quality > 2) {
     prefs.record_quality = 1;
@@ -344,6 +348,7 @@ void SaveAppPrefsToPath(const AppPrefs& prefs, const std::wstring& path) {
       << ",\n  \"auto_organize_watch\": "
       << (prefs.auto_organize_watch ? "true" : "false")
       << ",\n  \"record_seconds\": " << prefs.record_seconds
+      << ",\n  \"record_max_mb\": " << prefs.record_max_mb
       << ",\n  \"record_quality\": " << prefs.record_quality
       << ",\n  \"record_fps\": " << prefs.record_fps
       << ",\n  \"record_enabled\": "

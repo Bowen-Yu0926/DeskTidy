@@ -64,6 +64,11 @@ class FenceWindow {
   const std::wstring& Title() const { return title_; }
   int Page() const { return page_; }
   void SetPage(int page) { page_ = page; }
+  // P2-11: multi-page membership (at least one page).
+  const std::vector<int>& Pages() const { return pages_; }
+  void SetPages(std::vector<int> pages);
+  bool OnPage(int page) const;
+  void TogglePageMembership(int page);
   void SetTitle(const std::wstring& title);
   void SetStyleId(const std::string& style_id);
   const std::string& StyleId() const { return style_id_; }
@@ -254,8 +259,13 @@ class FenceWindow {
   COLORREF caption_color_ = RGB(255, 255, 255);
   BYTE panel_alpha_ = 178;
   int radius_ = 8;
+  int radius_override_ = -1;
   bool light_panel_ = false;
+  bool show_title_ = true;
+  bool collapsible_ = true;
+  bool has_custom_colors_ = false;
   int page_ = 0;
+  std::vector<int> pages_;
   MovedFn on_moved_;
   PathsFn on_paths_dropped_;
   DragDoneFn on_drag_done_;

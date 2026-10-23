@@ -10,8 +10,6 @@ bool WallpaperMenu(HWND owner);  // pick / random from folder / restore previous
 std::wstring WallpaperLibraryFolder();
 void SetWallpaperLibraryFolder(const std::wstring& folder);
 bool BrowseWallpaperLibrary(HWND owner);
-// Desktop + Start Menu DeskNote.lnk → native.exe --notes when enabled.
-void SyncDeskNoteShortcuts(bool enabled);
 // Install-dir\录屏 when prefs empty (Python parity).
 std::wstring ResolveRecordOutputDir();
 bool RandomWallpaperFromLibrary(HWND owner);

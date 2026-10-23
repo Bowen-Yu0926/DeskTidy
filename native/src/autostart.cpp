@@ -87,6 +87,23 @@ void RemoveApproved() {
   RegCloseKey(key);
 }
 
+// Also drop StartupApproved entries left by older Python / native names.
+void RemoveLegacyApproved() {
+  HKEY key = nullptr;
+  if (RegOpenKeyExW(HKEY_CURRENT_USER, kApprovedKeyPath, 0, KEY_SET_VALUE,
+                    &key) != ERROR_SUCCESS) {
+    return;
+  }
+  static const wchar_t* kLegacy[] = {
+      L"DeskTidy Native", L"Desktidy", L"桌面整理（私人版）",
+      L"DeskTidy-桌面守护", L"Desktidy-桌面守护",
+  };
+  for (const wchar_t* name : kLegacy) {
+    RegDeleteValueW(key, name);
+  }
+  RegCloseKey(key);
+}
+
 void RemoveLegacyShortcuts() {
   const std::wstring dir = StartupDir();
   if (dir.empty()) {
@@ -142,6 +159,7 @@ bool SetNativeAutostart(bool enable) {
   if (!enable) {
     RemoveRunValue();
     RemoveApproved();
+    RemoveLegacyApproved();
     RemoveLegacyShortcuts();
     return true;
   }
@@ -151,5 +169,48 @@ bool SetNativeAutostart(bool enable) {
   SetRunValue(command);
   WriteApprovedEnabled();
   RemoveLegacyShortcuts();
+  RemoveLegacyApproved();
   return RunValuePresent();
+}
+
+// P2-6: Python shipped a Startup-folder shortcut named "DeskTidy.lnk" (or
+// "Desktidy.lnk"); its presence is the legacy enabled flag and must be read
+// before it is deleted.
+bool PythonStartupShortcutPresent() {
+  const std::wstring dir = StartupDir();
+  if (dir.empty()) {
+    return false;
+  }
+  static const wchar_t* kPythonNames[] = {L"DeskTidy.lnk", L"Desktidy.lnk"};
+  for (const wchar_t* name : kPythonNames) {
+    const std::wstring link = dir + L"\\" + name;
+    const DWORD attrs = GetFileAttributesW(link.c_str());
+    if (attrs != INVALID_FILE_ATTRIBUTES &&
+        (attrs & FILE_ATTRIBUTE_DIRECTORY) == 0) {
+      return true;
+    }
+  }
+  return false;
+}
+
+void MigratePythonAutostartOnce() {
+  // Capture the legacy enabled state FIRST — deleting the Python lnk before
+  // reading it would lose the flag and skip the Run retarget.
+  const bool run_present = RunValuePresent();
+  const bool python_lnk = PythonStartupShortcutPresent();
+  const bool native_lnk = IsNativeAutostartEnabled();
+  const bool was_enabled = run_present || python_lnk || native_lnk;
+
+  RemoveLegacyShortcuts();
+  RemoveLegacyApproved();
+
+  // If the user already had DeskTidy autostart (Run value or a leftover lnk),
+  // retarget Run to this native exe so Task Manager stays consistent.
+  if (was_enabled) {
+    const std::wstring exe = NativeExePath();
+    SetRunValue(L"\"" + exe + L"\"");
+    WriteApprovedEnabled();
+    LogLine(L"[autostart] migrated Run value → %s (run=%d py_lnk=%d)",
+            exe.c_str(), run_present ? 1 : 0, python_lnk ? 1 : 0);
+  }
 }

@@ -2,7 +2,9 @@
 
 namespace {
 HANDLE g_mutex = nullptr;
-constexpr wchar_t kMutexName[] = L"Local\\DeskTidyNativeSingleInstance";
+// P2-8: same mutex as Python (`Local\DeskTidyMainInstance`) so the two
+// builds cannot both stay running.
+constexpr wchar_t kMutexName[] = L"Local\\DeskTidyMainInstance";
 }  // namespace
 
 bool AcquireNativeInstanceLock() {
