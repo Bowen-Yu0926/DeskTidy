@@ -14,13 +14,23 @@
   html, body {
     margin: 0; height: 100%;
     font-family: "Microsoft YaHei UI", "Segoe UI", sans-serif;
-    background: var(--bg); color: var(--text); font-size: 13px;
+    background: transparent; color: var(--text); font-size: 13px;
   }
-  #wrap { height: 100%; display: flex; flex-direction: column; padding: 14px 16px 12px; }
-  .title { font-size: 16px; font-weight: 800; margin: 0 0 12px; }
+  #wrap {
+    height: 100%; display: flex; flex-direction: column; padding: 14px 16px 12px;
+    background: rgba(15, 23, 42, 0.22); border-radius: 16px;
+  }
+  .title-row { display: flex; align-items: center; justify-content: space-between; margin: 0 0 12px; }
+  .title { font-size: 16px; font-weight: 800; margin: 0; }
+  #close {
+    width: 28px; height: 28px; border: none; background: transparent; color: var(--muted);
+    font-size: 18px; border-radius: 8px; cursor: pointer; line-height: 1;
+  }
+  #close:hover { background: var(--accent-soft); color: var(--accent); }
   .card {
     flex: 1; background: var(--card); border: 1px solid var(--border); border-radius: 14px;
     border-left: 3px solid var(--accent); padding: 14px 16px;
+    box-shadow: 0 12px 28px rgba(26,35,50,0.12);
   }
   .field { margin-bottom: 10px; }
   .field label { display: block; font-size: 12px; color: var(--muted); font-weight: 700; margin-bottom: 4px; }
@@ -49,7 +59,10 @@
 </head>
 <body>
 <div id="wrap">
-  <h1 class="title" id="title">查找</h1>
+  <div class="title-row">
+    <h1 class="title" id="title">查找</h1>
+    <button id="close" type="button" aria-label="关闭">×</button>
+  </div>
   <div class="card">
     <div class="field">
       <label>查找内容</label>
@@ -109,6 +122,7 @@
   document.getElementById('btn-replace').onclick = () => post(payload('replace'));
   document.getElementById('btn-replace-all').onclick = () => post(payload('replace_all'));
   document.getElementById('btn-close').onclick = () => post({ type: 'action', id: 'close' });
+  document.getElementById('close').onclick = () => post({ type: 'action', id: 'close' });
   document.getElementById('find').onkeydown = e => {
     if (e.key === 'Enter') post(payload(e.shiftKey ? 'find_prev' : 'find_next'));
     if (e.key === 'Escape') post({ type: 'action', id: 'close' });

@@ -9,6 +9,7 @@
 #include "i18n.h"
 #include "log.h"
 #include "markdown_preview.h"
+#include "mist_msg.h"
 #include "mist_webview.h"
 #include "notes_library.h"
 #include "paths_util.h"
@@ -101,8 +102,23 @@ constexpr int kMenuInsertImage = 2154;
 constexpr int kMenuEncUtf8 = 2155;
 constexpr int kMenuEncUtf8Bom = 2156;
 constexpr int kMenuEncAcp = 2157;
+constexpr int kMenuCopyPath = 2158;
 constexpr int kTabCopyPath = 3105;
+constexpr int kTabCloseOthers = 3106;
+constexpr int kTabCloseRight = 3107;
 constexpr int kSideCopyPath = 3008;
+constexpr int kMenuStrike = 2159;
+constexpr int kMenuBullet = 2160;
+constexpr int kMenuQuote = 2161;
+constexpr int kMenuHRule = 2162;
+constexpr int kMenuDateTime = 2163;
+constexpr int kEditCtxUndo = 3201;
+constexpr int kEditCtxCut = 3202;
+constexpr int kEditCtxCopy = 3203;
+constexpr int kEditCtxPaste = 3204;
+constexpr int kEditCtxSelectAll = 3205;
+constexpr int kEditCtxFind = 3206;
+constexpr int kEditCtxGoto = 3207;
 constexpr int kOutlineId = 2002;
 constexpr int kSidebarRefreshId = 2009;
 constexpr int kModeStripId = 2010;
@@ -478,6 +494,7 @@ bool NotesWindow::Create(HINSTANCE instance) {
   AppendMenuW(file, MF_STRING, kMenuSave, L"保存\tCtrl+S");
   AppendMenuW(file, MF_STRING, kMenuSaveAs, L"另存为…\tCtrl+Shift+S");
   AppendMenuW(file, MF_STRING, kMenuReload, L"从磁盘重新加载\tF5");
+  AppendMenuW(file, MF_STRING, kMenuCopyPath, L"复制文件路径\tCtrl+Shift+C");
   HMENU enc = CreatePopupMenu();
   AppendMenuW(enc, MF_STRING, kMenuEncUtf8, L"UTF-8");
   AppendMenuW(enc, MF_STRING, kMenuEncUtf8Bom, L"UTF-8 带 BOM");
@@ -537,6 +554,7 @@ bool NotesWindow::Create(HINSTANCE instance) {
   AppendMenuW(fmt, MF_STRING, kMenuBold, L"粗体\tCtrl+B");
   AppendMenuW(fmt, MF_STRING, kMenuItalic, L"斜体\tCtrl+I");
   AppendMenuW(fmt, MF_STRING, kMenuUnder, L"下划线\tCtrl+U");
+  AppendMenuW(fmt, MF_STRING, kMenuStrike, L"删除线");
   AppendMenuW(fmt, MF_STRING, kMenuInsertLink, L"插入链接\tCtrl+K");
   AppendMenuW(fmt, MF_STRING, kMenuInsertCode, L"插入代码块");
   AppendMenuW(fmt, MF_STRING, kMenuInsertImage, L"插入图片…");
@@ -544,6 +562,11 @@ bool NotesWindow::Create(HINSTANCE instance) {
   AppendMenuW(fmt, MF_STRING, kMenuHeading1, L"一级标题");
   AppendMenuW(fmt, MF_STRING, kMenuHeading2, L"二级标题");
   AppendMenuW(fmt, MF_STRING, kMenuHeading3, L"三级标题");
+  AppendMenuW(fmt, MF_STRING, kMenuBullet, L"无序列表");
+  AppendMenuW(fmt, MF_STRING, kMenuQuote, L"引用");
+  AppendMenuW(fmt, MF_STRING, kMenuHRule, L"水平分割线");
+  AppendMenuW(fmt, MF_SEPARATOR, 0, nullptr);
+  AppendMenuW(fmt, MF_STRING, kMenuDateTime, L"插入日期时间\tCtrl+Shift+D");
   AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(fmt),
               Tr("format").c_str());
   HMENU help = CreatePopupMenu();
@@ -886,6 +909,8 @@ void NotesWindow::BuildAccelerators() {
       {FVIRTKEY | FCONTROL, 'G', static_cast<WORD>(kMenuGotoLine)},
       {FVIRTKEY | FCONTROL, 'Y', static_cast<WORD>(kMenuRedo)},
       {FVIRTKEY | FCONTROL, 'K', static_cast<WORD>(kMenuInsertLink)},
+      {FVIRTKEY | FCONTROL | FSHIFT, 'C', static_cast<WORD>(kMenuCopyPath)},
+      {FVIRTKEY | FCONTROL | FSHIFT, 'D', static_cast<WORD>(kMenuDateTime)},
       {FVIRTKEY | FCONTROL, VK_TAB, static_cast<WORD>(kMenuNextTab)},
       {FVIRTKEY | FCONTROL | FSHIFT, VK_TAB, static_cast<WORD>(kMenuPrevTab)},
       {FVIRTKEY | FCONTROL, VK_OEM_PLUS, static_cast<WORD>(kMenuBigger)},
@@ -1074,7 +1099,7 @@ bool NotesWindow::InsertImageFile(const std::wstring& src_path) {
     }
   }
   if (!CopyFileW(src_path.c_str(), dest.c_str(), FALSE)) {
-    MessageBoxW(hwnd_, L"无法导入图片。", L"插入图片", MB_OK | MB_ICONWARNING);
+    MistAlert(hwnd_, L"插入图片", L"无法导入图片。", MistMsgTone::Warn);
     return false;
   }
   const size_t dslash = dest.find_last_of(L"\\/");
@@ -1094,8 +1119,7 @@ void NotesWindow::InsertImageFromFile() {
     return;
   }
   if (!PathLooksMarkdown()) {
-    MessageBoxW(hwnd_, L"请先打开或保存一个 Markdown（.md）文档。", L"插入图片",
-                MB_OK | MB_ICONINFORMATION);
+    MistAlert(hwnd_, L"插入图片", L"请先打开或保存一个 Markdown（.md）文档。");
     return;
   }
   wchar_t file[MAX_PATH] = {};
@@ -1128,8 +1152,8 @@ void NotesWindow::InsertImageFromFile() {
     }
   }
   if (n == 0 && !paths.empty()) {
-    MessageBoxW(hwnd_, L"未插入任何图片（格式不受支持或复制失败）。", L"插入图片",
-                MB_OK | MB_ICONWARNING);
+    MistAlert(hwnd_, L"插入图片", L"未插入任何图片（格式不受支持或复制失败）。",
+              MistMsgTone::Warn);
   }
 }
 
@@ -1214,6 +1238,10 @@ void NotesWindow::SyncMdMenuState() {
   EnableMenuItem(menu_, kMenuHeading3, flag);
   EnableMenuItem(menu_, kMenuBold, flag);
   EnableMenuItem(menu_, kMenuItalic, flag);
+  EnableMenuItem(menu_, kMenuStrike, flag);
+  EnableMenuItem(menu_, kMenuBullet, flag);
+  EnableMenuItem(menu_, kMenuQuote, flag);
+  EnableMenuItem(menu_, kMenuHRule, flag);
 }
 
 void NotesWindow::SetSaveEncoding(TextFileEncoding enc) {
@@ -1225,6 +1253,29 @@ void NotesWindow::SetSaveEncoding(TextFileEncoding enc) {
   MarkDirty();
   ApplyViewMenuChecks();
   UpdateStatusBar();
+}
+
+void NotesWindow::CopyPathToClipboard(const std::wstring& path) {
+  if (path.empty() || !hwnd_) {
+    return;
+  }
+  if (!OpenClipboard(hwnd_)) {
+    return;
+  }
+  EmptyClipboard();
+  const size_t bytes = (path.size() + 1) * sizeof(wchar_t);
+  HGLOBAL mem = GlobalAlloc(GMEM_MOVEABLE, bytes);
+  if (mem) {
+    void* p = GlobalLock(mem);
+    if (p) {
+      memcpy(p, path.c_str(), bytes);
+      GlobalUnlock(mem);
+      SetClipboardData(CF_UNICODETEXT, mem);
+    } else {
+      GlobalFree(mem);
+    }
+  }
+  CloseClipboard();
 }
 
 void NotesWindow::PersistViewSettings() {
@@ -1374,8 +1425,7 @@ void NotesWindow::OpenOrActivatePath(const std::wstring& path) {
     }
   }
   if (tab_paths_.size() >= 12) {
-    MessageBoxW(hwnd_, L"最多 12 个标签。", L"DeskNote",
-                MB_OK | MB_ICONINFORMATION);
+    MistAlert(hwnd_, L"DeskNote", L"最多 12 个标签。", MistMsgTone::Info);
     return;
   }
   Save();
@@ -1621,7 +1671,7 @@ void NotesWindow::SwitchToTab(int index, bool save_current) {
     Save();
   }
   SyncFromWysiwyg();
-  // Remember the outgoing tab's WYSIWYG / wrap / caret (M8 per-tab state).
+  // Remember the outgoing tab's WYSIWYG / wrap / caret / scroll (M8).
   EnsureTabStates();
   if (tab_index_ >= 0 && tab_index_ < static_cast<int>(tab_states_.size())) {
     tab_states_[static_cast<size_t>(tab_index_)].wysiwyg = wysiwyg_;
@@ -1630,6 +1680,9 @@ void NotesWindow::SwitchToTab(int index, bool save_current) {
       CHARRANGE cr{};
       SendMessageW(edit_, EM_EXGETSEL, 0, reinterpret_cast<LPARAM>(&cr));
       tab_states_[static_cast<size_t>(tab_index_)].caret = cr.cpMin;
+      tab_states_[static_cast<size_t>(tab_index_)].first_visible_line =
+          static_cast<int>(
+              SendMessageW(edit_, EM_GETFIRSTVISIBLELINE, 0, 0));
     }
   }
   tab_index_ = index;
@@ -1649,9 +1702,16 @@ void NotesWindow::SwitchToTab(int index, bool save_current) {
   ApplyWysiwygVisibility();
   if (wysiwyg_) {
     web_.SetMarkdown(CurrentPlainText());
-  } else {
+  } else if (edit_) {
+    const int vis =
+        tab_states_[static_cast<size_t>(tab_index_)].first_visible_line;
+    if (vis > 0) {
+      const int cur = static_cast<int>(
+          SendMessageW(edit_, EM_GETFIRSTVISIBLELINE, 0, 0));
+      SendMessageW(edit_, EM_LINESCROLL, 0, vis - cur);
+    }
     const LONG caret = tab_states_[static_cast<size_t>(tab_index_)].caret;
-    if (edit_ && caret > 0) {
+    if (caret > 0) {
       CHARRANGE cr{caret, caret};
       SendMessageW(edit_, EM_EXSETSEL, 0, reinterpret_cast<LPARAM>(&cr));
       SendMessageW(edit_, EM_SCROLLCARET, 0, 0);
@@ -1709,7 +1769,7 @@ std::wstring NotesWindow::MakeNewNotePath() {
 
 void NotesWindow::NewTab() {
   if (tab_paths_.size() >= 12) {
-    MessageBoxW(hwnd_, L"最多 12 个标签。", L"DeskNote", MB_OK | MB_ICONINFORMATION);
+    MistAlert(hwnd_, L"DeskNote", L"最多 12 个标签。", MistMsgTone::Info);
     return;
   }
   Save();
@@ -1788,15 +1848,13 @@ void NotesWindow::ReloadFromDisk() {
     return;
   }
   if (GetFileAttributesW(path_.c_str()) == INVALID_FILE_ATTRIBUTES) {
-    MessageBoxW(hwnd_, L"文件不存在或无法访问。", L"重新加载",
-                MB_OK | MB_ICONWARNING);
+    MistAlert(hwnd_, L"重新加载", L"文件不存在或无法访问。", MistMsgTone::Warn);
     return;
   }
   if (dirty_) {
-    const int r = MessageBoxW(
-        hwnd_, L"当前有未保存的修改。重新加载将丢弃这些修改，继续？",
-        L"重新加载", MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2);
-    if (r != IDYES) {
+    if (!MistConfirm(hwnd_, L"重新加载",
+                     L"当前有未保存的修改。重新加载将丢弃这些修改，继续？",
+                     MistMsgTone::Warn)) {
       return;
     }
   }
@@ -1894,20 +1952,19 @@ void NotesWindow::Load() {
 
 bool NotesWindow::OfferElevatedSave(const std::wstring& path,
                                     const std::wstring& text) {
-  const int choice = MessageBoxW(
-      hwnd_,
-      (L"「" + path +
-       L"」受系统保护，无法直接保存。\n\n"
-       L"是否以管理员权限重启 DeskNote 并保存？\n"
-       L"（将弹出 UAC 确认框，重启后自动保存该文件）")
-          .c_str(),
-      L"保存", MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON1);
-  if (choice != IDYES) {
+  if (!MistConfirm(
+          hwnd_, L"保存",
+          (L"「" + path +
+           L"」受系统保护，无法直接保存。\n\n"
+           L"是否以管理员权限重启 DeskNote 并保存？\n"
+           L"（将弹出 UAC 确认框，重启后自动保存该文件）")
+              .c_str(),
+          MistMsgTone::Warn)) {
     return false;
   }
   if (!WriteElevatedPending(path, text)) {
-    MessageBoxW(hwnd_, L"无法准备提权保存的暂存内容。", L"笔记",
-                MB_OK | MB_ICONWARNING);
+    MistAlert(hwnd_, L"笔记", L"无法准备提权保存的暂存内容。",
+              MistMsgTone::Warn);
     return false;
   }
   ReleaseDeskNoteInstanceLock();
@@ -1923,10 +1980,10 @@ bool NotesWindow::OfferElevatedSave(const std::wstring& path,
       }
       return false;
     }
-    MessageBoxW(hwnd_,
-                L"已取消提权保存（UAC 未确认）。\n"
-                L"可尝试以管理员身份运行 DeskNote 后重试。",
-                L"保存", MB_OK | MB_ICONWARNING);
+    MistAlert(hwnd_, L"保存",
+              L"已取消提权保存（UAC 未确认）。\n"
+              L"可尝试以管理员身份运行 DeskNote 后重试。",
+              MistMsgTone::Warn);
     return false;
   }
   dirty_ = false;
@@ -1964,8 +2021,8 @@ void NotesWindow::ShowPreviewMode() {
     preview_web_.SetTheme(SystemAppsUseLightTheme() ? L"light" : L"dark");
     preview_web_.on_scroll = [this](double ratio) { SyncPreviewToEdit(ratio); };
     if (!preview_web_.Create(hwnd_)) {
-      MessageBoxW(hwnd_, L"无法启动预览（WebView2 不可用）。", L"预览",
-                  MB_OK | MB_ICONWARNING);
+      MistAlert(hwnd_, L"预览", L"无法启动预览（WebView2 不可用）。",
+                MistMsgTone::Warn);
       return;
     }
   }
@@ -2037,15 +2094,16 @@ void NotesWindow::Save() {
   if (textish) {
     std::string bytes;
     if (!EncodeTextFileBytes(plain, text_enc_, &bytes)) {
-      MessageBoxW(hwnd_, L"无法按原编码写回文件（字符无法映射到 ANSI/GBK）。",
-                  L"保存失败", MB_OK | MB_ICONWARNING);
+      MistAlert(hwnd_, L"保存失败",
+                L"无法按原编码写回文件（字符无法映射到 ANSI/GBK）。",
+                MistMsgTone::Warn);
       return;
     }
     if (!WriteFileBytes(path_, bytes.data(), bytes.size())) {
       if (LastWriteWasAccessDenied() && OfferElevatedSave(path_, plain)) {
         return;
       }
-      MessageBoxW(hwnd_, L"保存失败。", L"笔记", MB_OK | MB_ICONWARNING);
+      MistAlert(hwnd_, L"笔记", L"保存失败。", MistMsgTone::Warn);
       return;
     }
     dirty_ = false;
@@ -2070,7 +2128,7 @@ void NotesWindow::Save() {
     if (LastWriteWasAccessDenied() && OfferElevatedSave(path_, plain)) {
       return;
     }
-    MessageBoxW(hwnd_, L"保存失败。", L"笔记", MB_OK | MB_ICONWARNING);
+    MistAlert(hwnd_, L"笔记", L"保存失败。", MistMsgTone::Warn);
     return;
   }
   dirty_ = false;
@@ -2205,6 +2263,265 @@ void NotesWindow::CloseTabAt(int index) {
   CloseTab();
 }
 
+void NotesWindow::CloseOtherTabs(int keep_index) {
+  if (keep_index < 0 ||
+      keep_index >= static_cast<int>(tab_paths_.size()) ||
+      tab_paths_.size() <= 1) {
+    return;
+  }
+  // Autosave active tab; other tabs were saved on last switch.
+  Save();
+  EnsureTabStates();
+  const std::wstring keep = tab_paths_[static_cast<size_t>(keep_index)];
+  TabState st{};
+  if (keep_index < static_cast<int>(tab_states_.size())) {
+    st = tab_states_[static_cast<size_t>(keep_index)];
+  }
+  tab_paths_.assign(1, keep);
+  tab_states_.assign(1, st);
+  tab_index_ = 0;
+  path_ = keep;
+  RebuildTabControl();
+  SwitchToTab(0, false);
+  PersistTabs();
+}
+
+void NotesWindow::CloseTabsToTheRight(int index) {
+  if (index < 0 || index >= static_cast<int>(tab_paths_.size()) - 1) {
+    return;
+  }
+  Save();
+  EnsureTabStates();
+  tab_paths_.erase(tab_paths_.begin() + index + 1, tab_paths_.end());
+  if (static_cast<int>(tab_states_.size()) > index + 1) {
+    tab_states_.erase(tab_states_.begin() + index + 1, tab_states_.end());
+  }
+  if (tab_index_ > index) {
+    tab_index_ = index;
+    path_ = tab_paths_[static_cast<size_t>(index)];
+  }
+  RebuildTabControl();
+  SwitchToTab(tab_index_, false);
+  PersistTabs();
+}
+
+void NotesWindow::InsertMdStrike() {
+  if (PathLooksMarkdown()) {
+    WrapSelectionMarkdown(L"~~", L"~~");
+  }
+}
+
+void NotesWindow::InsertMdBullet() {
+  if (!edit_ || !PathLooksMarkdown()) {
+    return;
+  }
+  CHARRANGE cr{};
+  SendMessageW(edit_, EM_EXGETSEL, 0, reinterpret_cast<LPARAM>(&cr));
+  const int line =
+      static_cast<int>(SendMessageW(edit_, EM_EXLINEFROMCHAR, 0, cr.cpMin));
+  const LONG start =
+      static_cast<LONG>(SendMessageW(edit_, EM_LINEINDEX, line, 0));
+  CHARRANGE at{start, start};
+  SendMessageW(edit_, EM_EXSETSEL, 0, reinterpret_cast<LPARAM>(&at));
+  SendMessageW(edit_, EM_REPLACESEL, TRUE,
+               reinterpret_cast<LPARAM>(L"- "));
+  MarkDirty();
+}
+
+void NotesWindow::InsertMdQuote() {
+  if (!edit_ || !PathLooksMarkdown()) {
+    return;
+  }
+  CHARRANGE cr{};
+  SendMessageW(edit_, EM_EXGETSEL, 0, reinterpret_cast<LPARAM>(&cr));
+  const int line =
+      static_cast<int>(SendMessageW(edit_, EM_EXLINEFROMCHAR, 0, cr.cpMin));
+  const LONG start =
+      static_cast<LONG>(SendMessageW(edit_, EM_LINEINDEX, line, 0));
+  CHARRANGE at{start, start};
+  SendMessageW(edit_, EM_EXSETSEL, 0, reinterpret_cast<LPARAM>(&at));
+  SendMessageW(edit_, EM_REPLACESEL, TRUE,
+               reinterpret_cast<LPARAM>(L"> "));
+  MarkDirty();
+}
+
+void NotesWindow::InsertMdHorizontalRule() {
+  if (!edit_ || !PathLooksMarkdown()) {
+    return;
+  }
+  SendMessageW(edit_, EM_REPLACESEL, TRUE,
+               reinterpret_cast<LPARAM>(L"\r\n---\r\n"));
+  MarkDirty();
+}
+
+void NotesWindow::InsertDateTime() {
+  if (!edit_) {
+    return;
+  }
+  SYSTEMTIME st{};
+  GetLocalTime(&st);
+  wchar_t buf[64];
+  swprintf_s(buf, L"%04d-%02d-%02d %02d:%02d:%02d", st.wYear, st.wMonth,
+             st.wDay, st.wHour, st.wMinute, st.wSecond);
+  SendMessageW(edit_, EM_REPLACESEL, TRUE, reinterpret_cast<LPARAM>(buf));
+  MarkDirty();
+}
+
+bool NotesWindow::TryContinueMarkdownList() {
+  if (!edit_ || !PathLooksMarkdown()) {
+    return false;
+  }
+  CHARRANGE cr{};
+  SendMessageW(edit_, EM_EXGETSEL, 0, reinterpret_cast<LPARAM>(&cr));
+  if (cr.cpMin != cr.cpMax) {
+    return false;  // Selection: let default replace with newline.
+  }
+  const int line =
+      static_cast<int>(SendMessageW(edit_, EM_EXLINEFROMCHAR, 0, cr.cpMin));
+  const LONG line_start =
+      static_cast<LONG>(SendMessageW(edit_, EM_LINEINDEX, line, 0));
+  const int line_len =
+      static_cast<int>(SendMessageW(edit_, EM_LINELENGTH, line_start, 0));
+  if (line_len <= 0 || line_len > 512) {
+    return false;
+  }
+  // EM_GETLINE: first WORD of buffer = capacity in TCHARs.
+  std::wstring raw(static_cast<size_t>(line_len) + 2, L'\0');
+  *reinterpret_cast<WORD*>(raw.data()) = static_cast<WORD>(line_len + 1);
+  const int got = static_cast<int>(
+      SendMessageW(edit_, EM_GETLINE, line, reinterpret_cast<LPARAM>(raw.data())));
+  if (got <= 0) {
+    return false;
+  }
+  raw.resize(static_cast<size_t>(got));
+  // Trim CR/LF if present.
+  while (!raw.empty() && (raw.back() == L'\r' || raw.back() == L'\n')) {
+    raw.pop_back();
+  }
+  // Match leading indent + list marker: -, *, +, 1. / - [ ] / - [x]
+  size_t i = 0;
+  while (i < raw.size() && (raw[i] == L' ' || raw[i] == L'\t')) {
+    ++i;
+  }
+  const std::wstring indent = raw.substr(0, i);
+  std::wstring marker;
+  if (i < raw.size() &&
+      (raw[i] == L'-' || raw[i] == L'*' || raw[i] == L'+')) {
+    marker.push_back(raw[i++]);
+    if (i + 4 <= raw.size() && raw[i] == L' ' && raw[i + 1] == L'[' &&
+        (raw[i + 2] == L' ' || raw[i + 2] == L'x' || raw[i + 2] == L'X') &&
+        raw[i + 3] == L']') {
+      marker += L" [ ]";  // New checkbox always unchecked.
+      i += 4;
+    }
+    if (i < raw.size() && raw[i] == L' ') {
+      ++i;
+    } else if (marker.size() == 1) {
+      return false;
+    }
+  } else if (i < raw.size() && raw[i] >= L'0' && raw[i] <= L'9') {
+    size_t j = i;
+    while (j < raw.size() && raw[j] >= L'0' && raw[j] <= L'9') {
+      ++j;
+    }
+    if (j < raw.size() && raw[j] == L'.') {
+      // Continue with next number.
+      int n = 0;
+      for (size_t k = i; k < j; ++k) {
+        n = n * 10 + (raw[k] - L'0');
+      }
+      marker = std::to_wstring(n + 1) + L".";
+      i = j + 1;
+      if (i < raw.size() && raw[i] == L' ') {
+        ++i;
+      } else {
+        return false;
+      }
+    } else {
+      return false;
+    }
+  } else {
+    return false;
+  }
+  const std::wstring content = raw.substr(i);
+  // Empty item → exit list (delete marker on this line).
+  bool only_ws = true;
+  for (wchar_t ch : content) {
+    if (ch != L' ' && ch != L'\t') {
+      only_ws = false;
+      break;
+    }
+  }
+  if (only_ws) {
+    CHARRANGE whole{line_start, cr.cpMin};
+    SendMessageW(edit_, EM_EXSETSEL, 0, reinterpret_cast<LPARAM>(&whole));
+    SendMessageW(edit_, EM_REPLACESEL, TRUE, reinterpret_cast<LPARAM>(L""));
+    MarkDirty();
+    return true;
+  }
+  std::wstring insert = L"\r\n";
+  insert += indent;
+  insert += marker;
+  insert += L" ";
+  SendMessageW(edit_, EM_REPLACESEL, TRUE,
+               reinterpret_cast<LPARAM>(insert.c_str()));
+  MarkDirty();
+  return true;
+}
+
+void NotesWindow::HandleEditContextMenu(POINT screen_pt) {
+  if (!edit_) {
+    return;
+  }
+  CHARRANGE cr{};
+  SendMessageW(edit_, EM_EXGETSEL, 0, reinterpret_cast<LPARAM>(&cr));
+  const bool has_sel = cr.cpMin != cr.cpMax;
+  HMENU m = CreatePopupMenu();
+  AppendMenuW(m, MF_STRING, kEditCtxUndo, L"撤销\tCtrl+Z");
+  AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
+  AppendMenuW(m, MF_STRING | (has_sel ? MF_ENABLED : MF_GRAYED), kEditCtxCut,
+              L"剪切\tCtrl+X");
+  AppendMenuW(m, MF_STRING | (has_sel ? MF_ENABLED : MF_GRAYED), kEditCtxCopy,
+              L"复制\tCtrl+C");
+  AppendMenuW(m, MF_STRING, kEditCtxPaste, L"粘贴\tCtrl+V");
+  AppendMenuW(m, MF_STRING, kEditCtxSelectAll, L"全选\tCtrl+A");
+  AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
+  AppendMenuW(m, MF_STRING, kEditCtxFind, L"查找…\tCtrl+F");
+  AppendMenuW(m, MF_STRING, kEditCtxGoto, L"转到行…\tCtrl+G");
+  const int cmd =
+      TrackPopupMenu(m, TPM_RETURNCMD | TPM_NONOTIFY, screen_pt.x, screen_pt.y,
+                     0, hwnd_, nullptr);
+  DestroyMenu(m);
+  switch (cmd) {
+    case kEditCtxUndo:
+      SendMessageW(edit_, EM_UNDO, 0, 0);
+      break;
+    case kEditCtxCut:
+      SendMessageW(edit_, WM_CUT, 0, 0);
+      MarkDirty();
+      break;
+    case kEditCtxCopy:
+      SendMessageW(edit_, WM_COPY, 0, 0);
+      break;
+    case kEditCtxPaste:
+      if (!SmartPaste()) {
+        SendMessageW(edit_, WM_PASTE, 0, 0);
+      }
+      break;
+    case kEditCtxSelectAll:
+      SendMessageW(edit_, EM_SETSEL, 0, -1);
+      break;
+    case kEditCtxFind:
+      ShowFind(false);
+      break;
+    case kEditCtxGoto:
+      PromptGotoLine();
+      break;
+    default:
+      break;
+  }
+}
+
 void NotesWindow::ReorderTab(int from, int to) {
   if (from < 0 || to < 0 || from == to ||
       from >= static_cast<int>(tab_paths_.size()) ||
@@ -2244,6 +2561,9 @@ void NotesWindow::HandleTabContextMenu(int index, POINT screen_pt) {
   const std::wstring path = tab_paths_[static_cast<size_t>(index)];
   HMENU m = CreatePopupMenu();
   AppendMenuW(m, MF_STRING, kTabClose, L"关闭");
+  AppendMenuW(m, MF_STRING, kTabCloseOthers, L"关闭其他页签");
+  AppendMenuW(m, MF_STRING, kTabCloseRight, L"关闭右侧页签");
+  AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
   AppendMenuW(m, MF_STRING, kTabRename, L"重命名");
   AppendMenuW(m, MF_STRING, kTabPin,
               PathIsPinned(path) ? L"取消置顶" : L"置顶");
@@ -2257,6 +2577,10 @@ void NotesWindow::HandleTabContextMenu(int index, POINT screen_pt) {
   DestroyMenu(m);
   if (cmd == kTabClose) {
     CloseTabAt(index);
+  } else if (cmd == kTabCloseOthers) {
+    CloseOtherTabs(index);
+  } else if (cmd == kTabCloseRight) {
+    CloseTabsToTheRight(index);
   } else if (cmd == kTabPin) {
     TogglePinPath(path);
     RebuildTabControl();
@@ -2265,22 +2589,7 @@ void NotesWindow::HandleTabContextMenu(int index, POINT screen_pt) {
     ShellExecuteW(hwnd_, L"open", L"explorer.exe", arg.c_str(), nullptr,
                   SW_SHOWNORMAL);
   } else if (cmd == kTabCopyPath) {
-    if (OpenClipboard(hwnd_)) {
-      EmptyClipboard();
-      const size_t bytes = (path.size() + 1) * sizeof(wchar_t);
-      HGLOBAL mem = GlobalAlloc(GMEM_MOVEABLE, bytes);
-      if (mem) {
-        void* p = GlobalLock(mem);
-        if (p) {
-          memcpy(p, path.c_str(), bytes);
-          GlobalUnlock(mem);
-          SetClipboardData(CF_UNICODETEXT, mem);
-        } else {
-          GlobalFree(mem);
-        }
-      }
-      CloseClipboard();
-    }
+    CopyPathToClipboard(path);
   } else if (cmd == kTabRename) {
     std::wstring name = path;
     const size_t slash = path.find_last_of(L"\\/");
@@ -2301,12 +2610,11 @@ void NotesWindow::HandleTabContextMenu(int index, POINT screen_pt) {
         slash == std::wstring::npos ? path : path.substr(slash + 1);
     const std::wstring msg =
         L"确定删除「" + name + L"」？\n此操作不可撤销。";
-    if (MessageBoxW(hwnd_, msg.c_str(), L"删除",
-                    MB_YESNO | MB_ICONQUESTION) != IDYES) {
+    if (!MistConfirm(hwnd_, L"删除", msg.c_str(), MistMsgTone::Danger)) {
       return;
     }
     if (!RecyclePathQuiet(hwnd_, path)) {
-      MessageBoxW(hwnd_, L"无法删除。", L"删除", MB_OK | MB_ICONWARNING);
+      MistAlert(hwnd_, L"删除", L"无法删除。", MistMsgTone::Warn);
       return;
     }
     for (size_t i = 0; i < pinned_paths_.size(); ++i) {
@@ -2433,7 +2741,7 @@ void NotesWindow::ExportWithPandoc() {
   {
     std::ofstream out(src, std::ios::binary);
     if (!out) {
-      MessageBoxW(hwnd_, L"无法写入临时文件。", L"导出", MB_OK | MB_ICONERROR);
+      MistAlert(hwnd_, L"导出", L"无法写入临时文件。", MistMsgTone::Danger);
       return;
     }
     out << NarrowUtf8(CurrentPlainText());
@@ -2462,11 +2770,11 @@ void NotesWindow::ExportWithPandoc() {
       md_dst.resize(md_dst.size() - 5);
     }
     md_dst += L".md";
-    const int r = MessageBoxW(
-        hwnd_,
-        (L"未找到 pandoc。是否改为导出纯 Markdown？\n\n目标：\n" + md_dst).c_str(),
-        L"导出", MB_YESNO | MB_ICONQUESTION);
-    if (r == IDYES) {
+    if (MistConfirm(
+            hwnd_, L"导出",
+            (L"未找到 pandoc。是否改为导出纯 Markdown？\n\n目标：\n" + md_dst)
+                .c_str(),
+            MistMsgTone::Warn)) {
       if (CopyFileW(src.c_str(), md_dst.c_str(), FALSE)) {
         ShellExecuteW(nullptr, L"open", md_dst.c_str(), nullptr, nullptr,
                       SW_SHOWNORMAL);
@@ -2483,8 +2791,8 @@ void NotesWindow::ExportWithPandoc() {
   const DWORD attr = GetFileAttributesW(dst.c_str());
   if (exit != 0 || attr == INVALID_FILE_ATTRIBUTES ||
       (attr & FILE_ATTRIBUTE_DIRECTORY)) {
-    MessageBoxW(hwnd_, L"pandoc 导出失败，未打开任何文件。", L"导出",
-                MB_OK | MB_ICONERROR);
+    MistAlert(hwnd_, L"导出", L"pandoc 导出失败，未打开任何文件。",
+              MistMsgTone::Danger);
     return;
   }
   WIN32_FILE_ATTRIBUTE_DATA fad{};
@@ -2492,8 +2800,8 @@ void NotesWindow::ExportWithPandoc() {
   const ULONGLONG sz = (static_cast<ULONGLONG>(fad.nFileSizeHigh) << 32) |
                        fad.nFileSizeLow;
   if (sz == 0) {
-    MessageBoxW(hwnd_, L"pandoc 导出的文件为空，未打开。", L"导出",
-                MB_OK | MB_ICONERROR);
+    MistAlert(hwnd_, L"导出", L"pandoc 导出的文件为空，未打开。",
+              MistMsgTone::Danger);
     return;
   }
   ShellExecuteW(nullptr, L"open", dst.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
@@ -2528,7 +2836,7 @@ void NotesWindow::PasteHtmlAsMarkdown() {
   }
   CloseClipboard();
   if (html.empty()) {
-    MessageBoxW(hwnd_, L"剪贴板里没有 HTML。", L"便签", MB_OK);
+    MistAlert(hwnd_, L"便签", L"剪贴板里没有 HTML。", MistMsgTone::Info);
     return;
   }
   const std::wstring wide = HtmlToMarkdown(WidenUtf8(html));
@@ -2593,10 +2901,10 @@ void NotesWindow::ToggleWysiwyg() {
     }
   }
   if (!web_.Available()) {
-    MessageBoxW(hwnd_,
-                L"无法启动 WebView2。请安装 Microsoft Edge WebView2 Runtime，"
-                L"并确认 assets\\md_preview\\wysiwyg_native.html 存在。",
-                L"Toast 编辑器", MB_OK | MB_ICONWARNING);
+    MistAlert(hwnd_, L"Toast 编辑器",
+              L"无法启动 WebView2。请安装 Microsoft Edge WebView2 Runtime，"
+              L"并确认 assets\\md_preview\\wysiwyg_native.html 存在。",
+              MistMsgTone::Warn);
     return;
   }
   wysiwyg_ = !wysiwyg_;
@@ -2758,8 +3066,8 @@ void NotesWindow::TogglePreview() {
     preview_web_.SetTheme(SystemAppsUseLightTheme() ? L"light" : L"dark");
     preview_web_.on_scroll = [this](double ratio) { SyncPreviewToEdit(ratio); };
     if (!preview_web_.Create(hwnd_)) {
-      MessageBoxW(hwnd_, L"无法启动预览（WebView2 不可用）。", L"预览",
-                  MB_OK | MB_ICONWARNING);
+      MistAlert(hwnd_, L"预览", L"无法启动预览（WebView2 不可用）。",
+                MistMsgTone::Warn);
       return;
     }
   }
@@ -2785,8 +3093,8 @@ void NotesWindow::ExportPdf() {
     preview_web_.SetKind(NotesWebView::Kind::kViewer);
     preview_web_.SetTheme(SystemAppsUseLightTheme() ? L"light" : L"dark");
     if (!preview_web_.Create(hwnd_)) {
-      MessageBoxW(hwnd_, L"无法启动 PDF 导出（WebView2 不可用）。", L"导出 PDF",
-                  MB_OK | MB_ICONWARNING);
+      MistAlert(hwnd_, L"导出 PDF", L"无法启动 PDF 导出（WebView2 不可用）。",
+                MistMsgTone::Warn);
       return;
     }
   }
@@ -2817,9 +3125,9 @@ void NotesWindow::ExportPdf() {
   preview_web_.SetPreview(CurrentPlainText(), NoteBaseDir());
   std::wstring err;
   if (!preview_web_.PrintToPdf(file, &err)) {
-    MessageBoxW(hwnd_,
-                (L"PDF 导出失败：" + (err.empty() ? L"未知错误" : err)).c_str(),
-                L"导出 PDF", MB_OK | MB_ICONERROR);
+    MistAlert(hwnd_, L"导出 PDF",
+              (L"PDF 导出失败：" + (err.empty() ? L"未知错误" : err)).c_str(),
+              MistMsgTone::Danger);
     return;
   }
   ShellExecuteW(nullptr, L"open", file, nullptr, nullptr, SW_SHOWNORMAL);
@@ -2920,8 +3228,8 @@ void NotesWindow::FindAgain(bool down) {
   std::wstring status;
   if (!RunFindOnce(down, find_wrap_, find_match_case_, find_whole_word_,
                    &status)) {
-    MessageBoxW(hwnd_, status.empty() ? L"未找到。" : status.c_str(), L"查找",
-                MB_OK | MB_ICONINFORMATION);
+    MistAlert(hwnd_, L"查找", status.empty() ? L"未找到。" : status.c_str(),
+              MistMsgTone::Info);
   }
 }
 
@@ -3418,13 +3726,13 @@ int NotesWindow::RunReplaceAllTabs(bool match_case, bool whole) {
 void NotesWindow::ShowFind(bool replace) {
   MistWebDialog dlg;
   dlg.owner = hwnd_;
+  dlg.frameless = true;
   dlg.disable_owner = false;  // Modeless-like: keep editor usable (Python).
   dlg.owner_accel = accel_;
   dlg.user_data_subdir = L"webview2-notes-find";
   dlg.html_path = MistFindAssetHtml(L"dialogs\\notes_find.html");
   if (dlg.html_path.empty()) {
-    MessageBoxW(hwnd_, L"找不到 notes_find.html", L"查找",
-                MB_OK | MB_ICONWARNING);
+    MistAlert(hwnd_, L"查找", L"找不到 notes_find.html", MistMsgTone::Warn);
     return;
   }
   std::wstring status;
@@ -3597,13 +3905,13 @@ bool NotesWindow::ConfirmSaveCurrent() {
   }
   const std::wstring msg =
       L"是否保存对「" + TabLabel(path_) + L"」的更改？";
-  const int r = MessageBoxW(hwnd_, msg.c_str(), L"便签",
-                            MB_YESNOCANCEL | MB_ICONQUESTION);
-  if (r == IDYES) {
+  const MistMsgResult r = MistMessage(hwnd_, L"便签", msg.c_str(),
+                                      MistMsgKind::YesNoCancel, MistMsgTone::Warn);
+  if (r == MistMsgResult::Yes) {
     Save();
     return true;
   }
-  if (r == IDNO) {
+  if (r == MistMsgResult::No) {
     dirty_ = false;
     return true;
   }
@@ -3981,17 +4289,16 @@ bool NotesWindow::ApplySidebarRename(const std::wstring& path,
   }
   // Disallow path separators in the stem.
   if (new_stem.find_first_of(L"\\/") != std::wstring::npos) {
-    MessageBoxW(hwnd_, L"名称不能包含路径分隔符。", L"重命名",
-                MB_OK | MB_ICONWARNING);
+    MistAlert(hwnd_, L"重命名", L"名称不能包含路径分隔符。", MistMsgTone::Warn);
     return false;
   }
   const std::wstring new_path = dir + L"\\" + new_stem + suffix;
   if (GetFileAttributesW(new_path.c_str()) != INVALID_FILE_ATTRIBUTES) {
-    MessageBoxW(hwnd_, L"该名称已存在。", L"重命名", MB_OK | MB_ICONWARNING);
+    MistAlert(hwnd_, L"重命名", L"该名称已存在。", MistMsgTone::Warn);
     return false;
   }
   if (!MoveFileW(path.c_str(), new_path.c_str())) {
-    MessageBoxW(hwnd_, L"无法重命名。", L"重命名", MB_OK | MB_ICONWARNING);
+    MistAlert(hwnd_, L"重命名", L"无法重命名。", MistMsgTone::Warn);
     return false;
   }
   for (auto& p : tab_paths_) {
@@ -4023,9 +4330,9 @@ void NotesWindow::DeleteSidebarSelected() {
   if (path.empty()) {
     return;
   }
-  const int r = MessageBoxW(hwnd_, L"删除此文件？将移入回收站。", L"删除",
-                            MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2);
-  if (r != IDYES || !RecyclePathQuiet(hwnd_, path)) {
+  if (!MistConfirm(hwnd_, L"删除", L"删除此文件？将移入回收站。",
+                   MistMsgTone::Danger) ||
+      !RecyclePathQuiet(hwnd_, path)) {
     return;
   }
   for (size_t i = 0; i < pinned_paths_.size(); ++i) {
@@ -4083,6 +4390,8 @@ void NotesWindow::HandleSidebarContextMenu(const POINT& pt) {
               L"删除\tDelete");
   AppendMenuW(m, MF_STRING | (is_file ? MF_ENABLED : MF_GRAYED), kSideReveal,
               L"在资源管理器中显示");
+  AppendMenuW(m, MF_STRING | (is_file ? MF_ENABLED : MF_GRAYED), kSideCopyPath,
+              L"复制路径");
   AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
   AppendMenuW(m, MF_STRING, kSideRefresh, L"刷新");
   const int cmd = TrackPopupMenu(m, TPM_RETURNCMD | TPM_NONOTIFY, pt.x, pt.y, 0,
@@ -4104,6 +4413,8 @@ void NotesWindow::HandleSidebarContextMenu(const POINT& pt) {
     const std::wstring arg = L"/select,\"" + path + L"\"";
     ShellExecuteW(hwnd_, L"open", L"explorer.exe", arg.c_str(), nullptr,
                   SW_SHOWNORMAL);
+  } else if (cmd == kSideCopyPath && is_file) {
+    CopyPathToClipboard(path);
   } else if (cmd == kSideRefresh) {
     RebuildSidebar();
   }
@@ -4135,6 +4446,12 @@ LRESULT CALLBACK NotesWindow::StatusProc(HWND hwnd, UINT msg, WPARAM wparam,
       GetWindowLongPtrW(GetParent(hwnd), GWLP_USERDATA));
   if (self && msg == WM_LBUTTONDBLCLK) {
     self->PromptGotoLine();
+    return 0;
+  }
+  if (self && (msg == WM_RBUTTONUP || msg == WM_CONTEXTMENU)) {
+    if (!self->path_.empty()) {
+      self->CopyPathToClipboard(self->path_);
+    }
     return 0;
   }
   if (self && self->status_proc_) {
@@ -4246,12 +4563,42 @@ LRESULT CALLBACK NotesWindow::EditProc(HWND hwnd, UINT msg, WPARAM wparam,
                                         LPARAM lparam) {
   auto* self = reinterpret_cast<NotesWindow*>(
       GetWindowLongPtrW(GetParent(hwnd), GWLP_USERDATA));
+  if (self && msg == WM_MOUSEWHEEL &&
+      (GetKeyState(VK_CONTROL) & 0x8000) != 0) {
+    const short delta = GET_WHEEL_DELTA_WPARAM(wparam);
+    if (delta > 0) {
+      self->SetFontSize(self->font_pt_ + 1);
+    } else if (delta < 0 && self->font_pt_ > 8) {
+      self->SetFontSize(self->font_pt_ - 1);
+    }
+    return 0;
+  }
   if (self && msg == WM_PASTE && self->SmartPaste()) {
+    return 0;
+  }
+  if (self && (msg == WM_RBUTTONUP || msg == WM_CONTEXTMENU)) {
+    POINT pt{};
+    if (msg == WM_CONTEXTMENU) {
+      pt.x = GET_X_LPARAM(lparam);
+      pt.y = GET_Y_LPARAM(lparam);
+      if (pt.x == -1 && pt.y == -1) {
+        GetCursorPos(&pt);
+      }
+    } else {
+      pt.x = GET_X_LPARAM(lparam);
+      pt.y = GET_Y_LPARAM(lparam);
+      ClientToScreen(hwnd, &pt);
+    }
+    self->HandleEditContextMenu(pt);
     return 0;
   }
   if (self && msg == WM_KEYDOWN) {
     const bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
     const bool shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+    if (wparam == VK_RETURN && !ctrl && !shift &&
+        self->TryContinueMarkdownList()) {
+      return 0;
+    }
     if (wparam == VK_F1) {
       self->ShowHelp();
       return 0;
@@ -4635,6 +4982,21 @@ LRESULT NotesWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
         case kMenuInsertImage:
           InsertImageFromFile();
           return 0;
+        case kMenuStrike:
+          InsertMdStrike();
+          return 0;
+        case kMenuBullet:
+          InsertMdBullet();
+          return 0;
+        case kMenuQuote:
+          InsertMdQuote();
+          return 0;
+        case kMenuHRule:
+          InsertMdHorizontalRule();
+          return 0;
+        case kMenuDateTime:
+          InsertDateTime();
+          return 0;
         case kMenuHeading1:
           InsertMdHeading(1);
           return 0;
@@ -4649,6 +5011,18 @@ LRESULT NotesWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
           return 0;
         case kMenuSyncScroll:
           ToggleSyncScroll();
+          return 0;
+        case kMenuEncUtf8:
+          SetSaveEncoding(TextFileEncoding::Utf8);
+          return 0;
+        case kMenuEncUtf8Bom:
+          SetSaveEncoding(TextFileEncoding::Utf8Bom);
+          return 0;
+        case kMenuEncAcp:
+          SetSaveEncoding(TextFileEncoding::Acp);
+          return 0;
+        case kMenuCopyPath:
+          CopyPathToClipboard(path_);
           return 0;
         default:
           break;

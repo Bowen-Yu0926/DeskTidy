@@ -37,6 +37,7 @@ class NotesWindow {
     bool wysiwyg = false;
     bool wrap = true;  // Per-tab word wrap (Python page.wrap).
     LONG caret = 0;
+    int first_visible_line = 0;  // Restore scroll on tab switch.
   };
 
   static LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
@@ -108,6 +109,7 @@ class NotesWindow {
   // Gray out Markdown-only commands when the active file is not .md.
   void SyncMdMenuState();
   void SetSaveEncoding(TextFileEncoding enc);
+  void CopyPathToClipboard(const std::wstring& path);
   void ToggleToast();
   void ToggleWysiwyg();
   void SyncFromWysiwyg();
@@ -147,6 +149,16 @@ class NotesWindow {
   void NewTab();
   void CloseTab();
   void CloseTabAt(int index);
+  void CloseOtherTabs(int keep_index);
+  void CloseTabsToTheRight(int index);
+  void InsertMdStrike();
+  void InsertMdBullet();
+  void InsertMdQuote();
+  void InsertMdHorizontalRule();
+  void InsertDateTime();
+  // Enter in a Markdown list: continue marker, or exit empty item.
+  bool TryContinueMarkdownList();
+  void HandleEditContextMenu(POINT screen_pt);
   void ActivateNextTab(bool forward);
   void HandleTabContextMenu(int index, POINT screen_pt);
   void ReorderTab(int from, int to);

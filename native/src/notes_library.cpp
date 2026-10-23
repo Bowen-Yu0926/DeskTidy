@@ -1,6 +1,7 @@
 #include "notes_library.h"
 
 #include "app_prefs.h"
+#include "mist_msg.h"
 #include "mist_webview.h"
 #include "paths_util.h"
 #include "prompt_text.h"
@@ -227,10 +228,12 @@ std::wstring RunPickDialog(HWND owner, const std::wstring& dir,
   std::wstring result;
   MistWebDialog dlg;
   dlg.owner = owner;
+  dlg.frameless = true;
   dlg.user_data_subdir = L"webview2-notes-pick";
   dlg.html_path = MistFindAssetHtml(L"dialogs\\pick_list.html");
   if (dlg.html_path.empty()) {
-    MessageBoxW(owner, L"找不到 pick_list.html", title, MB_OK | MB_ICONWARNING);
+    MistAlert(owner, title ? title : L"笔记库", L"找不到 pick_list.html",
+              MistMsgTone::Warn);
     return {};
   }
   dlg.build_state = [&]() {
@@ -271,8 +274,9 @@ std::wstring RunPickDialog(HWND owner, const std::wstring& dir,
       return false;
     }
     if (id == L"new" && allow_new) {
+      // Nested MistWebDialog freezes — use Win32 prompt while pick list is open.
       HWND parent = dlg.hwnd ? dlg.hwnd : owner;
-      const std::wstring name = PromptText(
+      const std::wstring name = PromptTextWin32(
           parent, L"新建笔记", L"文件名（不含路径，如 idea.md）：", L"note.md");
       if (!name.empty()) {
         result = JoinPath(dir, name);
@@ -491,11 +495,11 @@ NoteSearchHit SearchNotesInLibrary(HWND owner) {
   NoteSearchHit picked;
   MistWebDialog dlg;
   dlg.owner = owner;
+  dlg.frameless = true;
   dlg.user_data_subdir = L"webview2-notes-search";
   dlg.html_path = MistFindAssetHtml(L"dialogs\\pick_list.html");
   if (dlg.html_path.empty()) {
-    MessageBoxW(owner, L"找不到 pick_list.html", L"搜索笔记",
-                MB_OK | MB_ICONWARNING);
+    MistAlert(owner, L"搜索笔记", L"找不到 pick_list.html", MistMsgTone::Warn);
     return {};
   }
 
