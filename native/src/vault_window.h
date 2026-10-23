@@ -86,6 +86,8 @@ class VaultWindow {
   void CloudRegister();
   void CloudSync();
   void StartCloudRefresh();
+  // After local add/edit/delete/import: push mirror to cloud when logged in (P0-8).
+  void ScheduleCloudPush();
   void GeneratePassword(const std::wstring& length, const std::wstring& charset);
 
   int clipboard_clear_seconds_ = 30;

@@ -1089,6 +1089,13 @@ bool VaultHttpHasMasterKey() {
   return g_master_key.size() == kVaultKeyLen;
 }
 
+bool VaultHttpPushLocalMirror(const std::vector<VaultHttpCredential>& entries) {
+  if (VaultHttpHasMasterKey()) {
+    return VaultHttpPushAllZk(entries, MasterKeyCopy());
+  }
+  return VaultHttpPushAll(entries);
+}
+
 bool VaultHttpGetKdfParams(std::wstring* salt_b64, int* iterations,
                            std::wstring* key_check, std::wstring* algo) {
   const Session s = LoadSession();
@@ -1152,7 +1159,8 @@ bool VaultHttpPullMerge(std::vector<VaultHttpCredential>* entries) {
     return false;  // offline / network error — do not overwrite local.
   }
   const std::vector<BYTE> key = MasterKeyCopy();
-  if (key.size() == kVaultKeyLen) {
+  const bool have_key = key.size() == kVaultKeyLen;
+  if (have_key) {
     for (auto& r : remote) {
       if (r.enc_ver == 1) {
         r.username = VaultDecryptField(r.username, key);
@@ -1162,8 +1170,12 @@ bool VaultHttpPullMerge(std::vector<VaultHttpCredential>* entries) {
       }
     }
   }
-  // Index local by title+username.
+  // Index local by title+username. P1-26: never merge enc_ver=1 ciphertext as
+  // plaintext when the master key is absent (would double-encrypt on next push).
   for (const auto& r : remote) {
+    if (r.enc_ver == 1 && !have_key) {
+      continue;
+    }
     bool found = false;
     for (auto& local : *entries) {
       if (_wcsicmp(MatchKey(local).c_str(), MatchKey(r).c_str()) == 0) {

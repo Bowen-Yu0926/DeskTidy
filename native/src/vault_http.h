@@ -49,6 +49,8 @@ bool VaultHttpUpsertCredential(const std::wstring& title,
 bool VaultHttpDeleteCredential(int id);
 // Push local entries to cloud (create missing / update matched by title+user).
 bool VaultHttpPushAll(const std::vector<VaultHttpCredential>& entries);
+// Push using in-memory master key when present (ZK), else plaintext PushAll.
+bool VaultHttpPushLocalMirror(const std::vector<VaultHttpCredential>& entries);
 // Pull remote list and merge into *entries (remote wins on title+user clash).
 // enc_ver=1 rows are decrypted when a master key is in process memory.
 bool VaultHttpPullMerge(std::vector<VaultHttpCredential>* entries);

@@ -784,6 +784,40 @@ void VaultWindow::DispatchAction(const std::wstring& json) {
     CopyNoteAt(JsonIntField(json, L"index", -1));
   } else if (id == L"delete") {
     DeleteAt(JsonIntField(json, L"index", -1));
+  } else if (id == L"toggle_pin") {
+    const int index = JsonIntField(json, L"index", -1);
+    if (index >= 0 && index < static_cast<int>(entries_.size())) {
+      entries_[static_cast<size_t>(index)].pinned =
+          !entries_[static_cast<size_t>(index)].pinned;
+      dirty_ = true;
+      SortEntries();
+      Save();
+      PushState();
+      ScheduleCloudPush();
+    }
+  } else if (id == L"reorder") {
+    // P1-27: drag-drop within the same pin group (Python reorder_credential_ids).
+    const int from = JsonIntField(json, L"from", -1);
+    const int to = JsonIntField(json, L"to", -1);
+    if (from >= 0 && to >= 0 && from != to &&
+        from < static_cast<int>(entries_.size()) &&
+        to < static_cast<int>(entries_.size())) {
+      const bool pin = entries_[static_cast<size_t>(from)].pinned;
+      if (entries_[static_cast<size_t>(to)].pinned == pin) {
+        Entry moved = std::move(entries_[static_cast<size_t>(from)]);
+        entries_.erase(entries_.begin() + from);
+        const int insert_at = from < to ? to - 1 : to;
+        entries_.insert(entries_.begin() + insert_at, std::move(moved));
+        for (size_t i = 0; i < entries_.size(); ++i) {
+          entries_[i].sort_order = static_cast<int>(i);
+          entries_[i].has_sort_order = true;
+        }
+        dirty_ = true;
+        Save();
+        PushState();
+        ScheduleCloudPush();
+      }
+    }
   } else if (id == L"save_entry") {
     SaveEntryFromJson(json);
   } else if (id == L"open_url") {
@@ -1097,6 +1131,7 @@ void VaultWindow::DeleteAt(int index) {
   entries_.erase(entries_.begin() + index);
   Save();
   PushState();
+  ScheduleCloudPush();
 }
 
 void VaultWindow::SaveEntryFromJson(const std::wstring& json) {
@@ -1120,6 +1155,7 @@ void VaultWindow::SaveEntryFromJson(const std::wstring& json) {
   }
   Save();
   PushState();
+  ScheduleCloudPush();
 }
 
 void VaultWindow::ClearClipboardIfOurs() {
@@ -1230,11 +1266,12 @@ void VaultWindow::Save() {
 }
 
 void VaultWindow::SortEntries() {
-  // Render order: entries with an explicit sort_order (cloud) ascending first,
-  // then entries without one in their original/insertion order. Stable so ties
-  // and the "unset" group keep their relative order.
+  // Pinned first, then explicit sort_order ascending, then insertion order.
   std::stable_sort(entries_.begin(), entries_.end(),
                    [](const Entry& a, const Entry& b) {
+                     if (a.pinned != b.pinned) {
+                       return a.pinned && !b.pinned;
+                     }
                      if (a.has_sort_order != b.has_sort_order) {
                        return a.has_sort_order;
                      }
@@ -1370,21 +1407,40 @@ void VaultWindow::ImportBackup() {
                   MB_OK | MB_ICONWARNING);
       return;
     }
-    std::vector<Entry> previous = entries_;
-    entries_.clear();
+    // Merge by title+username (Python import creates; never wipe local) — P0-9.
+    int added = 0;
+    int updated = 0;
     for (const auto& c : creds) {
-      Entry e;
-      e.title = c.title;
-      e.user = c.username;
-      e.pass = c.password;
-      e.url = c.url;
-      e.note = c.note;
-      e.pinned = c.pinned;
-      entries_.push_back(std::move(e));
+      bool found = false;
+      for (auto& e : entries_) {
+        if (_wcsicmp(e.title.c_str(), c.title.c_str()) == 0 &&
+            _wcsicmp(e.user.c_str(), c.username.c_str()) == 0) {
+          e.pass = c.password.empty() ? e.pass : c.password;
+          e.url = c.url.empty() ? e.url : c.url;
+          e.note = c.note.empty() ? e.note : c.note;
+          e.pinned = c.pinned;
+          found = true;
+          ++updated;
+          break;
+        }
+      }
+      if (!found) {
+        Entry e;
+        e.title = c.title;
+        e.user = c.username;
+        e.pass = c.password;
+        e.url = c.url;
+        e.note = c.note;
+        e.pinned = c.pinned;
+        entries_.push_back(std::move(e));
+        ++added;
+      }
     }
     Save();
     PushState();
-    ShowToast(L"账号库已导入（JSON）");
+    ScheduleCloudPush();
+    ShowToast(L"账号库已导入：新增 " + std::to_wstring(added) + L"，更新 " +
+              std::to_wstring(updated));
     return;
   }
   // Legacy DPAPI whole-file blob.
@@ -1397,12 +1453,13 @@ void VaultWindow::ImportBackup() {
   }
   std::istringstream ss(plain);
   std::string line;
-  entries_.clear();
+  int added = 0;
+  int updated = 0;
   while (std::getline(ss, line)) {
     if (line.empty()) {
       continue;
     }
-    Entry e;
+    Entry incoming;
     size_t p0 = 0;
     auto next = [&](std::wstring* field) {
       const size_t p1 = line.find('\t', p0);
@@ -1411,18 +1468,43 @@ void VaultWindow::ImportBackup() {
       *field = WidenUtf8(part);
       p0 = (p1 == std::string::npos) ? line.size() : p1 + 1;
     };
-    next(&e.title);
-    next(&e.user);
-    next(&e.pass);
-    next(&e.url);
+    next(&incoming.title);
+    next(&incoming.user);
+    next(&incoming.pass);
+    next(&incoming.url);
     if (p0 < line.size()) {
-      next(&e.note);
+      next(&incoming.note);
     }
-    entries_.push_back(std::move(e));
+    bool found = false;
+    for (auto& e : entries_) {
+      if (_wcsicmp(e.title.c_str(), incoming.title.c_str()) == 0 &&
+          _wcsicmp(e.user.c_str(), incoming.user.c_str()) == 0) {
+        e.pass = incoming.pass.empty() ? e.pass : incoming.pass;
+        e.url = incoming.url.empty() ? e.url : incoming.url;
+        e.note = incoming.note.empty() ? e.note : incoming.note;
+        found = true;
+        ++updated;
+        break;
+      }
+    }
+    if (!found) {
+      entries_.push_back(std::move(incoming));
+      ++added;
+    }
   }
   Save();
   PushState();
-  ShowToast(L"账号库已导入（DPAPI）");
+  ScheduleCloudPush();
+  ShowToast(L"账号库已导入（DPAPI）：新增 " + std::to_wstring(added) +
+            L"，更新 " + std::to_wstring(updated));
+}
+
+void VaultWindow::ScheduleCloudPush() {
+  if (!VaultHttpLoggedIn()) {
+    return;
+  }
+  const std::vector<VaultHttpCredential> snapshot = SnapshotCredentials();
+  std::thread([snapshot]() { VaultHttpPushLocalMirror(snapshot); }).detach();
 }
 
 void VaultWindow::CloudLogin() {
@@ -1485,6 +1567,61 @@ void VaultWindow::StartCloudRefresh() {
   }
   const std::vector<VaultHttpCredential> snapshot = SnapshotCredentials();
   const HWND h = hwnd_;
+
+  // P1-26: after restart the in-process master key is gone. If ZK KDF params
+  // exist, unlock before merge so enc_ver=1 rows decrypt instead of landing as
+  // ciphertext-as-plaintext.
+  std::wstring salt_b64;
+  int iterations = 0;
+  std::wstring key_check;
+  std::wstring algo;
+  const bool zk_configured =
+      VaultHttpGetKdfParams(&salt_b64, &iterations, &key_check, &algo);
+  if (zk_configured && !VaultHttpHasMasterKey()) {
+    const std::wstring master =
+        PromptPassword(hwnd_, L"零知识保险库", L"主密码（云同步解密）：");
+    if (master.empty()) {
+      ShowToast(L"已跳过云同步：零知识库需主密码才能解密");
+      return;
+    }
+    const std::vector<BYTE> salt = VaultDecodeSalt(NarrowUtf8(salt_b64));
+    if (salt.empty()) {
+      ShowToast(L"KDF 参数无效，已跳过云同步");
+      return;
+    }
+    std::thread([snapshot, h, master, salt, iterations, key_check]() {
+      auto* outcome = new SyncOutcome;
+      outcome->quiet = true;
+      std::vector<BYTE> key;
+      if (!VaultDeriveKeyEx(master, salt, iterations, &key)) {
+        outcome->message = L"派生密钥失败";
+        if (!PostMessageW(h, kMsgSyncDone, 0,
+                          reinterpret_cast<LPARAM>(outcome))) {
+          delete outcome;
+        }
+        return;
+      }
+      if (!VaultVerifyKeyCheck(key_check, key)) {
+        outcome->message = L"主密码错误，已跳过云同步";
+        if (!PostMessageW(h, kMsgSyncDone, 0,
+                          reinterpret_cast<LPARAM>(outcome))) {
+          delete outcome;
+        }
+        return;
+      }
+      VaultHttpSetMasterKey(key);
+      std::vector<VaultHttpCredential> remote = snapshot;
+      outcome->ok = VaultHttpPullMergeZk(&remote, key);
+      outcome->have_entries = outcome->ok;
+      outcome->entries = remote;
+      outcome->message = L"同步失败，已离线（网络或服务端不可达）";
+      if (!PostMessageW(h, kMsgSyncDone, 0, reinterpret_cast<LPARAM>(outcome))) {
+        delete outcome;
+      }
+    }).detach();
+    return;
+  }
+
   std::thread([snapshot, h]() {
     auto* outcome = new SyncOutcome;
     outcome->quiet = true;
