@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include "ole_drag.h"
 
@@ -24,10 +24,16 @@ class PetWindow {
   HWND Hwnd() const { return hwnd_; }
   void AttachToDesktopLayer();
   void Tick();
+  // P2-24: 33ms when active/hovered, 100ms when idle pose and pointer away.
+  int WantedTickMs() const;
   void StartClimb();
   void SetOnTrash(TrashFn fn) { on_trash_ = std::move(fn); }
   void SetOnPage(PageFn fn) { on_page_ = std::move(fn); }
+  // Right-click page chip → create fence on that page (Python create_fence_requested).
+  void SetOnCreateFence(PageFn fn) { on_create_fence_ = std::move(fn); }
   void SetOnHide(VoidFn fn) { on_hide_ = std::move(fn); }
+  // Push sprite below overlapping fence bottoms (P1-17).
+  void NudgeClearOfFenceBottoms(const std::vector<RECT>& fence_screen_rects);
   // Float-bar tools hosted on the pet (Python: pages + tools on pet).
   void SetOnTool(std::function<void(const std::wstring&)> fn) {
     on_tool_ = std::move(fn);
@@ -75,6 +81,9 @@ class PetWindow {
   LRESULT HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam);
   void Paint(HDC hdc);
   void Present();
+  // Rebuild + apply the sprite-shaped hit region (cached per frame).
+  void ApplyHitRegion(const std::vector<BYTE>& alpha, int bw, int bh, int cw,
+                      int ch);
   void EnsureDropTarget();
   void TryLoadSprite();
   void LoadFramePack();
@@ -96,6 +105,8 @@ class PetWindow {
   void ChooseNextAfterIdle(DWORD now);
   void RunAi(DWORD now);
   void SpawnHearts(int count);
+  // Speech bubble above the pet (not the screen-top toast strip).
+  void Say(const char* action);
   void AdvanceFrames(DWORD elapsed_ms, DWORD now, bool* frame_changed);
   void StepPhysics(DWORD elapsed_ms);
   void EndDrag(POINT release);
@@ -130,7 +141,8 @@ class PetWindow {
   static std::vector<std::wstring> PetAssetRoots();
 
   HWND hwnd_ = nullptr;
-  int bob_ = 0;
+  // P2-22: continuous anim clock for breath/sway/FX (ticks forward every Tick).
+  int anim_tick_ = 0;
   int base_y_ = 0;
   bool dragging_ = false;
   POINT drag_offset_{};
@@ -144,6 +156,7 @@ class PetWindow {
   PathDropTarget* drop_target_ = nullptr;
   TrashFn on_trash_;
   PageFn on_page_;
+  PageFn on_create_fence_;
   VoidFn on_hide_;
   std::function<void(const std::wstring&)> on_tool_;
   std::function<void(const std::wstring&)> on_folder_;
@@ -153,18 +166,31 @@ class PetWindow {
   std::vector<std::wstring> page_names_;
   std::vector<ChromeItem> chrome_;
   std::vector<FolderChip> folders_;
+  int chrome_hover_ = -1;
   int current_page_ = 0;
   bool tool_record_ = false;
   bool tool_minutes_ = false;
   bool tool_calculator_ = false;
   bool tool_todo_ = false;
   bool auto_wander_ = true;
+  bool follow_cursor_ = false;
   bool show_page_bubbles_ = true;
   float size_scale_ = 1.f;
   // character id → enabled action ids (pet/wait/sleep/fall).
   std::map<std::wstring, std::vector<std::string>> enabled_actions_;
   HBITMAP sprite_ = nullptr;
   int sprite_w_ = 0;
+  // Cached hit-test region built from the sprite's own PNG alpha (P0-12).
+  // HBITMAP round-trips lose alpha, so masks are captured at load time.
+  HRGN mask_rgn_ = nullptr;
+  int mask_w_ = 0;
+  int mask_h_ = 0;
+  int mask_facing_ = 1;
+  int mask_index_ = -1;
+  int mask_gen_ = -1;
+  int mask_gen_counter_ = 0;
+  std::vector<std::vector<BYTE>> frames_alpha_;
+  std::vector<BYTE> sprite_alpha_;
   int sprite_h_ = 0;
   std::vector<HBITMAP> frames_;
   int frame_i_ = 0;
@@ -189,6 +215,8 @@ class PetWindow {
   HWND ledge_hwnd_ = nullptr;
   int climb_cooldown_ = 0;
   int walk_dir_ = 1;
+  // 1 = face right (default art), -1 = face left (mirrored) — P1-14.
+  int facing_ = 1;
   HWND buoy_ = nullptr;
   HWND pages_ = nullptr;
   // ---- P1/P3/P4/P5/P6 additions ----

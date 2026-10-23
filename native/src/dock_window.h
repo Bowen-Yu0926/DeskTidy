@@ -18,6 +18,11 @@ class DockWindow {
   void SetVisible(bool on);
   HWND Hwnd() const { return hwnd_; }
   void SetItems(std::vector<DesktopItem> items);
+  // P1-10: read dock items from the settings UI field (comma-separated paths,
+  // "ext_dock_items") — validates existence, caps at 8, renders.
+  void SetItemsFromCsv(const std::wstring& csv);
+  // P1-10: read dock items straight from app_prefs (dock_items), cap 8, render.
+  void ReloadFromPrefs();
   // edge: "bottom" | "left" | "right"
   void SetEdge(const std::wstring& edge);
   void SetOpacity(float opacity);  // 0.4 – 1.0
@@ -48,6 +53,7 @@ class DockWindow {
   void ShowSlotMenu(int index, POINT screen);
   void EnsureTooltip();
   void UpdateHoverTip(int index);
+  void ApplyPaths(const std::vector<std::wstring>& paths);
 
   HWND hwnd_ = nullptr;
   HWND tip_ = nullptr;
@@ -59,3 +65,7 @@ class DockWindow {
   std::function<void(const std::wstring&, const std::wstring&)> on_path_replaced_;
   std::function<void(const std::wstring&)> on_removed_;
 };
+
+// P1-10: split a comma-separated path list (settings "ext_dock_items" input),
+// trimming whitespace and dropping empties. Used by App to persist dock_items.
+std::vector<std::wstring> SplitDockCsv(const std::wstring& csv);

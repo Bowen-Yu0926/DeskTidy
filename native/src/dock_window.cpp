@@ -1,5 +1,6 @@
 #include "dock_window.h"
 
+#include "app_prefs.h"
 #include "desktop_shell.h"
 #include "display_geom.h"
 #include "icon_actions.h"
@@ -41,6 +42,89 @@ void AddRoundRect(Gdiplus::GraphicsPath* path, int w, int h, int radius) {
 }
 }  // namespace
 
+std::vector<std::wstring> SplitDockCsv(const std::wstring& csv) {
+  std::vector<std::wstring> out;
+  size_t start = 0;
+  while (start <= csv.size()) {
+    size_t comma = csv.find(L',', start);
+    if (comma == std::wstring::npos) {
+      comma = csv.size();
+    }
+    std::wstring part = csv.substr(start, comma - start);
+    // Trim whitespace (paths may contain spaces but not leading/trailing).
+    size_t a = 0;
+    while (a < part.size() && (part[a] == L' ' || part[a] == L'\t' ||
+                               part[a] == L'\r' || part[a] == L'\n')) {
+      ++a;
+    }
+    size_t b = part.size();
+    while (b > a && (part[b - 1] == L' ' || part[b - 1] == L'\t' ||
+                     part[b - 1] == L'\r' || part[b - 1] == L'\n')) {
+      --b;
+    }
+    part = part.substr(a, b - a);
+    if (!part.empty()) {
+      out.push_back(part);
+    }
+    if (comma >= csv.size()) {
+      break;
+    }
+    start = comma + 1;
+  }
+  return out;
+}
+
+void DockWindow::ApplyPaths(const std::vector<std::wstring>& paths) {
+  for (auto& s : slots_) {
+    if (s.icon) {
+      DestroyIcon(s.icon);
+    }
+  }
+  slots_.clear();
+  for (const auto& path : paths) {
+    if (slots_.size() >= 8) {
+      break;
+    }
+    if (path.empty() ||
+        GetFileAttributesW(path.c_str()) == INVALID_FILE_ATTRIBUTES) {
+      continue;
+    }
+    Slot s;
+    s.item.path = path;
+    s.item.name = path;
+    const size_t slash = path.find_last_of(L"\\/");
+    if (slash != std::wstring::npos && slash + 1 < path.size()) {
+      s.item.name = path.substr(slash + 1);
+    }
+    const size_t dot = s.item.name.rfind(L'.');
+    if (dot != std::wstring::npos && dot > 0) {
+      const std::wstring ext = s.item.name.substr(dot);
+      if (_wcsicmp(ext.c_str(), L".lnk") == 0 ||
+          _wcsicmp(ext.c_str(), L".url") == 0) {
+        s.item.is_link = true;
+        s.item.name.resize(dot);
+      }
+    }
+    SHFILEINFOW sfi{};
+    if (SHGetFileInfoW(path.c_str(), 0, &sfi, sizeof(sfi), SHGFI_DISPLAYNAME) &&
+        sfi.szDisplayName[0]) {
+      s.item.name = sfi.szDisplayName;
+    }
+    s.icon = LoadItemIcon(path, kIcon);
+    slots_.push_back(std::move(s));
+  }
+  LayoutSlots();
+  ApplyVisibility();
+}
+
+void DockWindow::SetItemsFromCsv(const std::wstring& csv) {
+  ApplyPaths(SplitDockCsv(csv));
+}
+
+void DockWindow::ReloadFromPrefs() {
+  ApplyPaths(LoadAppPrefs().dock_items);
+}
+
 bool DockWindow::Create(HINSTANCE instance) {
   if (!g_registered) {
     WNDCLASSEXW wc{};
@@ -53,11 +137,13 @@ bool DockWindow::Create(HINSTANCE instance) {
     g_registered = true;
   }
 
-  const RECT work = PrimaryWorkArea();
+  POINT cursor{};
+  GetCursorPos(&cursor);
+  const RECT work = WorkAreaAtPoint(cursor);
   const int w = kMarginX * 2 + kBtn;
   const int x = work.left + (work.right - work.left - w) / 2;
-  // Sit above the bottom page bar (page bar occupies the last ~44px).
-  const int y = work.bottom - kH - 56;
+  // Match Python DockWidget: 48px above work-area bottom (page bar clearance).
+  const int y = work.bottom - kH - 48;
   hwnd_ = CreateWindowExW(
       WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_LAYERED, kClassName, L"Dock",
       WS_POPUP, x, y, w, kH, nullptr, nullptr, instance, this);
@@ -218,7 +304,10 @@ void DockWindow::LayoutSlots() {
     return;
   }
   const int n = static_cast<int>(slots_.size());
-  const RECT work = PrimaryWorkArea();
+  POINT cursor{};
+  GetCursorPos(&cursor);
+  // Prefer the monitor under the cursor (Python work_screen), not primary only.
+  const RECT work = WorkAreaAtPoint(cursor);
   const int icon_pad = (kBtn - kIcon) / 2;
   int x = 0, y = 0, w = 0, h = 0;
   if (edge_ == L"left" || edge_ == L"right") {
@@ -237,7 +326,7 @@ void DockWindow::LayoutSlots() {
     w = kMarginX * 2 + n * kBtn + (std::max)(0, n - 1) * kGap;
     h = kH;
     x = work.left + ((work.right - work.left) - w) / 2;
-    y = work.bottom - h - 56;
+    y = work.bottom - h - 48;
     SetWindowPos(hwnd_, nullptr, x, y, w, h, SWP_NOZORDER | SWP_NOACTIVATE);
     int left = kMarginX;
     for (auto& s : slots_) {
