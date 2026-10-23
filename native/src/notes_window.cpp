@@ -478,6 +478,11 @@ bool NotesWindow::Create(HINSTANCE instance) {
   AppendMenuW(file, MF_STRING, kMenuSave, L"保存\tCtrl+S");
   AppendMenuW(file, MF_STRING, kMenuSaveAs, L"另存为…\tCtrl+Shift+S");
   AppendMenuW(file, MF_STRING, kMenuReload, L"从磁盘重新加载\tF5");
+  HMENU enc = CreatePopupMenu();
+  AppendMenuW(enc, MF_STRING, kMenuEncUtf8, L"UTF-8");
+  AppendMenuW(enc, MF_STRING, kMenuEncUtf8Bom, L"UTF-8 带 BOM");
+  AppendMenuW(enc, MF_STRING, kMenuEncAcp, L"系统 ANSI（如 GBK）");
+  AppendMenuW(file, MF_POPUP, reinterpret_cast<UINT_PTR>(enc), L"保存编码");
   AppendMenuW(file, MF_STRING, kMenuLibrary, Tr("notes_library").c_str());
   AppendMenuW(file, MF_STRING, kMenuOpenFolder, Tr("notes_open_folder").c_str());
   AppendMenuW(file, MF_STRING, kMenuSearchLib, L"搜索笔记库\tCtrl+Shift+F");
@@ -1170,6 +1175,56 @@ void NotesWindow::ApplyViewMenuChecks() {
                 MF_BYCOMMAND | (focus_ ? MF_CHECKED : MF_UNCHECKED));
   CheckMenuItem(menu_, kMenuAlwaysOnTop,
                 MF_BYCOMMAND | (always_on_top_ ? MF_CHECKED : MF_UNCHECKED));
+  CheckMenuItem(menu_, kMenuEncUtf8,
+                MF_BYCOMMAND | (text_enc_ == TextFileEncoding::Utf8
+                                    ? MF_CHECKED
+                                    : MF_UNCHECKED));
+  CheckMenuItem(menu_, kMenuEncUtf8Bom,
+                MF_BYCOMMAND | (text_enc_ == TextFileEncoding::Utf8Bom
+                                    ? MF_CHECKED
+                                    : MF_UNCHECKED));
+  CheckMenuItem(menu_, kMenuEncAcp,
+                MF_BYCOMMAND | (text_enc_ == TextFileEncoding::Acp
+                                    ? MF_CHECKED
+                                    : MF_UNCHECKED));
+  SyncMdMenuState();
+}
+
+void NotesWindow::SyncMdMenuState() {
+  if (!menu_) {
+    return;
+  }
+  const bool md = PathLooksMarkdown();
+  const UINT flag = MF_BYCOMMAND | (md ? MF_ENABLED : MF_GRAYED);
+  EnableMenuItem(menu_, kMenuExportHtml, flag);
+  EnableMenuItem(menu_, kMenuExportPdf, flag);
+  EnableMenuItem(menu_, kMenuPandoc, flag);
+  EnableMenuItem(menu_, kMenuExportMd, flag);
+  EnableMenuItem(menu_, kMenuPreview, flag);
+  EnableMenuItem(menu_, kMenuPreviewPane, flag);
+  EnableMenuItem(menu_, kMenuEditMode, flag);
+  EnableMenuItem(menu_, kMenuOutline, flag);
+  EnableMenuItem(menu_, kMenuSyncScroll, flag);
+  EnableMenuItem(menu_, kMenuWysiwyg, flag);
+  EnableMenuItem(menu_, kMenuInsertLink, flag);
+  EnableMenuItem(menu_, kMenuInsertCode, flag);
+  EnableMenuItem(menu_, kMenuInsertImage, flag);
+  EnableMenuItem(menu_, kMenuHeading1, flag);
+  EnableMenuItem(menu_, kMenuHeading2, flag);
+  EnableMenuItem(menu_, kMenuHeading3, flag);
+  EnableMenuItem(menu_, kMenuBold, flag);
+  EnableMenuItem(menu_, kMenuItalic, flag);
+}
+
+void NotesWindow::SetSaveEncoding(TextFileEncoding enc) {
+  if (text_enc_ == enc) {
+    ApplyViewMenuChecks();
+    return;
+  }
+  text_enc_ = enc;
+  MarkDirty();
+  ApplyViewMenuChecks();
+  UpdateStatusBar();
 }
 
 void NotesWindow::PersistViewSettings() {
@@ -1623,6 +1678,8 @@ void NotesWindow::SwitchToTab(int index, bool save_current) {
   PersistTabs();
   UpdateStatusBar();
   UpdateModeStrip();
+  SyncMdMenuState();
+  ApplyViewMenuChecks();
   LayoutClient();
 }
 
@@ -2191,6 +2248,7 @@ void NotesWindow::HandleTabContextMenu(int index, POINT screen_pt) {
   AppendMenuW(m, MF_STRING, kTabPin,
               PathIsPinned(path) ? L"取消置顶" : L"置顶");
   AppendMenuW(m, MF_STRING, kTabReveal, L"打开文件所在目录");
+  AppendMenuW(m, MF_STRING, kTabCopyPath, L"复制路径");
   AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
   AppendMenuW(m, MF_STRING, kTabDelete, L"删除");
   const int cmd =
@@ -2206,6 +2264,23 @@ void NotesWindow::HandleTabContextMenu(int index, POINT screen_pt) {
     const std::wstring arg = L"/select,\"" + path + L"\"";
     ShellExecuteW(hwnd_, L"open", L"explorer.exe", arg.c_str(), nullptr,
                   SW_SHOWNORMAL);
+  } else if (cmd == kTabCopyPath) {
+    if (OpenClipboard(hwnd_)) {
+      EmptyClipboard();
+      const size_t bytes = (path.size() + 1) * sizeof(wchar_t);
+      HGLOBAL mem = GlobalAlloc(GMEM_MOVEABLE, bytes);
+      if (mem) {
+        void* p = GlobalLock(mem);
+        if (p) {
+          memcpy(p, path.c_str(), bytes);
+          GlobalUnlock(mem);
+          SetClipboardData(CF_UNICODETEXT, mem);
+        } else {
+          GlobalFree(mem);
+        }
+      }
+      CloseClipboard();
+    }
   } else if (cmd == kTabRename) {
     std::wstring name = path;
     const size_t slash = path.find_last_of(L"\\/");
