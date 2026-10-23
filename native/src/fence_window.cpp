@@ -3035,25 +3035,57 @@ void FenceWindow::Paint(HDC hdc) {
     g.DrawString(title_.c_str(), -1, &title_font, title_box, &title_fmt,
                  &title_brush);
   }
-  // Title-bar buttons: collapse · lock · delete (Python chrome parity).
+  // Title-bar icons only (no text): collapse · lock · delete. Edit stays in settings.
   {
-    Gdiplus::StringFormat btn_fmt;
-    btn_fmt.SetAlignment(Gdiplus::StringAlignmentCenter);
-    btn_fmt.SetLineAlignment(Gdiplus::StringAlignmentCenter);
-    auto draw_btn = [&](const RECT& r, const wchar_t* glyph) {
-      if (r.right <= r.left) {
-        return;
-      }
-      Gdiplus::RectF box(static_cast<Gdiplus::REAL>(r.left),
-                         static_cast<Gdiplus::REAL>(r.top),
-                         static_cast<Gdiplus::REAL>(r.right - r.left),
-                         static_cast<Gdiplus::REAL>(r.bottom - r.top));
-      g.DrawString(glyph, -1, &title_font, box, &btn_fmt, &title_brush);
+    Gdiplus::Pen pen(Gdiplus::Color(255, GetRValue(title_color_),
+                                    GetGValue(title_color_),
+                                    GetBValue(title_color_)),
+                     1.6f);
+    pen.SetLineCap(Gdiplus::LineCapRound, Gdiplus::LineCapRound,
+                   Gdiplus::DashCapRound);
+    auto mid = [](const RECT& r) {
+      return Gdiplus::PointF(
+          (r.left + r.right) * 0.5f, (r.top + r.bottom) * 0.5f);
     };
-    draw_btn(collapse_rc, collapsed_ ? L"▸" : L"▾");
-    // YaHei on layered windows: prefer CJK glyphs over emoji (often blank).
-    draw_btn(lock_rc, position_locked_ ? L"锁" : L"开");
-    draw_btn(dissolve_rc, L"删");
+    // Collapse chevron
+    if (collapse_rc.right > collapse_rc.left) {
+      const auto c = mid(collapse_rc);
+      const float s = 4.5f;
+      if (collapsed_) {
+        g.DrawLine(&pen, c.X - s, c.Y - s * 0.4f, c.X, c.Y + s * 0.5f);
+        g.DrawLine(&pen, c.X, c.Y + s * 0.5f, c.X + s, c.Y - s * 0.4f);
+      } else {
+        g.DrawLine(&pen, c.X - s, c.Y + s * 0.4f, c.X, c.Y - s * 0.5f);
+        g.DrawLine(&pen, c.X, c.Y - s * 0.5f, c.X + s, c.Y + s * 0.4f);
+      }
+    }
+    // Lock / unlock padlock
+    if (lock_rc.right > lock_rc.left) {
+      const auto c = mid(lock_rc);
+      const float bw = 7.f, bh = 6.f;
+      Gdiplus::RectF body(c.X - bw * 0.5f, c.Y - 0.5f, bw, bh);
+      g.DrawRectangle(&pen, body);
+      // Shackle
+      Gdiplus::REAL sh_top = c.Y - 6.5f;
+      Gdiplus::REAL sh_bot = c.Y - 0.5f;
+      if (position_locked_) {
+        g.DrawArc(&pen, c.X - 3.2f, sh_top, 6.4f, 7.f, 200.f, 140.f);
+      } else {
+        // Open shackle — arc shifted right
+        g.DrawArc(&pen, c.X - 1.2f, sh_top, 6.4f, 7.f, 200.f, 140.f);
+        g.DrawLine(&pen, c.X + 5.f, sh_bot - 1.f, c.X + 5.f, sh_top + 2.f);
+      }
+      // Keyhole
+      g.FillEllipse(&title_brush, c.X - 1.1f, c.Y + 0.8f, 2.2f, 2.2f);
+      g.DrawLine(&pen, c.X, c.Y + 2.5f, c.X, c.Y + 4.2f);
+    }
+    // Delete = X
+    if (dissolve_rc.right > dissolve_rc.left) {
+      const auto c = mid(dissolve_rc);
+      const float s = 4.2f;
+      g.DrawLine(&pen, c.X - s, c.Y - s, c.X + s, c.Y + s);
+      g.DrawLine(&pen, c.X + s, c.Y - s, c.X - s, c.Y + s);
+    }
   }
   if (collapsed_) {
     return;

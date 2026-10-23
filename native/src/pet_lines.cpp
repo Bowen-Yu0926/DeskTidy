@@ -64,6 +64,31 @@ const wchar_t* VoyageLine(const char* action) {
   return L"";
 }
 
+const wchar_t* PixehoodLine(const char* action) {
+  if (std::strcmp(action, "pet") == 0) {
+    return Pick({L"哔哔——摸到像素啦。", L"谢谢你～", L"再摸摸！"});
+  }
+  if (std::strcmp(action, "sleep") == 0) {
+    return Pick({L"进入休眠帧……", L"Zzz……"});
+  }
+  if (std::strcmp(action, "wake") == 0) {
+    return Pick({L"加载完成！", L"醒啦～"});
+  }
+  if (std::strcmp(action, "wait") == 0) {
+    return Pick({L"打一局像素游戏～", L"等你哦～", L"这关马上过！"});
+  }
+  if (std::strcmp(action, "climb") == 0) {
+    return Pick({L"一格一格挪过去。", L"靠边站会儿～"});
+  }
+  if (std::strcmp(action, "fall") == 0) {
+    return Pick({L"掉帧了——！", L"软着陆！"});
+  }
+  if (std::strcmp(action, "trash") == 0) {
+    return Pick({L"折个纸飞机～", L"飞走啦！", L"帮你删掉咯。"});
+  }
+  return L"";
+}
+
 }  // namespace
 
 std::wstring PetActionLine(const std::wstring& character, const char* action) {
@@ -73,6 +98,8 @@ std::wstring PetActionLine(const std::wstring& character, const char* action) {
   const wchar_t* line = nullptr;
   if (_wcsicmp(character.c_str(), L"voyage") == 0) {
     line = VoyageLine(action);
+  } else if (_wcsicmp(character.c_str(), L"pixehood") == 0) {
+    line = PixehoodLine(action);
   } else {
     line = HoodieLine(action);
   }

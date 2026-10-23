@@ -361,10 +361,15 @@ void MistWebDialogRun(MistWebDialog* dlg, const wchar_t* title, int width,
   const int x = work.left + ((work.right - work.left) - width) / 2;
   const int y = work.top + ((work.bottom - work.top) - height) / 3;
 
-  HWND hwnd = CreateWindowExW(
-      WS_EX_DLGMODALFRAME, kClass, title,
-      WS_CAPTION | WS_SYSMENU | WS_POPUP | WS_CLIPCHILDREN, x, y, width, height,
-      dlg->owner, nullptr, GetModuleHandleW(nullptr), dlg);
+  const DWORD ex = dlg->frameless
+                       ? (WS_EX_TOOLWINDOW | WS_EX_TOPMOST)
+                       : WS_EX_DLGMODALFRAME;
+  const DWORD style = dlg->frameless
+                          ? (WS_POPUP | WS_CLIPCHILDREN)
+                          : (WS_CAPTION | WS_SYSMENU | WS_POPUP | WS_CLIPCHILDREN);
+  HWND hwnd = CreateWindowExW(ex, kClass, title, style, x, y, width, height,
+                              dlg->owner, nullptr, GetModuleHandleW(nullptr),
+                              dlg);
   if (!hwnd) {
     dlg->done = true;
     return;

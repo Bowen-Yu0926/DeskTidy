@@ -133,8 +133,14 @@ class SettingsWindow {
       int page = 0;
       std::string style_id = "charcoal";
       int opacity_pct = 70;  // 35–100
+      // Organize rule kinds: "icon" (软件) / "file" (文档). Empty = no rule.
+      std::vector<std::string> organize_kinds;
+      bool system_fence = false;
+      bool position_locked = false;
     };
     std::vector<FenceCard> fence_cards;
+    // Per-page lock flags (index aligned with page_names_).
+    std::vector<bool> page_locked;
     struct SnapPreviewBox {
       std::wstring title;
       int x = 0;

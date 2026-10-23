@@ -440,6 +440,16 @@ std::wstring SettingsWindow::BuildStateJson() const {
     json += JsonEscape(page_names_[i]);
     json += L'"';
   }
+  json += L"],\"page_locked\":[";
+  for (size_t i = 0; i < page_names_.size(); ++i) {
+    if (i) {
+      json += L',';
+    }
+    const bool locked =
+        i < 2 ||
+        (i < ext_.page_locked.size() && ext_.page_locked[i]);
+    json += locked ? L"true" : L"false";
+  }
   json += L"],\"current_page\":";
   json += std::to_wstring(current_page_);
   json += L",\"preview\":[";
@@ -705,7 +715,20 @@ std::wstring SettingsWindow::BuildStateJson() const {
     json += JsonEscape(WidenUtf8(c.style_id));
     json += L"\",\"opacity_pct\":";
     json += std::to_wstring(c.opacity_pct);
-    json += L'}';
+    json += L",\"system\":";
+    json += c.system_fence ? L"true" : L"false";
+    json += L",\"position_locked\":";
+    json += c.position_locked ? L"true" : L"false";
+    json += L",\"organize_kinds\":[";
+    for (size_t k = 0; k < c.organize_kinds.size(); ++k) {
+      if (k) {
+        json += L',';
+      }
+      json += L'"';
+      json += JsonEscape(WidenUtf8(c.organize_kinds[k]));
+      json += L'"';
+    }
+    json += L"]}";
   }
   json += L"],\"snapshots\":[";
   for (size_t i = 0; i < ext_.snapshots.size(); ++i) {
@@ -1097,6 +1120,25 @@ void SettingsWindow::DispatchAction(const std::wstring& json) {
     if (on_command_) {
       on_command_(L"rename_fence:" + std::to_wstring(selected_));
     }
+  } else if (id == L"edit_fence" && on_command_) {
+    selected_ = JsonIntField(json, L"index", selected_);
+    // edit_fence:INDEX|kinds|title — title last so it may contain '|' rarely;
+    // UI escapes '|' out of the name field.
+    const std::wstring kinds = JsonStringField(json, L"kinds");
+    std::wstring title = JsonStringField(json, L"title");
+    for (auto& ch : title) {
+      if (ch == L'|') {
+        ch = L'/';
+      }
+    }
+    on_command_(L"edit_fence:" + std::to_wstring(selected_) + L"|" + kinds +
+                L"|" + title);
+  } else if (id == L"fence_toggle_lock" && on_command_) {
+    on_command_(L"fence_toggle_lock:" +
+                std::to_wstring(JsonIntField(json, L"index", 0)));
+  } else if (id == L"toggle_page_lock" && on_command_) {
+    on_command_(L"toggle_page_lock:" +
+                std::to_wstring(JsonIntField(json, L"page", 0)));
   } else if (id == L"vault_copy_user" && on_ext_field_) {
     on_ext_field_(L"vault_copy_user", JsonStringField(json, L"value"));
   } else if (id == L"vault_copy_user_idx" && on_ext_field_) {

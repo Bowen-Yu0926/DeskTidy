@@ -20,6 +20,8 @@ struct MistWebDialog {
   // When false, owner stays enabled so the user can edit while the dialog is
   // open (DeskNote find/replace — Python setModal(False)).
   bool disable_owner = true;
+  // Borderless popup — HTML draws the card / close button (DeskNote mist UI).
+  bool frameless = false;
   // Optional: translate owner accelerators (F3, etc.) while the dialog loop runs.
   HACCEL owner_accel = nullptr;
   std::wstring html_path;

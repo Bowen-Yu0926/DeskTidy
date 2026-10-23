@@ -422,11 +422,16 @@
   .page-row .pr-acts { display: flex; gap: 4px; flex-shrink: 0; }
   .icon-btn {
     width: 28px; height: 28px; border: 1px solid var(--border); border-radius: 8px;
-    background: #fff; color: var(--muted); cursor: pointer; font-size: 13px;
+    background: #fff; color: var(--muted); cursor: pointer;
     display: inline-flex; align-items: center; justify-content: center; padding: 0;
   }
+  .icon-btn svg { width: 14px; height: 14px; stroke: currentColor; fill: none;
+    stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
   .icon-btn:hover { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
+  .icon-btn.danger { color: var(--danger); }
   .icon-btn.danger:hover { color: var(--danger); border-color: var(--danger); background: #FEF2F2; }
+  .icon-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+  .icon-btn.on { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
   .page-add-row {
     display: flex; align-items: center; justify-content: center; gap: 6px;
     padding: 8px; margin-top: 2px; border: 1px dashed var(--border); border-radius: 10px;
@@ -481,6 +486,31 @@
     flex: 1; min-width: 0; font-weight: 800; font-size: 13px; color: var(--text);
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
+  .fence-tile .ft-kinds {
+    font-size: 11px; color: var(--muted); margin: 0 0 2px; line-height: 1.3;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .fence-dlg-mask {
+    display: none; position: fixed; inset: 0; z-index: 80;
+    background: rgba(15, 23, 42, 0.45); align-items: center; justify-content: center;
+    padding: 24px;
+  }
+  .fence-dlg-mask.on { display: flex; }
+  .fence-dlg {
+    width: min(420px, 100%); background: #fff; border-radius: 16px;
+    border: 1px solid var(--border); box-shadow: 0 18px 48px rgba(15, 23, 42, 0.22);
+    padding: 18px 20px 16px;
+  }
+  .fence-dlg h3 { margin: 0 0 6px; font-size: 16px; }
+  .fence-dlg .hint { margin-bottom: 12px; }
+  .fence-dlg .kind-row {
+    display: flex; flex-wrap: wrap; gap: 14px; margin: 8px 0 14px;
+    padding: 12px 14px; border: 1px solid var(--border); border-radius: 12px; background: #F8FAFC;
+  }
+  .fence-dlg .kind-row label {
+    display: flex; align-items: center; gap: 8px; font-weight: 600; cursor: pointer;
+  }
+  .fence-dlg .dlg-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; }
   .fence-add-tile {
     width: auto; min-width: 0; min-height: 200px; border: 1px dashed var(--border); border-radius: 14px;
     background: #F8FAFC; display: flex; flex-direction: column; align-items: center;
@@ -697,6 +727,10 @@
         <svg viewBox="0 0 18 18"><rect x="3" y="4" width="12" height="11" rx="2"/><path d="M3 7h12"/><circle cx="9" cy="11" r="1.5"/></svg>
         <span data-i18n="nav_snapshot">布局快照</span>
       </button>
+      <button class="nav" data-page="pet">
+        <svg viewBox="0 0 18 18"><circle cx="9" cy="8" r="3.2"/><path d="M5.2 5.2c-.8-1.2.2-2.6 1.5-2.1M12.8 5.2c.8-1.2-.2-2.6-1.5-2.1M4.5 8.8c-1.4-.2-2.2 1.4-1.2 2.2M13.5 8.8c1.4-.2 2.2 1.4 1.2 2.2"/><path d="M5.5 13.5c1.2 1.6 5.8 1.6 7 0"/></svg>
+        <span data-i18n="nav_pet">桌面宠物</span>
+      </button>
       <button class="nav" data-page="extensions">
         <svg viewBox="0 0 18 18"><rect x="3" y="3" width="5" height="5" rx="1.5"/><rect x="10" y="3" width="5" height="5" rx="1.5"/><rect x="3" y="10" width="5" height="5" rx="1.5"/><path d="M11.5 11.5h3M13 10v3"/></svg>
         <span data-i18n="nav_extensions">扩展功能</span>
@@ -831,17 +865,38 @@
       </div>
     </section>
 
+    <section class="panel" id="page-pet">
+      <div class="page-header">
+        <h1 class="page-title" data-i18n="title_pet">桌面宠物</h1>
+        <p class="page-sub" data-i18n="sub_pet">形象、互动与桌面显示</p>
+      </div>
+      <div class="card">
+        <h3>桌面宠物</h3>
+        <p class="hint">启用后宠物会出现在桌面；隐藏后可点下方「显示到桌面」找回。</p>
+        <p class="hint">选中形象后，在卡片右侧勾选互动动作；桌面点「⋯」或点宠物使用。</p>
+        <div class="toggles" style="margin-top:0">
+          <label class="toggle"><input type="checkbox" id="pet3" /> 启用桌面宠物</label>
+          <label class="toggle"><input type="checkbox" id="ext_pet_bubbles" /> 在宠物上显示浮标栏（分页 / 文件夹 / 录屏等；开启后隐藏右侧浮标栏）</label>
+        </div>
+        <div class="field-row">
+          <span class="label">宠物大小</span>
+          <input type="range" id="ext_pet_scale" min="50" max="160" step="5" value="100" style="flex:1" />
+          <span id="ext_pet_scale_lbl" class="hint" style="margin:0;min-width:3rem">100%</span>
+        </div>
+        <div class="group">选择宠物形象</div>
+        <div id="pet-char-grid" class="pet-char-grid"></div>
+        <div class="row" style="margin-top:12px">
+          <button class="btn primary" data-act="pet_show" type="button">显示到桌面</button>
+        </div>
+        <input type="hidden" id="ext_pet_character" />
+      </div>
+    </section>
+
     <section class="panel" id="page-extensions">
       <div class="page-header">
         <h1 class="page-title" data-i18n="title_extensions">扩展功能</h1>
         <p class="page-sub" data-i18n="sub_extensions">纪要、壁纸、录屏与文件夹</p>
       </div>
-      <div class="subtabs" id="ext-tabs">
-        <button type="button" class="on" data-extsub="tools">扩展功能</button>
-        <button type="button" data-extsub="pet">桌面宠物</button>
-      </div>
-
-      <div class="ext-sub on" id="extsub-tools">
       <div class="card">
         <h3>会议纪要</h3>
         <p class="hint">桌面分页栏底部「纪要」按钮双击后会在此文件夹生成文档，文件名格式为 年月日_流水号（如 20260803_001）。留空则使用安装目录下的「纪要」文件夹。关闭后分页栏不显示该按钮。</p>
@@ -990,30 +1045,6 @@
         </div>
         <div id="page-folders-list" class="page-folders-list"></div>
       </div>
-      </div><!-- /extsub-tools -->
-
-      <div class="ext-sub" id="extsub-pet">
-        <div class="card">
-          <h3>桌面宠物</h3>
-          <p class="hint">启用后宠物会出现在桌面；隐藏后可点下方「显示到桌面」找回。</p>
-          <p class="hint">选中形象后，在卡片右侧勾选互动动作；桌面点「⋯」或点宠物使用。</p>
-          <div class="toggles" style="margin-top:0">
-            <label class="toggle"><input type="checkbox" id="pet3" /> 启用桌面宠物</label>
-            <label class="toggle"><input type="checkbox" id="ext_pet_bubbles" /> 在宠物上显示浮标栏（分页 / 文件夹 / 录屏等；开启后隐藏右侧浮标栏）</label>
-          </div>
-          <div class="field-row">
-            <span class="label">宠物大小</span>
-            <input type="range" id="ext_pet_scale" min="50" max="160" step="5" value="100" style="flex:1" />
-            <span id="ext_pet_scale_lbl" class="hint" style="margin:0;min-width:3rem">100%</span>
-          </div>
-          <div class="group">选择宠物形象</div>
-          <div id="pet-char-grid" class="pet-char-grid"></div>
-          <div class="row" style="margin-top:12px">
-            <button class="btn primary" data-act="pet_show" type="button">显示到桌面</button>
-          </div>
-          <input type="hidden" id="ext_pet_character" />
-        </div>
-      </div><!-- /extsub-pet -->
 
     </section>
 
@@ -1131,7 +1162,7 @@
             <span class="label">Dock 项目</span>
             <input type="text" id="ext_dock_items" placeholder="逗号分隔的应用路径…" />
           </div>
-          <p class="hint">桌面宠物请到「扩展功能 → 桌面宠物」配置。</p>
+          <p class="hint">桌面宠物请到侧栏「桌面宠物」配置。</p>
           </div>
         </div>
         <div class="card">
@@ -1190,6 +1221,26 @@
     </section>
   </main>
 </div>
+<div class="fence-dlg-mask" id="fence-edit-mask" role="dialog" aria-modal="true">
+  <div class="fence-dlg">
+    <h3>编辑分区</h3>
+    <p class="hint">名称与整理规则（一键整理按类型钉入分区；未勾选则不参与整理）。</p>
+    <div class="field-row">
+      <span class="label">名称</span>
+      <input type="text" id="fence-edit-name" placeholder="分区名称" maxlength="64" />
+    </div>
+    <div class="group">整理规则</div>
+    <div class="kind-row">
+      <label><input type="checkbox" id="fence-edit-kind-icon" /> 软件（快捷方式）</label>
+      <label><input type="checkbox" id="fence-edit-kind-file" /> 文档（文件夹与其它文件）</label>
+    </div>
+    <input type="hidden" id="fence-edit-index" value="-1" />
+    <div class="dlg-actions">
+      <button type="button" class="btn" id="fence-edit-cancel">取消</button>
+      <button type="button" class="btn primary" id="fence-edit-ok">确定</button>
+    </div>
+  </div>
+</div>
 <script>
   const STYLE_COLORS = {
     charcoal: { bg: '#2A2E35', accent: '#4C8DFF', text: '#FFFFFF' },
@@ -1201,7 +1252,7 @@
   };
 
   const state = {
-    fences: [], pages: [], selected: 0, selected_page: 0, current_page: 0,
+    fences: [], pages: [], page_locked: [], selected: 0, selected_page: 0, current_page: 0,
     dock: false, pet: true, autostart: false,
     org_startup: false, org_watch: false, preview: [],
     org_pending: 0, org_organized: 0, org_total: 0, org_files: [],
@@ -1266,22 +1317,24 @@
   const I18N = {
     zh: {
       nav_organize: '整理', nav_fences: '桌面分区', nav_snapshot: '布局快照',
-      nav_extensions: '扩展功能', nav_vault: '账号管理', nav_settings: '设置',
+      nav_pet: '桌面宠物', nav_extensions: '扩展功能', nav_vault: '账号管理', nav_settings: '设置',
       help: '帮助',
       title_organize: '整理', sub_organize: '未归入分区的桌面项',
       title_fences: '桌面分区', sub_fences: '分页与分区外观',
       title_snapshot: '布局快照', sub_snapshot: '保存并复用布局',
+      title_pet: '桌面宠物', sub_pet: '形象、互动与桌面显示',
       title_extensions: '扩展功能', sub_extensions: '纪要、壁纸、录屏与文件夹',
       title_vault: '账号管理', sub_vault: '账号、密码与网址',
       title_settings: '设置', sub_settings: '主题、快捷键与应用行为'
     },
     en: {
       nav_organize: 'Organize', nav_fences: 'Fences', nav_snapshot: 'Snapshots',
-      nav_extensions: 'Extensions', nav_vault: 'Accounts', nav_settings: 'Settings',
+      nav_pet: 'Desktop pet', nav_extensions: 'Extensions', nav_vault: 'Accounts', nav_settings: 'Settings',
       help: 'Help',
       title_organize: 'Organize', sub_organize: 'Desktop items not in a fence',
       title_fences: 'Desktop fences', sub_fences: 'Pages and fence chrome',
       title_snapshot: 'Layout snapshots', sub_snapshot: 'Save and restore layouts',
+      title_pet: 'Desktop pet', sub_pet: 'Character, actions, and display',
       title_extensions: 'Extensions', sub_extensions: 'Notes, wallpaper, record…',
       title_vault: 'Accounts', sub_vault: 'Usernames, passwords, URLs',
       title_settings: 'Settings', sub_settings: 'Theme, hotkeys, and behavior'
@@ -1351,15 +1404,22 @@
       row.className = 'page-row' + (i === state.selected_page ? ' sel' : '');
       const sw = (name || '页').trim().charAt(0) || '页';
       const count = fenceCountOnPage(i);
+      const locks = Array.isArray(state.page_locked) ? state.page_locked : [];
+      const locked = i < 2 || !!locks[i];
+      const systemPage = i < 2;
       row.innerHTML =
         '<div class="page-swatch">' + sw + '</div>' +
         '<div class="pr-body"><div class="pr-name"></div><div class="pr-meta"></div></div>' +
         '<div class="pr-acts">' +
-        '<button type="button" class="icon-btn" data-page-edit title="重命名">✎</button>' +
-        '<button type="button" class="icon-btn danger" data-page-del title="删除">✕</button>' +
+        '<button type="button" class="icon-btn' + (locked ? ' on' : '') +
+        '" data-page-lock title="' + (locked ? '解锁分页' : '锁定分页') + '"' +
+        (systemPage ? ' disabled' : '') + '>' + (locked ? ICO.lock : ICO.unlock) + '</button>' +
+        '<button type="button" class="icon-btn" data-page-edit title="重命名">' + ICO.edit + '</button>' +
+        '<button type="button" class="icon-btn danger" data-page-del title="删除"' +
+        (systemPage ? ' disabled' : '') + '>' + ICO.del + '</button>' +
         '</div>';
       row.querySelector('.pr-name').textContent = name || (i === 0 ? '工作' : (i === 1 ? '文档' : ('页' + (i + 1))));
-      row.querySelector('.pr-meta').textContent = count + ' 个分区';
+      row.querySelector('.pr-meta').textContent = count + ' 个分区' + (locked ? ' · 已锁定' : '');
       row.addEventListener('click', (ev) => {
         if (ev.target.closest('button')) return;
         selectPage(i, true);
@@ -1368,6 +1428,13 @@
         selectPage(i, true);
         post({ type: 'action', id: 'rename_page' });
       });
+      const lockBtn = row.querySelector('[data-page-lock]');
+      if (lockBtn && !systemPage) {
+        lockBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          post({ type: 'action', id: 'toggle_page_lock', page: i });
+        });
+      }
       const editBtn = row.querySelector('[data-page-edit]');
       if (editBtn) {
         editBtn.addEventListener('click', (e) => {
@@ -1377,7 +1444,7 @@
         });
       }
       const delBtn = row.querySelector('[data-page-del]');
-      if (delBtn) {
+      if (delBtn && !systemPage) {
         delBtn.addEventListener('click', (e) => {
           e.stopPropagation();
           selectPage(i, true);
@@ -1401,6 +1468,68 @@
       hint.textContent = '分页「' + pageName +
         '」— 左选分页；右卡片点色块改该分区外观；右侧「+」新建分区';
     }
+  }
+
+  const ICO = {
+    lock: '<svg viewBox="0 0 16 16"><rect x="3.5" y="7" width="9" height="7" rx="1.2"/><path d="M5.5 7V5a2.5 2.5 0 0 1 5 0v2"/><circle cx="8" cy="10.5" r="0.9" fill="currentColor" stroke="none"/></svg>',
+    unlock: '<svg viewBox="0 0 16 16"><rect x="3.5" y="7" width="9" height="7" rx="1.2"/><path d="M5.5 7V5a2.5 2.5 0 0 1 5 0"/><circle cx="8" cy="10.5" r="0.9" fill="currentColor" stroke="none"/></svg>',
+    edit: '<svg viewBox="0 0 16 16"><path d="M10.5 2.5l3 3L5 14H2v-3L10.5 2.5z"/><path d="M9 4l3 3"/></svg>',
+    del: '<svg viewBox="0 0 16 16"><path d="M4 4l8 8M12 4L4 12"/></svg>'
+  };
+
+  function kindsLabel(kinds) {
+    const set = new Set(Array.isArray(kinds) ? kinds.map(String) : []);
+    const parts = [];
+    if (set.has('icon')) parts.push('软件');
+    if (set.has('file')) parts.push('文档');
+    return parts.length ? ('整理：' + parts.join(' · ')) : '整理：未设置';
+  }
+
+  let _fenceEditIndex = -1;
+  function openFenceEdit(card) {
+    const mask = document.getElementById('fence-edit-mask');
+    const nameEl = document.getElementById('fence-edit-name');
+    const iconEl = document.getElementById('fence-edit-kind-icon');
+    const fileEl = document.getElementById('fence-edit-kind-file');
+    if (!mask || !nameEl || !iconEl || !fileEl) return;
+    _fenceEditIndex = typeof card.index === 'number' ? card.index : -1;
+    const idxEl = document.getElementById('fence-edit-index');
+    if (idxEl) idxEl.value = String(_fenceEditIndex);
+    nameEl.value = card.title || '';
+    const kinds = Array.isArray(card.organize_kinds) ? card.organize_kinds.map(String) : [];
+    iconEl.checked = kinds.indexOf('icon') >= 0;
+    fileEl.checked = kinds.indexOf('file') >= 0;
+    mask.classList.add('on');
+    setTimeout(() => { try { nameEl.focus(); nameEl.select(); } catch (e) {} }, 0);
+  }
+  function closeFenceEdit() {
+    const mask = document.getElementById('fence-edit-mask');
+    if (mask) mask.classList.remove('on');
+    _fenceEditIndex = -1;
+  }
+  function saveFenceEdit() {
+    if (_fenceEditIndex < 0) { closeFenceEdit(); return; }
+    const nameEl = document.getElementById('fence-edit-name');
+    const iconEl = document.getElementById('fence-edit-kind-icon');
+    const fileEl = document.getElementById('fence-edit-kind-file');
+    let title = ((nameEl && nameEl.value) || '').trim() || '分区';
+    title = title.replace(/\|/g, '/');
+    const kinds = [];
+    if (iconEl && iconEl.checked) kinds.push('icon');
+    if (fileEl && fileEl.checked) kinds.push('file');
+    post({
+      type: 'action', id: 'edit_fence', index: _fenceEditIndex,
+      title: title, kinds: kinds.join(',')
+    });
+    // Optimistic local update until host refreshes fence_cards.
+    const cards = allFenceCards();
+    const hit = cards.find((c) => c.index === _fenceEditIndex);
+    if (hit) {
+      hit.title = title;
+      hit.organize_kinds = kinds.slice();
+    }
+    closeFenceEdit();
+    renderFenceCards();
   }
 
   function renderFenceCards() {
@@ -1428,6 +1557,7 @@
           '" data-style="' + id + '" title="' + (t.name || id) +
           '" style="background:' + col.bg + '"></button>';
       }).join('');
+      const isSystem = !!c.system;
       el.innerHTML =
         '<div class="ft-preview" style="background:' + colors.bg +
         '; opacity:' + alpha + '">' +
@@ -1439,10 +1569,21 @@
         '<div class="ft-chips">' + chips + '</div>' +
         '<div class="ft-op"><input type="range" min="35" max="100" step="1" value="' +
         pct + '" data-fc-op /><span data-fc-pct>' + pct + '%</span></div>' +
+        '<div class="ft-kinds"></div>' +
         '<div class="ft-foot"><div class="ft-title"></div>' +
-        '<button type="button" class="icon-btn" data-fc-edit title="重命名">✎</button>' +
-        '<button type="button" class="icon-btn danger" data-fc-del title="删除">✕</button></div>';
+        '<button type="button" class="icon-btn' + (c.position_locked ? ' on' : '') +
+        '" data-fc-lock title="' + (c.position_locked ? '解锁位置' : '锁定位置') + '">' +
+        (c.position_locked ? ICO.lock : ICO.unlock) + '</button>' +
+        '<button type="button" class="icon-btn" data-fc-edit title="编辑">' + ICO.edit + '</button>' +
+        '<button type="button" class="icon-btn danger" data-fc-del title="' +
+        (isSystem ? '系统分区不可删除' : '删除') + '"' +
+        (isSystem ? ' disabled' : '') + '>' + ICO.del + '</button></div>';
       el.querySelector('.ft-title').textContent = title;
+      const kindsEl = el.querySelector('.ft-kinds');
+      if (kindsEl) {
+        kindsEl.textContent = kindsLabel(c.organize_kinds) +
+          (c.position_locked ? ' · 位置已锁' : '');
+      }
       el.addEventListener('click', (ev) => {
         if (ev.target.closest('button,input')) return;
         state.selected = i;
@@ -1450,7 +1591,7 @@
       });
       el.addEventListener('dblclick', () => {
         state.selected = i;
-        post({ type: 'action', id: 'rename_fence', index: i });
+        openFenceEdit(c);
       });
       el.querySelectorAll('[data-style]').forEach((chip) => {
         chip.addEventListener('click', (e) => {
@@ -1474,15 +1615,22 @@
                  value: Number(range.value) });
         });
       }
+      const lockBtn = el.querySelector('[data-fc-lock]');
+      if (lockBtn) {
+        lockBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          post({ type: 'action', id: 'fence_toggle_lock', index: i });
+        });
+      }
       const editBtn = el.querySelector('[data-fc-edit]');
       if (editBtn) {
         editBtn.addEventListener('click', (e) => {
           e.stopPropagation();
-          post({ type: 'action', id: 'rename_fence', index: i });
+          openFenceEdit(c);
         });
       }
       const delBtn = el.querySelector('[data-fc-del]');
-      if (delBtn) {
+      if (delBtn && !isSystem) {
         delBtn.addEventListener('click', (e) => {
           e.stopPropagation();
           post({ type: 'action', id: 'remove', index: i });
@@ -2194,20 +2342,15 @@
     });
   }
 
-  function showExtSub(sub) {
-    if (!sub) return;
-    document.querySelectorAll('#ext-tabs button').forEach((b) => {
-      b.classList.toggle('on', b.dataset.extsub === sub);
-    });
-    document.querySelectorAll('#page-extensions .ext-sub').forEach((p) => {
-      p.classList.toggle('on', p.id === 'extsub-' + sub);
-    });
-  }
-
   const PET_META = {
     hoodie: {
       name: '卫衣少年',
       blurb: '卫衣少年：摸摸、玩手机 / 睡觉（等待时轮流）、跌落；拖拽揪领，松开跌落',
+      actions: [{ id: 'wait', label: '玩手机' }, { id: 'sleep', label: '睡觉' }]
+    },
+    pixehood: {
+      name: '像素卫衣',
+      blurb: '像素卫衣：由卫衣少年脚本像素化；摸摸、玩手机 / 睡觉、跌落；拖拽揪领',
       actions: [{ id: 'wait', label: '玩手机' }, { id: 'sleep', label: '睡觉' }]
     },
     voyage: {
@@ -2221,7 +2364,7 @@
       ? state.pet_actions : {};
     const raw = Array.isArray(map[charId]) ? map[charId] : null;
     if (raw && raw.length) return new Set(raw.map(String));
-    return charId === 'hoodie'
+    return (charId === 'hoodie' || charId === 'pixehood')
       ? new Set(['pet', 'wait', 'sleep', 'fall'])
       : new Set(['pet', 'wait', 'fall']);
   }
@@ -2314,6 +2457,9 @@
         if (/^第\s*2\s*页$/.test(s) || s === '第2页') return '文档';
         return s || (i === 0 ? '工作' : (i === 1 ? '文档' : ('页' + (i + 1))));
       });
+    }
+    if (Array.isArray(msg.page_locked)) {
+      state.page_locked = msg.page_locked.map((v) => !!v);
     }
     if (typeof msg.dock === 'boolean') state.dock = msg.dock;
     if (typeof msg.pet === 'boolean') state.pet = msg.pet;
@@ -2435,6 +2581,9 @@
         renderPageList();
         renderFenceCards();
       }
+      if (btn.dataset.page === 'pet') {
+        renderPetChars();
+      }
     });
   });
 
@@ -2543,9 +2692,6 @@
       scaleEl.addEventListener('change', sendScale);
     }
   }
-  document.querySelectorAll('#ext-tabs button').forEach((btn) => {
-    btn.addEventListener('click', () => showExtSub(btn.dataset.extsub));
-  });
   bindField('ext_dock_opacity', 'dock_opacity', true);
   bindField('ext_ui_theme', 'ui_theme');
   bindField('ext_vault_api', 'vault_api_base');
@@ -2596,6 +2742,24 @@
       if (state.whitelist_selected < 0) return;
       post({ type: 'action', id: 'whitelist_remove',
              index: state.whitelist_selected });
+    });
+  }
+
+  const fenceEditOk = document.getElementById('fence-edit-ok');
+  const fenceEditCancel = document.getElementById('fence-edit-cancel');
+  const fenceEditMask = document.getElementById('fence-edit-mask');
+  if (fenceEditOk) fenceEditOk.addEventListener('click', () => saveFenceEdit());
+  if (fenceEditCancel) fenceEditCancel.addEventListener('click', () => closeFenceEdit());
+  if (fenceEditMask) {
+    fenceEditMask.addEventListener('click', (ev) => {
+      if (ev.target === fenceEditMask) closeFenceEdit();
+    });
+  }
+  const fenceEditName = document.getElementById('fence-edit-name');
+  if (fenceEditName) {
+    fenceEditName.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Enter') { ev.preventDefault(); saveFenceEdit(); }
+      if (ev.key === 'Escape') { ev.preventDefault(); closeFenceEdit(); }
     });
   }
 

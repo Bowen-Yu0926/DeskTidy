@@ -966,11 +966,13 @@ void MigratePythonPrefs(const std::string& json) {
     };
     std::vector<std::string> hoodie_acts;
     std::vector<std::string> voyage_acts;
+    std::vector<std::string> pixehood_acts;
     const std::string by_char =
         FindNestedObject(pet, "enabled_actions_by_character");
     if (!by_char.empty()) {
       FindStringArray(by_char, "hoodie", &hoodie_acts);
       FindStringArray(by_char, "voyage", &voyage_acts);
+      FindStringArray(by_char, "pixehood", &pixehood_acts);
     } else {
       FindStringArray(pet, "enabled_actions", &hoodie_acts);
     }
@@ -979,6 +981,9 @@ void MigratePythonPrefs(const std::string& json) {
     }
     if (voyage_acts.empty()) {
       voyage_acts = {"pet", "wait", "fall"};
+    }
+    if (pixehood_acts.empty()) {
+      pixehood_acts = {"pet", "wait", "sleep", "fall"};
     }
     std::ofstream out(JoinPath(NativeDataDir(), L"pet.json"), std::ios::binary);
     if (out) {
@@ -989,6 +994,7 @@ void MigratePythonPrefs(const std::string& json) {
           << ",\n  \"pos_x\": 0,\n  \"pos_y\": 0"
           << ",\n  \"actions_hoodie\":\"" << join_acts(hoodie_acts)
           << "\",\n  \"actions_voyage\":\"" << join_acts(voyage_acts)
+          << "\",\n  \"actions_pixehood\":\"" << join_acts(pixehood_acts)
           << "\"\n}\n";
     }
   }

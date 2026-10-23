@@ -1,5 +1,7 @@
 #include "prompt_text.h"
 
+#include "mist_msg.h"
+
 #include <Windowsx.h>
 
 #include <algorithm>
@@ -179,8 +181,14 @@ LRESULT CALLBACK PromptProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
 
 std::wstring PromptText(HWND owner, const wchar_t* title, const wchar_t* label,
                         const std::wstring& initial) {
-  // Classic Win32 modal — never WebView2. Nested MistWebDialog inside a
-  // settings WebView callback left a blank caption-only window and froze.
+  // Prefer Mist card UI; nested WebView hosts should call PromptTextWin32.
+  return MistPromptText(owner, title, label, initial);
+}
+
+std::wstring PromptTextWin32(HWND owner, const wchar_t* title,
+                             const wchar_t* label,
+                             const std::wstring& initial) {
+  // Classic Win32 modal — safe when nested inside another WebView2 dialog.
   static bool registered = false;
   if (!registered) {
     WNDCLASSEXW wc{};

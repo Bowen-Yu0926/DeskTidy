@@ -27,6 +27,7 @@ add_executable(desktidy_native WIN32
   src/page_bar.cpp
   src/desktop_watch.cpp
   src/prompt_text.cpp
+  src/mist_msg.cpp
   src/autostart.cpp
   src/instance_lock.cpp
   src/paths_util.cpp
@@ -92,6 +93,7 @@ add_executable(deskNote WIN32
   src/markdown_preview.cpp
   src/desknote_help.cpp
   src/mist_webview.cpp
+  src/mist_msg.cpp
   src/paths_util.cpp
   src/prompt_text.cpp
   src/i18n.cpp
@@ -194,6 +196,9 @@ add_custom_command(TARGET desktidy_native POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E copy_if_different
           ${CMAKE_CURRENT_SOURCE_DIR}/assets/dialogs/prompt.html
           $<TARGET_FILE_DIR:desktidy_native>/assets/dialogs/prompt.html
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          ${CMAKE_CURRENT_SOURCE_DIR}/assets/dialogs/confirm.html
+          $<TARGET_FILE_DIR:desktidy_native>/assets/dialogs/confirm.html
   COMMAND ${CMAKE_COMMAND} -E copy_if_different
           ${CMAKE_CURRENT_SOURCE_DIR}/assets/dialogs/pick_list.html
           $<TARGET_FILE_DIR:desktidy_native>/assets/dialogs/pick_list.html

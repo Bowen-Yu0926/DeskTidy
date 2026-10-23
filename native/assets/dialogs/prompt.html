@@ -14,19 +14,25 @@
   html, body {
     margin: 0; height: 100%;
     font-family: "Microsoft YaHei UI", "Segoe UI", sans-serif;
-    background: var(--bg); color: var(--text); font-size: 13px;
+    background: transparent; color: var(--text); font-size: 13px;
   }
   #wrap {
     height: 100%; display: flex; align-items: center; justify-content: center;
-    padding: 16px;
+    padding: 12px; background: rgba(15, 23, 42, 0.28);
   }
   #card {
-    width: 100%; max-width: 400px;
-    background: var(--card); border: 1px solid var(--border); border-radius: 14px;
-    border-left: 3px solid var(--accent); padding: 16px 18px 14px;
-    box-shadow: 0 10px 28px rgba(26,35,50,0.10);
+    width: 100%; max-width: 400px; position: relative;
+    background: var(--card); border: 1px solid var(--border); border-radius: 16px;
+    border-left: 3px solid var(--accent); padding: 18px 18px 14px;
+    box-shadow: 0 18px 40px rgba(26,35,50,0.18);
   }
-  #title { margin: 0 0 6px; font-size: 16px; font-weight: 800; }
+  #close {
+    position: absolute; top: 10px; right: 12px; width: 28px; height: 28px;
+    border: none; background: transparent; color: var(--muted); font-size: 18px;
+    border-radius: 8px; cursor: pointer; line-height: 1;
+  }
+  #close:hover { background: var(--accent-soft); color: var(--accent); }
+  #title { margin: 0 28px 6px 0; font-size: 16px; font-weight: 800; }
   #label { margin: 0 0 10px; color: var(--muted); font-size: 12px; line-height: 1.45; }
   #val {
     width: 100%; height: 36px; padding: 0 12px; margin-bottom: 14px;
@@ -46,6 +52,7 @@
 <body>
 <div id="wrap">
   <div id="card">
+    <button id="close" type="button" aria-label="关闭">×</button>
     <h1 id="title">输入</h1>
     <p id="label"></p>
     <input id="val" type="text" />
@@ -73,6 +80,7 @@
     post({ type: 'action', id: 'ok', value: document.getElementById('val').value });
   };
   document.getElementById('cancel').onclick = () => post({ type: 'action', id: 'cancel' });
+  document.getElementById('close').onclick = () => post({ type: 'action', id: 'cancel' });
   document.getElementById('val').onkeydown = e => {
     if (e.key === 'Enter') document.getElementById('ok').click();
     if (e.key === 'Escape') document.getElementById('cancel').click();
