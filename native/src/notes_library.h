@@ -16,8 +16,9 @@ struct NoteSearchHit {
 // Pick / create a note file under the notes library. Returns empty on cancel.
 std::wstring PickNoteFromLibrary(HWND owner);
 // Search note filenames and text (encoding-aware, line + context); opens a
-// result list with a case-sensitivity toggle. Returns the chosen file or empty.
-std::wstring SearchNotesInLibrary(HWND owner);
+// result list with a case-sensitivity toggle. Returns the chosen hit (empty
+// path on cancel). line is 0-based, or -1 for filename-only matches (P1-19).
+NoteSearchHit SearchNotesInLibrary(HWND owner);
 std::wstring NotesLibraryDir(bool ensure = true);
 
 // Encoding-aware recursive search over the library. `case_sensitive` defaults

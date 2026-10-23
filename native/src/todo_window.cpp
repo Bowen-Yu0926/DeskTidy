@@ -5,6 +5,7 @@
 #include "i18n.h"
 #include "mist_webview.h"
 #include "paths_util.h"
+#include "ui_theme.h"
 
 #include <Windows.h>
 
@@ -470,21 +471,27 @@ bool TodoWindow::Create(HINSTANCE instance) {
   wc.lpfnWndProc = TodoWindow::WndProc;
   wc.hInstance = instance;
   wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
-  wc.hbrBackground = CreateSolidBrush(RGB(250, 248, 235));
+  // Transparent host — card chrome lives in todo.html (Python sticky feel).
+  wc.hbrBackground = static_cast<HBRUSH>(GetStockObject(NULL_BRUSH));
   wc.lpszClassName = kClass;
   RegisterClassExW(&wc);
 
+  // Default: left side of work area, ~280px — same as DesktopTodoWidget.
   const RECT work = PrimaryWorkArea();
-  const int def_x = work.right - 320;
-  const int def_y = work.top + 120;
+  const int ww = 280;
+  const int wh = 220;
+  const int def_x = work.left + 48;
+  const int def_y =
+      work.top + (std::max)(80, static_cast<int>(work.bottom - work.top - wh) / 4);
   hwnd_ = CreateWindowExW(
-      WS_EX_TOOLWINDOW | WS_EX_LAYERED, kClass, Tr("todos").c_str(),
-      WS_POPUP | WS_THICKFRAME | WS_CLIPCHILDREN, def_x, def_y, 300, 380,
+      WS_EX_TOOLWINDOW | WS_EX_LAYERED | WS_EX_NOACTIVATE, kClass, L"待办",
+      WS_POPUP | WS_THICKFRAME | WS_CLIPCHILDREN, def_x, def_y, ww, wh,
       nullptr, nullptr, instance, this);
   if (!hwnd_) {
     return false;
   }
-  SetLayeredWindowAttributes(hwnd_, 0, 245, LWA_ALPHA);
+  // Near-opaque; card itself uses CSS rgba translucency over wallpaper.
+  SetLayeredWindowAttributes(hwnd_, 0, 250, LWA_ALPHA);
   SetWindowLongPtrW(hwnd_, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(this));
   LoadGeo();
   Load();
@@ -503,7 +510,7 @@ bool TodoWindow::CreateWebView() {
     wc.lpfnWndProc = DefWindowProcW;
     wc.hInstance = GetModuleHandleW(nullptr);
     wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
-    wc.hbrBackground = CreateSolidBrush(RGB(250, 248, 235));
+    wc.hbrBackground = static_cast<HBRUSH>(GetStockObject(NULL_BRUSH));
     wc.lpszClassName = kHostClass;
     RegisterClassExW(&wc);
     host_reg = true;
@@ -636,13 +643,33 @@ void TodoWindow::NavigateHome() {
   static_cast<ICoreWebView2*>(webview_)->Navigate((L"file:///" + url).c_str());
 }
 
+void TodoWindow::ApplyUiTheme(const std::string& ui_theme) {
+  ui_theme_ = NormalizeUiTheme(ui_theme);
+  PushState();
+}
+
 void TodoWindow::PushState() {
   if (!webview_ || !web_ready_) {
     return;
   }
-  std::wstring json = L"{\"type\":\"state\",\"title\":\"";
-  json += MistJsonEscape(Tr("todo_title"));
-  json += L"\",\"items\":[";
+  const auto vars = UiThemeCssVars(ui_theme_);
+  auto hex = [&](const char* key, const wchar_t* fallback) -> std::wstring {
+    const auto it = vars.find(key);
+    if (it == vars.end()) {
+      return fallback;
+    }
+    return WidenUtf8(it->second);
+  };
+  // Title label matches Python sticky: 「待办」 (not 「待办便签」).
+  std::wstring json = L"{\"type\":\"state\",\"title\":\"待办\",\"theme\":{";
+  json += L"\"card\":\"" + MistJsonEscape(hex("card", L"#FFFFFF")) + L"\",";
+  json += L"\"accent_soft\":\"" +
+          MistJsonEscape(hex("accent-soft", L"#E0E7FF")) + L"\",";
+  json += L"\"border\":\"" + MistJsonEscape(hex("border", L"#C9D2DE")) + L"\",";
+  json += L"\"text\":\"" + MistJsonEscape(hex("text", L"#1A2332")) + L"\",";
+  json += L"\"muted\":\"" + MistJsonEscape(hex("muted", L"#64748B")) + L"\",";
+  json += L"\"accent\":\"" + MistJsonEscape(hex("accent", L"#1D4ED8")) + L"\"";
+  json += L"},\"items\":[";
   for (size_t i = 0; i < items_.size(); ++i) {
     if (i) {
       json += L',';
@@ -674,7 +701,8 @@ void TodoWindow::OnWebMessage(const std::wstring& json) {
   } else if (id == L"hide") {
     Hide();
   } else if (id == L"add") {
-    items_.insert(items_.begin(), NewTodoItem(Tr("todo_new_item"), false));
+    // Empty text like Python add_todo("") — user types in the new row.
+    items_.insert(items_.begin(), NewTodoItem(L"", false));
     Save();
     PushState();
   } else if (id == L"clear") {
@@ -770,12 +798,13 @@ void TodoWindow::LoadGeo() {
   const std::string json = ss.str();
   const int x = ReadGeoInt(json, "x", -1);
   const int y = ReadGeoInt(json, "y", -1);
-  const int w = ReadGeoInt(json, "w", 300);
-  const int h = ReadGeoInt(json, "h", 380);
+  // Width clamped like Python (_MIN_W=220 … _MAX_W=420).
+  const int w = (std::max)(220, (std::min)(420, ReadGeoInt(json, "w", 280)));
+  const int h = (std::max)(160, ReadGeoInt(json, "h", 220));
   if (x < 0 || y < 0) {
     return;
   }
-  RECT rc{x, y, x + (std::max)(200, w), y + (std::max)(180, h)};
+  RECT rc{x, y, x + w, y + h};
   ClampRectToWorkArea(&rc);
   SetWindowPos(hwnd_, nullptr, rc.left, rc.top, rc.right - rc.left,
                rc.bottom - rc.top, SWP_NOZORDER | SWP_NOACTIVATE);

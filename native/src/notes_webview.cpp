@@ -323,8 +323,10 @@ void NotesWebView::SetMarkdown(const std::wstring& md) {
     pending_set_ = md;
     return;
   }
-  const std::wstring json = L"{\"type\":\"set\",\"theme\":\"light\",\"md\":\"" +
-                            JsonEscape(md) + L"\"}";
+  const std::wstring theme =
+      theme_.empty() ? L"light" : theme_;
+  const std::wstring json = L"{\"type\":\"set\",\"theme\":\"" + theme +
+                            L"\",\"md\":\"" + JsonEscape(md) + L"\"}";
   web->PostWebMessageAsJson(json.c_str());
 }
 
@@ -336,8 +338,10 @@ void NotesWebView::SetPreview(const std::wstring& md,
     pending_base_ = base_dir;
     return;
   }
+  const std::wstring theme =
+      theme_.empty() ? L"light" : theme_;
   const std::wstring json =
-      L"{\"type\":\"set\",\"theme\":\"light\",\"baseUrl\":\"" +
+      L"{\"type\":\"set\",\"theme\":\"" + theme + L"\",\"baseUrl\":\"" +
       JsonEscape(base_dir) + L"\",\"md\":\"" + JsonEscape(md) + L"\"}";
   web->PostWebMessageAsJson(json.c_str());
 }

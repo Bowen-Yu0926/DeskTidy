@@ -21,6 +21,8 @@ class TodoWindow {
   void Destroy();
   void Show();
   void Hide();
+  // Match Python DesktopTodoWidget theme palette (settings ui_theme).
+  void ApplyUiTheme(const std::string& ui_theme);
   HWND Hwnd() const { return hwnd_; }
 
  private:
@@ -47,4 +49,5 @@ class TodoWindow {
   POINT drag_origin_{};
   POINT win_origin_{};
   std::vector<Item> items_;
+  std::string ui_theme_ = "mist";
 };

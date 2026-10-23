@@ -221,18 +221,20 @@ std::string RunP(const std::string& text, int half_pts, bool bold) {
   return o;
 }
 
-// Build the WordprocessingML body matching Python meeting_minutes.py.
+// Build the WordprocessingML body matching Python meeting_minutes.py
+// (Heading 1 / Heading 2 paragraph styles, not bold-only Normal runs).
 bool WriteMinutesDocx(const std::wstring& path, int year, int month, int day,
                       const std::string& stem) {
   char date[64];
   sprintf_s(date, "%04d年%02d月%02d日", year, month, day);
   std::string body;
-  // Title (centered, 18pt bold).
-  body += "<w:p><w:pPr><w:jc w:val=\"center\"/></w:pPr>";
+  // Title → Heading 1 (centered).
+  body += "<w:p><w:pPr><w:pStyle w:val=\"Heading1\"/>"
+          "<w:jc w:val=\"center\"/></w:pPr>";
   body += RunP("会议纪要", 36, true);
   body += "</w:p>";
-  // Meta line: date (bold) + fullwidth-spaced serial (regular).
-  body += "<w:p>";
+  // Meta line: Normal (date bold + serial regular).
+  body += "<w:p><w:pPr><w:pStyle w:val=\"Normal\"/></w:pPr>";
   body += RunP(std::string("日期：") + date, 22, true);
   body += RunP(std::string("　　编号：") + stem, 22, false);
   body += "</w:p>";
@@ -242,10 +244,10 @@ bool WriteMinutesDocx(const std::wstring& path, int year, int month, int day,
       {"五、待办事项", "（请填写）"},
   };
   for (const auto& sec : kSections) {
-    body += "<w:p>";
+    body += "<w:p><w:pPr><w:pStyle w:val=\"Heading2\"/></w:pPr>";
     body += RunP(sec[0], 28, true);
     body += "</w:p>";
-    body += "<w:p>";
+    body += "<w:p><w:pPr><w:pStyle w:val=\"Normal\"/></w:pPr>";
     body += RunP(sec[1], 22, false);
     body += "</w:p>";
   }
@@ -261,6 +263,35 @@ bool WriteMinutesDocx(const std::wstring& path, int year, int month, int day,
       "<w:body>" +
       body + "</w:body></w:document>";
 
+  // P3-39: real Word heading styles (outline levels) so TOC / Navigation work.
+  const std::string styles =
+      "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>"
+      "<w:styles "
+      "xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\">"
+      "<w:style w:type=\"paragraph\" w:default=\"1\" w:styleId=\"Normal\">"
+      "<w:name w:val=\"Normal\"/><w:qFormat/>"
+      "<w:rPr>" +
+      std::string(kFonts) +
+      "<w:sz w:val=\"22\"/><w:szCs w:val=\"22\"/>"
+      "<w:color w:val=\"000000\"/></w:rPr></w:style>"
+      "<w:style w:type=\"paragraph\" w:styleId=\"Heading1\">"
+      "<w:name w:val=\"heading 1\"/><w:basedOn w:val=\"Normal\"/>"
+      "<w:next w:val=\"Normal\"/><w:uiPriority w:val=\"9\"/><w:qFormat/>"
+      "<w:pPr><w:outlineLvl w:val=\"0\"/></w:pPr>"
+      "<w:rPr>" +
+      std::string(kFonts) +
+      "<w:b/><w:sz w:val=\"36\"/><w:szCs w:val=\"36\"/>"
+      "<w:color w:val=\"000000\"/></w:rPr></w:style>"
+      "<w:style w:type=\"paragraph\" w:styleId=\"Heading2\">"
+      "<w:name w:val=\"heading 2\"/><w:basedOn w:val=\"Normal\"/>"
+      "<w:next w:val=\"Normal\"/><w:uiPriority w:val=\"9\"/><w:qFormat/>"
+      "<w:pPr><w:outlineLvl w:val=\"1\"/></w:pPr>"
+      "<w:rPr>" +
+      std::string(kFonts) +
+      "<w:b/><w:sz w:val=\"28\"/><w:szCs w:val=\"28\"/>"
+      "<w:color w:val=\"000000\"/></w:rPr></w:style>"
+      "</w:styles>";
+
   const std::string content_types =
       "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>"
       "<Types "
@@ -271,9 +302,12 @@ bool WriteMinutesDocx(const std::wstring& path, int year, int month, int day,
       "<Override PartName=\"/word/document.xml\" "
       "ContentType=\"application/vnd.openxmlformats-officedocument."
       "wordprocessingml.document.main+xml\"/>"
+      "<Override PartName=\"/word/styles.xml\" "
+      "ContentType=\"application/vnd.openxmlformats-officedocument."
+      "wordprocessingml.styles+xml\"/>"
       "</Types>";
 
-  const std::string rels =
+  const std::string package_rels =
       "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>"
       "<Relationships "
       "xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">"
@@ -282,9 +316,20 @@ bool WriteMinutesDocx(const std::wstring& path, int year, int month, int day,
       "relationships/officeDocument\" Target=\"word/document.xml\"/>"
       "</Relationships>";
 
+  const std::string doc_rels =
+      "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>"
+      "<Relationships "
+      "xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">"
+      "<Relationship Id=\"rId1\" "
+      "Type=\"http://schemas.openxmlformats.org/officeDocument/2006/"
+      "relationships/styles\" Target=\"styles.xml\"/>"
+      "</Relationships>";
+
   return WriteStoredZip(path, {{"[Content_Types].xml", content_types},
-                               {"_rels/.rels", rels},
-                               {"word/document.xml", doc}});
+                               {"_rels/.rels", package_rels},
+                               {"word/document.xml", doc},
+                               {"word/_rels/document.xml.rels", doc_rels},
+                               {"word/styles.xml", styles}});
 }
 
 }  // namespace

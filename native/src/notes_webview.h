@@ -20,6 +20,9 @@ class NotesWebView {
   void Hide();
   void Resize();
   void SetKind(Kind kind) { kind_ = kind; }
+  // Preview/editor chrome theme: "light" or "dark" (P2-30).
+  void SetTheme(const std::wstring& theme) { theme_ = theme; }
+  const std::wstring& Theme() const { return theme_; }
 
   // WYSIWYG editor (kWysiwyg).
   void SetMarkdown(const std::wstring& md);
@@ -52,6 +55,7 @@ class NotesWebView {
   bool available_ = false;
   bool ready_ = false;
   bool got_md_ = false;
+  std::wstring theme_ = L"light";
   std::wstring pending_md_;
   std::wstring pending_set_;
   std::wstring pending_base_;

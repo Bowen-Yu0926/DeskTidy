@@ -473,7 +473,7 @@ std::vector<NoteSearchHit> SearchNotesLibrary(const std::wstring& dir,
   return hits;
 }
 
-std::wstring SearchNotesInLibrary(HWND owner) {
+NoteSearchHit SearchNotesInLibrary(HWND owner) {
   const std::wstring query =
       PromptText(owner, L"搜索笔记", L"文件名或正文关键词：", L"");
   if (query.empty()) {
@@ -488,7 +488,7 @@ std::wstring SearchNotesInLibrary(HWND owner) {
   std::vector<NoteSearchHit> hits =
       SearchNotesLibrary(dir, query, case_sensitive, max_hits, max_file_bytes);
 
-  std::wstring picked;
+  NoteSearchHit picked;
   MistWebDialog dlg;
   dlg.owner = owner;
   dlg.user_data_subdir = L"webview2-notes-search";
@@ -557,7 +557,7 @@ std::wstring SearchNotesInLibrary(HWND owner) {
     if (id == L"open") {
       const int index = MistJsonIntField(json, L"index", -1);
       if (index >= 0 && index < static_cast<int>(hits.size())) {
-        picked = hits[static_cast<size_t>(index)].path;
+        picked = hits[static_cast<size_t>(index)];
         return true;
       }
       return false;
