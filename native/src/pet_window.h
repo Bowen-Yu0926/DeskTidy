@@ -180,6 +180,9 @@ class PetWindow {
   std::map<std::wstring, std::vector<std::string>> enabled_actions_;
   HBITMAP sprite_ = nullptr;
   int sprite_w_ = 0;
+  // Base (idle) sprite height captured at load, kept stable across poses so the
+  // fence-nudge margin matches Python's fixed _sprite_h (P1-17).
+  int base_sprite_h_ = 0;
   // Cached hit-test region built from the sprite's own PNG alpha (P0-12).
   // HBITMAP round-trips lose alpha, so masks are captured at load time.
   HRGN mask_rgn_ = nullptr;

@@ -63,8 +63,16 @@ struct PetMotion {
   float stretch = 1.f;
 };
 
+bool IsHoodieFamily(const std::wstring& character) {
+  return character == L"hoodie" || character == L"pixehood";
+}
+
+bool IsPixelArtCharacter(const std::wstring& character) {
+  return character == L"pixehood";
+}
+
 bool PoseSkipsMotion(const std::wstring& character, const std::wstring& pose) {
-  if (character == L"hoodie") {
+  if (IsHoodieFamily(character)) {
     return pose == L"wait" || pose == L"perch" || pose == L"hold" ||
            pose == L"fall" || pose == L"dizzy" || pose == L"trash";
   }
@@ -84,7 +92,7 @@ PetMotion ComputePetMotion(const std::wstring& character,
   }
   const float t = static_cast<float>(frame) / 10.f;
   const bool soft_sleep =
-      (character == L"hoodie" || character == L"voyage") &&
+      (IsHoodieFamily(character) || character == L"voyage") &&
       (pose == L"sleep" || pose == L"lie");
   if (soft_sleep) {
     const float breath = std::sin(t * 0.4f);
@@ -196,11 +204,11 @@ void PaintZzz(Gdiplus::Graphics& g, int cw, int ch, int frame,
               const std::wstring& character) {
   g.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
   const float base_x =
-      character == L"hoodie"
+      IsHoodieFamily(character)
           ? cw * 0.54f
           : cw * 0.58f;
   const float base_y =
-      character == L"hoodie"
+      IsHoodieFamily(character)
           ? (std::max)(4.f, ch * 0.24f)
           : (std::max)(4.f, ch * 0.12f);
   const float delays[] = {0.f, 0.34f, 0.68f};
@@ -430,7 +438,13 @@ std::vector<BYTE> ExtractAlphaMap(Gdiplus::Bitmap& bmp, int w, int h) {
     }
   }
   bmp.UnlockBits(&bd);
-  LogLineA("[pet] mask alpha %dx%d nonzero=%d", w, h, nonzero);
+  // B3: ExtractAlphaMap runs on every pose load (SetPose) and each cel — the
+  // per-cel log flooded the file every few seconds. Log the first capture only.
+  static bool logged_first = false;
+  if (!logged_first) {
+    LogLineA("[pet] mask alpha %dx%d nonzero=%d", w, h, nonzero);
+    logged_first = true;
+  }
   return out;
 }
 }  // namespace
@@ -463,6 +477,7 @@ void PetWindow::TryLoadSprite() {
       sprite_h_ = sprite_h_ * kSpriteMaxW / sprite_w_;
       sprite_w_ = kSpriteMaxW;
     }
+    base_sprite_h_ = sprite_h_;
     Gdiplus::Bitmap scaled(sprite_w_, sprite_h_, PixelFormat32bppPARGB);
     {
       Gdiplus::Graphics g(&scaled);
@@ -608,8 +623,10 @@ void PetWindow::LoadPrefs() {
   };
   load_actions(L"hoodie", "actions_hoodie");
   load_actions(L"voyage", "actions_voyage");
+  load_actions(L"pixehood", "actions_pixehood");
   EnsureDefaultActions(L"hoodie");
   EnsureDefaultActions(L"voyage");
+  EnsureDefaultActions(L"pixehood");
 }
 
 void PetWindow::PersistPrefs() {
@@ -634,7 +651,9 @@ void PetWindow::PersistPrefs() {
       << size_scale_ << ",\n  \"pos_x\": " << static_cast<int>(std::lround(pos_x_))
       << ",\n  \"pos_y\": " << static_cast<int>(std::lround(pos_y_))
       << ",\n  \"actions_hoodie\":\"" << join_acts(L"hoodie")
-      << "\",\n  \"actions_voyage\":\"" << join_acts(L"voyage") << "\"\n}\n";
+      << "\",\n  \"actions_voyage\":\"" << join_acts(L"voyage")
+      << "\",\n  \"actions_pixehood\":\"" << join_acts(L"pixehood")
+      << "\"\n}\n";
   AtomicWriteUtf8File(JoinPath(NativeDataDir(), L"pet.json"), out.str());
 }
 
@@ -642,7 +661,7 @@ void PetWindow::EnsureDefaultActions(const std::wstring& character) {
   if (enabled_actions_.count(character) && !enabled_actions_[character].empty()) {
     return;
   }
-  if (character == L"hoodie") {
+  if (IsHoodieFamily(character)) {
     enabled_actions_[character] = {"pet", "wait", "sleep", "fall"};
   } else {
     enabled_actions_[character] = {"pet", "wait", "fall"};
@@ -657,7 +676,7 @@ bool PetWindow::ActionEnabled(const std::wstring& character,
   }
   auto it = enabled_actions_.find(character);
   if (it == enabled_actions_.end()) {
-    if (character == L"hoodie") {
+    if (IsHoodieFamily(character)) {
       return action == "wait" || action == "sleep";
     }
     return action == "wait";
@@ -672,7 +691,7 @@ std::vector<std::string> PetWindow::EnabledActions(
   if (it != enabled_actions_.end() && !it->second.empty()) {
     return it->second;
   }
-  if (character == L"hoodie") {
+  if (IsHoodieFamily(character)) {
     return {"pet", "wait", "sleep", "fall"};
   }
   return {"pet", "wait", "fall"};
@@ -710,7 +729,7 @@ void PetWindow::SetEnabledActions(const std::wstring& character,
 std::vector<std::pair<std::string, std::wstring>> PetWindow::SettingsActionOptions(
     const std::wstring& character) const {
   // Settings UI only — 摸摸/跌落 always on and hidden (Python).
-  if (character == L"hoodie") {
+  if (IsHoodieFamily(character)) {
     return {{"wait", L"玩手机"}, {"sleep", L"睡觉"}};
   }
   return {{"wait", L"刷手机"}};
@@ -942,7 +961,12 @@ void PetWindow::SetPose(const std::wstring& pose) {
     {
       Gdiplus::Graphics g(&scaled);
       g.Clear(Gdiplus::Color(0, 0, 0, 0));
-      g.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
+      // Pixel pets must stay nearest-neighbor or color blocks smear.
+      g.SetInterpolationMode(
+          IsPixelArtCharacter(character_)
+              ? Gdiplus::InterpolationModeNearestNeighbor
+              : Gdiplus::InterpolationModeHighQualityBicubic);
+      g.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHalf);
       g.DrawImage(&src, 0, 0, w, h);
     }  // destroy Graphics before LockBits (GDI+ refuses while it is alive)
     const std::vector<BYTE> alpha = ExtractAlphaMap(scaled, w, h);
@@ -953,6 +977,9 @@ void PetWindow::SetPose(const std::wstring& pose) {
       frames_alpha_.push_back(alpha);
       sprite_w_ = w;
       sprite_h_ = h;
+      if (pose == L"idle") {
+        base_sprite_h_ = h;
+      }
     }
   }
   Gdiplus::GdiplusShutdown(token);
@@ -1268,21 +1295,26 @@ void PetWindow::RunAi(DWORD now) {
   GetCursorPos(&cur);
   RECT rc{};
   GetWindowRect(hwnd_, &rc);
-  const int dx = cur.x - (rc.left + rc.right) / 2;
+  const int cx = (rc.left + rc.right) / 2;
+  const int dx = cur.x - cx;
   const int dy = cur.y - (rc.top + rc.bottom) / 2;
   const bool cursor_near = dx * dx + dy * dy < kCursorNoticePx * kCursorNoticePx;
   if (cursor_near && !cursor_was_near_) {
     if (pose_ == L"sleep") {
       ScheduleIdle(now);
     }
-    if (pose_ == L"idle" || pose_ == L"walk" || walking_) {
-      const int cx = (rc.left + rc.right) / 2;
-      if (cur.x != cx) {
-        facing_ = cur.x > cx ? 1 : -1;
+    mood_ = (std::min)(100.f, mood_ + 1.5f);
+  }
+  // P1-14: face the cursor whenever it is near (not just on the approach edge),
+  // so the sprite mirrors as the cursor crosses left↔right while hovering.
+  if (cursor_near && (pose_ == L"idle" || pose_ == L"walk" || walking_)) {
+    if (cur.x != cx) {
+      const int f = cur.x > cx ? 1 : -1;
+      if (f != facing_) {
+        facing_ = f;
         present_dirty_ = true;
       }
     }
-    mood_ = (std::min)(100.f, mood_ + 1.5f);
   }
   cursor_was_near_ = cursor_near;
 }
@@ -1484,6 +1516,7 @@ void PetWindow::StepPhysics(DWORD elapsed_ms) {
     if (pos_x_ < static_cast<float>(work.left) ||
         pos_x_ + ww > static_cast<float>(work.right)) {
       walk_dir_ = -walk_dir_;
+      facing_ = walk_dir_ >= 0 ? 1 : -1;
       vel_x_ = 90.f * static_cast<float>(walk_dir_);
       pos_x_ = (std::max)(static_cast<float>(work.left),
                           (std::min)(pos_x_, static_cast<float>(work.right - ww)));
@@ -1660,33 +1693,44 @@ void PetWindow::StartWalk() {
 
 void PetWindow::NudgeClearOfFenceBottoms(
     const std::vector<RECT>& fence_screen_rects) {
-  // P1-17: keep sprite crown below overlapping fence strips.
+  // P1-17: push the pet below any visible fence whose fill overlaps the pet
+  // chrome (page chips + crown). Mirrors Python _nudge_clear_of_fence_bottoms.
   if (!hwnd_ || dragging_ || fence_screen_rects.empty()) {
     return;
   }
   RECT wr{};
   GetWindowRect(hwnd_, &wr);
+  const int chrome_top = wr.top;
+  const int chrome_bottom = wr.bottom;
   const int spr_l = wr.left;
-  const int spr_t = wr.top;
   const int spr_r = wr.right;
+  const int base_h = base_sprite_h_ > 0 ? base_sprite_h_ : sprite_h_;
   const int margin =
-      (std::max)(20, static_cast<int>(ScaledH() * 0.14f));
+      (std::max)(20, static_cast<int>(std::lround(base_h * 0.14 * size_scale_)));
   int need_y = -1;
   for (const RECT& fr : fence_screen_rects) {
-    if (fr.right <= spr_l || fr.left >= spr_r) {
+    // Horizontal overlap with an 8px inset (Python parity).
+    if (spr_r < fr.left + 8 || spr_l > fr.right - 8) {
       continue;
     }
-    // Overlap horizontally; if pet top is under fence bottom band, push down.
-    if (spr_t < fr.bottom + margin && spr_t + ScaledH() / 3 > fr.top) {
-      const int y = fr.bottom + margin;
-      if (need_y < 0 || y > need_y) {
-        need_y = y;
-      }
+    const int fence_top = fr.top;
+    const int fence_bottom = fr.bottom;
+    if (chrome_bottom <= fence_top || chrome_top >= fence_bottom) {
+      continue;
+    }
+    const int delta = (fence_bottom + margin) - chrome_top;
+    if (delta <= 0) {
+      continue;
+    }
+    const int candidate = static_cast<int>(pos_y_) + delta;
+    if (need_y < 0 || candidate > need_y) {
+      need_y = candidate;
     }
   }
-  if (need_y < 0) {
+  if (need_y < 0 || need_y <= static_cast<int>(pos_y_)) {
     return;
   }
+  // Clamp to the work area, only moving down.
   POINT mid{spr_l + ScaledW() / 2, need_y + ScaledH() / 2};
   const RECT work = WorkAreaAtPoint(mid);
   const int max_y = work.bottom - ScaledH() - kGroundMarginPx;
@@ -1702,6 +1746,8 @@ void PetWindow::NudgeClearOfFenceBottoms(
   present_dirty_ = true;
   PlacePages();
   PlaceMenu();
+  PersistPrefs();
+  LogLine(L"[pet] nudge clear of fence bottom → y=%d", need_y);
 }
 
 void PetWindow::StartFall() {
@@ -1819,6 +1865,14 @@ void PetWindow::ShowContextMenu(POINT screen) {
 }
 
 bool PetWindow::Create(HINSTANCE instance) {
+  // Seed the shared rand() RNG once so idle→rest rolls (P1-18) and other pet
+  // randomness are not deterministic across runs.
+  static bool rng_seeded = false;
+  if (!rng_seeded) {
+    srand(static_cast<unsigned>(GetTickCount()) ^
+          static_cast<unsigned>(GetCurrentProcessId()));
+    rng_seeded = true;
+  }
   if (!g_registered) {
     WNDCLASSEXW wc{};
     wc.cbSize = sizeof(wc);
@@ -2868,10 +2922,18 @@ LRESULT PetWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
           AttachToDesktopLayer();
         }
         SetCursor(LoadCursor(nullptr, IDC_SIZEALL));
-        SetWindowPos(hwnd_, nullptr, pt.x - drag_offset_.x,
-                     pt.y - drag_offset_.y, 0, 0,
+        const int new_x = pt.x - drag_offset_.x;
+        // P1-14: face the drag direction as the pet is pulled left/right.
+        if (new_x != static_cast<int>(pos_x_)) {
+          const int f = new_x > static_cast<int>(pos_x_) ? 1 : -1;
+          if (f != facing_) {
+            facing_ = f;
+            present_dirty_ = true;
+          }
+        }
+        SetWindowPos(hwnd_, nullptr, new_x, pt.y - drag_offset_.y, 0, 0,
                      SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
-        pos_x_ = static_cast<float>(pt.x - drag_offset_.x);
+        pos_x_ = static_cast<float>(new_x);
         pos_y_ = static_cast<float>(pt.y - drag_offset_.y);
         PushDragSample(pt);
       }
@@ -2961,7 +3023,24 @@ void PetWindow::Paint(HDC hdc) {
     bf.BlendOp = AC_SRC_OVER;
     bf.SourceConstantAlpha = 255;
     bf.AlphaFormat = AC_SRC_ALPHA;
-    if (facing_ < 0) {
+    if (IsPixelArtCharacter(character_)) {
+      // AlphaBlend bilinear-smears chunky pixels — nearest-neighbor via GDI+.
+      Gdiplus::Bitmap held(bmp, nullptr);
+      Gdiplus::Bitmap flipped(bw, bh, PixelFormat32bppPARGB);
+      Gdiplus::Bitmap* use = &held;
+      if (facing_ < 0) {
+        Gdiplus::Graphics fg(&flipped);
+        fg.Clear(Gdiplus::Color(0, 0, 0, 0));
+        fg.ScaleTransform(-1.f, 1.f);
+        fg.DrawImage(&held, -bw, 0, bw, bh);
+        use = &flipped;
+      }
+      Gdiplus::Graphics g(hdc);
+      g.SetInterpolationMode(Gdiplus::InterpolationModeNearestNeighbor);
+      g.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHalf);
+      g.SetCompositingMode(Gdiplus::CompositingModeSourceOver);
+      g.DrawImage(use, 0, bob_y, cw, ch);
+    } else if (facing_ < 0) {
       // Horizontal flip preserving PARGB (StretchBlt drops alpha).
       BITMAPINFO bi{};
       bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
