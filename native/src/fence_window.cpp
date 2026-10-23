@@ -80,6 +80,15 @@ int FenceDpi(HWND hwnd) {
   return dpi > 0 ? dpi : 96;
 }
 
+std::wstring Widen(const std::string& s) {
+  std::wstring out;
+  out.reserve(s.size());
+  for (char c : s) {
+    out.push_back(static_cast<wchar_t>(static_cast<unsigned char>(c)));
+  }
+  return out;
+}
+
 // Explorer / Fences style: translucent accent plate. Must use GDI+ (not GDI
 // RoundRect) so per-pixel alpha stays valid for UpdateLayeredWindow.
 void PaintSelectionChrome(Gdiplus::Graphics& g, int left, int top, int right,
@@ -335,6 +344,37 @@ void FenceWindow::PresentLayered() {
 
   Paint(mem);
 
+  // P1-12: drop-target highlight — 2px inner accent stroke + translucent
+  // overlay, drawn on top of content (reuses the rounded panel path).
+  if (drop_highlight_) {
+    Gdiplus::Graphics hg(mem);
+    hg.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+    hg.SetPixelOffsetMode(Gdiplus::PixelOffsetModeNone);
+    hg.ResetTransform();
+    Gdiplus::GraphicsPath path;
+    const int rr = radius * 2;
+    const int rw = (std::max)(1, w - 1);
+    const int rh = (std::max)(1, h - 1);
+    if (rr > 2 && rr < rw && rr < rh) {
+      path.AddArc(0, 0, rr, rr, 180, 90);
+      path.AddArc(rw - rr, 0, rr, rr, 270, 90);
+      path.AddArc(rw - rr, rh - rr, rr, rr, 0, 90);
+      path.AddArc(0, rh - rr, rr, rr, 90, 90);
+      path.CloseFigure();
+    } else {
+      path.AddRectangle(Gdiplus::Rect(0, 0, rw, rh));
+    }
+    Gdiplus::SolidBrush fill(Gdiplus::Color(
+        48, GetRValue(accent_), GetGValue(accent_), GetBValue(accent_)));
+    hg.FillPath(&fill, &path);
+    Gdiplus::Pen edge(
+        Gdiplus::Color(230, GetRValue(accent_), GetGValue(accent_),
+                       GetBValue(accent_)),
+        2.0f);
+    edge.SetLineJoin(Gdiplus::LineJoinRound);
+    hg.DrawPath(&edge, &path);
+  }
+
   POINT origin{wr.left, wr.top};
   SIZE size{w, h};
   POINT src{0, 0};
@@ -449,6 +489,34 @@ void FenceWindow::InsertPinOrder(const std::vector<std::wstring>& paths,
   filtered.insert(filtered.begin() + static_cast<ptrdiff_t>(idx), paths.begin(),
                   paths.end());
   pin_order_ = std::move(filtered);
+}
+
+void FenceWindow::RemovePinOrder(const std::vector<std::wstring>& paths) {
+  std::vector<std::wstring> filtered;
+  filtered.reserve(pin_order_.size());
+  for (const auto& p : pin_order_) {
+    bool dropped = false;
+    for (const auto& d : paths) {
+      if (p == d) {
+        dropped = true;
+        break;
+      }
+    }
+    if (!dropped) {
+      filtered.push_back(p);
+    }
+  }
+  pin_order_ = std::move(filtered);
+}
+
+void FenceWindow::SetDropHighlight(bool on) {
+  if (drop_highlight_ == on) {
+    return;
+  }
+  drop_highlight_ = on;
+  if (hwnd_) {
+    PresentLayered();
+  }
 }
 
 void FenceWindow::SetPageGeometry(int page, const FencePageGeometry& geo) {
@@ -655,7 +723,16 @@ void FenceWindow::EnsureDropTarget() {
         if (on_paths_dropped_) {
           on_paths_dropped_(this, paths);
         }
-      });
+      },
+        [this](const std::wstring& src, const std::vector<std::wstring>& paths,
+               bool commit) -> DWORD {
+          if (on_pin_drop_) {
+            return on_pin_drop_(this, src, paths, commit);
+          }
+          return DROPEFFECT_NONE;
+        });
+  drop_target_->SetHighlightFn(
+      [this](bool on) { SetDropHighlight(on); });
   if (!RegisterPathDropTarget(hwnd_, drop_target_)) {
     drop_target_->Release();
     drop_target_ = nullptr;
@@ -1402,6 +1479,15 @@ FenceWindow::Edge FenceWindow::HitTestEdge(int x, int y) const {
   }
   RECT rc{};
   GetClientRect(hwnd_, &rc);
+  const int header = S(hwnd_, kHeaderH0);
+  // Title bar hosts lock / collapse / delete — never treat L/R as resize there
+  // (otherwise the right-edge strip steals button clicks).
+  if (y < header) {
+    if (!collapsed_ && y <= kEdge) {
+      return Edge::Top;
+    }
+    return Edge::None;
+  }
   int e = 0;
   if (x <= kEdge) {
     e |= static_cast<int>(Edge::Left);
@@ -1419,6 +1505,77 @@ FenceWindow::Edge FenceWindow::HitTestEdge(int x, int y) const {
     }
   }
   return static_cast<Edge>(e);
+}
+
+bool FenceWindow::IsSystemFence() const {
+  return id_.rfind("system_", 0) == 0;
+}
+
+void FenceWindow::HeaderBtnRects(RECT* collapse, RECT* lock,
+                                RECT* dissolve) const {
+  if (collapse) {
+    *collapse = {};
+  }
+  if (lock) {
+    *lock = {};
+  }
+  if (dissolve) {
+    *dissolve = {};
+  }
+  if (!hwnd_) {
+    return;
+  }
+  RECT rc{};
+  GetClientRect(hwnd_, &rc);
+  const int header = S(hwnd_, kHeaderH0);
+  const int btn = S(hwnd_, 22);
+  const int gap = S(hwnd_, 2);
+  int right = rc.right - 2;
+  auto place = [&](RECT* out, bool enabled) {
+    if (!out || !enabled) {
+      return;
+    }
+    out->right = right;
+    out->left = right - btn;
+    out->top = 2;
+    out->bottom = header - 2;
+    right = out->left - gap;
+  };
+  // Right → left: collapse, lock, dissolve (delete).
+  place(collapse, collapsible_);
+  place(lock, true);
+  place(dissolve, !IsSystemFence());
+}
+
+FenceWindow::HeaderBtn FenceWindow::HitTestHeaderBtn(int x, int y) const {
+  RECT collapse{}, lock{}, dissolve{};
+  HeaderBtnRects(&collapse, &lock, &dissolve);
+  auto hit = [&](const RECT& r) {
+    return r.right > r.left && x >= r.left && x < r.right && y >= r.top &&
+           y < r.bottom;
+  };
+  if (hit(collapse)) {
+    return HeaderBtn::Collapse;
+  }
+  if (hit(lock)) {
+    return HeaderBtn::Lock;
+  }
+  if (hit(dissolve)) {
+    return HeaderBtn::Dissolve;
+  }
+  return HeaderBtn::None;
+}
+
+void FenceWindow::ActivateHeaderBtn(HeaderBtn btn) {
+  if (btn == HeaderBtn::Collapse) {
+    ToggleCollapsed();
+  } else if (btn == HeaderBtn::Lock) {
+    SetPositionLocked(!position_locked_);
+  } else if (btn == HeaderBtn::Dissolve) {
+    if (on_dissolve_) {
+      on_dissolve_(this);
+    }
+  }
 }
 
 void FenceWindow::OpenItem(int index) {
@@ -1501,6 +1658,20 @@ void FenceWindow::UpdateManualIconDrag(int x, int y) {
   RECT rc{};
   GetClientRect(hwnd_, &rc);
   const bool outside = x < 0 || y < 0 || x >= rc.right || y >= rc.bottom;
+  if (outside && !drag_left_) {
+    // P1-13: pointer left the fence mid-drag → hand off to the OLE pin-transfer
+    // drag (cross-fence transfer / Explorer / Recycle Bin / desktop).
+    drag_left_ = true;
+    icon_dragging_ = false;
+    std::vector<std::wstring> paths = std::move(drag_paths_);
+    drag_paths_.clear();
+    drag_indices_.clear();
+    drag_insert_ = -1;
+    ReleaseCapture();
+    PresentLayered();
+    CommitDragOutPins(std::move(paths));
+    return;
+  }
   drag_left_ = outside;
   drag_insert_ = outside ? -1 : InsertIndexAt(x, y);
   PresentLayered();
@@ -1517,26 +1688,15 @@ void FenceWindow::FinishManualIconDrag(int x, int y) {
   const bool outside =
       x < 0 || y < 0 || x >= rc.right || y >= rc.bottom;
   if (outside) {
-    // P1-3: hand off to shell OLE (Explorer / other apps / Recycle Bin).
-    // P1-12: always unpin afterward so wallpaper / cancel lands as public floats
-    // (Python virtual unpin → public), instead of icons vanishing from the fence.
-    const std::vector<std::wstring> paths = drag_paths_;
+    // P1-13: hand off to the OLE pin-transfer drag (cross-fence transfer /
+    // Explorer / Recycle Bin); unpins unless a fence consumed the transfer.
+    std::vector<std::wstring> paths = std::move(drag_paths_);
     drag_paths_.clear();
     drag_indices_.clear();
     drag_insert_ = -1;
     drag_left_ = false;
     PresentLayered();
-    if (!paths.empty()) {
-      ShellDoDragFiles(paths);
-      for (const auto& p : paths) {
-        if (on_unpin_) {
-          on_unpin_(this, p);
-        }
-      }
-    }
-    if (on_drag_done_) {
-      on_drag_done_(this);
-    }
+    CommitDragOutPins(std::move(paths));
     return;
   }
   if (y >= S(hwnd_, kHeaderH0)) {
@@ -1650,6 +1810,30 @@ void FenceWindow::CommitDragOutUnpin() {
     if (on_unpin_) {
       on_unpin_(this, p);
     }
+  }
+}
+
+void FenceWindow::CommitDragOutPins(std::vector<std::wstring> paths) {
+  // P1-13: start the OLE pin-transfer drag. If a fence consumed the custom
+  // format (transfer A→B), the pins already moved — do not unpin. Any other
+  // outcome (Explorer/Recycle Bin/desktop, or cancel) keeps the old drag-out
+  // semantics: unpin so the file lands back on the desktop as a float.
+  bool transferred = false;
+  if (!paths.empty()) {
+    transferred = ShellDoDragPins(paths, Widen(id_));
+    if (!transferred) {
+      for (const auto& p : paths) {
+        if (on_unpin_) {
+          on_unpin_(this, p);
+        }
+      }
+    }
+  }
+  if (on_pin_drag_end_) {
+    on_pin_drag_end_(this);
+  }
+  if (on_drag_done_) {
+    on_drag_done_(this);
   }
 }
 
@@ -2424,6 +2608,20 @@ LRESULT FenceWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
     }
     case WM_LBUTTONDOWN: {
       press_client_ = {GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
+      header_press_ = HeaderBtn::None;
+      // Title-bar chrome (collapse / lock / delete) before resize / drag.
+      {
+        const HeaderBtn hb =
+            HitTestHeaderBtn(press_client_.x, press_client_.y);
+        if (hb != HeaderBtn::None) {
+          header_press_ = hb;
+          dragging_ = false;
+          rubber_ = false;
+          icon_press_ = false;
+          SetCapture(hwnd_);
+          return 0;
+        }
+      }
       // Scrollbar wins over the east resize strip when content overflows.
       const int sb = HitTestScrollbar(press_client_.x, press_client_.y);
       if (sb == 1) {
@@ -2628,17 +2826,14 @@ LRESULT FenceWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
       const int x = GET_X_LPARAM(lparam);
       const int y = GET_Y_LPARAM(lparam);
       ReleaseCapture();
-      // P2-16: title-bar collapse control (right edge).
-      if (collapsible_) {
-        RECT rc{};
-        GetClientRect(hwnd_, &rc);
-        const int collapse_btn = S(hwnd_, 22);
-        if (y < S(hwnd_, kHeaderH0) && x >= rc.right - collapse_btn &&
-            HitTestEdge(x, y) == Edge::None && !dragging_ && !rubber_ &&
+      if (header_press_ != HeaderBtn::None) {
+        const HeaderBtn pressed = header_press_;
+        header_press_ = HeaderBtn::None;
+        if (HitTestHeaderBtn(x, y) == pressed && !dragging_ && !rubber_ &&
             !icon_dragging_ && !thumb_dragging_ && !resizing_) {
-          ToggleCollapsed();
-          return 0;
+          ActivateHeaderBtn(pressed);
         }
+        return 0;
       }
       if (thumb_dragging_) {
         thumb_dragging_ = false;
@@ -2818,34 +3013,47 @@ void FenceWindow::Paint(HDC hdc) {
   title_fmt.SetTrimming(Gdiplus::StringTrimmingEllipsisCharacter);
   title_fmt.SetFormatFlags(Gdiplus::StringFormatFlagsNoWrap);
   const int title_top = S(hwnd_, 6);
-  const int collapse_btn = collapsible_ ? S(hwnd_, 22) : 0;
+  RECT collapse_rc{}, lock_rc{}, dissolve_rc{};
+  HeaderBtnRects(&collapse_rc, &lock_rc, &dissolve_rc);
+  const int chrome_left = [&]() {
+    int leftmost = rc.right;
+    auto consider = [&](const RECT& r) {
+      if (r.right > r.left && r.left < leftmost) {
+        leftmost = r.left;
+      }
+    };
+    consider(collapse_rc);
+    consider(lock_rc);
+    consider(dissolve_rc);
+    return (std::max)(0, leftmost - 6);
+  }();
   if (show_title_) {
-    std::wstring caption;
-    // F6: on narrow fences drop the lock prefix so the title keeps room.
-    if (position_locked_ && rc.right >= S(hwnd_, 132)) {
-      caption += L"[锁] ";
-    }
-    caption += title_;
     Gdiplus::RectF title_box(
         0.f, static_cast<Gdiplus::REAL>(title_top),
-        static_cast<Gdiplus::REAL>(
-            (std::max)(0, static_cast<int>(rc.right) - collapse_btn - 4)),
+        static_cast<Gdiplus::REAL>(chrome_left),
         static_cast<Gdiplus::REAL>(title_px + 6));
-    g.DrawString(caption.c_str(), -1, &title_font, title_box, &title_fmt,
+    g.DrawString(title_.c_str(), -1, &title_font, title_box, &title_fmt,
                  &title_brush);
   }
-  // P2-16: dedicated collapse/expand control on the title bar.
-  if (collapsible_) {
-    const wchar_t* glyph = collapsed_ ? L"▸" : L"▾";
+  // Title-bar buttons: collapse · lock · delete (Python chrome parity).
+  {
     Gdiplus::StringFormat btn_fmt;
     btn_fmt.SetAlignment(Gdiplus::StringAlignmentCenter);
     btn_fmt.SetLineAlignment(Gdiplus::StringAlignmentCenter);
-    Gdiplus::RectF btn_box(
-        static_cast<Gdiplus::REAL>(rc.right - collapse_btn),
-        static_cast<Gdiplus::REAL>(2),
-        static_cast<Gdiplus::REAL>(collapse_btn),
-        static_cast<Gdiplus::REAL>(header - 4));
-    g.DrawString(glyph, -1, &title_font, btn_box, &btn_fmt, &title_brush);
+    auto draw_btn = [&](const RECT& r, const wchar_t* glyph) {
+      if (r.right <= r.left) {
+        return;
+      }
+      Gdiplus::RectF box(static_cast<Gdiplus::REAL>(r.left),
+                         static_cast<Gdiplus::REAL>(r.top),
+                         static_cast<Gdiplus::REAL>(r.right - r.left),
+                         static_cast<Gdiplus::REAL>(r.bottom - r.top));
+      g.DrawString(glyph, -1, &title_font, box, &btn_fmt, &title_brush);
+    };
+    draw_btn(collapse_rc, collapsed_ ? L"▸" : L"▾");
+    // YaHei on layered windows: prefer CJK glyphs over emoji (often blank).
+    draw_btn(lock_rc, position_locked_ ? L"锁" : L"开");
+    draw_btn(dissolve_rc, L"删");
   }
   if (collapsed_) {
     return;

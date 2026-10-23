@@ -9,6 +9,19 @@
 
 namespace {
 
+CLIPFORMAT PinTransferFormat() {
+  static CLIPFORMAT fmt = 0;
+  if (!fmt) {
+    fmt = static_cast<CLIPFORMAT>(RegisterClipboardFormatW(L"DeskTidyPinTransfer"));
+  }
+  return fmt;
+}
+
+PinDragMoveFn g_pin_move_fn;
+bool g_over_pin_target = false;
+bool g_over_pin_invalid = false;
+bool g_pin_transferred = false;
+
 class SimpleDropSource : public IDropSource {
  public:
   HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void** ppv) override {
@@ -40,6 +53,14 @@ class SimpleDropSource : public IDropSource {
     }
     if ((key_state & MK_LBUTTON) == 0) {
       return DRAGDROP_S_DROP;
+    }
+    if (g_pin_move_fn) {
+      POINT pt{};
+      GetCursorPos(&pt);
+      PinDragHint hint;
+      hint.over_target = g_over_pin_target;
+      hint.invalid = g_over_pin_invalid;
+      g_pin_move_fn(pt, hint);
     }
     return S_OK;
   }
@@ -81,6 +102,31 @@ HGLOBAL BuildHdrop(const std::vector<std::wstring>& paths) {
     dest += p.size() + 1;
   }
   *dest = L'\0';
+  GlobalUnlock(mem);
+  return mem;
+}
+
+HGLOBAL BuildPinPayload(const std::wstring& src_fence_id,
+                        const std::vector<std::wstring>& paths) {
+  std::wstring payload;
+  payload.reserve(src_fence_id.size() + paths.size() * 64 + 16);
+  payload += src_fence_id;
+  for (const auto& p : paths) {
+    payload.push_back(L'\n');
+    payload += p;
+  }
+  const SIZE_T bytes = (payload.size() + 1) * sizeof(wchar_t);
+  HGLOBAL mem = GlobalAlloc(GHND | GMEM_SHARE, bytes);
+  if (!mem) {
+    return nullptr;
+  }
+  auto* dst = static_cast<wchar_t*>(GlobalLock(mem));
+  if (!dst) {
+    GlobalFree(mem);
+    return nullptr;
+  }
+  memcpy(dst, payload.c_str(), payload.size() * sizeof(wchar_t));
+  dst[payload.size()] = L'\0';
   GlobalUnlock(mem);
   return mem;
 }
@@ -192,6 +238,136 @@ class HdropDataObject : public IDataObject {
   HGLOBAL hdrop_ = nullptr;
 };
 
+class PinTransferDataObject : public IDataObject {
+ public:
+  PinTransferDataObject(HGLOBAL hdrop, HGLOBAL pin)
+      : hdrop_(hdrop), pin_(pin) {}
+  ~PinTransferDataObject() {
+    if (hdrop_) {
+      GlobalFree(hdrop_);
+      hdrop_ = nullptr;
+    }
+    if (pin_) {
+      GlobalFree(pin_);
+      pin_ = nullptr;
+    }
+  }
+
+  HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void** ppv) override {
+    if (!ppv) {
+      return E_POINTER;
+    }
+    if (riid == IID_IUnknown || riid == IID_IDataObject) {
+      *ppv = static_cast<IDataObject*>(this);
+      AddRef();
+      return S_OK;
+    }
+    *ppv = nullptr;
+    return E_NOINTERFACE;
+  }
+  ULONG STDMETHODCALLTYPE AddRef() override {
+    return InterlockedIncrement(&ref_);
+  }
+  ULONG STDMETHODCALLTYPE Release() override {
+    const LONG v = InterlockedDecrement(&ref_);
+    if (v == 0) {
+      delete this;
+    }
+    return static_cast<ULONG>(v);
+  }
+
+  HGLOBAL HandleFor(const FORMATETC* fe) const {
+    if (!fe || fe->tymed != TYMED_HGLOBAL) {
+      return nullptr;
+    }
+    if (fe->cfFormat == CF_HDROP) {
+      return hdrop_;
+    }
+    if (fe->cfFormat == PinTransferFormat()) {
+      return pin_;
+    }
+    return nullptr;
+  }
+
+  HRESULT STDMETHODCALLTYPE GetData(FORMATETC* fe, STGMEDIUM* stg) override {
+    if (!fe || !stg) {
+      return E_INVALIDARG;
+    }
+    HGLOBAL src = HandleFor(fe);
+    if (!src) {
+      return DV_E_FORMATETC;
+    }
+    const SIZE_T sz = GlobalSize(src);
+    HGLOBAL copy = GlobalAlloc(GHND | GMEM_SHARE, sz);
+    if (!copy) {
+      return E_OUTOFMEMORY;
+    }
+    void* s = GlobalLock(src);
+    void* d = GlobalLock(copy);
+    if (s && d) {
+      memcpy(d, s, sz);
+    }
+    GlobalUnlock(src);
+    GlobalUnlock(copy);
+    stg->tymed = TYMED_HGLOBAL;
+    stg->hGlobal = copy;
+    stg->pUnkForRelease = nullptr;
+    return S_OK;
+  }
+  HRESULT STDMETHODCALLTYPE GetDataHere(FORMATETC*, STGMEDIUM*) override {
+    return E_NOTIMPL;
+  }
+  HRESULT STDMETHODCALLTYPE QueryGetData(FORMATETC* fe) override {
+    if (!fe) {
+      return E_INVALIDARG;
+    }
+    if ((fe->tymed & TYMED_HGLOBAL) && HandleFor(fe)) {
+      return S_OK;
+    }
+    return DV_E_FORMATETC;
+  }
+  HRESULT STDMETHODCALLTYPE GetCanonicalFormatEtc(FORMATETC*,
+                                                  FORMATETC* out) override {
+    if (out) {
+      out->ptd = nullptr;
+    }
+    return DATA_S_SAMEFORMATETC;
+  }
+  HRESULT STDMETHODCALLTYPE SetData(FORMATETC*, STGMEDIUM*, BOOL) override {
+    return E_NOTIMPL;
+  }
+  HRESULT STDMETHODCALLTYPE EnumFormatEtc(DWORD dir,
+                                          IEnumFORMATETC** enum_fe) override {
+    if (!enum_fe) {
+      return E_POINTER;
+    }
+    *enum_fe = nullptr;
+    if (dir != DATADIR_GET) {
+      return E_NOTIMPL;
+    }
+    FORMATETC fe[2] = {
+        {CF_HDROP, nullptr, DVASPECT_CONTENT, -1, TYMED_HGLOBAL},
+        {PinTransferFormat(), nullptr, DVASPECT_CONTENT, -1, TYMED_HGLOBAL},
+    };
+    return SHCreateStdEnumFmtEtc(2, fe, enum_fe);
+  }
+  HRESULT STDMETHODCALLTYPE DAdvise(FORMATETC*, DWORD, IAdviseSink*,
+                                    DWORD*) override {
+    return OLE_E_ADVISENOTSUPPORTED;
+  }
+  HRESULT STDMETHODCALLTYPE DUnadvise(DWORD) override {
+    return OLE_E_ADVISENOTSUPPORTED;
+  }
+  HRESULT STDMETHODCALLTYPE EnumDAdvise(IEnumSTATDATA**) override {
+    return OLE_E_ADVISENOTSUPPORTED;
+  }
+
+ private:
+  LONG ref_ = 1;
+  HGLOBAL hdrop_ = nullptr;
+  HGLOBAL pin_ = nullptr;
+};
+
 IDataObject* CreateShellDataObject(const std::vector<std::wstring>& paths) {
   if (paths.empty()) {
     return nullptr;
@@ -236,7 +412,44 @@ bool ShellDoDragFiles(const std::vector<std::wstring>& paths) {
   return hr == DRAGDROP_S_DROP;
 }
 
-PathDropTarget::PathDropTarget(DropFn on_drop) : on_drop_(std::move(on_drop)) {}
+void SetPinDragMoveFn(PinDragMoveFn fn) { g_pin_move_fn = std::move(fn); }
+
+bool ShellDoDragPins(const std::vector<std::wstring>& paths,
+                     const std::wstring& src_fence_id) {
+  if (paths.empty()) {
+    return false;
+  }
+  HGLOBAL hdrop = BuildHdrop(paths);
+  if (!hdrop) {
+    return false;
+  }
+  HGLOBAL pin = BuildPinPayload(src_fence_id, paths);
+  if (!pin) {
+    GlobalFree(hdrop);
+    return false;
+  }
+  auto* data = new (std::nothrow) PinTransferDataObject(hdrop, pin);
+  if (!data) {
+    GlobalFree(hdrop);
+    GlobalFree(pin);
+    return false;
+  }
+  auto* source = new (std::nothrow) SimpleDropSource();
+  if (!source) {
+    data->Release();
+    return false;
+  }
+  g_pin_transferred = false;
+  DWORD effect = DROPEFFECT_COPY | DROPEFFECT_MOVE | DROPEFFECT_LINK;
+  const HRESULT hr = DoDragDrop(data, source, effect, &effect);
+  source->Release();
+  data->Release();
+  (void)hr;
+  return g_pin_transferred;
+}
+
+PathDropTarget::PathDropTarget(DropFn on_drop, PinDropFn on_pin_drop)
+    : on_drop_(std::move(on_drop)), on_pin_drop_(std::move(on_pin_drop)) {}
 
 HRESULT STDMETHODCALLTYPE PathDropTarget::QueryInterface(REFIID riid,
                                                          void** ppv) {
@@ -296,14 +509,88 @@ std::vector<std::wstring> PathDropTarget::ExtractPaths(IDataObject* data) const 
   return out;
 }
 
+bool PathDropTarget::HasPinTransfer(IDataObject* data) const {
+  if (!data) {
+    return false;
+  }
+  FORMATETC fe{PinTransferFormat(), nullptr, DVASPECT_CONTENT, -1,
+               TYMED_HGLOBAL};
+  return data->QueryGetData(&fe) == S_OK;
+}
+
+bool PathDropTarget::ExtractPinTransfer(IDataObject* data, std::wstring* src,
+                                        std::vector<std::wstring>* paths) const {
+  if (!data || !src || !paths) {
+    return false;
+  }
+  FORMATETC fe{PinTransferFormat(), nullptr, DVASPECT_CONTENT, -1,
+               TYMED_HGLOBAL};
+  STGMEDIUM stg{};
+  if (FAILED(data->GetData(&fe, &stg)) || !stg.hGlobal) {
+    return false;
+  }
+  const auto* buf = static_cast<const wchar_t*>(GlobalLock(stg.hGlobal));
+  if (buf) {
+    std::wstring s;
+    const wchar_t* p = buf;
+    while (*p && *p != L'\n') {
+      s.push_back(*p++);
+    }
+    *src = s;
+    if (*p == L'\n') {
+      ++p;
+    }
+    while (*p) {
+      std::wstring path;
+      while (*p && *p != L'\n') {
+        path.push_back(*p++);
+      }
+      if (!path.empty()) {
+        paths->push_back(path);
+      }
+      if (*p == L'\n') {
+        ++p;
+      }
+    }
+    GlobalUnlock(stg.hGlobal);
+  }
+  ReleaseStgMedium(&stg);
+  return !src->empty() && !paths->empty();
+}
+
 HRESULT STDMETHODCALLTYPE PathDropTarget::DragEnter(IDataObject* data,
                                                     DWORD /*key_state*/,
                                                     POINTL /*pt*/,
                                                     DWORD* effect) {
+  g_over_pin_target = false;
+  g_over_pin_invalid = false;
+  pin_mode_ = false;
+  accept_ = false;
+
+  std::wstring src;
+  std::vector<std::wstring> paths;
+  if (on_pin_drop_ && ExtractPinTransfer(data, &src, &paths)) {
+    pin_mode_ = true;
+    const DWORD eff = on_pin_drop_(src, paths, /*commit=*/false);
+    accept_ = (eff != DROPEFFECT_NONE);
+    g_over_pin_target = true;
+    g_over_pin_invalid = !accept_;
+    if (effect) {
+      *effect = accept_ ? eff : DROPEFFECT_NONE;
+    }
+    if (highlight_fn_) {
+      highlight_fn_(accept_);
+    }
+    return S_OK;
+  }
+
   accept_ = HasFileDrop(data);
   if (effect) {
     *effect = accept_ ? (*effect & (DROPEFFECT_COPY | DROPEFFECT_MOVE))
                       : DROPEFFECT_NONE;
+  }
+  if (highlight_fn_) {
+    highlight_fn_(accept_);
   }
   return S_OK;
 }
@@ -311,6 +598,12 @@ HRESULT STDMETHODCALLTYPE PathDropTarget::DragEnter(IDataObject* data,
 HRESULT STDMETHODCALLTYPE PathDropTarget::DragOver(DWORD /*key_state*/,
                                                    POINTL /*pt*/,
                                                    DWORD* effect) {
+  if (pin_mode_) {
+    if (effect) {
+      *effect = accept_ ? DROPEFFECT_MOVE : DROPEFFECT_NONE;
+    }
+    return S_OK;
+  }
   if (effect) {
     *effect = accept_ ? (*effect & (DROPEFFECT_COPY | DROPEFFECT_MOVE))
                       : DROPEFFECT_NONE;
@@ -319,13 +612,43 @@ HRESULT STDMETHODCALLTYPE PathDropTarget::DragOver(DWORD /*key_state*/,
 }
 
 HRESULT STDMETHODCALLTYPE PathDropTarget::DragLeave() {
+  g_over_pin_target = false;
+  g_over_pin_invalid = false;
   accept_ = false;
+  pin_mode_ = false;
+  if (highlight_fn_) {
+    highlight_fn_(false);
+  }
   return S_OK;
 }
 
 HRESULT STDMETHODCALLTYPE PathDropTarget::Drop(IDataObject* data,
                                                DWORD /*key_state*/, POINTL /*pt*/,
                                                DWORD* effect) {
+  if (pin_mode_) {
+    std::wstring src;
+    std::vector<std::wstring> paths;
+    if (ExtractPinTransfer(data, &src, &paths)) {
+      const DWORD eff = on_pin_drop_(src, paths, /*commit=*/true);
+      if (eff != DROPEFFECT_NONE) {
+        g_pin_transferred = true;
+      }
+      if (effect) {
+        *effect = eff;
+      }
+    } else if (effect) {
+      *effect = DROPEFFECT_NONE;
+    }
+    g_over_pin_target = false;
+    g_over_pin_invalid = false;
+    accept_ = false;
+    pin_mode_ = false;
+    if (highlight_fn_) {
+      highlight_fn_(false);
+    }
+    return S_OK;
+  }
+
   auto paths = ExtractPaths(data);
   if (effect) {
     *effect = paths.empty() ? DROPEFFECT_NONE : DROPEFFECT_COPY;
@@ -334,6 +657,9 @@ HRESULT STDMETHODCALLTYPE PathDropTarget::Drop(IDataObject* data,
     on_drop_(paths);
   }
   accept_ = false;
+  if (highlight_fn_) {
+    highlight_fn_(false);
+  }
   return S_OK;
 }
 

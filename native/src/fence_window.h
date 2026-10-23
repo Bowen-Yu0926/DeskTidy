@@ -101,6 +101,16 @@ class FenceWindow {
   void SetOnReorder(ReorderFn fn) { on_reorder_ = std::move(fn); }
   void SetOnPathsDroppedAt(DropAtFn fn) { on_paths_dropped_at_ = std::move(fn); }
   void SetOnZoomChanged(ZoomFn fn) { on_zoom_changed_ = std::move(fn); }
+  // P1-13: pin-transfer drop. Returns the DROPEFFECT to advertise (NONE = reject).
+  using PinDropFn = std::function<DWORD(
+      FenceWindow*, const std::wstring& src_fence_id,
+      const std::vector<std::wstring>& paths, bool commit)>;
+  void SetOnPinDrop(PinDropFn fn) { on_pin_drop_ = std::move(fn); }
+  // P1-12: fired once when a pin-transfer drag ends (Drop/Escape) — hides the
+  // floating drop hint owned by App.
+  void SetOnPinDragEnd(DragDoneFn fn) { on_pin_drag_end_ = std::move(fn); }
+  // P1-12: drop-target highlight (inner stroke + translucent overlay).
+  void SetDropHighlight(bool on);
   void SetOnGeometryMoved(GeometryMovedFn fn) {
     on_geometry_moved_ = std::move(fn);
   }
@@ -113,6 +123,8 @@ class FenceWindow {
   const std::vector<std::wstring>& PinOrder() const { return pin_order_; }
   // Insert dropped paths at `at` (dedup existing occurrences); `at<0` appends.
   void InsertPinOrder(const std::vector<std::wstring>& paths, int at);
+  // Remove every occurrence of `paths` from the manual pin order.
+  void RemovePinOrder(const std::vector<std::wstring>& paths);
   // H3: per-page geometry / visibility.
   void SetPageGeometry(int page, const FencePageGeometry& geo);
   const std::map<int, FencePageGeometry>& PageGeometries() const {
@@ -175,6 +187,14 @@ class FenceWindow {
     Bottom = 8,
   };
 
+  // Title-bar chrome buttons (Python: collapse + lock; dissolve for delete).
+  enum class HeaderBtn : int {
+    None = 0,
+    Collapse = 1,
+    Lock = 2,
+    Dissolve = 3,
+  };
+
   static LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
   LRESULT HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam);
   void Paint(HDC hdc);
@@ -182,6 +202,10 @@ class FenceWindow {
   void LayoutCells();
   int HitTestIcon(int x, int y) const;
   Edge HitTestEdge(int x, int y) const;
+  bool IsSystemFence() const;
+  void HeaderBtnRects(RECT* collapse, RECT* lock, RECT* dissolve) const;
+  HeaderBtn HitTestHeaderBtn(int x, int y) const;
+  void ActivateHeaderBtn(HeaderBtn btn);
   void OpenItem(int index);
   void RevealItem(int index);
   void BeginIconDrag(int index);
@@ -215,6 +239,8 @@ class FenceWindow {
   void StartManualIconDrag(int index);
   void UpdateManualIconDrag(int x, int y);
   void FinishManualIconDrag(int x, int y);
+  // P1-13: OLE pin-transfer drag out of the fence; unpins unless transferred.
+  void CommitDragOutPins(std::vector<std::wstring> paths);
   int InsertIndexAt(int x, int y) const;
   void CommitReorder(int insert_index);
   void CommitDragOutUnpin();
@@ -287,9 +313,12 @@ class FenceWindow {
   DropAtFn on_paths_dropped_at_;
   ZoomFn on_zoom_changed_;
   GeometryMovedFn on_geometry_moved_;
+  PinDropFn on_pin_drop_;
+  DragDoneFn on_pin_drag_end_;
   std::wstring portal_path_;
   bool collapsed_ = false;
   bool position_locked_ = false;
+  HeaderBtn header_press_ = HeaderBtn::None;
   int expanded_h_ = 360;
   std::string sort_by_ = "name";
   std::string view_mode_ = "grid";
@@ -320,6 +349,8 @@ class FenceWindow {
   std::vector<int> drag_indices_;
   int drag_insert_ = -1;   // live insert indicator position
   bool drag_left_ = false;  // pointer has left the client area
+  // P1-12: fence-level drop-target highlight (DragEnter on / DragLeave+Drop off).
+  bool drop_highlight_ = false;
   // F4 icon zoom.
   int icon_zoom_percent_ = 100;
   // F7 scrollbar drag state.
