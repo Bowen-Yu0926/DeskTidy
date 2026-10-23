@@ -21,6 +21,7 @@
 #include "snapshot_ui.h"
 #include "whitelist.h"
 #include "paths_util.h"
+#include "mist_msg.h"
 #include "prompt_text.h"
 #include "cli_ipc.h"
 #include "fence_keys.h"
@@ -47,13 +48,17 @@
 #include <cstring>
 #include <Shellapi.h>
 #include <ShlObj.h>
+#include <gdiplus.h>
 
 #include <algorithm>
 #include <fstream>
+#include <functional>
 #include <memory>
 #include <thread>
 #include <unordered_map>
 #include <utility>
+
+#pragma comment(lib, "gdiplus.lib")
 
 // Defined in layout.cpp — scales the stored layout old work area → new (U4).
 // Declared at global scope so it links against the external definition.
@@ -101,6 +106,156 @@ HWND g_band_hwnd = nullptr;
 HHOOK g_kb_hook = nullptr;
 // Avoid overlapping WinHttp vault pulls from the periodic timer.
 bool g_vault_pull_busy = false;
+
+// P1-12: floating drop-hint window (layered, rounded, no-activate).
+constexpr wchar_t kPinHintClass[] = L"DeskTidyPinHint";
+HWND g_pin_hint_hwnd = nullptr;
+
+// Shutdown steps must never let one failing step (SEH access violation or a
+// C++ exception) abort the rest. C++ exceptions are caught in InvokeStepBody
+// (no __try there) and SEH faults in RunShutdownStep (no C++ objects there) —
+// kept in separate functions because MSVC forbids mixing __try with try/catch
+// inside one function (/EHsc).
+void InvokeStepBody(const std::function<void()>& body) {
+  try {
+    body();
+  } catch (...) {
+    LogLineA("[shutdown] step body threw C++ exception");
+  }
+}
+
+void RunShutdownStep(const char* name, const std::function<void()>& body) {
+  LogLineA("[shutdown] %s begin", name);
+  __try {
+    InvokeStepBody(body);
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    LogLineA("[shutdown] %s SEH exception code=0x%08X", name,
+             static_cast<unsigned int>(GetExceptionCode()));
+  }
+  LogLineA("[shutdown] %s end", name);
+}
+
+LRESULT CALLBACK PinHintWndProc(HWND hwnd, UINT msg, WPARAM w, LPARAM l) {
+  return DefWindowProcW(hwnd, msg, w, l);
+}
+
+void EnsurePinHintWindow(HINSTANCE inst) {
+  if (g_pin_hint_hwnd) {
+    return;
+  }
+  WNDCLASSEXW wc{};
+  wc.cbSize = sizeof(wc);
+  wc.lpfnWndProc = PinHintWndProc;
+  wc.hInstance = inst;
+  wc.lpszClassName = kPinHintClass;
+  wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
+  if (!RegisterClassExW(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {
+    return;
+  }
+  g_pin_hint_hwnd =
+      CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE |
+                          WS_EX_LAYERED,
+                      kPinHintClass, L"", WS_POPUP, 0, 0, 16, 16, nullptr,
+                      nullptr, inst, nullptr);
+}
+
+void ShowPinHintWindow(HINSTANCE inst, const std::wstring& text, POINT cursor) {
+  EnsurePinHintWindow(inst);
+  if (!g_pin_hint_hwnd) {
+    return;
+  }
+  static ULONG_PTR gdi_token = 0;
+  if (!gdi_token) {
+    Gdiplus::GdiplusStartupInput input;
+    Gdiplus::GdiplusStartup(&gdi_token, &input, nullptr);
+  }
+  Gdiplus::FontFamily family(L"Microsoft YaHei UI");
+  const Gdiplus::FontFamily* face =
+      family.IsAvailable() ? &family : Gdiplus::FontFamily::GenericSansSerif();
+  Gdiplus::Font font(face, 13.0f, Gdiplus::FontStyleRegular,
+                     Gdiplus::UnitPixel);
+  Gdiplus::Bitmap tmp(1, 1, PixelFormat32bppARGB);
+  Gdiplus::Graphics mg(&tmp);
+  Gdiplus::RectF mbox;
+  mg.MeasureString(text.c_str(), -1, &font, Gdiplus::PointF(0, 0), &mbox);
+  const int pad_x = 14;
+  const int pad_y = 7;
+  const int w = (std::max)(16, static_cast<int>(mbox.Width + 0.5f) + pad_x * 2);
+  const int h = (std::max)(16, static_cast<int>(mbox.Height + 0.5f) + pad_y * 2);
+  const int x = cursor.x + 12;
+  const int y = cursor.y + 12;
+
+  HDC screen = GetDC(nullptr);
+  HDC mem = CreateCompatibleDC(screen);
+  BITMAPINFO bmi{};
+  bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+  bmi.bmiHeader.biWidth = w;
+  bmi.bmiHeader.biHeight = -h;
+  bmi.bmiHeader.biPlanes = 1;
+  bmi.bmiHeader.biBitCount = 32;
+  bmi.bmiHeader.biCompression = BI_RGB;
+  void* bits = nullptr;
+  HBITMAP dib = CreateDIBSection(screen, &bmi, DIB_RGB_COLORS, &bits, nullptr, 0);
+  if (!dib || !bits) {
+    if (dib) {
+      DeleteObject(dib);
+    }
+    DeleteDC(mem);
+    ReleaseDC(nullptr, screen);
+    return;
+  }
+  HGDIOBJ old = SelectObject(mem, dib);
+  std::memset(bits, 0, static_cast<size_t>(w) * static_cast<size_t>(h) * 4);
+  {
+    Gdiplus::Graphics g(mem);
+    g.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+    g.SetPixelOffsetMode(Gdiplus::PixelOffsetModeNone);
+    g.SetTextRenderingHint(Gdiplus::TextRenderingHintAntiAliasGridFit);
+    const int radius = 8;
+    Gdiplus::GraphicsPath path;
+    const int rr = radius * 2;
+    if (rr > 2 && rr < w && rr < h) {
+      path.AddArc(0, 0, rr, rr, 180, 90);
+      path.AddArc(w - rr, 0, rr, rr, 270, 90);
+      path.AddArc(w - rr, h - rr, rr, rr, 0, 90);
+      path.AddArc(0, h - rr, rr, rr, 90, 90);
+      path.CloseFigure();
+    } else {
+      path.AddRectangle(Gdiplus::Rect(0, 0, w, h));
+    }
+    Gdiplus::SolidBrush bg(Gdiplus::Color(214, 22, 27, 34));
+    g.FillPath(&bg, &path);
+    Gdiplus::Pen edge(Gdiplus::Color(120, 120, 170, 255), 1.0f);
+    g.DrawPath(&edge, &path);
+    Gdiplus::SolidBrush text_br(Gdiplus::Color(255, 255, 255, 255));
+    Gdiplus::StringFormat fmt;
+    fmt.SetAlignment(Gdiplus::StringAlignmentCenter);
+    fmt.SetLineAlignment(Gdiplus::StringAlignmentCenter);
+    Gdiplus::RectF box(0.f, 0.f, static_cast<Gdiplus::REAL>(w),
+                       static_cast<Gdiplus::REAL>(h));
+    g.DrawString(text.c_str(), -1, &font, box, &fmt, &text_br);
+  }
+  POINT origin{x, y};
+  SIZE size{w, h};
+  POINT src{0, 0};
+  BLENDFUNCTION blend{};
+  blend.BlendOp = AC_SRC_OVER;
+  blend.SourceConstantAlpha = 255;
+  blend.AlphaFormat = AC_SRC_ALPHA;
+  UpdateLayeredWindow(g_pin_hint_hwnd, screen, &origin, &size, mem, &src, 0,
+                      &blend, ULW_ALPHA);
+  SelectObject(mem, old);
+  DeleteObject(dib);
+  DeleteDC(mem);
+  ReleaseDC(nullptr, screen);
+}
+
+void HidePinHintWindow() {
+  if (g_pin_hint_hwnd) {
+    ShowWindow(g_pin_hint_hwnd, SW_HIDE);
+  }
+}
+
 }  // namespace
 
 struct OrganizeJobResult {
@@ -237,6 +392,31 @@ void PushOrganizePage(SettingsWindow* settings, const PinMap& pins,
 }
 }  // namespace
 
+// P1-17: push the pet below any visible fence on the current page so fence fill
+// cannot cover the pet's chrome (page chips + crown). Mirrors the fence-rect
+// collection in App::SetPage.
+static void NudgePetClearOfFences(
+    PetWindow& pet, const std::vector<std::unique_ptr<FenceWindow>>& fences,
+    int current_page) {
+  if (!pet.Hwnd() || !IsWindowVisible(pet.Hwnd())) {
+    return;
+  }
+  std::vector<RECT> rects;
+  for (const auto& f : fences) {
+    if (!f || !f->Hwnd() || !IsWindowVisible(f->Hwnd())) {
+      continue;
+    }
+    if (f->Page() != current_page) {
+      continue;
+    }
+    RECT wr{};
+    if (GetWindowRect(f->Hwnd(), &wr)) {
+      rects.push_back(wr);
+    }
+  }
+  pet.NudgeClearOfFenceBottoms(rects);
+}
+
 void App::WireFence(FenceWindow* fence) {
   if (!fence) {
     return;
@@ -313,11 +493,13 @@ void App::WireFence(FenceWindow* fence) {
       fw->SetPageGeometry(page, geo);
     }
     PersistLayouts();
+    NudgePetClearOfFences(pet_, fences_, current_page_);
   });
   fence->SetOnZoomChanged([this](FenceWindow* f, int zoom) {
     (void)f;
     (void)zoom;
     PersistLayouts();
+    NudgePetClearOfFences(pet_, fences_, current_page_);
   });
   fence->SetOnReorder([this](FenceWindow* f,
                              const std::vector<std::wstring>& order) {
@@ -342,6 +524,12 @@ void App::WireFence(FenceWindow* fence) {
         OnPathsDropped(f, paths);
       });
   fence->SetOnDragDone([this](FenceWindow*) { RefreshDesktopIcons(); });
+  fence->SetOnPinDrop([this](FenceWindow* f, const std::wstring& src,
+                             const std::vector<std::wstring>& paths,
+                             bool commit) {
+    return OnPinDropped(f, src, paths, commit);
+  });
+  fence->SetOnPinDragEnd([this](FenceWindow*) { HidePinDragHint(); });
   fence->SetOnUnpin([this](FenceWindow*, const std::wstring& path) {
     UnpinPath(path);
   });
@@ -451,6 +639,10 @@ bool App::Init(HINSTANCE instance) {
                     reinterpret_cast<LONG_PTR>(this));
   // Cut-ghost dimming tracks Explorer Preferred DropEffect changes.
   AddClipboardFormatListener(message_hwnd_);
+  // P1-12: drive the floating drop hint from the OLE drag loop.
+  SetPinDragMoveFn([this](POINT cursor, const PinDragHint& hint) {
+    UpdatePinDragHint(cursor, hint.over_target, hint.invalid);
+  });
 
   // P1-29/P1-30: migrate Python settings/hotkeys/prefs/first_run BEFORE loading
   // native values, otherwise the first launch loads stale defaults and the
@@ -906,14 +1098,6 @@ bool App::Init(HINSTANCE instance) {
       return false;
     }
   }
-  if (!prefs_.theme_id.empty()) {
-    LogLineA("[shutdown] step 9 fences");
-  for (auto& fence : fences_) {
-      if (fence && fence->StyleId() == "charcoal") {
-        // leave explicit styles; theme applies to new fences via prefs
-      }
-    }
-  }
   PersistLayouts();
   // Match Python: host This PC / Recycle Bin as fence pins before first paint.
   if (EnsureHostedSystemNamespaceIcons(&pins_) > 0) {
@@ -1307,88 +1491,173 @@ int App::Run() {
   return static_cast<int>(msg.wParam);
 }
 
+void App::ReapFinishedWorkers() {
+  for (auto it = workers_.begin(); it != workers_.end();) {
+    if (!it->joinable()) {
+      it = workers_.erase(it);
+      continue;
+    }
+    const HANDLE h = static_cast<HANDLE>(it->native_handle());
+    if (h && WaitForSingleObject(h, 0) == WAIT_OBJECT_0) {
+      it->join();
+      it = workers_.erase(it);
+      continue;
+    }
+    ++it;
+  }
+}
+
+void App::JoinWorkers() {
+  ReapFinishedWorkers();
+  for (auto& t : workers_) {
+    if (!t.joinable()) {
+      continue;
+    }
+    const HANDLE h = static_cast<HANDLE>(t.native_handle());
+    const DWORD r = h ? WaitForSingleObject(h, 2000) : WAIT_TIMEOUT;
+    if (r == WAIT_OBJECT_0) {
+      t.join();
+    } else {
+      LogLineA("[shutdown] worker join timeout");
+      t.detach();
+    }
+  }
+  workers_.clear();
+}
+
 void App::Shutdown() {
-  LogLineA("[shutdown] step 1 hooks");
-  hotkey_relay_.Stop();
-  RemoveFenceKeyHook();
-  StopForegroundHook();
-  StopDesktopDblClickMonitor();
-  PersistLayouts();
-  SavePins(pins_);
-  SaveRules(rules_);
-  SaveAppPrefs(prefs_);
-  LogLineA("[shutdown] step 2 persist done");
-  StopNamespaceIconRebuildGuard();
-  LogLineA("[shutdown] step 3 restore icons");
-  RestoreDesktopIconsIfHidden();
-  LogLineA("[shutdown] step 4 icons restored");
-  if (message_hwnd_) {
-    KillTimer(message_hwnd_, kTimerRestore);
-    KillTimer(message_hwnd_, kTimerPet);
-    KillTimer(message_hwnd_, kTimerWatch);
-    KillTimer(message_hwnd_, kTimerBandSettle);
-    KillTimer(message_hwnd_, kTimerUpdate);
-    KillTimer(message_hwnd_, kTimerVault);
-    KillTimer(message_hwnd_, kTimerOpenSettingsVault);
-    KillTimer(message_hwnd_, kTimerOpenSettingsOrg);
-    KillTimer(message_hwnd_, kTimerMemTrim);
-    vault_timer_ = 0;
-    open_settings_vault_timer_ = 0;
-    restore_timer_ = pet_timer_ = watch_timer_ = 0;
-  }
-  LogLineA("[shutdown] step 5 timers killed");
-  RemoveTrayIcon();
-  LogLineA("[shutdown] step 6 tray removed");
-  if (message_hwnd_) {
-    RemoveClipboardFormatListener(message_hwnd_);
-    for (size_t i = 0; i < 32; ++i) {
-      UnregisterHotKey(message_hwnd_, static_cast<int>(kHotkeyBase + i));
+  // 1) stop all timers.
+  RunShutdownStep("step 1 timers", [this]() {
+    if (message_hwnd_) {
+      KillTimer(message_hwnd_, kTimerRestore);
+      KillTimer(message_hwnd_, kTimerPet);
+      KillTimer(message_hwnd_, kTimerWatch);
+      KillTimer(message_hwnd_, kTimerBandSettle);
+      KillTimer(message_hwnd_, kTimerUpdate);
+      KillTimer(message_hwnd_, kTimerVault);
+      KillTimer(message_hwnd_, kTimerOpenSettingsVault);
+      KillTimer(message_hwnd_, kTimerOpenSettingsOrg);
+      KillTimer(message_hwnd_, kTimerMemTrim);
+      KillTimer(message_hwnd_, kTimerDisplayChange);
+      KillTimer(message_hwnd_, kTimerIconsRefresh);
+      vault_timer_ = 0;
+      open_settings_vault_timer_ = 0;
+      restore_timer_ = pet_timer_ = watch_timer_ = 0;
     }
-    LogLineA("[shutdown] step 7 destroying msg hwnd");
-    DestroyWindow(message_hwnd_);
-    LogLineA("[shutdown] step 8 msg hwnd destroyed");
-    message_hwnd_ = nullptr;
-  }
-  for (auto& fence : fences_) {
-    if (fence) {
-      fence->Destroy();
+  });
+
+  // 2) revoke drop targets.
+  RunShutdownStep("step 2 drop targets", [this]() {
+    for (auto& fence : fences_) {
+      if (fence && fence->Hwnd()) {
+        RevokePathDropTarget(fence->Hwnd());
+      }
     }
-  }
-  fences_.clear();
-  LogLineA("[shutdown] step 10 panels");
-  page_bar_.Destroy();
-  public_host_.Destroy();
-  dock_.Destroy();
-  pet_.Destroy();
-  LogLineA("[shutdown] step 11 pet done");
-  todos_.Destroy();
-  search_.Destroy();
-  vault_launcher_.Destroy();
-  vault_.Destroy();
-  LogLineA("[shutdown] step 12 tools done");
-  settings_.Destroy();
-  LogLineA("[shutdown] step 13 settings done");
-  for (auto& p : pins_img_) {
-    if (p) {
-      p->Destroy();
+    if (pet_.Hwnd()) {
+      RevokePathDropTarget(pet_.Hwnd());
     }
-  }
-  pins_img_.clear();
-  LogLineA("[shutdown] step 14 record reap");
-  ReapScreenRecordOnExit();
-  LogLineA("[shutdown] step 15 record done");
-  // Python *_ensure_shell_icons_restored*: overlays are torn down by now; reveal
-  // Explorer icons. Toggled twice because Explorer sometimes misses the first
-  // request while the desktop HWND tree is still being destroyed.
-  InvalidateDefViewCache();
-  icons_visible_intent_ = true;
-  if (!AreDesktopIconsVisible()) {
-    SetDesktopIconsVisible(true);
-  }
-  if (!AreDesktopIconsVisible()) {
-    SetDesktopIconsVisible(true);
-  }
-  LogLine(L"[shell] shutdown icons restored visible=%d", AreDesktopIconsVisible() ? 1 : 0);
+  });
+
+  // 3) unregister hotkeys.
+  RunShutdownStep("step 3 hotkeys", [this]() {
+    if (message_hwnd_) {
+      for (size_t i = 0; i < 32; ++i) {
+        UnregisterHotKey(message_hwnd_, static_cast<int>(kHotkeyBase + i));
+      }
+    }
+  });
+
+  // 4) stop hooks.
+  RunShutdownStep("step 4 hooks", [this]() {
+    RemoveFenceKeyHook();
+    StopForegroundHook();
+    StopDesktopDblClickMonitor();
+    StopNamespaceIconRebuildGuard();
+  });
+
+  // 5) stop hotkey relay + join background workers.
+  RunShutdownStep("step 5 relay", [this]() {
+    hotkey_relay_.Stop();
+    JoinWorkers();
+  });
+
+  // 6) save state.
+  RunShutdownStep("step 6 persist", [this]() {
+    PersistLayouts();
+    SavePins(pins_);
+    SaveRules(rules_);
+    SaveAppPrefs(prefs_);
+  });
+
+  // 7) restore desktop icons.
+  RunShutdownStep("step 7 restore icons", [this]() {
+    RestoreDesktopIconsIfHidden();
+    icons_visible_intent_ = true;
+    if (!AreDesktopIconsVisible()) {
+      SetDesktopIconsVisible(true);
+    }
+    if (!AreDesktopIconsVisible()) {
+      SetDesktopIconsVisible(true);
+    }
+    LogLine(L"[shell] shutdown icons restored visible=%d",
+            AreDesktopIconsVisible() ? 1 : 0);
+  });
+
+  // 8) reap in-flight recording.
+  RunShutdownStep("step 8 record reap", [this]() { ReapScreenRecordOnExit(); });
+
+  // 9) destroy WebView2 windows (settings/vault/todo/search).
+  RunShutdownStep("step 9 webview", [this]() {
+    settings_.Destroy();
+    vault_.Destroy();
+    todos_.Destroy();
+    search_.Destroy();
+  });
+
+  // 10) destroy fences.
+  RunShutdownStep("step 10 fences", [this]() {
+    for (auto& fence : fences_) {
+      if (fence) {
+        fence->Destroy();
+      }
+    }
+    fences_.clear();
+  });
+
+  // 11) destroy panels.
+  RunShutdownStep("step 11 panels", [this]() {
+    page_bar_.Destroy();
+    public_host_.Destroy();
+    dock_.Destroy();
+    pet_.Destroy();
+    vault_launcher_.Destroy();
+  });
+
+  // 12) destroy pinned images.
+  RunShutdownStep("step 12 pins", [this]() {
+    for (auto& p : pins_img_) {
+      if (p) {
+        p->Destroy();
+      }
+    }
+    pins_img_.clear();
+  });
+
+  // 13) remove tray icon.
+  RunShutdownStep("step 13 tray", [this]() { RemoveTrayIcon(); });
+
+  // 14) remove clipboard listener + destroy message window (WM_DESTROY posts
+  // the quit message; the loop has already exited by now).
+  RunShutdownStep("step 14 msg hwnd", [this]() {
+    if (message_hwnd_) {
+      RemoveClipboardFormatListener(message_hwnd_);
+      DestroyWindow(message_hwnd_);
+      message_hwnd_ = nullptr;
+    }
+  });
+
+  // 15) finalize.
+  RunShutdownStep("step 15 done", [this]() { InvalidateDefViewCache(); });
 }
 
 void App::StartRegionCapture() {
@@ -1557,6 +1826,23 @@ void App::DispatchSettingsCommand(const std::wstring& id) {
     settings_.SetCurrentPage(current_page_);
     return;
   }
+  if (id.rfind(L"toggle_page_lock:", 0) == 0) {
+    TogglePageLock(_wtoi(id.c_str() + 16));
+    PushExtensionSettings();
+    return;
+  }
+  if (id.rfind(L"fence_toggle_lock:", 0) == 0) {
+    const int index = _wtoi(id.c_str() + 18);
+    if (index >= 0 && index < static_cast<int>(fences_.size()) &&
+        fences_[static_cast<size_t>(index)]) {
+      FenceWindow* f = fences_[static_cast<size_t>(index)].get();
+      f->SetPositionLocked(!f->IsPositionLocked());
+      PersistLayouts();
+      PushExtensionSettings();
+      ShowToast(f->IsPositionLocked() ? L"已锁定分区位置" : L"已解锁分区位置");
+    }
+    return;
+  }
   if (id.rfind(L"rename_fence:", 0) == 0) {
     const int index = _wtoi(id.c_str() + 13);
     if (index >= 0 && index < static_cast<int>(fences_.size()) &&
@@ -1572,6 +1858,63 @@ void App::DispatchSettingsCommand(const std::wstring& id) {
         PushExtensionSettings();
       }
     }
+    return;
+  }
+  // edit_fence:INDEX|kinds|title  — kinds = "icon,file" / "icon" / "file" / ""
+  if (id.rfind(L"edit_fence:", 0) == 0) {
+    const std::wstring rest = id.substr(11);
+    const size_t p1 = rest.find(L'|');
+    if (p1 == std::wstring::npos) {
+      return;
+    }
+    const int index = _wtoi(rest.substr(0, p1).c_str());
+    const size_t p2 = rest.find(L'|', p1 + 1);
+    const std::wstring kinds_w =
+        p2 == std::wstring::npos ? rest.substr(p1 + 1)
+                                 : rest.substr(p1 + 1, p2 - p1 - 1);
+    const std::wstring title =
+        p2 == std::wstring::npos ? L"" : rest.substr(p2 + 1);
+    if (index < 0 || index >= static_cast<int>(fences_.size()) ||
+        !fences_[static_cast<size_t>(index)]) {
+      return;
+    }
+    FenceWindow* f = fences_[static_cast<size_t>(index)].get();
+    if (!title.empty()) {
+      f->SetTitle(title);
+    }
+    std::vector<std::string> kinds;
+    size_t start = 0;
+    const std::string kinds_utf8 = NarrowUtf8(kinds_w);
+    while (start < kinds_utf8.size()) {
+      size_t comma = kinds_utf8.find(',', start);
+      if (comma == std::string::npos) {
+        comma = kinds_utf8.size();
+      }
+      std::string part = kinds_utf8.substr(start, comma - start);
+      while (!part.empty() && (part.front() == ' ' || part.front() == '\t')) {
+        part.erase(part.begin());
+      }
+      while (!part.empty() && (part.back() == ' ' || part.back() == '\t')) {
+        part.pop_back();
+      }
+      if (part == "icon" || part == "file") {
+        if (std::find(kinds.begin(), kinds.end(), part) == kinds.end()) {
+          kinds.push_back(part);
+        }
+      }
+      start = comma + 1;
+    }
+    // Stable order: icon then file.
+    std::vector<std::string> ordered;
+    for (const char* k : {"icon", "file"}) {
+      if (std::find(kinds.begin(), kinds.end(), k) != kinds.end()) {
+        ordered.push_back(k);
+      }
+    }
+    f->SetOrganizeKinds(std::move(ordered));
+    PersistLayouts();
+    RefreshSettingsList();
+    PushExtensionSettings();
     return;
   }
   if (id == L"pet_show") {
@@ -1689,14 +2032,15 @@ void App::DispatchSettingsCommand(const std::wstring& id) {
       auto* remote =
           new std::vector<VaultHttpCredential>(vault_.SnapshotCredentials());
       HWND msg_hwnd = message_hwnd_;
-      std::thread([remote, msg_hwnd]() {
+      ReapFinishedWorkers();
+      workers_.emplace_back([remote, msg_hwnd]() {
         const bool ok = VaultHttpPullMerge(remote);
         if (!PostMessageW(msg_hwnd, kMsgVaultPullDone, ok ? 1 : 0,
                           reinterpret_cast<LPARAM>(remote))) {
           delete remote;
           g_vault_pull_busy = false;
         }
-      }).detach();
+      });
     } else {
       RefreshVaultListForSettings();
       PushExtensionSettings();
@@ -1720,6 +2064,7 @@ void App::HandleCliAction(const std::wstring& action) {
   } else if (action == L"--refresh-fences") {
     RefreshDesktopIcons();
     HealLayoutsNow(false);
+    NudgePetClearOfFences(pet_, fences_, current_page_);
     RestoreDesktopChrome();
     ShowToast(L"已刷新分区");
   } else if (action == L"--refresh") {
@@ -1933,6 +2278,7 @@ void App::ReloadFencesFromState(const AppState& state) {
   ApplyPageVisibility();
   dock_.SetVisible(dock_visible_);
   pet_.SetVisible(pet_visible_);
+  NudgePetClearOfFences(pet_, fences_, current_page_);
 }
 
 void App::HealLayoutsNow(bool toast) {
@@ -2201,6 +2547,9 @@ void App::PushExtensionSettings() {
     card.title = f->Title();
     card.page = f->Page();
     card.style_id = f->StyleId();
+    card.organize_kinds = f->OrganizeKinds();
+    card.system_fence = f->Id().rfind("system_", 0) == 0;
+    card.position_locked = f->IsPositionLocked();
     int alpha = f->Opacity();
     if (alpha < 0) {
       const FenceStylePreset* st = FenceStyleById(f->StyleId());
@@ -2214,6 +2563,10 @@ void App::PushExtensionSettings() {
       card.opacity_pct = 100;
     }
     ext.fence_cards.push_back(std::move(card));
+  }
+  ext.page_locked = page_locked_;
+  if (ext.page_locked.size() < page_names_.size()) {
+    ext.page_locked.resize(page_names_.size(), false);
   }
   ext.snapshots.clear();
   for (const auto& s : ListSnapshots()) {
@@ -3288,6 +3641,122 @@ void App::RetargetPin(const std::wstring& from, const std::wstring& to) {
   RefreshDesktopIcons();
 }
 
+bool App::TransferPins(const std::wstring& src, const std::wstring& dst,
+                       const std::vector<std::wstring>& paths) {
+  if (src.empty() || dst.empty() || src == dst || paths.empty()) {
+    return false;
+  }
+  FenceWindow* src_fence = nullptr;
+  FenceWindow* dst_fence = nullptr;
+  for (auto& f : fences_) {
+    if (!f) {
+      continue;
+    }
+    if (WidenUtf8(f->Id()) == src) {
+      src_fence = f.get();
+    }
+    if (WidenUtf8(f->Id()) == dst) {
+      dst_fence = f.get();
+    }
+  }
+  if (!src_fence || !dst_fence) {
+    return false;
+  }
+  // Portal fences mirror a real folder — pins don't apply, reject the transfer.
+  if (!dst_fence->PortalPath().empty() || !src_fence->PortalPath().empty()) {
+    return false;
+  }
+
+  // Only move paths that are actually pinned to src (avoids hijacking a file
+  // that lives in two fences). A path not pinned to src is skipped.
+  std::vector<std::wstring> move_list;
+  move_list.reserve(paths.size());
+  for (const auto& p : paths) {
+    const std::string* cur = FindPin(pins_, p);
+    if (cur && *cur == NarrowUtf8(src)) {
+      move_list.push_back(p);
+    }
+  }
+  if (move_list.empty()) {
+    return false;
+  }
+
+  bool changed = false;
+  for (const auto& p : move_list) {
+    ClearPin(&pins_, p);
+    SetPin(&pins_, p, NarrowUtf8(dst));
+    changed = true;
+  }
+  if (!changed) {
+    return false;
+  }
+
+  src_fence->RemovePinOrder(move_list);
+  dst_fence->InsertPinOrder(move_list, -1);
+
+  SavePins(pins_);
+  PersistLayouts();
+  RefreshDesktopIcons();
+  return true;
+}
+
+DWORD App::OnPinDropped(FenceWindow* fence, const std::wstring& src_fence_id,
+                        const std::vector<std::wstring>& paths, bool commit) {
+  if (!fence) {
+    return DROPEFFECT_NONE;
+  }
+  const std::wstring dst = WidenUtf8(fence->Id());
+  if (src_fence_id.empty() || dst.empty() || src_fence_id == dst) {
+    return DROPEFFECT_NONE;
+  }
+  // Reject portal targets (pins don't apply) and same-file conflicts.
+  if (!fence->PortalPath().empty()) {
+    return DROPEFFECT_NONE;
+  }
+  for (const auto& p : paths) {
+    if (p.find(L"::") != std::wstring::npos) {
+      return DROPEFFECT_NONE;
+    }
+  }
+  if (commit) {
+    return TransferPins(src_fence_id, dst, paths) ? DROPEFFECT_MOVE
+                                                  : DROPEFFECT_NONE;
+  }
+  // Preview: check the destination fence exists and the paths are still pinned
+  // to src (a cheap validity probe without mutating state).
+  bool src_ok = false;
+  for (auto& f : fences_) {
+    if (f && WidenUtf8(f->Id()) == src_fence_id && f->PortalPath().empty()) {
+      src_ok = true;
+      break;
+    }
+  }
+  if (!src_ok) {
+    return DROPEFFECT_NONE;
+  }
+  for (const auto& p : paths) {
+    const std::string* cur = FindPin(pins_, p);
+    if (!cur || *cur != NarrowUtf8(src_fence_id)) {
+      return DROPEFFECT_NONE;
+    }
+  }
+  return DROPEFFECT_MOVE;
+}
+
+void App::UpdatePinDragHint(POINT cursor, bool over_target, bool invalid) {
+  std::wstring text;
+  if (invalid) {
+    text = L"无法放置";
+  } else if (over_target) {
+    text = L"松开移到目标分区";
+  } else {
+    text = L"松开移回桌面";
+  }
+  ShowPinHintWindow(instance_, text, cursor);
+}
+
+void App::HidePinDragHint() { HidePinHintWindow(); }
+
 void App::MoveDesktopItemsToFence(const std::vector<std::wstring>& paths,
                                   const std::string& fence_id) {
   if (fence_id.empty()) {
@@ -3711,7 +4180,8 @@ void App::OrganizeVirtual(bool quiet) {
     }
   }
   HWND msg_hwnd = message_hwnd_;
-  std::thread([job, rules, msg_hwnd, layouts]() {
+  ReapFinishedWorkers();
+  workers_.emplace_back([job, rules, msg_hwnd, layouts]() {
     const auto items = ScanDesktopItems();
     job->n = OrganizeApplyDefaultPins(&job->pins, items, rules,
                                       "system_software", "system_common",
@@ -3722,7 +4192,7 @@ void App::OrganizeVirtual(bool quiet) {
       delete job;
       g_organize_busy = false;
     }
-  }).detach();
+  });
 }
 
 void App::OnOrganizeDone(OrganizeJobResult* job) {
@@ -3870,10 +4340,10 @@ void App::RemoveFenceAt(int index) {
   if (index < 0 || index >= static_cast<int>(fences_.size())) {
     return;
   }
-  fences_[static_cast<size_t>(index)]->Destroy();
-  fences_.erase(fences_.begin() + index);
-  PersistLayouts();
-  RefreshSettingsList();
+  // Settings ✕ uses the same path as desktop「解散」— confirm, protect system
+  // fences, and clear pins (raw erase looked like a no-op when system fences
+  // were recreated on refresh).
+  DissolveFence(fences_[static_cast<size_t>(index)].get());
 }
 
 void App::DissolveFence(FenceWindow* fence) {
@@ -3883,16 +4353,16 @@ void App::DissolveFence(FenceWindow* fence) {
   const std::string id = fence->Id();
   // P2-13: system fences cannot be dissolved (Python protection tip).
   if (id.rfind("system_", 0) == 0) {
-    MessageBoxW(settings_.Hwnd(),
-                L"系统分区不可解散。\n\n可清空内容或隐藏，但不会删除系统分区本身。",
-                L"解散分区", MB_OK | MB_ICONINFORMATION);
+    MistAlert(settings_.Hwnd(), L"解散分区",
+              L"系统分区不可删除。\n\n可清空内容或隐藏，但不会删除系统分区本身。",
+              MistMsgTone::Info);
     return;
   }
   const std::wstring tip =
-      L"确定解散分区「" + fence->Title() +
+      L"确定删除分区「" + fence->Title() +
       L"」？\n\n钉选图标将回到桌面，分区本身会被删除。";
-  if (MessageBoxW(settings_.Hwnd(), tip.c_str(), L"解散分区",
-                  MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) != IDYES) {
+  if (!MistConfirm(settings_.Hwnd(), L"删除分区", tip.c_str(),
+                   MistMsgTone::Danger)) {
     return;
   }
   // Find and remove this fence from the live list.
@@ -4060,14 +4530,15 @@ LRESULT CALLBACK App::TrayWndProc(HWND hwnd, UINT msg, WPARAM wparam,
           auto* remote =
               new std::vector<VaultHttpCredential>(self->vault_.SnapshotCredentials());
           HWND msg_hwnd = self->message_hwnd_;
-          std::thread([remote, msg_hwnd]() {
+          self->ReapFinishedWorkers();
+          self->workers_.emplace_back([remote, msg_hwnd]() {
             const bool ok = VaultHttpPullMerge(remote);
             if (!PostMessageW(msg_hwnd, kMsgVaultPullDone, ok ? 1 : 0,
                               reinterpret_cast<LPARAM>(remote))) {
               delete remote;
               g_vault_pull_busy = false;
             }
-          }).detach();
+          });
         }
         return 0;
       }

@@ -15,6 +15,44 @@
 
 namespace {
 
+// Resolve the running instance's PID from its message window (before it is
+// destroyed during shutdown).
+DWORD FindInstancePid() {
+  HWND hwnd = FindWindowW(kNativeMsgWindowClass, L"DeskTidyNative");
+  if (!hwnd) {
+    return 0;
+  }
+  DWORD pid = 0;
+  GetWindowThreadProcessId(hwnd, &pid);
+  return pid;
+}
+
+// Wait for the running instance process to actually exit (B1 --quit-silent),
+// bounded by timeout_ms. On success *exit_code carries the real exit code.
+bool WaitForInstanceExit(DWORD pid, DWORD timeout_ms, DWORD* exit_code) {
+  if (exit_code) {
+    *exit_code = 0;
+  }
+  if (!pid) {
+    return true;
+  }
+  HANDLE proc = OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION,
+                            FALSE, pid);
+  if (!proc) {
+    return true;  // already gone
+  }
+  const DWORD r = WaitForSingleObject(proc, timeout_ms);
+  DWORD code = 0;
+  if (r == WAIT_OBJECT_0) {
+    GetExitCodeProcess(proc, &code);
+    if (exit_code) {
+      *exit_code = code;
+    }
+  }
+  CloseHandle(proc);
+  return r == WAIT_OBJECT_0;
+}
+
 std::wstring FindCliAction(LPWSTR cmd) {
   if (!cmd) {
     return {};
@@ -213,9 +251,22 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR cmd_line, int) {
       // "already running" dialog.
       effective_action = L"--focus";
     }
+    const DWORD instance_pid = FindInstancePid();
     if (ForwardCliToRunningInstance(effective_action)) {
       LogLine(L"[boot] forwarded CLI action to running instance: %s",
               effective_action.c_str());
+      // B1: --quit-silent / --quit wait for the main process to actually exit
+      // (max 10s) and forward its exit code so callers observe a real result.
+      if (effective_action == L"--quit-silent" ||
+          effective_action == L"--quit") {
+        DWORD code = 0;
+        const bool exited = WaitForInstanceExit(instance_pid, 10000, &code);
+        LogLine(L"[boot] quit: instance %s code=%lu",
+                exited ? L"exited" : L"timeout",
+                static_cast<unsigned long>(code));
+        LogShutdown();
+        return exited ? static_cast<int>(code) : 1;
+      }
       LogShutdown();
       return 0;
     }

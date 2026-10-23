@@ -19,6 +19,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <ctime>
 #include <fstream>
 #include <sstream>
 #include <string>
@@ -46,6 +47,10 @@ bool g_paused = false;
 DWORD g_rec_start_tick = 0;
 DWORD g_paused_accum_ms = 0;
 DWORD g_pause_tick = 0;
+// B2: heartbeat for crash recovery trimming — epoch seconds at start and the
+// most recent 2s heartbeat, so a killed parent leaves a bounded cut point.
+ULONGLONG g_started_at = 0;
+ULONGLONG g_last_beat = 0;
 bool g_adopted = false;  // orphan reopen: no stdin pipe to send 'q'
 bool g_badge_dragging = false;
 POINT g_badge_drag_origin{};
@@ -191,7 +196,8 @@ void WriteRecordState() {
   out << "{\n  \"pid\": " << g_proc_pid << ",\n  \"output\": \""
       << JsonEscapeUtf8(NarrowUtf8(g_out_path)) << "\",\n  \"exe\": \""
       << JsonEscapeUtf8(NarrowUtf8(g_cmd.ff)) << "\",\n  \"create_time_ms\": "
-      << g_proc_create_ms << ",\n  \"out_dir\": \""
+      << g_proc_create_ms << ",\n  \"started_at\": " << g_started_at
+      << ",\n  \"last_beat\": " << g_last_beat << ",\n  \"out_dir\": \""
       << JsonEscapeUtf8(NarrowUtf8(g_cmd.out_dir)) << "\",\n  \"stem\": \""
       << JsonEscapeUtf8(NarrowUtf8(g_cmd.stem)) << "\",\n  \"segments\": [";
   for (size_t i = 0; i < g_segments.size(); ++i) {
@@ -205,7 +211,8 @@ void WriteRecordState() {
 
 bool ReadRecordState(DWORD* pid, std::wstring* output, std::wstring* exe,
                      ULONGLONG* create_ms, std::wstring* out_dir,
-                     std::wstring* stem, std::vector<std::wstring>* segments) {
+                     std::wstring* stem, std::vector<std::wstring>* segments,
+                     ULONGLONG* started_at, ULONGLONG* last_beat) {
   std::ifstream in(RecordStatePath(), std::ios::binary);
   if (!in) {
     return false;
@@ -276,6 +283,14 @@ bool ReadRecordState(DWORD* pid, std::wstring* output, std::wstring* exe,
   ULONGLONG cms = 0;
   find_num("create_time_ms", &cms);
   *create_ms = cms;
+  ULONGLONG sat = 0;
+  if (started_at && find_num("started_at", &sat)) {
+    *started_at = sat;
+  }
+  ULONGLONG lb = 0;
+  if (last_beat && find_num("last_beat", &lb)) {
+    *last_beat = lb;
+  }
   find_str("out_dir", out_dir);
   find_str("stem", stem);
   if (segments) {
@@ -514,6 +529,15 @@ LRESULT CALLBACK BadgeProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
             return 0;
           }
         }
+        // B2: heartbeat — refresh last_beat every 2s so crash recovery can
+        // bound the orphan ffmpeg's overrun to a tight cut point.
+        if (!g_paused && g_proc) {
+          const ULONGLONG now = static_cast<ULONGLONG>(time(nullptr));
+          if (now >= g_last_beat + 2) {
+            g_last_beat = now;
+            WriteRecordState();
+          }
+        }
         InvalidateRect(hwnd, nullptr, FALSE);
       }
       return 0;
@@ -737,6 +761,8 @@ bool SpawnSegment(int index, bool timed) {
     g_rec_start_tick = GetTickCount();
     g_paused_accum_ms = 0;
     g_pause_tick = 0;
+    g_started_at = static_cast<ULONGLONG>(time(nullptr));
+    g_last_beat = g_started_at;
   }
   WriteRecordState();
   ShowBadges(GetModuleHandleW(nullptr));
@@ -992,7 +1018,7 @@ bool RunFfmpegCaptureStderr(const std::wstring& cmd, DWORD timeout_ms,
 // 200 chars of ffmpeg stderr (or a spawn error).
 bool RemuxSegment(const std::wstring& ff, const std::wstring& in_path,
                   const std::wstring& out_path, ULONGLONG* dur_ms,
-                  std::string* err_tail) {
+                  std::string* err_tail, double cut_seconds = 0) {
   if (dur_ms) {
     *dur_ms = 0;
   }
@@ -1000,8 +1026,13 @@ bool RemuxSegment(const std::wstring& ff, const std::wstring& in_path,
     err_tail->clear();
   }
   DeleteFileW(out_path.c_str());
-  const std::wstring cmd = L"\"" + ff + L"\" -y -i \"" + in_path +
-                           L"\" -c copy \"" + out_path + L"\"";
+  std::wstring cmd = L"\"" + ff + L"\" -y -i \"" + in_path + L"\"";
+  if (cut_seconds > 0) {
+    wchar_t buf[64];
+    swprintf_s(buf, L" -t %.3f", cut_seconds);
+    cmd += buf;
+  }
+  cmd += L" -c copy \"" + out_path + L"\"";
   int code = -1;
   std::string stderr_text;
   if (!RunFfmpegCaptureStderr(cmd, 120000, &code, &stderr_text)) {
@@ -1042,16 +1073,29 @@ bool RemuxSegment(const std::wstring& ff, const std::wstring& in_path,
 std::wstring MergeInterruptedRecording(const std::wstring& exe,
                                        const std::wstring& out_dir,
                                        const std::wstring& stem,
-                                       const std::vector<std::wstring>& segs) {
+                                       const std::vector<std::wstring>& segs,
+                                       ULONGLONG started_at,
+                                       ULONGLONG last_beat) {
   if (segs.empty() || out_dir.empty() || stem.empty() || exe.empty()) {
     return {};
   }
   const std::wstring final_path = JoinPath(out_dir, stem + L".mp4");
 
+  // B2: with a heartbeat, bound the orphan ffmpeg's overrun. cut = last known
+  // parent beat minus start plus a 3s buffer; remux `-t cut` caps the output at
+  // cut (a genuinely shorter real duration wins because -t is an upper bound).
+  double cut = 0;
+  if (started_at > 0 && last_beat >= started_at) {
+    const ULONGLONG now = static_cast<ULONGLONG>(time(nullptr));
+    cut = static_cast<double>(last_beat - started_at) + 3.0;
+    LogLine(L"[record] recovery trim cut=%.2fs beat_age=%.2fs", cut,
+            now >= last_beat ? static_cast<double>(now - last_beat) : 0.0);
+  }
+
   if (segs.size() == 1) {
     ULONGLONG dur = 0;
     std::string err;
-    if (RemuxSegment(exe, segs[0], final_path, &dur, &err)) {
+    if (RemuxSegment(exe, segs[0], final_path, &dur, &err, cut)) {
       LogLine(L"[record] remux ok seg1 dur=%.2fs", dur / 1000.0);
       DeleteFileW(segs[0].c_str());
       return final_path;
@@ -1071,7 +1115,9 @@ std::wstring MergeInterruptedRecording(const std::wstring& exe,
     const std::wstring tmp_path = JoinPath(temp_dir, name);
     ULONGLONG dur = 0;
     std::string err;
-    if (RemuxSegment(exe, segs[i], tmp_path, &dur, &err)) {
+    // Only the final (un-finalized) segment overruns after a parent kill.
+    const double seg_cut = (i + 1 == segs.size()) ? cut : 0.0;
+    if (RemuxSegment(exe, segs[i], tmp_path, &dur, &err, seg_cut)) {
       LogLine(L"[record] remux ok seg%zu dur=%.2fs", i + 1, dur / 1000.0);
       good.push_back(tmp_path);
     } else {
@@ -1151,9 +1197,11 @@ std::wstring MergeInterruptedRecording(const std::wstring& exe,
 // P1-25: dead-ffmpeg recovery — merge leftover segments, keep them on failure.
 bool RecoverDeadRecord(const std::wstring& exe, const std::wstring& out_dir,
                        const std::wstring& stem,
-                       const std::vector<std::wstring>& segs) {
+                       const std::vector<std::wstring>& segs,
+                       ULONGLONG started_at, ULONGLONG last_beat) {
   const std::wstring final =
-      MergeInterruptedRecording(exe, out_dir, stem, segs);
+      MergeInterruptedRecording(exe, out_dir, stem, segs, started_at,
+                                last_beat);
   if (final.empty()) {
     LogLineA("[record] interrupted merge failed — keeping segments");
     ShowToast(L"上次录制恢复失败，分段已保留：" + JoinPath(out_dir, stem));
@@ -1450,9 +1498,11 @@ bool AdoptOrphanScreenRecord() {
   DWORD pid = 0;
   std::wstring output, exe, out_dir, stem;
   ULONGLONG create_ms = 0;
+  ULONGLONG started_at = 0;
+  ULONGLONG last_beat = 0;
   std::vector<std::wstring> segs;
   if (!ReadRecordState(&pid, &output, &exe, &create_ms, &out_dir, &stem,
-                        &segs)) {
+                        &segs, &started_at, &last_beat)) {
     return false;
   }
   // Derive stem/out_dir from output when the state predates those fields.
@@ -1508,7 +1558,8 @@ bool AdoptOrphanScreenRecord() {
     CloseHandle(proc);
   }
   LogLine(L"[record] orphan pid=%lu dead — recovering segments", pid);
-  return RecoverDeadRecord(exe, out_dir, stem, all_segs);
+  return RecoverDeadRecord(exe, out_dir, stem, all_segs, started_at,
+                           last_beat);
 }
 
 // P1-25: startup recovery — adopt a live orphan ffmpeg or merge the segments of

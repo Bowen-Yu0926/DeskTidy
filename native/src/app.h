@@ -27,6 +27,7 @@
 
 #include <memory>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 
@@ -101,6 +102,10 @@ class App {
   void EditRules();
   void UnpinPath(const std::wstring& path);
   void RetargetPin(const std::wstring& from, const std::wstring& to);
+  // P1-13: move pins from `src` fence to `dst` fence (pin_order tail), persist,
+  // refresh both fences. Returns false (no mutation) for src==dst / missing dst.
+  bool TransferPins(const std::wstring& src, const std::wstring& dst,
+                    const std::vector<std::wstring>& paths);
   void TogglePeek();
   void ToggleFencesVisible();
   void SaveLayoutSnapshot();
@@ -153,6 +158,11 @@ class App {
   void OnPathsDropped(FenceWindow* fence, const std::vector<std::wstring>& paths);
   void OnPathsPasted(FenceWindow* fence, const std::vector<std::wstring>& paths,
                      bool move);
+  // P1-13: pin-transfer drop handler + floating hint lifecycle.
+  DWORD OnPinDropped(FenceWindow* fence, const std::wstring& src_fence_id,
+                     const std::vector<std::wstring>& paths, bool commit);
+  void UpdatePinDragHint(POINT cursor, bool over_target, bool invalid);
+  void HidePinDragHint();
   void DissolveFence(FenceWindow* fence);
   void SetWhitelistForPaths(const std::vector<std::wstring>& paths, bool add);
   void HandleIncomingPaths(FenceWindow* fence,
@@ -170,12 +180,17 @@ class App {
   void ScheduleDesktopBandRestore();
   void StartForegroundHook();
   void StopForegroundHook();
+  // Worker threads (vault pull / organize) are joined with a bounded wait on
+  // shutdown instead of being detached (P1 exit race).
+  void ReapFinishedWorkers();
+  void JoinWorkers();
   static void CALLBACK ForegroundWinEvent(HWINEVENTHOOK, DWORD, HWND, LONG,
                                           LONG, DWORD, DWORD);
 
   HINSTANCE instance_ = nullptr;
   HWND message_hwnd_ = nullptr;
   HWINEVENTHOOK fg_hook_ = nullptr;
+  std::vector<std::thread> workers_;
   int band_restore_left_ = 0;
   std::vector<std::unique_ptr<FenceWindow>> fences_;
   SettingsWindow settings_;
