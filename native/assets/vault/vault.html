@@ -96,7 +96,22 @@
     border-radius: 12px;
     padding: 10px;
     margin-bottom: 10px;
+    position: relative;
   }
+  .row.pinned { border-color: var(--accent); box-shadow: inset 3px 0 0 var(--accent); }
+  .row.dragging { opacity: 0.45; }
+  .row.drag-over { outline: 2px dashed var(--accent); }
+  .grip {
+    position: absolute; left: 4px; top: 12px; width: 14px; height: 28px;
+    cursor: grab; color: var(--muted); font-size: 12px; line-height: 14px;
+    letter-spacing: -1px; user-select: none;
+  }
+  .grip:active { cursor: grabbing; }
+  .pin-btn {
+    border: 0; background: transparent; color: var(--muted);
+    font: inherit; font-size: 14px; cursor: pointer; padding: 0 4px;
+  }
+  .pin-btn.on { color: var(--accent); }
   .row:hover {
     background: var(--row-hover);
     border-color: var(--accent);
@@ -295,15 +310,24 @@
       return;
     }
     box.innerHTML = '';
+    const q = (document.getElementById('search').value || '').trim();
     items.forEach((it) => {
       const i = it.index;
       const row = document.createElement('div');
-      row.className = 'row';
+      row.className = 'row' + (it.pinned ? ' pinned' : '');
+      row.dataset.index = String(i);
+      row.dataset.pinned = it.pinned ? '1' : '0';
       const url = it.url || '';
       const user = it.username || '';
       const note = it.note || '';
+      const canDrag = !q;
       row.innerHTML =
-        '<div class="row-top"><div class="row-title">' + esc(it.title || '未命名') + '</div>' +
+        (canDrag ? '<div class="grip" draggable="true" title="拖动排序">⋮⋮</div>' : '') +
+        '<div class="row-top" style="padding-left:' + (canDrag ? '16' : '0') + 'px">' +
+        '<button type="button" class="pin-btn' + (it.pinned ? ' on' : '') +
+        '" data-pin="' + i + '" title="' + (it.pinned ? '取消置顶' : '置顶') + '">' +
+        (it.pinned ? '★' : '☆') + '</button>' +
+        '<div class="row-title">' + esc(it.title || '未命名') + '</div>' +
         '<button type="button" class="chip" data-edit="' + i + '" title="编辑此账号">编辑</button></div>' +
         '<div class="meta" data-copy-url="' + i + '" title="双击复制网址">' +
         esc(clipLine('网址', url)) + '</div>' +
@@ -322,6 +346,34 @@
         '<button type="button" class="chip" data-edit="' + i + '">编辑</button>' +
         '<button type="button" class="chip danger" data-del="' + i + '" title="删除">删除</button>' +
         '</div>';
+      if (canDrag) {
+        const grip = row.querySelector('.grip');
+        grip.addEventListener('dragstart', (ev) => {
+          row.classList.add('dragging');
+          ev.dataTransfer.setData('text/plain', String(i));
+          ev.dataTransfer.effectAllowed = 'move';
+        });
+        grip.addEventListener('dragend', () => row.classList.remove('dragging'));
+        row.addEventListener('dragover', (ev) => {
+          ev.preventDefault();
+          const fromPinned = document.querySelector('.row.dragging');
+          if (fromPinned && fromPinned.dataset.pinned !== row.dataset.pinned) {
+            return;
+          }
+          row.classList.add('drag-over');
+          ev.dataTransfer.dropEffect = 'move';
+        });
+        row.addEventListener('dragleave', () => row.classList.remove('drag-over'));
+        row.addEventListener('drop', (ev) => {
+          ev.preventDefault();
+          row.classList.remove('drag-over');
+          const from = Number(ev.dataTransfer.getData('text/plain'));
+          const to = i;
+          if (Number.isFinite(from) && from !== to) {
+            post({ type: 'action', id: 'reorder', from: from, to: to });
+          }
+        });
+      }
       box.appendChild(row);
     });
   }
@@ -388,9 +440,11 @@
     if (!(t instanceof HTMLElement)) return;
     const edit = t.getAttribute('data-edit');
     const del = t.getAttribute('data-del');
+    const pin = t.getAttribute('data-pin');
     const cp = t.getAttribute('data-copy-pass');
     if (edit != null) openForm(Number(edit));
     else if (del != null) post({ type: 'action', id: 'delete', index: Number(del) });
+    else if (pin != null) post({ type: 'action', id: 'toggle_pin', index: Number(pin) });
     else if (cp != null && t.tagName === 'BUTTON') {
       post({ type: 'action', id: 'copy_pass', index: Number(cp) });
     }

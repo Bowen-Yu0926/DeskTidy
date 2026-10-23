@@ -23,8 +23,7 @@ add_executable(desktidy_native WIN32
   src/organize.cpp
   src/dock_window.cpp
   src/pet_window.cpp
-  src/notes_window.cpp
-  src/notes_webview.cpp
+  src/desknote_launch.cpp
   src/page_bar.cpp
   src/desktop_watch.cpp
   src/prompt_text.cpp
@@ -43,6 +42,8 @@ add_executable(desktidy_native WIN32
   src/pinned_image.cpp
   src/first_run.cpp
   src/hotkey_help.cpp
+  src/hotkey_helper.cpp
+  src/hotkey_relay.cpp
   src/hotkey_store.cpp
   src/fence_style.cpp
   src/whitelist.cpp
@@ -55,8 +56,6 @@ add_executable(desktidy_native WIN32
   src/vault_crypto.cpp
   src/shell_icons.cpp
   src/page_folders.cpp
-  src/notes_library.cpp
-  src/markdown_preview.cpp
   src/organize_suppress.cpp
   src/app_prefs.cpp
   src/ui_theme.cpp
@@ -77,9 +76,57 @@ add_executable(desktidy_native WIN32
   src/pet_ledges.cpp
   src/pet_lines.cpp
   src/cli_ipc.cpp
-  src/desknote_help.cpp
   src/file_assoc.cpp
   src/version.rc
+)
+
+# Standalone DeskNote (sibling of desktidy_native.exe).
+add_executable(deskNote WIN32
+  src/desknote_main.cpp
+  src/desknote_launch.cpp
+  src/elevated_save.cpp
+  src/file_assoc.cpp
+  src/notes_window.cpp
+  src/notes_webview.cpp
+  src/notes_library.cpp
+  src/markdown_preview.cpp
+  src/desknote_help.cpp
+  src/mist_webview.cpp
+  src/paths_util.cpp
+  src/prompt_text.cpp
+  src/i18n.cpp
+  src/app_prefs.cpp
+  src/ui_theme.cpp
+  src/tool_paths.cpp
+  src/desktop_shell.cpp
+  src/display_geom.cpp
+  src/log.cpp
+  src/version.rc
+)
+
+target_include_directories(deskNote PRIVATE
+  src
+  ${CMAKE_CURRENT_SOURCE_DIR}/third_party/webview2-include
+)
+target_compile_definitions(deskNote PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+target_link_libraries(deskNote PRIVATE
+  user32 gdi32 shell32 ole32 oleaut32 uuid comctl32 advapi32
+  gdiplus comdlg32 uxtheme version propsys
+  ${CMAKE_CURRENT_SOURCE_DIR}/third_party/webview2-x64/WebView2LoaderStatic.lib
+)
+set_target_properties(deskNote PROPERTIES OUTPUT_NAME "deskNote")
+if(MSVC)
+  target_compile_options(deskNote PRIVATE /W4 /permissive- /utf-8)
+endif()
+
+# Ensure deskNote.exe lands next to desktidy_native.exe.
+add_custom_command(TARGET deskNote POST_BUILD
+  COMMAND ${CMAKE_COMMAND} -E make_directory
+          $<TARGET_FILE_DIR:desktidy_native>
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          $<TARGET_FILE:deskNote>
+          $<TARGET_FILE_DIR:desktidy_native>/deskNote.exe
+  COMMENT "Copy deskNote.exe next to desktidy_native"
 )
 
 target_include_directories(desktidy_native PRIVATE
@@ -89,7 +136,7 @@ target_include_directories(desktidy_native PRIVATE
 target_compile_definitions(desktidy_native PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
 target_link_libraries(desktidy_native PRIVATE
   user32 gdi32 shell32 ole32 oleaut32 uuid comctl32 advapi32
-  gdiplus comdlg32 crypt32 winhttp bcrypt msimg32 version
+  gdiplus comdlg32 crypt32 winhttp bcrypt msimg32 version propsys
   ${CMAKE_CURRENT_SOURCE_DIR}/third_party/webview2-x64/WebView2LoaderStatic.lib
 )
 

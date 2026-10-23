@@ -5,74 +5,98 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>待办</title>
 <style>
+  /* Mirrors Python DesktopTodoWidget (todo_widget.py) */
   :root {
-    --card: rgba(255,255,255,0.90); --border: #C9D2DE; --text: #1A2332;
-    --muted: #64748B; --accent: #1D4ED8; --accent-soft: #E0E7FF;
-    --primary: #16A34A; --danger: #DC2626; --title: rgba(224,231,255,0.88);
+    --card: rgba(255,255,255,0.88);
+    --title: rgba(224,231,255,0.82);
+    --hover: rgba(224,231,255,0.55);
+    --border: rgba(201,210,222,0.55);
+    --text: #1A2332;
+    --muted: #64748B;
+    --accent: #1D4ED8;
+    --danger: #B91C1C;
+    --danger-bg: rgba(254,226,226,0.85);
   }
   * { box-sizing: border-box; }
   html, body {
     margin: 0; height: 100%; overflow: hidden;
-    font-family: "Microsoft YaHei UI", "Segoe UI", sans-serif;
+    font-family: "Segoe UI", "Microsoft YaHei UI", sans-serif;
     background: transparent; color: var(--text); font-size: 13px; user-select: none;
   }
   #card {
     height: 100%; display: flex; flex-direction: column;
-    background: var(--card); border: 1px solid var(--border); border-radius: 14px;
-    overflow: hidden; box-shadow: 0 10px 28px rgba(26,35,50,0.14);
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    overflow: hidden;
   }
   #title {
-    display: flex; align-items: center; gap: 8px;
-    padding: 8px 10px 8px 12px; background: var(--title); cursor: move;
+    display: flex; align-items: center; gap: 6px;
+    padding: 8px 8px 8px 12px;
+    background: var(--title);
+    cursor: move;
     border-bottom: 1px solid var(--border);
   }
-  #title .t { font-weight: 800; flex: 1; color: #1E3A8A; }
+  #heading {
+    font-weight: 700; font-size: 11pt; flex: 1; color: var(--text);
+    background: transparent;
+  }
+  #count {
+    color: var(--muted); font-size: 11px; background: transparent;
+  }
   #hide {
-    width: 26px; height: 26px; border: 0; border-radius: 8px;
-    background: transparent; color: var(--muted); font-size: 16px; cursor: pointer;
+    width: 24px; height: 24px; border: 0; border-radius: 6px;
+    background: transparent; color: var(--muted); font-size: 16px;
+    font-weight: 700; cursor: pointer;
   }
-  #hide:hover { background: var(--accent-soft); color: var(--accent); }
-  #list { flex: 1; overflow: auto; padding: 8px 10px; }
+  #hide:hover { background: var(--hover); color: var(--text); }
+  #list {
+    flex: 1; overflow: auto; padding: 4px 6px;
+    max-height: 320px;
+  }
   .row {
-    display: flex; align-items: flex-start; gap: 8px;
-    padding: 6px 8px; border-radius: 8px; margin-bottom: 4px;
+    display: flex; align-items: flex-start; gap: 6px;
+    padding: 4px 4px 4px 8px; border-radius: 8px;
   }
-  .row:hover { background: var(--accent-soft); }
-  .row input[type=checkbox] { margin-top: 6px; accent-color: var(--accent); }
+  .row:hover { background: var(--hover); }
+  .row input[type=checkbox] { margin-top: 4px; accent-color: var(--accent); }
   .row input[type=text] {
-    flex: 1; min-width: 0; border: 0; background: transparent; font: inherit;
-    color: var(--text); outline: none; padding: 4px 0;
+    flex: 1; min-width: 0; border: 0; background: transparent;
+    font: inherit; font-size: 13px; color: var(--text);
+    outline: none; padding: 2px 0;
   }
-  .row.done input[type=text] { color: var(--muted); text-decoration: line-through; }
+  .row.done input[type=text] {
+    color: var(--muted); text-decoration: line-through;
+  }
   .row .del {
-    width: 22px; height: 22px; border: 0; border-radius: 6px; background: transparent;
-    color: var(--muted); cursor: pointer; font-weight: 800;
+    width: 22px; height: 22px; border: 0; border-radius: 6px;
+    background: transparent; color: var(--muted); cursor: pointer;
+    font-size: 14px; font-weight: 700;
   }
-  .row .del:hover { background: #FEE2E2; color: var(--danger); }
-  #empty { color: var(--muted); text-align: center; padding: 36px 8px; }
-  .foot {
-    display: flex; gap: 6px; padding: 8px 10px 10px; border-top: 1px solid var(--border);
+  .row .del:hover { background: var(--danger-bg); color: var(--danger); }
+  #empty {
+    color: var(--muted); text-align: center; padding: 28px 8px; font-size: 13px;
   }
-  .btn {
-    border: 1px solid var(--border); background: #fff; border-radius: 10px;
-    padding: 6px 10px; font: inherit; font-weight: 700; cursor: pointer;
+  #add {
+    border: 0; border-top: 1px solid var(--border);
+    background: transparent; color: var(--accent);
+    border-bottom-left-radius: 12px; border-bottom-right-radius: 12px;
+    padding: 8px 12px; min-height: 34px;
+    font: inherit; font-size: 13px; font-weight: 600;
+    cursor: pointer; text-align: left; width: 100%;
   }
-  .btn:hover { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
-  .btn.primary { background: var(--primary); border-color: var(--primary); color: #fff; }
-  .btn.primary:hover { filter: brightness(0.95); color: #fff; }
+  #add:hover { background: var(--hover); }
 </style>
 </head>
 <body>
 <div id="card">
   <div id="title">
-    <div class="t" id="heading">待办</div>
-    <button id="hide">−</button>
+    <div id="heading">待办</div>
+    <div id="count"></div>
+    <button id="hide" title="暂时隐藏">−</button>
   </div>
   <div id="list"></div>
-  <div class="foot">
-    <button class="btn primary" id="add">添加</button>
-    <button class="btn" id="clear">清除已完成</button>
-  </div>
+  <button id="add">+ 添加待办事项</button>
 </div>
 <script>
   let items = [];
@@ -82,20 +106,51 @@
     try { chrome.webview.postMessage(JSON.stringify(msg)); } catch (e) {}
   }
   function esc(s) {
-    return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    return String(s).replace(/[&<>"']/g, c =>
+      ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
+  function hexToRgba(hex, a) {
+    const h = String(hex || '').replace('#', '');
+    if (h.length < 6) return hex;
+    const r = parseInt(h.slice(0, 2), 16);
+    const g = parseInt(h.slice(2, 4), 16);
+    const b = parseInt(h.slice(4, 6), 16);
+    return `rgba(${r},${g},${b},${a})`;
+  }
+  function applyTheme(t) {
+    if (!t || typeof t !== 'object') return;
+    const root = document.documentElement.style;
+    if (t.card) root.setProperty('--card', hexToRgba(t.card, 0.88));
+    if (t.accent_soft) {
+      root.setProperty('--title', hexToRgba(t.accent_soft, 0.82));
+      root.setProperty('--hover', hexToRgba(t.accent_soft, 0.55));
+    }
+    if (t.border) root.setProperty('--border', hexToRgba(t.border, 0.55));
+    if (t.text) root.setProperty('--text', t.text);
+    if (t.muted) root.setProperty('--muted', t.muted);
+    if (t.accent) root.setProperty('--accent', t.accent);
   }
   function render() {
     const list = document.getElementById('list');
-    if (!items.length) {
+    const pending = items.filter(it => !it.done);
+    const done = items.filter(it => it.done);
+    const ordered = pending.concat(done);
+    const openN = pending.length;
+    document.getElementById('count').textContent = openN ? (openN + ' 项') : '';
+    document.getElementById('add').textContent =
+      ordered.length ? '+ 添加待办事项' : '+ 添加第一条待办';
+    if (!ordered.length) {
       list.innerHTML = '<div id="empty">暂无待办</div>';
       return;
     }
-    list.innerHTML = items.map((it, i) =>
-      `<div class="row${it.done?' done':''}" data-i="${i}">
-        <input type="checkbox" ${it.done?'checked':''} data-act="toggle" />
-        <input type="text" value="${esc(it.text)}" data-act="edit" />
+    list.innerHTML = ordered.map((it) => {
+      const i = items.indexOf(it);
+      return `<div class="row${it.done ? ' done' : ''}" data-i="${i}">
+        <input type="checkbox" ${it.done ? 'checked' : ''} data-act="toggle" />
+        <input type="text" value="${esc(it.text)}" data-act="edit" placeholder="输入待办…" />
         <button class="del" data-act="del" title="删除">×</button>
-      </div>`).join('');
+      </div>`;
+    }).join('');
     list.querySelectorAll('.row').forEach(row => {
       const i = +row.dataset.i;
       row.querySelector('[data-act=toggle]').onchange = e => {
@@ -106,17 +161,18 @@
       edit.onkeydown = e => {
         if (e.key === 'Enter') { edit.blur(); }
       };
-      row.querySelector('[data-act=del]').onclick = () => post({ type: 'action', id: 'del', index: i });
+      row.querySelector('[data-act=del]').onclick = () =>
+        post({ type: 'action', id: 'del', index: i });
     });
   }
   window.applyState = function(m) {
     if (!m || m.type !== 'state') return;
     if (m.title) document.getElementById('heading').textContent = m.title;
+    if (m.theme) applyTheme(m.theme);
     items = Array.isArray(m.items) ? m.items.slice() : [];
     render();
   };
   document.getElementById('add').onclick = () => post({ type: 'action', id: 'add' });
-  document.getElementById('clear').onclick = () => post({ type: 'action', id: 'clear' });
   document.getElementById('hide').onclick = () => post({ type: 'action', id: 'hide' });
   document.getElementById('title').onmousedown = e => {
     if (e.target.id === 'hide') return;
@@ -131,7 +187,8 @@
   });
   try {
     chrome.webview.addEventListener('message', ev => {
-      let m = ev.data; if (typeof m === 'string') { try { m = JSON.parse(m); } catch(e) { return; } }
+      let m = ev.data;
+      if (typeof m === 'string') { try { m = JSON.parse(m); } catch (e) { return; } }
       applyState(m);
     });
   } catch (e) {}
