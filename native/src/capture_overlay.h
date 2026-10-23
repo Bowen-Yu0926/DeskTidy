@@ -4,37 +4,82 @@
 
 #include <functional>
 #include <string>
+#include <vector>
 
-// Frozen-frame capture overlay (Snipaste-style).
-//
-// On Begin the whole virtual desktop (all monitors, incl. negative coords) is
-// captured ONCE into a background bitmap. That frozen frame is drawn as the
-// overlay background and dimmed everywhere except the current selection/hover
-// window ("挖空"), so there is no live-capture tearing or animation ghosting.
-// Confirm copies the selection to the clipboard and saves it; Esc/right-click
-// cancels without producing any file.
+// Frozen-frame capture overlay with WeChat-style annotation toolbar (P0-5/P0-6).
+// Select region → annotate (rect/ellipse/arrow/brush/mosaic/text/emoji) →
+// copy / save / pin. Esc cancels with no file.
 class CaptureOverlay {
  public:
   using DoneFn = std::function<void(const std::wstring& png_path, bool pin)>;
 
-  // When auto_pin is true, skip the post-capture prompt and always pin.
   bool Begin(HINSTANCE instance, DoneFn on_done, bool auto_pin = false);
   void Cancel();
 
  private:
-  static LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
-  LRESULT HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam);
-  void Paint(HDC hdc);
-  bool SaveSelection();
-  void UpdateHover(POINT client);
+  enum class FinishAction { Copy, Save, Pin };
+  enum class Mode { Selecting, Annotating };
+  enum class Tool {
+    None,
+    Rect,
+    Ellipse,
+    Arrow,
+    Brush,
+    Mosaic,
+    Text,
+    Emoji
+  };
 
-  // Capture the full virtual desktop into bkg_bmp_ (physical pixels).
+  struct Annotation {
+    enum Kind {
+      kRect,
+      kEllipse,
+      kArrow,
+      kBrush,
+      kMosaic,
+      kText,
+      kEmoji
+    } kind = kRect;
+    POINT start{};
+    POINT end{};
+    std::vector<POINT> points;
+    COLORREF color = RGB(250, 81, 81);
+    int width = 4;
+    std::wstring text;
+  };
+
+  static LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
+  static LRESULT CALLBACK ToolbarProc(HWND, UINT, WPARAM, LPARAM);
+  LRESULT HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam);
+  LRESULT HandleToolbar(UINT msg, WPARAM wparam, LPARAM lparam);
+  void Paint(HDC hdc);
+  void PaintToolbar(HDC hdc);
+  void DrawAnnotations(HDC hdc);
+  void DrawOneAnnotation(HDC hdc, const Annotation& a, bool draft);
+  bool FinishSelection(FinishAction action);
+  RECT CurrentSelectionRect() const;
+  void UpdateHover(POINT client);
+  void CommitSelection();
+  void EnterAnnotateMode();
+  void LeaveAnnotateMode();
+  void PlaceToolbar();
+  void CreateToolbar();
+  void DestroyToolbar();
+  int HitToolbar(int x, int y) const;
+  void OnToolbarCommand(int id);
+  void UndoAnnotation();
+  void BeginDraft(Tool tool, POINT pt);
+  void UpdateDraft(POINT pt);
+  void CommitDraft();
+  HBITMAP CompositeAnnotatedCrop(const RECT& sel) const;
+  COLORREF SampleFrozen(int client_x, int client_y) const;
+
   bool FreezeVirtualDesktop();
   void ReleaseFrozenFrame();
-  // Crop the client-space selection out of the frozen frame (DPI-safe).
   HBITMAP CropSelectionBitmap(const RECT& sel_client) const;
 
   HWND hwnd_ = nullptr;
+  HWND toolbar_ = nullptr;
   HINSTANCE instance_ = nullptr;
   bool dragging_ = false;
   POINT start_{};
@@ -47,4 +92,18 @@ class CaptureOverlay {
   HBITMAP bkg_bmp_ = nullptr;
   int bkg_w_ = 0;
   int bkg_h_ = 0;
+
+  Mode mode_ = Mode::Selecting;
+  Tool tool_ = Tool::None;
+  COLORREF stroke_color_ = RGB(250, 81, 81);
+  int stroke_width_ = 4;
+  int color_index_ = 0;
+  int width_index_ = 1;  // kWidths[1] == 4
+  int emoji_index_ = 0;
+  RECT sel_{};
+  bool sel_ok_ = false;
+  std::vector<Annotation> annotations_;
+  Annotation draft_{};
+  bool has_draft_ = false;
+  bool drawing_ = false;
 };

@@ -15,6 +15,13 @@ bool IsScreenRecordPaused();
 void PauseScreenRecord(bool pause);
 void StopScreenRecord();
 std::wstring ScreenRecordOutputPath();
-// Reap any in-flight ffmpeg subprocess at process exit (no UI). Deletes
-// zero-byte / unreadable output files; logs path + size for valid ones.
+// P1-25: after a crash, adopt an orphan ffmpeg from screen_record_state.json.
+// Returns true when a live recording was reclaimed (badge shown).
+bool AdoptOrphanScreenRecord();
+// P1-25: startup recovery — adopt a live orphan ffmpeg, or merge the leftover
+// segments of a dead one (toasts "已恢复上次录制" / failure path keeps segments).
+// Wired from App::Init (development A's file) — not called from app.cpp here.
+bool RecoverInterruptedRecording();
+// Reap any in-flight ffmpeg at process exit: finalize + merge (keep files),
+// clear state. Never silently delete recoverable segments (P1-25).
 void ReapScreenRecordOnExit();

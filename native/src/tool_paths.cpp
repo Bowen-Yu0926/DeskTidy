@@ -1,4 +1,6 @@
-#include "tool_paths.h"
+﻿#include "tool_paths.h"
+
+#include "paths_util.h"
 
 #include <Windows.h>
 
@@ -46,6 +48,13 @@ std::wstring FindFfmpegExe() {
   };
   add(dir + L"\\ffmpeg.exe");
   add(dir + L"\\assets\\ffmpeg\\ffmpeg.exe");
+  // On-demand fetch installs under the app data root (portable or LOCALAPPDATA).
+  {
+    const std::wstring data_dir = NativeDataDir();
+    if (!data_dir.empty()) {
+      add(data_dir + L"\\ffmpeg\\ffmpeg.exe");
+    }
+  }
   for (int i = 0; i < 5; ++i) {
     const size_t slash = up.find_last_of(L'\\');
     if (slash == std::wstring::npos) {

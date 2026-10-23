@@ -31,6 +31,12 @@ bool FileExistsW(const std::wstring& path) {
 }
 
 std::wstring FfmpegCacheDir() {
+  // P2-2: portable builds keep ffmpeg under NativeDataDir (not %USERPROFILE%).
+  if (IsPortableMode()) {
+    std::wstring dir = JoinPath(NativeDataDir(), L"ffmpeg");
+    CreateDirectoryW(dir.c_str(), nullptr);
+    return dir;
+  }
   std::wstring base = GetEnvW(L"USERPROFILE");
   if (base.empty()) {
     base = L"C:\\";
@@ -127,6 +133,17 @@ bool ValidateRecordingFfmpeg(const std::wstring& exe, std::wstring* error_out) {
     return false;
   }
   return true;
+}
+
+std::wstring PreferredRecordingEncoder(const std::wstring& exe) {
+  std::string encoders;
+  if (!RunCapture(exe, L"-hide_banner -encoders", &encoders)) {
+    return L"libx264";
+  }
+  if (encoders.find("h264_mf") != std::string::npos) {
+    return L"h264_mf";
+  }
+  return L"libx264";
 }
 
 namespace {

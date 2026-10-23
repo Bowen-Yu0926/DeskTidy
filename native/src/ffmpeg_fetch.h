@@ -9,6 +9,10 @@
 // libx264) must be listed. On failure `error_out` gets a readable reason.
 bool ValidateRecordingFfmpeg(const std::wstring& exe, std::wstring* error_out);
 
+// Prefer Windows Media Foundation H.264 when listed (P1-24 / Python
+// probe_preferred_encoder). Returns L"h264_mf" or L"libx264".
+std::wstring PreferredRecordingEncoder(const std::wstring& exe);
+
 // Ensure a usable ffmpeg.exe for recording. Returns true and fills `out_exe`
 // when a validated ffmpeg is ready now; otherwise prompts to download the
 // BtbN gpl-shared build (with progress), validates it, and only returns true

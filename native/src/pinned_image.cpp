@@ -62,29 +62,26 @@ bool PinnedImage::Create(HINSTANCE instance, const std::wstring& path) {
     Gdiplus::GdiplusShutdown(token);
     return false;
   }
+  // P1-23: keep original pixel size (Python pinned_image — no 640px shrink).
   bmp_w_ = static_cast<int>(src.GetWidth());
   bmp_h_ = static_cast<int>(src.GetHeight());
-  if (bmp_w_ > 640) {
-    bmp_h_ = bmp_h_ * 640 / bmp_w_;
-    bmp_w_ = 640;
-  }
-  Gdiplus::Bitmap scaled(bmp_w_, bmp_h_);
-  Gdiplus::Graphics g(&scaled);
-  g.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
-  g.DrawImage(&src, 0, 0, bmp_w_, bmp_h_);
   HBITMAP hbmp = nullptr;
-  scaled.GetHBITMAP(Gdiplus::Color(0, 0, 0, 0), &hbmp);
+  src.GetHBITMAP(Gdiplus::Color(0, 0, 0, 0), &hbmp);
   bmp_ = hbmp;
   Gdiplus::GdiplusShutdown(token);
   if (!bmp_) {
     return false;
   }
 
+  // P2-35: stagger so successive pins do not fully overlap; drop NOACTIVATE so
+  // Esc / keyboard reach the window after click.
+  static int g_stack = 0;
+  const int stagger = (g_stack++ % 8) * 28;
   const int sw = GetSystemMetrics(SM_CXSCREEN);
   hwnd_ = CreateWindowExW(
-      WS_EX_TOOLWINDOW | WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_NOACTIVATE, kClass,
-      L"贴图", WS_POPUP, (sw - bmp_w_) / 2, 80, bmp_w_, bmp_h_, nullptr, nullptr,
-      instance, this);
+      WS_EX_TOOLWINDOW | WS_EX_LAYERED | WS_EX_TOPMOST, kClass, L"贴图",
+      WS_POPUP, (sw - bmp_w_) / 2 + stagger, 80 + stagger, bmp_w_, bmp_h_,
+      nullptr, nullptr, instance, this);
   if (!hwnd_) {
     return false;
   }
@@ -115,9 +112,9 @@ void PinnedImage::Show() {
   if (!hwnd_) {
     return;
   }
-  ShowWindow(hwnd_, SW_SHOWNOACTIVATE);
-  SetWindowPos(hwnd_, HWND_TOPMOST, 0, 0, 0, 0,
-               SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+  ShowWindow(hwnd_, SW_SHOW);
+  SetWindowPos(hwnd_, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
+  SetFocus(hwnd_);
 }
 
 void PinnedImage::SaveAs() {
@@ -186,26 +183,24 @@ void PinnedImage::SaveAs() {
 }
 
 void PinnedImage::CopyToClipboard() {
-  if (!bmp_ || !OpenClipboard(hwnd_)) {
+  if (path_.empty() || !OpenClipboard(hwnd_)) {
+    return;
+  }
+  // P1-23: copy the full source file, not a display-scaled HBITMAP.
+  Gdiplus::GdiplusStartupInput input;
+  ULONG_PTR token = 0;
+  Gdiplus::GdiplusStartup(&token, &input, nullptr);
+  Gdiplus::Bitmap src(path_.c_str());
+  HBITMAP copy = nullptr;
+  if (src.GetLastStatus() == Gdiplus::Ok) {
+    src.GetHBITMAP(Gdiplus::Color(255, 255, 255, 255), &copy);
+  }
+  Gdiplus::GdiplusShutdown(token);
+  if (!copy) {
+    CloseClipboard();
     return;
   }
   EmptyClipboard();
-  // Duplicate bitmap for clipboard ownership.
-  BITMAP bm{};
-  GetObjectW(bmp_, sizeof(bm), &bm);
-  HDC screen = GetDC(nullptr);
-  HDC src = CreateCompatibleDC(screen);
-  HDC dst = CreateCompatibleDC(screen);
-  HBITMAP copy =
-      CreateCompatibleBitmap(screen, bm.bmWidth, bm.bmHeight);
-  HGDIOBJ os = SelectObject(src, bmp_);
-  HGDIOBJ od = SelectObject(dst, copy);
-  BitBlt(dst, 0, 0, bm.bmWidth, bm.bmHeight, src, 0, 0, SRCCOPY);
-  SelectObject(src, os);
-  SelectObject(dst, od);
-  DeleteDC(src);
-  DeleteDC(dst);
-  ReleaseDC(nullptr, screen);
   SetClipboardData(CF_BITMAP, copy);
   CloseClipboard();
 }
