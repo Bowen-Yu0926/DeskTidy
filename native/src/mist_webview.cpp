@@ -2,6 +2,7 @@
 
 #include "paths_util.h"
 
+#include <dwmapi.h>
 #include <objbase.h>
 #ifndef interface
 #define interface struct
@@ -10,6 +11,8 @@
 #include <wrl.h>
 
 #include <string>
+
+#pragma comment(lib, "dwmapi.lib")
 
 using Microsoft::WRL::Callback;
 using Microsoft::WRL::ComPtr;
@@ -66,7 +69,9 @@ void CreateWeb(MistWebDialog* dlg) {
     wc.lpfnWndProc = DefWindowProcW;
     wc.hInstance = GetModuleHandleW(nullptr);
     wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
-    wc.hbrBackground = CreateSolidBrush(RGB(0xF4, 0xF6, 0xF9));
+    // NULL brush: frameless mist cards need a transparent host; captioned
+    // dialogs paint via WebView page background instead.
+    wc.hbrBackground = static_cast<HBRUSH>(GetStockObject(NULL_BRUSH));
     wc.lpszClassName = kHostClass;
     RegisterClassExW(&wc);
     host_reg = true;
@@ -111,6 +116,18 @@ void CreateWeb(MistWebDialog* dlg) {
                       }
                       dlg->webview = web;
                       dlg->web_available = true;
+                      // Frameless mist cards: transparent WebView so the rounded
+                      // HTML card is not boxed by an opaque white HWND fill.
+                      if (dlg->frameless) {
+                        ComPtr<ICoreWebView2Controller2> c2;
+                        if (SUCCEEDED(controller->QueryInterface(
+                                IID_PPV_ARGS(&c2))) &&
+                            c2) {
+                          COREWEBVIEW2_COLOR clear{};
+                          clear.A = 0;
+                          c2->put_DefaultBackgroundColor(clear);
+                        }
+                      }
                       ResizeWeb(dlg);
                       controller->put_IsVisible(TRUE);
                       web->add_WebMessageReceived(
@@ -199,6 +216,12 @@ LRESULT CALLBACK MistWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
         CreateWeb(dlg);
       }
       return 0;
+    case WM_ERASEBKGND:
+      // Frameless: skip GDI fill so DWM/WebView transparency shows through.
+      if (dlg && dlg->frameless) {
+        return 1;
+      }
+      break;
     case WM_SIZE:
       ResizeWeb(dlg);
       return 0;
@@ -356,8 +379,20 @@ void MistWebDialogRun(MistWebDialog* dlg, const wchar_t* title, int width,
     registered = true;
   }
 
+  // Prefer the monitor under the cursor (multi-monitor safe).
+  POINT cursor{};
+  if (!GetCursorPos(&cursor)) {
+    cursor = {0, 0};
+  }
+  HMONITOR mon = MonitorFromPoint(cursor, MONITOR_DEFAULTTONEAREST);
+  MONITORINFO mi{};
+  mi.cbSize = sizeof(mi);
   RECT work{};
-  SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0);
+  if (GetMonitorInfoW(mon, &mi)) {
+    work = mi.rcWork;
+  } else {
+    SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0);
+  }
   const int x = work.left + ((work.right - work.left) - width) / 2;
   const int y = work.top + ((work.bottom - work.top) - height) / 3;
 
@@ -373,6 +408,11 @@ void MistWebDialogRun(MistWebDialog* dlg, const wchar_t* title, int width,
   if (!hwnd) {
     dlg->done = true;
     return;
+  }
+  if (dlg->frameless) {
+    // Let the rounded HTML card float without an opaque rectangular plate.
+    MARGINS margins{-1, -1, -1, -1};
+    DwmExtendFrameIntoClientArea(hwnd, &margins);
   }
   if (dlg->disable_owner && dlg->owner) {
     EnableWindow(dlg->owner, FALSE);

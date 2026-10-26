@@ -135,9 +135,22 @@ void FenceRegionOverlay::Paint(HDC hdc) {
   FillRect(hdc, &rc, dim);
   DeleteObject(dim);
   if (!dragging_ && start_.x == end_.x) {
+    // Hint must sit on the monitor under the cursor (or primary) — centering
+    // in the full virtual-desktop client rect lands on the multi-monitor seam
+    // and pushes the text off the main screen.
+    POINT cursor{};
+    if (!GetCursorPos(&cursor)) {
+      cursor = {0, 0};
+    }
+    RECT work = WorkAreaAtPoint(cursor);
+    POINT tl{work.left, work.top};
+    POINT br{work.right, work.bottom};
+    ScreenToClient(hwnd_, &tl);
+    ScreenToClient(hwnd_, &br);
+    RECT tip{tl.x, tl.y, br.x, br.y};
     SetBkMode(hdc, TRANSPARENT);
     SetTextColor(hdc, RGB(240, 240, 240));
-    DrawTextW(hdc, L"拖拽框选新建分区 · Esc 取消", -1, &rc,
+    DrawTextW(hdc, L"拖拽框选新建分区 · Esc 取消", -1, &tip,
               DT_CENTER | DT_VCENTER | DT_SINGLELINE);
     return;
   }

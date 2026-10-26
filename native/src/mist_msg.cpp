@@ -85,6 +85,7 @@ MistMsgResult MistMessage(HWND owner, const wchar_t* title,
 
   MistMsgResult result = MistMsgResult::Cancel;
   bool answered = false;
+  bool mist_ui_ok = false;
 
   MistWebDialog dlg;
   dlg.owner = owner;
@@ -112,9 +113,11 @@ MistMsgResult MistMessage(HWND owner, const wchar_t* title,
     }
     const std::wstring id = MistJsonStringField(json, L"id");
     if (id == L"ready") {
+      mist_ui_ok = true;
       MistWebDialogPushState(&dlg);
       return false;
     }
+    mist_ui_ok = true;
     answered = true;
     if (id == L"ok") {
       result = MistMsgResult::Ok;
@@ -129,10 +132,15 @@ MistMsgResult MistMessage(HWND owner, const wchar_t* title,
   };
 
   MistWebDialogRun(&dlg, title ? title : L"提示", 460, 240);
-  if (!answered || !dlg.web_available) {
+  // DestroyWeb clears web_available — do NOT re-check it after Run returns,
+  // or every successful Mist click would also open the Win32 MessageBox.
+  if (answered) {
+    return result;
+  }
+  if (!mist_ui_ok) {
     return Win32Fallback(owner, title, message, kind, tone);
   }
-  return result;
+  return MistMsgResult::Cancel;
 }
 
 std::wstring MistPromptText(HWND owner, const wchar_t* title,
@@ -146,6 +154,7 @@ std::wstring MistPromptText(HWND owner, const wchar_t* title,
   std::wstring result;
   bool accepted = false;
   bool answered = false;
+  bool mist_ui_ok = false;
 
   MistWebDialog dlg;
   dlg.owner = owner;
@@ -169,9 +178,11 @@ std::wstring MistPromptText(HWND owner, const wchar_t* title,
     }
     const std::wstring id = MistJsonStringField(json, L"id");
     if (id == L"ready") {
+      mist_ui_ok = true;
       MistWebDialogPushState(&dlg);
       return false;
     }
+    mist_ui_ok = true;
     answered = true;
     if (id == L"ok") {
       result = MistJsonStringField(json, L"value");
@@ -201,8 +212,11 @@ std::wstring MistPromptText(HWND owner, const wchar_t* title,
   };
 
   MistWebDialogRun(&dlg, title ? title : L"输入", 440, 220);
-  if (!answered || !dlg.web_available) {
+  if (answered) {
+    return accepted ? result : std::wstring{};
+  }
+  if (!mist_ui_ok) {
     return PromptTextWin32(owner, title, label, initial);
   }
-  return accepted ? result : std::wstring{};
+  return {};
 }
