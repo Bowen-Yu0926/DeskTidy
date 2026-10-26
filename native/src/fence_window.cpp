@@ -893,8 +893,14 @@ void FenceWindow::Show() {
   if (it != page_geometries_.end()) {
     it->second.visible = true;
   }
-  const bool was_visible = IsWindowVisible(hwnd_) != FALSE;
-  if (!was_visible) {
+  // Win+D minimizes desktop-owned overlays: IsWindowVisible stays TRUE while
+  // IsIconic is set, and SW_SHOWNOACTIVATE cannot un-minimize. Treat iconic as
+  // not-visible and restore it (Python overlay_win32_visible does the same).
+  const bool was_iconic = IsIconic(hwnd_) != FALSE;
+  const bool was_visible = IsWindowVisible(hwnd_) != FALSE && !was_iconic;
+  if (was_iconic) {
+    ShowWindow(hwnd_, SW_RESTORE);
+  } else if (!was_visible) {
     ShowWindow(hwnd_, SW_SHOWNOACTIVATE);
   }
   if (!IsAttachedToDesktop(hwnd_)) {
@@ -923,6 +929,12 @@ void FenceWindow::Hide() {
   }
   if (on_moved_) {
     on_moved_(this);
+  }
+}
+
+void FenceWindow::HideTransient() {
+  if (hwnd_) {
+    ShowWindow(hwnd_, SW_HIDE);
   }
 }
 

@@ -57,6 +57,22 @@ HWND WindowAboveDefView(HWND defview, HWND host, HWND self) {
   return above;
 }
 
+// Win+D minimizes desktop-owned overlays: IsWindowVisible stays TRUE while
+// IsIconic is set, and SW_SHOWNOACTIVATE cannot un-minimize a window. Restore
+// iconic overlays first, then show hidden ones without stealing focus.
+void ShowOverlayNoActivate(HWND hwnd) {
+  if (!IsWindowAlive(hwnd)) {
+    return;
+  }
+  if (IsIconic(hwnd)) {
+    ShowWindow(hwnd, SW_RESTORE);
+    return;
+  }
+  if (!IsWindowVisible(hwnd)) {
+    ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+  }
+}
+
 }  // namespace
 
 void InvalidateDefViewCache() {
@@ -168,8 +184,8 @@ bool AttachOverlayToDesktop(HWND hwnd, bool show) {
     return false;
   }
   if (IsAttachedToDesktop(hwnd, &host)) {
-    if (show && !IsWindowVisible(hwnd)) {
-      ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+    if (show) {
+      ShowOverlayNoActivate(hwnd);
     }
     return true;
   }
@@ -188,8 +204,8 @@ bool AttachOverlayToDesktop(HWND hwnd, bool show) {
 
   PlaceOverlayInDesktopBand(hwnd, true);
 
-  if (show && !IsWindowVisible(hwnd)) {
-    ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+  if (show) {
+    ShowOverlayNoActivate(hwnd);
   }
   return IsAttachedToDesktop(hwnd, &host);
 }
@@ -274,7 +290,5 @@ void RaiseOverlayInDesktopBand(HWND hwnd) {
   const UINT flags = kSwpNoMoveNoSizeNoActivate | SWP_NOREDRAW;
   SetWindowPos(hwnd, insert_after, 0, 0, 0, 0, flags);
 
-  if (!IsWindowVisible(hwnd)) {
-    ShowWindow(hwnd, SW_SHOWNOACTIVATE);
-  }
+  ShowOverlayNoActivate(hwnd);
 }

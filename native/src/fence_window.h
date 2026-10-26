@@ -75,6 +75,10 @@ class FenceWindow {
   FenceLayout CurrentLayout() const;
   void Show();
   void Hide();
+  // Temporary hide: hides the window without touching visible_/page geometry,
+  // so page switches, the global show_fences toggle and the "stock desktop"
+  // double-click view cannot permanently clear a fence (P1-2 leaked into them).
+  void HideTransient();
   void AttachToDesktopLayer();
   void RefreshLayer();  // re-upload UpdateLayeredWindow pixels
   void SetOnMoved(MovedFn fn) { on_moved_ = std::move(fn); }

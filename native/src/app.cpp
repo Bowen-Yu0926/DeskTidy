@@ -763,7 +763,7 @@ bool App::Init(HINSTANCE instance) {
       if (fences_hidden_) {
         for (auto& f : fences_) {
           if (f) {
-            f->Hide();
+            f->HideTransient();
           }
         }
       } else {
@@ -2212,7 +2212,7 @@ void App::ToggleFencesVisible() {
   if (fences_hidden_) {
     for (auto& f : fences_) {
       if (f) {
-        f->Hide();
+        f->HideTransient();
       }
     }
     TrimMemory();
@@ -2773,7 +2773,7 @@ void App::ShowStockDesktopView() {
   // Hide DeskTidy chrome without permanently clearing prefs (Python stock view).
   for (auto& f : fences_) {
     if (f) {
-      f->Hide();
+      f->HideTransient();
     }
   }
   dock_.SetVisible(false);
@@ -2809,7 +2809,7 @@ void App::ApplyLoadedGeneralPrefs() {
   if (fences_hidden_) {
     for (auto& f : fences_) {
       if (f) {
-        f->Hide();
+        f->HideTransient();
       }
     }
   } else {
@@ -2922,6 +2922,11 @@ void App::SeatAllFencesUnderApps() {
   // HWND_BOTTOM alone buries layered fences under SHELLDLL_DefView / ListView,
   // so Explorer desktop icons paint on top of pins (ghosted labels). Seat under
   // APPWINDOWs but keep overlays DefView-adjacent — same as fence Show().
+  //
+  // Critical: AttachOverlay/RaiseOverlay call ShowWindow when the HWND is
+  // hidden. Only seat chrome that should be visible — otherwise opening
+  // Settings (or band-settle while Settings is open) resurrects a pet/dock
+  // the user just turned off.
   auto seat = [](HWND hwnd) {
     if (!hwnd || !IsWindow(hwnd)) {
       return;
@@ -2934,16 +2939,22 @@ void App::SeatAllFencesUnderApps() {
     if (!fence || !fence->Hwnd()) {
       continue;
     }
+    const bool want =
+        !fences_hidden_ && !peek_active_ && fence->VisibleOnPage(current_page_);
+    if (!want) {
+      continue;
+    }
     seat(fence->Hwnd());
     fence->RefreshLayer();
   }
-  if (dock_.Hwnd()) {
+  if (dock_visible_ && dock_.Hwnd()) {
     seat(dock_.Hwnd());
   }
-  if (pet_.Hwnd()) {
+  if (pet_visible_ && pet_.Hwnd()) {
     seat(pet_.Hwnd());
   }
-  if (page_bar_.Hwnd()) {
+  const bool pet_hosts = pet_visible_ && pet_.ShowPageBubbles();
+  if (!pet_hosts && prefs_.show_page_indicator && page_bar_.Hwnd()) {
     seat(page_bar_.Hwnd());
   }
   // Organized mode: keep Explorer icons off so they cannot bleed through.
@@ -3994,7 +4005,7 @@ void App::ApplyPageVisibility() {
     if (!fences_hidden_ && fence->VisibleOnPage(current_page_)) {
       fence->Show();
     } else {
-      fence->Hide();
+      fence->HideTransient();
     }
   }
   if (pet_visible_) {
@@ -4145,7 +4156,7 @@ void App::RestoreDesktopChrome() {
     if (fences_hidden_ || peek_active_) {
       continue;
     }
-    if (!IsWindowVisible(fence->Hwnd())) {
+    if (!IsWindowVisible(fence->Hwnd()) || IsIconic(fence->Hwnd())) {
       fence->Show();
     } else {
       reattach(fence->Hwnd());
@@ -4287,6 +4298,7 @@ void App::SetPetVisible(bool on) {
   pet_.SetVisible(pet_visible_);
   SyncPageChrome();
   PersistLayouts();
+  LogLine(L"[pet] visible=%d", on ? 1 : 0);
 }
 
 void App::ToggleDock() { SetDockVisible(!dock_visible_); }
