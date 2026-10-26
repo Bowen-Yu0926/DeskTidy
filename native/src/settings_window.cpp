@@ -1106,6 +1106,8 @@ void SettingsWindow::DispatchAction(const std::wstring& json) {
   } else if (id == L"fence_set_style" && on_fence_style_) {
     on_fence_style_(JsonIntField(json, L"index", 0),
                     JsonStringField(json, L"value"));
+  } else if (id == L"fence_set_style_all" && on_fence_style_all_) {
+    on_fence_style_all_(JsonStringField(json, L"value"));
   } else if (id == L"fence_set_opacity" && on_fence_opacity_) {
     on_fence_opacity_(JsonIntField(json, L"index", 0),
                       JsonIntField(json, L"value", 70));

@@ -78,6 +78,7 @@ class App {
   void SyncVaultLauncher();
   void RefreshVaultListForSettings();
   void SetFenceStyleAt(int index, const std::wstring& style_id);
+  void SetAllFenceStyle(const std::wstring& style_id);
   void SetFenceOpacityPctAt(int index, int opacity_pct);
   void ApplyDockPrefs();
   void SyncPageChrome();

@@ -184,6 +184,9 @@ class SettingsWindow {
   void SetOnFenceOpacity(std::function<void(int, int)> fn) {
     on_fence_opacity_ = std::move(fn);
   }
+  void SetOnFenceStyleAll(std::function<void(const std::wstring&)> fn) {
+    on_fence_style_all_ = std::move(fn);
+  }
   void SetOnFencePage(PageFn fn) { on_fence_page_card_ = std::move(fn); }
   struct HotkeyRow {
     std::wstring id;
@@ -286,6 +289,7 @@ class SettingsWindow {
   std::function<void(const std::wstring&, const std::wstring&)> on_hotkey_set_;
   std::function<void(int, const std::wstring&)> on_fence_style_;
   std::function<void(int, int)> on_fence_opacity_;
+  std::function<void(const std::wstring&)> on_fence_style_all_;
   PageFn on_fence_page_card_;
 
   std::vector<std::wstring> fence_names_;

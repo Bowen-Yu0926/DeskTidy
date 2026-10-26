@@ -704,6 +704,8 @@ bool App::Init(HINSTANCE instance) {
       [this](int index, const std::wstring& style) {
         SetFenceStyleAt(index, style);
       });
+  settings_.SetOnFenceStyleAll(
+      [this](const std::wstring& style) { SetAllFenceStyle(style); });
   settings_.SetOnFenceOpacity(
       [this](int index, int pct) { SetFenceOpacityPctAt(index, pct); });
   settings_.SetOnFencePage(
@@ -2658,6 +2660,22 @@ void App::SetFenceStyleAt(int index, const std::wstring& style_id) {
   PersistLayouts();
   PushExtensionSettings();
   ShowToast(L"已更新分区样式");
+}
+
+void App::SetAllFenceStyle(const std::wstring& style_id) {
+  const std::string id = NormalizeFenceStyleId(NarrowUtf8(style_id));
+  for (auto& fence : fences_) {
+    if (fence) {
+      fence->SetStyleId(id);
+    }
+  }
+  // Global preset lives in prefs_.theme_id (not AppState), so persist it
+  // explicitly; PersistLayouts() only writes the per-fence layouts.
+  prefs_.theme_id = id;
+  SaveAppPrefs(prefs_);
+  PersistLayouts();
+  PushExtensionSettings();
+  ShowToast(L"已应用到全部分区样式");
 }
 
 void App::SetFenceOpacityPctAt(int index, int opacity_pct) {

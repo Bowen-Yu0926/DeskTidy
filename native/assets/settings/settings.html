@@ -382,6 +382,19 @@
     font-size: 12px; font-weight: 700; color: var(--muted);
     padding: 4px 10px; border-radius: 999px; background: #F1F5F9;
   }
+  .global-style-row {
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    padding: 10px 12px; margin: 2px 0 12px;
+    border: 1px solid var(--border); border-radius: 12px; background: #F8FAFC;
+  }
+  .global-style-label { font-size: 13px; font-weight: 800; color: var(--text); }
+  .global-style-row .ft-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .global-style-row .ft-chip {
+    width: 26px; height: 20px; border-radius: 6px; border: 1px solid var(--border);
+    cursor: pointer; padding: 0;
+  }
+  .global-style-row .ft-chip.on { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .global-style-row .hint { margin: 0; }
   .fence-columns {
     display: flex; gap: 12px; flex: 1; min-height: 320px; align-items: stretch;
   }
@@ -821,6 +834,11 @@
             <span class="fence-date" id="fence-date"></span>
             <label class="toggle"><input type="checkbox" id="ext_page_indicator" /> 显示页码指示器</label>
           </div>
+        </div>
+        <div class="global-style-row">
+          <span class="global-style-label">全局样式</span>
+          <div id="global-style-chips" class="ft-chips"></div>
+          <p class="hint">点色块应用到所有分区（单分区可在下方卡片单独改）</p>
         </div>
         <div class="fence-columns">
           <div class="fence-col-pages">
@@ -1644,6 +1662,30 @@
     add.title = '框选新建分区';
     add.addEventListener('click', () => post({ type: 'action', id: 'add' }));
     box.appendChild(add);
+    renderGlobalStyle();
+  }
+
+  function renderGlobalStyle() {
+    const box = document.getElementById('global-style-chips');
+    if (!box) return;
+    const styles = Array.isArray(state.themes) && state.themes.length
+      ? state.themes
+      : Object.keys(STYLE_COLORS).map((id) => ({ id, name: id }));
+    const cur = state.theme_id || 'charcoal';
+    box.innerHTML = styles.map((t) => {
+      const id = t.id || '';
+      const col = STYLE_COLORS[id] || STYLE_COLORS.charcoal;
+      return '<button type="button" class="ft-chip' + (id === cur ? ' on' : '') +
+        '" data-style="' + id + '" title="' + (t.name || id) +
+        '" style="background:' + col.bg + '"></button>';
+    }).join('');
+    box.querySelectorAll('[data-style]').forEach((chip) => {
+      chip.addEventListener('click', () => {
+        post({ type: 'action', id: 'fence_set_style_all', value: chip.dataset.style });
+        state.theme_id = chip.dataset.style;
+        renderGlobalStyle();
+      });
+    });
   }
 
   function paintSnapThumb(thumbEl, it, large) {
