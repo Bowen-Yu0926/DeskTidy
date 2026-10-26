@@ -463,6 +463,33 @@ bool MigrateTodosTxt(const std::wstring& json_path) {
   return true;
 }
 
+// One-shot import from Python %USERPROFILE%\.desktidy\todos.json.
+// Both sides share {"version":1,"items":[{id,text,done,created_at}]}.
+bool MigratePythonTodos(const std::wstring& json_path) {
+  wchar_t profile[MAX_PATH];
+  const DWORD n = GetEnvironmentVariableW(L"USERPROFILE", profile, MAX_PATH);
+  if (n == 0 || n >= MAX_PATH) {
+    return false;
+  }
+  const std::wstring py_path =
+      JoinPath(JoinPath(profile, L".desktidy"), L"todos.json");
+  const DWORD a = GetFileAttributesW(py_path.c_str());
+  if (a == INVALID_FILE_ATTRIBUTES || (a & FILE_ATTRIBUTE_DIRECTORY)) {
+    return false;
+  }
+  std::string json;
+  if (!ReadTextFile(py_path, &json)) {
+    return false;
+  }
+  std::vector<TodoWindow::Item> items;
+  ParseTodosJson(json, &items);
+  if (items.empty()) {
+    return false;
+  }
+  SaveStringAtomic(SerializeTodos(items), json_path);
+  return true;
+}
+
 }  // namespace
 
 bool TodoWindow::Create(HINSTANCE instance) {
@@ -829,6 +856,9 @@ void TodoWindow::Load() {
   items_.clear();
   std::string json;
   bool have_file = ReadTextFile(TodosPath(), &json);
+  if (!have_file && MigratePythonTodos(TodosPath())) {
+    have_file = ReadTextFile(TodosPath(), &json);
+  }
   if (!have_file && MigrateTodosTxt(TodosPath())) {
     have_file = ReadTextFile(TodosPath(), &json);
   }
