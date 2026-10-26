@@ -157,6 +157,41 @@ bool FindBool(const std::string& body, const char* key, bool* out) {
   return false;
 }
 
+// Decode one JSON string starting at the opening quote index ``q``.
+// Advances ``q`` past the closing quote. Mirrors FindString unescaping so
+// Windows paths ("D:\\foo") do not accumulate backslashes across save cycles.
+bool ParseJsonStringAt(const std::string& body, size_t* q, std::string* out) {
+  if (*q >= body.size() || body[*q] != '"') {
+    return false;
+  }
+  ++(*q);
+  std::string val;
+  while (*q < body.size() && body[*q] != '"') {
+    if (body[*q] == '\\' && *q + 1 < body.size()) {
+      ++(*q);
+      if (body[*q] == 'n') {
+        val.push_back('\n');
+      } else if (body[*q] == 'r') {
+        val.push_back('\r');
+      } else if (body[*q] == 't') {
+        val.push_back('\t');
+      } else {
+        // \\ \" \/ and any other escaped char → take the next literally.
+        val.push_back(body[*q]);
+      }
+    } else {
+      val.push_back(body[*q]);
+    }
+    ++(*q);
+  }
+  if (*q >= body.size() || body[*q] != '"') {
+    return false;
+  }
+  ++(*q);  // closing quote
+  *out = std::move(val);
+  return true;
+}
+
 // Extract a JSON array of strings, e.g. "organize_kinds":["icon","file"].
 bool FindStringArray(const std::string& body, const char* key,
                      std::vector<std::string>* out) {
@@ -169,24 +204,32 @@ bool FindStringArray(const std::string& body, const char* key,
   if (p == std::string::npos) {
     return false;
   }
-  const size_t end = body.find(']', p);
-  if (end == std::string::npos) {
-    return false;
-  }
+  // Do not use find(']') — paths with escaped quotes / huge corrupt runs
+  // make a naive scan wrong; walk tokens instead.
   size_t q = p + 1;
-  while (q < end) {
-    const size_t a = body.find('"', q);
-    if (a == std::string::npos || a >= end) {
+  while (q < body.size()) {
+    while (q < body.size() &&
+           (body[q] == ' ' || body[q] == '\t' || body[q] == '\n' ||
+            body[q] == '\r' || body[q] == ',')) {
+      ++q;
+    }
+    if (q >= body.size()) {
       break;
     }
-    const size_t b = body.find('"', a + 1);
-    if (b == std::string::npos || b > end) {
+    if (body[q] == ']') {
+      return true;
+    }
+    if (body[q] != '"') {
       break;
     }
-    out->push_back(body.substr(a + 1, b - a - 1));
-    q = b + 1;
+    std::string item;
+    if (!ParseJsonStringAt(body, &q, &item)) {
+      break;
+    }
+    out->push_back(std::move(item));
   }
-  return true;
+  // True when ']' reached (including empty []); false only on parse error.
+  return q < body.size() && body[q] == ']';
 }
 
 }  // namespace
@@ -323,11 +366,33 @@ bool IsPageLocked(const AppState& state, int page) {
   return state.page_locked[static_cast<size_t>(page)];
 }
 
+// Hard cap: a healthy layout.json is a few KB. A runaway EscapeJson /
+// FindStringArray bug once wrote ~2GB of backslashes — never mmap that again.
+constexpr std::uintmax_t kMaxLayoutJsonBytes = 8ull * 1024ull * 1024ull;
+
 // Read a layout JSON, falling back to the .bak copy when the main file is
-// missing, empty, or truncated (no brace pair). Returns false only when both
-// copies are unusable.
+// missing, empty, oversized, or truncated (no brace pair). Returns false only
+// when both copies are unusable.
 bool ReadLayoutJson(const std::wstring& path, std::string* out) {
   for (const std::wstring& candidate : {path, path + L".bak"}) {
+    WIN32_FILE_ATTRIBUTE_DATA fad{};
+    if (!GetFileAttributesExW(candidate.c_str(), GetFileExInfoStandard, &fad)) {
+      continue;
+    }
+    const ULARGE_INTEGER sz{fad.nFileSizeLow, fad.nFileSizeHigh};
+    if (sz.QuadPart == 0 || sz.QuadPart > kMaxLayoutJsonBytes) {
+      LogLine(L"[layout] skip oversized/empty %s (%llu bytes)",
+              candidate.c_str(),
+              static_cast<unsigned long long>(sz.QuadPart));
+      // Quarantine runaway main file so the next save cannot promote it to .bak.
+      if (sz.QuadPart > kMaxLayoutJsonBytes && candidate == path) {
+        const std::wstring bad = path + L".corrupt";
+        DeleteFileW(bad.c_str());
+        MoveFileExW(path.c_str(), bad.c_str(), MOVEFILE_REPLACE_EXISTING);
+        LogLine(L"[layout] quarantined oversized main → %s", bad.c_str());
+      }
+      continue;
+    }
     std::ifstream in(candidate, std::ios::binary);
     if (!in) {
       continue;
@@ -743,11 +808,18 @@ bool SaveAppState(const AppState& state) {
   const std::wstring path = LayoutFilePath();
   std::string previous;
   {
-    std::ifstream in(path);
-    if (in) {
-      std::ostringstream ss;
-      ss << in.rdbuf();
-      previous = ss.str();
+    WIN32_FILE_ATTRIBUTE_DATA fad{};
+    if (GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &fad)) {
+      const ULARGE_INTEGER sz{fad.nFileSizeLow, fad.nFileSizeHigh};
+      // Never re-ingest a runaway layout as profile donor / .bak source.
+      if (sz.QuadPart > 0 && sz.QuadPart <= kMaxLayoutJsonBytes) {
+        std::ifstream in(path, std::ios::binary);
+        if (in) {
+          std::ostringstream ss;
+          ss << in.rdbuf();
+          previous = ss.str();
+        }
+      }
     }
   }
   struct Kept {
@@ -961,11 +1033,19 @@ bool SaveAppState(const AppState& state) {
             json.size());
     return false;
   }
+  // Only promote a previous *good* layout to .bak — never a runaway 2GB file.
   WIN32_FILE_ATTRIBUTE_DATA fad{};
   if (GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &fad) &&
-      !(fad.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) &&
-      (fad.nFileSizeHigh != 0 || fad.nFileSizeLow != 0)) {
-    CopyFileW(path.c_str(), (path + L".bak").c_str(), FALSE);
+      !(fad.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
+    const ULARGE_INTEGER sz{fad.nFileSizeLow, fad.nFileSizeHigh};
+    if (sz.QuadPart > 0 && sz.QuadPart <= kMaxLayoutJsonBytes) {
+      CopyFileW(path.c_str(), (path + L".bak").c_str(), FALSE);
+    } else if (sz.QuadPart > kMaxLayoutJsonBytes) {
+      const std::wstring bad = path + L".corrupt";
+      DeleteFileW(bad.c_str());
+      MoveFileExW(path.c_str(), bad.c_str(), MOVEFILE_REPLACE_EXISTING);
+      LogLine(L"[layout] quarantined oversized before save → %s", bad.c_str());
+    }
   }
   if (!MoveFileExW(tmp.c_str(), path.c_str(),
                    MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
@@ -1122,7 +1202,7 @@ LayoutPoint SnapFencePosition(const LayoutRect& moving,
   int w = moving.w < 1 ? 1 : moving.w;
   int h = moving.h < 1 ? 1 : moving.h;
 
-  // Screen work-area edges (Python snap_geometry). Top is tighter.
+  // 1) Screen work-area edges (Python snap_geometry). Top is tighter.
   if (AbsInt(x - work.x) <= threshold) {
     x = work.x;
   } else if (AbsInt((x + w) - work.right()) <= threshold) {
@@ -1134,7 +1214,49 @@ LayoutPoint SnapFencePosition(const LayoutRect& moving,
     y = work.bottom() - h;
   }
 
-  // Always keep the result fully inside the work area.
+  // 2) Sibling edge / abut snap (Fences-class fence↔fence align). Pick the
+  // closest candidate within threshold so multiple neighbors don't fight.
+  {
+    int best_dx = threshold + 1;
+    int snap_x = x;
+    auto try_x = [&](int nx) {
+      const int d = AbsInt(nx - x);
+      if (d <= threshold && d < best_dx) {
+        best_dx = d;
+        snap_x = nx;
+      }
+    };
+    int best_dy = threshold + 1;
+    int snap_y = y;
+    auto try_y = [&](int ny) {
+      const int d = AbsInt(ny - y);
+      if (d <= threshold && d < best_dy) {
+        best_dy = d;
+        snap_y = ny;
+      }
+    };
+    for (const auto& o : others) {
+      if (o.w < 1 || o.h < 1) {
+        continue;
+      }
+      try_x(o.x);            // left ↔ left
+      try_x(o.right() - w);  // right ↔ right
+      try_x(o.right());      // left abut other's right
+      try_x(o.x - w);        // right abut other's left
+      try_y(o.y);            // top ↔ top
+      try_y(o.bottom() - h); // bottom ↔ bottom
+      try_y(o.bottom());     // top abut other's bottom
+      try_y(o.y - h);        // bottom abut other's top
+    }
+    if (best_dx <= threshold) {
+      x = snap_x;
+    }
+    if (best_dy <= threshold) {
+      y = snap_y;
+    }
+  }
+
+  // 3) Always keep the result fully inside the work area.
   if (w > work.w) {
     w = work.w;
   }
@@ -1153,11 +1275,6 @@ LayoutPoint SnapFencePosition(const LayoutRect& moving,
   if (y + h > work.bottom()) {
     y = work.bottom() - h;
   }
-
-  // `others` reserved for fence-to-fence edge/centerline alignment; Python
-  // currently snaps screen edges only and resolves sibling overlap separately
-  // (ResolveFenceCollisions).
-  (void)others;
 
   LayoutPoint out;
   out.x = x;

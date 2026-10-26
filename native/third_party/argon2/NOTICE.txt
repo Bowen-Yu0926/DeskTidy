@@ -1,0 +1,5 @@
+Argon2 reference implementation (phc-winner-argon2)
+https://github.com/P-H-C/phc-winner-argon2
+
+Licensed under CC0 1.0 or Apache 2.0 (at your option).
+Vendored under native/third_party/argon2 for DeskTidy Native vault ZK.

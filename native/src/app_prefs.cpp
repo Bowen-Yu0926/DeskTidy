@@ -107,16 +107,36 @@ std::vector<std::wstring> ParseStringArrayField(const std::string& json,
   }
   size_t q = p + 1;
   while (q < end) {
-    const size_t a = json.find('"', q);
-    if (a == std::string::npos || a >= end) {
+    while (q < end && (json[q] == ' ' || json[q] == '\t' || json[q] == '\n' ||
+                       json[q] == '\r' || json[q] == ',')) {
+      ++q;
+    }
+    if (q >= end || json[q] != '"') {
       break;
     }
-    const size_t b = json.find('"', a + 1);
-    if (b == std::string::npos || b > end) {
-      break;
+    ++q;
+    std::string raw;
+    while (q < end && json[q] != '"') {
+      if (json[q] == '\\' && q + 1 < end) {
+        ++q;
+        if (json[q] == 'n') {
+          raw.push_back('\n');
+        } else if (json[q] == 'r') {
+          raw.push_back('\r');
+        } else if (json[q] == 't') {
+          raw.push_back('\t');
+        } else {
+          raw.push_back(json[q]);
+        }
+      } else {
+        raw.push_back(json[q]);
+      }
+      ++q;
     }
-    out.push_back(WidenUtf8(json.substr(a + 1, b - a - 1)));
-    q = b + 1;
+    if (q < end && json[q] == '"') {
+      ++q;
+    }
+    out.push_back(WidenUtf8(raw));
   }
   return out;
 }
@@ -229,6 +249,8 @@ AppPrefs LoadAppPrefsFromPath(const std::wstring& path) {
   prefs.calculator_enabled = ParseBoolField(json, "calculator_enabled", false);
   prefs.todos_enabled = ParseBoolField(json, "todos_enabled", false);
   prefs.notepad_enabled = ParseBoolField(json, "notepad_enabled", true);
+  prefs.elevate_hotkey_helper =
+      ParseBoolField(json, "elevate_hotkey_helper", false);
   prefs.record_on_bar = ParseBoolField(json, "record_on_bar", false);
   prefs.calculator_on_bar = ParseBoolField(json, "calculator_on_bar", false);
   prefs.todos_on_bar = ParseBoolField(json, "todos_on_bar", false);
@@ -295,8 +317,7 @@ AppPrefs LoadAppPrefsFromPath(const std::wstring& path) {
   if (!notified.empty()) {
     prefs.update_notified_tag = WidenUtf8(notified);
   }
-  prefs.auto_snapshot_on_change =
-      ParseBoolField(json, "auto_snapshot_on_change", false);
+  // auto_snapshot_on_change removed — ignore if present in older prefs files.
   prefs.desktop_right_click_menu =
       ParseBoolField(json, "desktop_right_click_menu", true);
   prefs.vault_enabled = ParseBoolField(json, "vault_enabled", false);
@@ -395,6 +416,8 @@ void SaveAppPrefsToPath(const AppPrefs& prefs, const std::wstring& path) {
       << (prefs.todos_enabled ? "true" : "false")
       << ",\n  \"notepad_enabled\": "
       << (prefs.notepad_enabled ? "true" : "false")
+      << ",\n  \"elevate_hotkey_helper\": "
+      << (prefs.elevate_hotkey_helper ? "true" : "false")
       << ",\n  \"record_on_bar\": "
       << (prefs.record_on_bar ? "true" : "false")
       << ",\n  \"calculator_on_bar\": "
@@ -431,9 +454,7 @@ void SaveAppPrefsToPath(const AppPrefs& prefs, const std::wstring& path) {
       << (prefs.check_update_on_startup ? "true" : "false")
       << ",\n  \"update_notified_tag\": \""
       << EscapeJson(NarrowUtf8(prefs.update_notified_tag))
-      << "\",\n  \"auto_snapshot_on_change\": "
-      << (prefs.auto_snapshot_on_change ? "true" : "false")
-      << ",\n  \"desktop_right_click_menu\": "
+      << "\",\n  \"desktop_right_click_menu\": "
       << (prefs.desktop_right_click_menu ? "true" : "false")
       << ",\n  \"vault_enabled\": "
       << (prefs.vault_enabled ? "true" : "false")

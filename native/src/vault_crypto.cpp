@@ -2,6 +2,8 @@
 
 #include "paths_util.h"
 
+#include "argon2.h"
+
 #include <Windows.h>
 #include <bcrypt.h>
 #include <wincrypt.h>
@@ -172,24 +174,53 @@ bool VaultDeriveKey(const std::wstring& master_password,
 bool VaultDeriveKeyEx(const std::wstring& master_password,
                       const std::vector<BYTE>& salt, int iterations,
                       std::vector<BYTE>* key_out) {
-  if (!key_out || salt.empty() || iterations < 1) {
+  return VaultDeriveKeyForAlgo(master_password, salt, iterations, L"pbkdf2",
+                               key_out);
+}
+
+bool VaultDeriveKeyForAlgo(const std::wstring& master_password,
+                           const std::vector<BYTE>& salt, int iterations,
+                           const std::wstring& algo,
+                           std::vector<BYTE>* key_out) {
+  if (!key_out || salt.empty()) {
     return false;
   }
   const std::string pw = Narrow(master_password);
   key_out->assign(kVaultKeyLen, 0);
-  // BCryptDeriveKeyPBKDF2
-  BCRYPT_ALG_HANDLE alg = nullptr;
-  if (BCryptOpenAlgorithmProvider(&alg, BCRYPT_SHA256_ALGORITHM, nullptr,
-                                  BCRYPT_ALG_HANDLE_HMAC_FLAG) != 0) {
-    return false;
+
+  std::wstring a = algo;
+  for (wchar_t& c : a) {
+    if (c >= L'A' && c <= L'Z') {
+      c = static_cast<wchar_t>(c - L'A' + L'a');
+    }
   }
-  const NTSTATUS st = BCryptDeriveKeyPBKDF2(
-      alg, reinterpret_cast<PUCHAR>(const_cast<char*>(pw.data())),
-      static_cast<ULONG>(pw.size()), const_cast<PUCHAR>(salt.data()),
-      static_cast<ULONG>(salt.size()), static_cast<ULONG>(iterations),
-      key_out->data(), kVaultKeyLen, 0);
-  BCryptCloseAlgorithmProvider(alg, 0);
-  return st == 0;
+  if (a.empty() || a == L"pbkdf2") {
+    if (iterations < 1) {
+      iterations = kVaultKdfIterations;
+    }
+    BCRYPT_ALG_HANDLE alg = nullptr;
+    if (BCryptOpenAlgorithmProvider(&alg, BCRYPT_SHA256_ALGORITHM, nullptr,
+                                    BCRYPT_ALG_HANDLE_HMAC_FLAG) != 0) {
+      return false;
+    }
+    const NTSTATUS st = BCryptDeriveKeyPBKDF2(
+        alg, reinterpret_cast<PUCHAR>(const_cast<char*>(pw.data())),
+        static_cast<ULONG>(pw.size()), const_cast<PUCHAR>(salt.data()),
+        static_cast<ULONG>(salt.size()), static_cast<ULONG>(iterations),
+        key_out->data(), kVaultKeyLen, 0);
+    BCryptCloseAlgorithmProvider(alg, 0);
+    return st == 0;
+  }
+  if (a == L"argon2id") {
+    // Match Python vault_crypto.derive_key(algo="argon2id") defaults.
+    const int rc = argon2id_hash_raw(
+        static_cast<uint32_t>(kVaultArgon2TimeCost),
+        static_cast<uint32_t>(kVaultArgon2MemoryKiB),
+        static_cast<uint32_t>(kVaultArgon2Parallelism), pw.data(), pw.size(),
+        salt.data(), salt.size(), key_out->data(), kVaultKeyLen);
+    return rc == ARGON2_OK;
+  }
+  return false;
 }
 
 std::wstring VaultEncryptField(const std::wstring& plain,

@@ -107,6 +107,7 @@ class PageBar {
   std::vector<FolderChip> folders_;
   int anchor_y_ = -1;  // -1 = vertical center
   // X2: DPI-scaled chip metrics (start at the 96-DPI design values).
+  int chip_w_ = 86;
   int chip_h_ = 34;
   int slot_h_ = 38;
   float font_scale_ = 1.f;

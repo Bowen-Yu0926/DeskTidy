@@ -50,7 +50,7 @@ bool PageBar::Create(HINSTANCE instance) {
   }
   RebuildSlots();
   const int n = (std::max)(1, static_cast<int>(slots_.size()));
-  const int w = kChipW + kPadX * 2;
+  const int w = chip_w_ + kPadX * 2;
   const int h = kPadY * 2 + n * slot_h_;
   const RECT work = PrimaryWorkArea();
   const int x = work.right - w - kEdgeMargin;
@@ -141,10 +141,19 @@ void PageBar::Show() {
   if (!hwnd_) {
     return;
   }
-  Relayout();
-  ShowWindow(hwnd_, SW_SHOWNOACTIVATE);
-  AttachToDesktopLayer();
-  Paint(nullptr);
+  // Page clicks call Show via ApplyPageVisibility — do not Relayout /
+  // PlaceOverlay(HWND_BOTTOM) every time (that flashes the whole desktop).
+  const bool need_map = !IsWindowVisible(hwnd_);
+  if (need_map) {
+    Relayout();
+    ShowWindow(hwnd_, SW_SHOWNOACTIVATE);
+  }
+  if (!IsAttachedToDesktop(hwnd_)) {
+    AttachToDesktopLayer();
+  }
+  if (need_map) {
+    Paint(nullptr);
+  }
 }
 
 void PageBar::Hide() {
@@ -240,7 +249,7 @@ void PageBar::Relayout() {
   }
   RebuildSlots();
   const int n = (std::max)(1, static_cast<int>(slots_.size()));
-  const int w = kChipW + kPadX * 2;
+  const int w = chip_w_ + kPadX * 2;
   const int h = kPadY * 2 + n * slot_h_;
   const RECT work = PrimaryWorkArea();
   int y = static_cast<int>(work.top) +
@@ -339,6 +348,7 @@ void PageBar::ScaleForDpi(int old_dpi, int new_dpi) {
   if (anchor_y_ >= 0) {
     anchor_y_ = static_cast<int>(anchor_y_ * k + 0.5);
   }
+  chip_w_ = (std::max)(1, static_cast<int>(kChipW * k + 0.5));
   chip_h_ = (std::max)(1, static_cast<int>(kChipH * k + 0.5));
   slot_h_ = (std::max)(chip_h_, static_cast<int>(kSlot * k + 0.5));
   font_scale_ = static_cast<float>(k);
@@ -365,13 +375,17 @@ void PageBar::AttachToDesktopLayer() {
   if (!hwnd_) {
     return;
   }
+  // Already seated — skip HWND_BOTTOM + raise (page-switch flash).
+  if (IsAttachedToDesktop(hwnd_)) {
+    return;
+  }
   AttachOverlayToDesktop(hwnd_, true);
   PlaceOverlayInDesktopBand(hwnd_, true);
   RaiseOverlayInDesktopBand(hwnd_);
 }
 
 int PageBar::HitTest(int x, int y) const {
-  if (x < kPadX || x >= kPadX + kChipW) {
+  if (x < kPadX || x >= kPadX + chip_w_) {
     return -1;
   }
   const int idx = (y - kPadY) / slot_h_;
@@ -652,15 +666,18 @@ void PageBar::Paint(HDC) {
   {
     Gdiplus::Graphics g(mem);
     g.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
-    g.SetPixelOffsetMode(Gdiplus::PixelOffsetModeNone);
+    g.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHalf);
+    // Same as fence labels: grayscale grid-fit on opaque chips (ClearType
+    // fringes on layered windows). Opaque fill keeps AA crisp vs wallpaper.
     g.SetTextRenderingHint(Gdiplus::TextRenderingHintAntiAliasGridFit);
+    g.SetTextContrast(4);
 
     Gdiplus::FontFamily family(L"Microsoft YaHei UI");
     const Gdiplus::FontFamily* face =
         family.IsAvailable() ? &family : Gdiplus::FontFamily::GenericSansSerif();
-    Gdiplus::Font font_page(face, 12.f * font_scale_, Gdiplus::FontStyleRegular,
+    Gdiplus::Font font_page(face, 13.f * font_scale_, Gdiplus::FontStyleRegular,
                             Gdiplus::UnitPixel);
-    Gdiplus::Font font_util(face, 11.f * font_scale_, Gdiplus::FontStyleRegular,
+    Gdiplus::Font font_util(face, 12.f * font_scale_, Gdiplus::FontStyleRegular,
                             Gdiplus::UnitPixel);
     Gdiplus::StringFormat fmt;
     fmt.SetAlignment(Gdiplus::StringAlignmentCenter);
@@ -684,24 +701,24 @@ void PageBar::Paint(HDC) {
       const float cx = static_cast<float>(kPadX);
       const float cy =
           static_cast<float>(kPadY + i * slot_h_ + (slot_h_ - chip_h_) / 2);
-      const float bw = static_cast<float>(kChipW);
-      const float bh = static_cast<float>(kChipH);
+      const float bw = static_cast<float>(chip_w_);
+      const float bh = static_cast<float>(chip_h_);
 
-      // Soft indigo wash when active — match Python _palette().
+      // Opaque chip body (A=255) so glyph AA does not bleed through wallpaper.
       Gdiplus::Color top;
       Gdiplus::Color bottom;
       if (on) {
-        top = Gdiplus::Color(236, 224, 231, 255);
-        bottom = Gdiplus::Color(244, 210, 220, 252);
+        top = Gdiplus::Color(255, 224, 231, 255);
+        bottom = Gdiplus::Color(255, 210, 220, 252);
       } else if (hover) {
-        top = Gdiplus::Color(236, 255, 255, 255);
-        bottom = Gdiplus::Color(244, 232, 238, 255);
+        top = Gdiplus::Color(255, 255, 255, 255);
+        bottom = Gdiplus::Color(255, 232, 238, 255);
       } else if (utility) {
-        top = Gdiplus::Color(214, 255, 255, 255);
-        bottom = Gdiplus::Color(222, 248, 250, 252);
+        top = Gdiplus::Color(255, 255, 255, 255);
+        bottom = Gdiplus::Color(255, 248, 250, 252);
       } else {
-        top = Gdiplus::Color(228, 255, 255, 255);
-        bottom = Gdiplus::Color(236, 248, 250, 252);
+        top = Gdiplus::Color(255, 255, 255, 255);
+        bottom = Gdiplus::Color(255, 248, 250, 252);
       }
       Gdiplus::LinearGradientBrush body(
           Gdiplus::PointF(cx, cy), Gdiplus::PointF(cx, cy + bh), top, bottom);
@@ -715,6 +732,20 @@ void PageBar::Paint(HDC) {
       path.AddLine(cx + bw, cy + bh, cx + rad, cy + bh);
       path.AddArc(cx, cy + bh - rad * 2, rad * 2, rad * 2, 90, 90);
       path.CloseFigure();
+      // Soft drop shadow under opaque chip (keeps depth without text bleed).
+      {
+        Gdiplus::GraphicsPath shadow;
+        shadow.AddArc(cx + 1.f, cy + 1.5f, rad * 2, rad * 2, 180, 90);
+        shadow.AddLine(cx + rad + 1.f, cy + 1.5f, cx + bw + 1.f, cy + 1.5f);
+        shadow.AddLine(cx + bw + 1.f, cy + 1.5f, cx + bw + 1.f, cy + bh + 1.5f);
+        shadow.AddLine(cx + bw + 1.f, cy + bh + 1.5f, cx + rad + 1.f,
+                       cy + bh + 1.5f);
+        shadow.AddArc(cx + 1.f, cy + bh - rad * 2 + 1.5f, rad * 2, rad * 2, 90,
+                      90);
+        shadow.CloseFigure();
+        Gdiplus::SolidBrush shade(Gdiplus::Color(36, 15, 23, 42));
+        g.FillPath(&shade, &shadow);
+      }
       g.FillPath(&body, &path);
 
       if (on || hover) {

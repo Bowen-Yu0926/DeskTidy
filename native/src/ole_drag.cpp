@@ -21,6 +21,48 @@ PinDragMoveFn g_pin_move_fn;
 bool g_over_pin_target = false;
 bool g_over_pin_invalid = false;
 bool g_pin_transferred = false;
+// True while ShellDoDragPins runs — desktop release must NOT CF_HDROP into
+// Explorer (files already live on the desktop → 「源相同」 + icon stack).
+bool g_pin_drag_active = false;
+
+// Python start_virtual_item_drag: releasing over the real desktop / public
+// float host unpins without OLE. Folder windows + Recycle Bin still get DROP.
+bool IsPointOverDesktopUnpinZone(POINT pt) {
+  HWND hwnd = WindowFromPoint(pt);
+  if (!hwnd) {
+    return false;
+  }
+  for (HWND cur = hwnd; cur; cur = GetParent(cur)) {
+    wchar_t cls[256] = {};
+    GetClassNameW(cur, cls, 256);
+    if (wcscmp(cls, L"DeskTidyNativeFence") == 0 ||
+        wcscmp(cls, L"DeskTidyNativePet") == 0 ||
+        wcscmp(cls, L"DeskTidyNativePetBuoy") == 0 ||
+        wcscmp(cls, L"DeskTidyNativePetPages") == 0) {
+      return false;
+    }
+    if (wcscmp(cls, L"DeskTidyNativePublic") == 0 ||
+        wcscmp(cls, L"DeskTidyNativeDock") == 0) {
+      return true;
+    }
+    if (wcscmp(cls, L"CabinetWClass") == 0 ||
+        wcscmp(cls, L"ExploreWClass") == 0) {
+      return false;
+    }
+    if (wcscmp(cls, L"SHELLDLL_DefView") == 0) {
+      HWND parent = GetParent(cur);
+      wchar_t pcls[256] = {};
+      if (parent) {
+        GetClassNameW(parent, pcls, 256);
+      }
+      return wcscmp(pcls, L"Progman") == 0 || wcscmp(pcls, L"WorkerW") == 0;
+    }
+    if (wcscmp(cls, L"Progman") == 0 || wcscmp(cls, L"WorkerW") == 0) {
+      return true;
+    }
+  }
+  return false;
+}
 
 class SimpleDropSource : public IDropSource {
  public:
@@ -52,6 +94,15 @@ class SimpleDropSource : public IDropSource {
       return DRAGDROP_S_CANCEL;
     }
     if ((key_state & MK_LBUTTON) == 0) {
+      // Pin drag released over desktop/public → cancel OLE so Explorer never
+      // sees same-folder CF_HDROP (「源和目标文件名相同」). Caller unpins.
+      if (g_pin_drag_active) {
+        POINT pt{};
+        GetCursorPos(&pt);
+        if (IsPointOverDesktopUnpinZone(pt)) {
+          return DRAGDROP_S_CANCEL;
+        }
+      }
       return DRAGDROP_S_DROP;
     }
     if (g_pin_move_fn) {
@@ -372,20 +423,58 @@ IDataObject* CreateShellDataObject(const std::vector<std::wstring>& paths) {
   if (paths.empty()) {
     return nullptr;
   }
-  if (paths.size() == 1) {
-    IShellItem* item = nullptr;
-    if (SUCCEEDED(SHCreateItemFromParsingName(paths[0].c_str(), nullptr,
-                                              IID_PPV_ARGS(&item))) &&
-        item) {
-      IDataObject* data = nullptr;
-      const HRESULT hr =
-          item->BindToHandler(nullptr, BHID_DataObject, IID_PPV_ARGS(&data));
-      item->Release();
-      if (SUCCEEDED(hr) && data) {
-        return data;
-      }
+  // Shell-native data object for every count, matching Python's
+  // SHCreateDataObject path. A CF_HDROP-only object (HdropDataObject) answers
+  // E_NOTIMPL to SetData/EnumFormatEtc non-HDROP formats, so multi-select
+  // drags broke on targets that need Shell IDList / FileGroupDescriptor /
+  // Preferred DropEffect (Explorer "move to folder", Outlook mail, IDEs).
+  std::vector<PIDLIST_ABSOLUTE> pidls;
+  pidls.reserve(paths.size());
+  for (const auto& p : paths) {
+    PIDLIST_ABSOLUTE pidl = nullptr;
+    if (SUCCEEDED(
+            SHParseDisplayName(p.c_str(), nullptr, &pidl, 0, nullptr)) &&
+        pidl) {
+      pidls.push_back(pidl);
     }
   }
+  IDataObject* shell_data = nullptr;
+  if (pidls.size() == 1) {
+    IShellItem* item = nullptr;
+    if (SUCCEEDED(SHCreateItemFromIDList(pidls[0], IID_PPV_ARGS(&item))) &&
+        item) {
+      if (FAILED(
+              item->BindToHandler(nullptr, BHID_DataObject,
+                                  IID_PPV_ARGS(&shell_data)))) {
+        shell_data = nullptr;
+      }
+      item->Release();
+    }
+  } else if (pidls.size() > 1) {
+    std::vector<const ITEMIDLIST*> list;
+    list.reserve(pidls.size());
+    for (PIDLIST_ABSOLUTE pidl : pidls) {
+      list.push_back(pidl);
+    }
+    IShellItemArray* array = nullptr;
+    if (SUCCEEDED(SHCreateShellItemArrayFromIDLists(
+            static_cast<UINT>(list.size()), list.data(), &array)) &&
+        array) {
+      if (FAILED(array->BindToHandler(nullptr, BHID_DataObject,
+                                      IID_PPV_ARGS(&shell_data)))) {
+        shell_data = nullptr;
+      }
+      array->Release();
+    }
+  }
+  for (PIDLIST_ABSOLUTE pidl : pidls) {
+    CoTaskMemFree(pidl);
+  }
+  if (shell_data) {
+    return shell_data;
+  }
+  // Fallback keeps plain CF_HDROP drops (Explorer / desktop) working even when
+  // PIDL parsing fails (e.g. a namespace-only path).
   HGLOBAL hdrop = BuildHdrop(paths);
   if (!hdrop) {
     return nullptr;
@@ -440,8 +529,10 @@ bool ShellDoDragPins(const std::vector<std::wstring>& paths,
     return false;
   }
   g_pin_transferred = false;
+  g_pin_drag_active = true;
   DWORD effect = DROPEFFECT_COPY | DROPEFFECT_MOVE | DROPEFFECT_LINK;
   const HRESULT hr = DoDragDrop(data, source, effect, &effect);
+  g_pin_drag_active = false;
   source->Release();
   data->Release();
   (void)hr;

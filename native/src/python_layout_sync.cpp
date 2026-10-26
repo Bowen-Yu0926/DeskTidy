@@ -742,7 +742,6 @@ void MigratePythonPrefs(const std::string& json) {
 
   FindBool(json, "auto_organize_on_startup", &prefs.auto_organize_on_startup);
   FindBool(json, "auto_organize_watch", &prefs.auto_organize_watch);
-  FindBool(json, "auto_snapshot_on_change", &prefs.auto_snapshot_on_change);
   FindBool(json, "check_update_on_startup", &prefs.check_update_on_startup);
   FindBool(json, "show_fences", &prefs.show_fences);
   FindBool(json, "show_page_indicator", &prefs.show_page_indicator);

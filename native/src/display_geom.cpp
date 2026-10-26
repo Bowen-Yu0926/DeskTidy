@@ -152,12 +152,55 @@ RECT WorkAreaAtPoint(POINT pt) {
   return PrimaryWorkArea();
 }
 
+RECT WorkAreaForRect(const RECT& rc) {
+  // Match Python snap_geometry: pick by overlap area; dual-overlap → primary.
+  const auto mons = EnumMonitors();
+  if (mons.empty()) {
+    return PrimaryWorkArea();
+  }
+  struct Hit {
+    LONGLONG area = 0;
+    RECT work{};
+    bool primary = false;
+  };
+  std::vector<Hit> hits;
+  hits.reserve(mons.size());
+  for (const auto& m : mons) {
+    const int l = (std::max)(rc.left, m.work.left);
+    const int t = (std::max)(rc.top, m.work.top);
+    const int r = (std::min)(rc.right, m.work.right);
+    const int b = (std::min)(rc.bottom, m.work.bottom);
+    if (r <= l || b <= t) {
+      continue;
+    }
+    Hit h;
+    h.area = static_cast<LONGLONG>(r - l) * static_cast<LONGLONG>(b - t);
+    h.work = m.work;
+    h.primary = m.primary;
+    hits.push_back(h);
+  }
+  if (hits.size() >= 2) {
+    for (const auto& h : hits) {
+      if (h.primary) {
+        return h.work;
+      }
+    }
+  }
+  if (!hits.empty()) {
+    std::sort(hits.begin(), hits.end(),
+              [](const Hit& a, const Hit& b) { return a.area > b.area; });
+    return hits.front().work;
+  }
+  // Fully off-screen / unplugged: nearest to center, else primary.
+  POINT center{(rc.left + rc.right) / 2, (rc.top + rc.bottom) / 2};
+  return WorkAreaAtPoint(center);
+}
+
 void ClampRectToWorkArea(RECT* rc) {
   if (!rc) {
     return;
   }
-  POINT center{(rc->left + rc->right) / 2, (rc->top + rc->bottom) / 2};
-  const RECT work = WorkAreaAtPoint(center);
+  const RECT work = WorkAreaForRect(*rc);
   const int w = rc->right - rc->left;
   const int h = rc->bottom - rc->top;
   int x = rc->left;
@@ -173,6 +216,69 @@ void ClampRectToWorkArea(RECT* rc) {
   }
   if (y < work.top) {
     y = work.top;
+  }
+  rc->left = x;
+  rc->top = y;
+  rc->right = x + w;
+  rc->bottom = y + h;
+}
+
+void SnapRectToWorkArea(RECT* rc, int threshold) {
+  if (!rc) {
+    return;
+  }
+  const RECT work = WorkAreaForRect(*rc);
+  POINT center{(rc->left + rc->right) / 2, (rc->top + rc->bottom) / 2};
+  int thr = threshold;
+  if (thr <= 0) {
+    const int dpi = DpiAtPoint(center);
+    thr = (std::max)(24, MulDiv(24, dpi, 96));
+  }
+  const int top_thr = (std::min)(8, thr);
+
+  int x = rc->left;
+  int y = rc->top;
+  int w = rc->right - rc->left;
+  int h = rc->bottom - rc->top;
+  if (w < 1) {
+    w = 1;
+  }
+  if (h < 1) {
+    h = 1;
+  }
+
+  auto AbsI = [](int v) { return v < 0 ? -v : v; };
+  if (AbsI(x - work.left) <= thr) {
+    x = work.left;
+  } else if (AbsI((x + w) - work.right) <= thr) {
+    x = work.right - w;
+  }
+  // Tighter top snap — loose top + desktop parenting left fences stuck at y=0.
+  if (AbsI(y - work.top) <= top_thr) {
+    y = work.top;
+  } else if (AbsI((y + h) - work.bottom) <= thr) {
+    y = work.bottom - h;
+  }
+
+  const int max_w = work.right - work.left;
+  const int max_h = work.bottom - work.top;
+  if (w > max_w) {
+    w = max_w;
+  }
+  if (h > max_h) {
+    h = max_h;
+  }
+  if (x < work.left) {
+    x = work.left;
+  }
+  if (y < work.top) {
+    y = work.top;
+  }
+  if (x + w > work.right) {
+    x = work.right - w;
+  }
+  if (y + h > work.bottom) {
+    y = work.bottom - h;
   }
   rc->left = x;
   rc->top = y;

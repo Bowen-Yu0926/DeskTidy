@@ -53,6 +53,7 @@
   #replace-field { display: none; }
   body.replace #replace-field { display: block; }
   body.replace #btn-replace, body.replace #btn-replace-all { display: inline-block; }
+  #all-tabs-wrap { display: none; }
   body.replace #all-tabs-wrap { display: flex; }
   #btn-replace, #btn-replace-all { display: none; }
 </style>
@@ -75,8 +76,9 @@
     <div class="opts">
       <label><input type="checkbox" id="case" /> 区分大小写</label>
       <label><input type="checkbox" id="word" /> 全字匹配</label>
+      <label><input type="checkbox" id="regex" /> 正则表达式</label>
       <label><input type="checkbox" id="wrap" checked /> 循环查找</label>
-      <label id="all-tabs-wrap" style="display:none"><input type="checkbox" id="all_tabs" /> 所有页签（全部替换）</label>
+      <label id="all-tabs-wrap"><input type="checkbox" id="all_tabs" /> 所有页签（全部替换）</label>
     </div>
     <div id="status"></div>
   </div>
@@ -99,6 +101,7 @@
       replace: document.getElementById('replace').value,
       match_case: document.getElementById('case').checked,
       whole_word: document.getElementById('word').checked,
+      regex: document.getElementById('regex').checked,
       wrap: document.getElementById('wrap').checked,
       all_tabs: document.getElementById('all_tabs').checked
     };
@@ -112,6 +115,7 @@
     if (typeof m.replace === 'string') document.getElementById('replace').value = m.replace;
     document.getElementById('case').checked = !!m.match_case;
     document.getElementById('word').checked = !!m.whole_word;
+    document.getElementById('regex').checked = !!m.regex;
     document.getElementById('wrap').checked = m.wrap !== false;
     document.getElementById('all_tabs').checked = !!m.all_tabs;
     if (typeof m.status === 'string') document.getElementById('status').textContent = m.status;

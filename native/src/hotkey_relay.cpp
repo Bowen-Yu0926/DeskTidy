@@ -156,13 +156,17 @@ DWORD WINAPI HotkeyRelay::ThreadProc(LPVOID param) {
 HotkeyRelay::~HotkeyRelay() { Stop(); }
 
 bool HotkeyRelay::Start(HWND notify_hwnd, UINT notify_msg,
-                        const std::vector<HotkeyDef>& keys) {
+                        const std::vector<HotkeyDef>& keys,
+                        bool launch_elevated) {
   if (ProcessIsElevated()) {
     LogLineA("[hotkey_relay] main already elevated — skip helper");
     return true;
   }
   if (Running()) {
     UpdateMapping(keys);
+    if (launch_elevated && !helper_launched_) {
+      EnsureElevatedHelper();
+    }
     return true;
   }
   EnsureWsa();
@@ -207,11 +211,11 @@ bool HotkeyRelay::Start(HWND notify_hwnd, UINT notify_msg,
     sock_ = INVALID_SOCKET;
     return false;
   }
-  helper_launched_ = LaunchHelper();
-  if (!helper_launched_) {
-    LogLineA("[hotkey_relay] elevated helper launch failed (UAC cancel?)");
+  // Default: no UAC. Opt-in covers elevated/fullscreen FG hotkeys (P1-28).
+  if (launch_elevated) {
+    EnsureElevatedHelper();
   } else {
-    LogLine(L"[hotkey_relay] helper launched port=%d", port_);
+    LogLineA("[hotkey_relay] relay up — elevated helper skipped (no UAC)");
   }
   return true;
 }
@@ -221,12 +225,23 @@ void HotkeyRelay::UpdateMapping(const std::vector<HotkeyDef>& keys) {
     return;
   }
   WriteMapping(keys);
-  if (!helper_launched_) {
-    helper_launched_ = LaunchHelper();
-    if (helper_launched_) {
-      LogLine(L"[hotkey_relay] helper launched (retry) port=%d", port_);
-    }
+  // Do not retry runas here — that re-prompted UAC on every hotkey save.
+}
+
+bool HotkeyRelay::EnsureElevatedHelper() {
+  if (helper_launched_ || ProcessIsElevated()) {
+    return true;
   }
+  if (port_ == 0 || mapping_path_.empty()) {
+    return false;
+  }
+  helper_launched_ = LaunchHelper();
+  if (!helper_launched_) {
+    LogLineA("[hotkey_relay] elevated helper launch failed (UAC cancel?)");
+  } else {
+    LogLine(L"[hotkey_relay] helper launched port=%d", port_);
+  }
+  return helper_launched_;
 }
 
 void HotkeyRelay::Stop() {

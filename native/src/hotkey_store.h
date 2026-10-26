@@ -25,6 +25,3 @@ bool CaptureHotkeyChord(HWND owner, UINT* mods, UINT* vk);
 // Fallback chords tried when a configured binding is occupied/unparseable
 // (mirrors Python HOTKEY_FALLBACKS). Empty for actions with no fallbacks.
 std::vector<std::wstring> HotkeyFallbacks(const std::string& id);
-
-// Fallback MessageBox summary — prefer the settings WebView list.
-void EditHotkeysDialog(HWND owner, std::vector<HotkeyDef>* keys);

@@ -68,7 +68,8 @@ bool WriteProgId() {
                           .c_str(),
                       0, nullptr, 0, KEY_WRITE, nullptr, &icon,
                       nullptr) == ERROR_SUCCESS) {
-    const std::wstring ico = exe + L",0";
+    // Prefer branded ICO / embedded PE icon (Python desknote_open_with).
+    const std::wstring ico = DeskNoteIconPath() + L",0";
     SetString(icon, nullptr, ico.c_str());
     RegCloseKey(icon);
   }

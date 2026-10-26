@@ -22,14 +22,18 @@ class HotkeyRelay {
   HotkeyRelay(const HotkeyRelay&) = delete;
   HotkeyRelay& operator=(const HotkeyRelay&) = delete;
 
-  // Bind listener, write mapping, launch elevated helper (UAC once).
-  // Returns true when already elevated (helper unnecessary) or helper started.
+  // Bind listener + write mapping. Elevated helper is opt-in (UAC) via
+  // ``launch_elevated`` — never prompt on every cold start by default.
+  // Returns true when the localhost relay is up (helper may be skipped).
   bool Start(HWND notify_hwnd, UINT notify_msg,
-             const std::vector<HotkeyDef>& keys);
-  // Rewrite mapping JSON; helper reloads on mtime change.
+             const std::vector<HotkeyDef>& keys, bool launch_elevated = false);
+  // Rewrite mapping JSON; helper reloads on mtime change when already running.
   void UpdateMapping(const std::vector<HotkeyDef>& keys);
+  // Explicit UAC launch (settings / user request). False if cancelled.
+  bool EnsureElevatedHelper();
   void Stop();
   bool Running() const { return sock_ != INVALID_SOCKET; }
+  bool HelperLaunched() const { return helper_launched_; }
 
  private:
   bool WriteMapping(const std::vector<HotkeyDef>& keys);

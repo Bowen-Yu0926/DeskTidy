@@ -431,12 +431,6 @@ std::wstring CreateAndOpenMinutesDocx(HWND owner) {
   return path;
 }
 
-std::wstring CreateAndOpenMinutesRtf(HWND owner) {
-  // Word-friendly output is now a real .docx (was RTF). Kept the symbol for
-  // callers that still reference the "Word" menu action.
-  return CreateAndOpenMinutesDocx(owner);
-}
-
 bool OpenRecentMinutes(HWND owner) {
   const std::wstring folder = MinutesFolder(true);
   std::vector<std::wstring> files;

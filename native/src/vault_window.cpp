@@ -1589,11 +1589,11 @@ void VaultWindow::StartCloudRefresh() {
       ShowToast(L"KDF 参数无效，已跳过云同步");
       return;
     }
-    std::thread([snapshot, h, master, salt, iterations, key_check]() {
+    std::thread([snapshot, h, master, salt, iterations, key_check, algo]() {
       auto* outcome = new SyncOutcome;
       outcome->quiet = true;
       std::vector<BYTE> key;
-      if (!VaultDeriveKeyEx(master, salt, iterations, &key)) {
+      if (!VaultDeriveKeyForAlgo(master, salt, iterations, algo, &key)) {
         outcome->message = L"派生密钥失败";
         if (!PostMessageW(h, kMsgSyncDone, 0,
                           reinterpret_cast<LPARAM>(outcome))) {
@@ -1654,11 +1654,15 @@ void VaultWindow::CloudSync() {
   auto zk_worker = [snapshot, h](const std::wstring& master,
                                  const std::vector<BYTE>& salt, int iterations,
                                  const std::wstring& key_check,
-                                 bool verify) {
-    std::thread([snapshot, h, master, salt, iterations, key_check, verify]() {
+                                 const std::wstring& algo, bool verify) {
+    std::thread([snapshot, h, master, salt, iterations, key_check, algo,
+                 verify]() {
       auto* outcome = new SyncOutcome;
       std::vector<BYTE> key;
-      if (!VaultDeriveKeyEx(master, salt, iterations, &key)) {
+      const std::wstring use_algo =
+          verify ? algo
+                 : (algo.empty() ? std::wstring(VaultPreferredKdfAlgo()) : algo);
+      if (!VaultDeriveKeyForAlgo(master, salt, iterations, use_algo, &key)) {
         outcome->message = L"派生密钥失败";
         PostMessageW(h, kMsgSyncDone, 0, reinterpret_cast<LPARAM>(outcome));
         return;
@@ -1671,12 +1675,12 @@ void VaultWindow::CloudSync() {
       if (!verify) {
         const std::wstring check = VaultMakeKeyCheck(key);
         const std::wstring salt_b64 = WidenUtf8(VaultBytesToB64(salt));
-        if (!VaultHttpEnsureMaster(salt_b64, iterations, check, L"pbkdf2")) {
+        if (!VaultHttpEnsureMaster(salt_b64, iterations, check, use_algo)) {
           outcome->message = L"主密码初始化失败（服务端不可达）";
           PostMessageW(h, kMsgSyncDone, 0, reinterpret_cast<LPARAM>(outcome));
           return;
         }
-        VaultHttpSetKdfParams(salt_b64, iterations, check, L"pbkdf2");
+        VaultHttpSetKdfParams(salt_b64, iterations, check, use_algo);
       }
       VaultHttpSetMasterKey(key);
       std::vector<VaultHttpCredential> remote = snapshot;
@@ -1711,7 +1715,7 @@ void VaultWindow::CloudSync() {
                     MB_OK | MB_ICONWARNING);
         return;
       }
-      zk_worker(master, salt, iterations, key_check, true);
+      zk_worker(master, salt, iterations, key_check, algo, true);
     } else {
       const std::wstring master =
           PromptPassword(hwnd_, L"零知识保险库", L"设置主密码：");
@@ -1725,7 +1729,8 @@ void VaultWindow::CloudSync() {
                     MB_OK | MB_ICONWARNING);
         return;
       }
-      zk_worker(master, VaultNewSalt(16), kVaultKdfIterations, L"", false);
+      zk_worker(master, VaultNewSalt(16), kVaultKdfIterations, L"",
+                VaultPreferredKdfAlgo(), false);
     }
     return;
   }

@@ -12,10 +12,8 @@ void ResetMinutesFolder();
 void SetMinutesFolder(const std::wstring& folder);
 // Create next dated markdown and open in notepad. Returns path.
 std::wstring CreateAndOpenMinutes(HWND owner);
-// Create dated .rtf (Word-friendly) and open with default app.
-std::wstring CreateAndOpenMinutesRtf(HWND owner);
 // Create next dated .docx (matches Python meeting_minutes.py structure).
 std::wstring CreateAndOpenMinutesDocx(HWND owner);
 void OpenMinutesFolder(HWND owner);
-// Prompt to open one of the most recent .md/.rtf notes.
+// Prompt to open one of the most recent .md/.docx notes (also finds legacy .rtf).
 bool OpenRecentMinutes(HWND owner);

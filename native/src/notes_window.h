@@ -6,6 +6,7 @@
 
 #include <Windows.h>
 
+#include <set>
 #include <string>
 #include <vector>
 
@@ -45,6 +46,7 @@ class NotesWindow {
   static LRESULT CALLBACK TabsProc(HWND, UINT, WPARAM, LPARAM);
   static LRESULT CALLBACK SidebarProc(HWND, UINT, WPARAM, LPARAM);
   static LRESULT CALLBACK StatusProc(HWND, UINT, WPARAM, LPARAM);
+  static LRESULT CALLBACK GutterProc(HWND, UINT, WPARAM, LPARAM);
   LRESULT HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam);
   void Load();
   // Re-read current path from disk (prompts if dirty).
@@ -145,7 +147,16 @@ class NotesWindow {
   bool RunReplaceOnce(bool match_case, bool whole, bool wrap,
                       std::wstring* status_out);
   int RunReplaceAll(bool match_case, bool whole);
+  // RichEdit CP-aligned plain text (\r line ends) for find/gutter ops.
+  std::wstring EditTextCpAligned() const;
   std::wstring CurrentPlainText() const;
+  void EnsureGutter();
+  void LayoutGutter(int left, int top, int height);
+  void RefreshGutter();
+  void ToggleBookmarkAtCaret();
+  void GotoBookmark(bool next);
+  void DuplicateCurrentLine();
+  void MoveCurrentLine(int delta);
   void NewTab();
   void CloseTab();
   void CloseTabAt(int index);
@@ -193,6 +204,7 @@ class NotesWindow {
   HWND hwnd_ = nullptr;
   HWND tabs_ = nullptr;
   HWND edit_ = nullptr;
+  HWND gutter_ = nullptr;
   HWND outline_list_ = nullptr;
   HWND outline_strip_ = nullptr;  // Collapse handle (Python CollapsibleMdPane).
   HWND sidebar_ = nullptr;
@@ -224,8 +236,12 @@ class NotesWindow {
   wchar_t replace_with_[256]{};
   bool find_match_case_ = false;
   bool find_whole_word_ = false;
+  bool find_regex_ = false;
   bool find_wrap_ = true;
   bool find_all_tabs_ = false;
+  std::set<int> bookmarks_;  // 0-based line indices (current tab).
+  int gutter_width_ = 44;
+  int pending_goto_line_ = -1;  // P1-19: deferred after SwitchToTab caret restore
   bool quit_on_close_ = false;
   bool toast_ = false;
   bool wysiwyg_ = false;

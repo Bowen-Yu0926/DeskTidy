@@ -15,15 +15,9 @@ int OrganizeApplyDefaultPins(PinMap* pins, const std::vector<DesktopItem>& items
                              const RuleMap& rules,
                              const std::string& software_id,
                              const std::string& common_id,
-                             const std::vector<FenceLayout>* fences = nullptr);
+                             const std::vector<FenceLayout>* fences = nullptr,
+                             int current_page = -1, bool reassign = false);
 
-// Physical organize: move unpinned desktop files into DeskTidy subfolders.
-int OrganizeMoveIntoFolders(const std::vector<DesktopItem>& items);
-// Count how many items would be moved (respects whitelist).
-int OrganizeCountPhysicalMoves(const std::vector<DesktopItem>& items);
-// Names of items that would be moved (for preview).
-std::vector<std::wstring> OrganizePreviewPhysicalMoves(
-    const std::vector<DesktopItem>& items);
 // Lines "name → fence title" for items that would get a default pin.
 std::vector<std::wstring> OrganizePreviewVirtualPins(
     const PinMap& pins, const std::vector<DesktopItem>& items,
@@ -31,9 +25,8 @@ std::vector<std::wstring> OrganizePreviewVirtualPins(
     const std::unordered_map<std::string, std::wstring>& fence_titles,
     const std::string& software_id = "system_software",
     const std::string& common_id = "system_common",
-    const std::vector<FenceLayout>* fences = nullptr);
-// Show preview MessageBox; returns true if user confirms.
-bool OrganizeConfirmPhysical(HWND owner, const std::vector<DesktopItem>& items);
+    const std::vector<FenceLayout>* fences = nullptr,
+    int current_page = -1);
 
 // ---------------------------------------------------------------------------
 // G4 — per-fence organize kinds (Python fence_rules.py).
@@ -43,10 +36,13 @@ std::string OrganizeKindOfItem(const DesktopItem& item);
 // True when the item's kind is in the fence's organize_kinds. Empty = no rule.
 bool FenceAcceptsItem(const std::vector<std::string>& organize_kinds,
                       const DesktopItem& item);
-// First fence (in order) whose organize_kinds accepts the item. Empty id = none
+// First fence whose organize_kinds accepts the item, preferring fences on
+// ``current_page`` and only then falling back to other pages (Python
+// resolve_organize_target walks the current page first). Empty id = none
 // (caller may fall back to legacy ResolveFenceId extension rules).
 std::string ResolveFenceByKind(const DesktopItem& item,
-                               const std::vector<FenceLayout>& fences);
+                               const std::vector<FenceLayout>& fences,
+                               int current_page = -1);
 
 // ---------------------------------------------------------------------------
 // G5 — portal / desktop scan exclude patterns (Python desktop_scanner.py).

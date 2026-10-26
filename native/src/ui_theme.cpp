@@ -34,31 +34,31 @@ std::string RgbaFromHex(const char* hex, float alpha) {
 }
 
 const Palette& PaletteFor(const std::string& id) {
-  // Content colors from Python _PALETTES; sidebar from _SIDEBAR_INK.
+  // Content from Python _PALETTES; sidebar from _SIDEBAR_RAIL (360-like light).
   static const Palette kMist{
       "#EEF1F6", "#F4F6F9", "#FFFFFF", "#C9D2DE", "#1A2332", "#64748B",
       "#1D4ED8", "#E0E7FF", "#1E40AF", "#16A34A", "#15803D", "#DC2626",
-      "#1A2740", "#EAF0FA", "#93A4BF"};
+      "#F5F7FA", "#1A2332", "#64748B"};
   static const Palette kGraphite{
       "#E8EAED", "#F0F1F3", "#FFFFFF", "#C5CAD3", "#1F2933", "#6B7280",
       "#4B5563", "#E5E7EB", "#374151", "#374151", "#1F2937", "#DC2626",
-      "#1C1F24", "#F1F3F5", "#9AA3AF"};
+      "#F0F1F3", "#1F2933", "#6B7280"};
   static const Palette kSky{
       "#EAF4FF", "#F2F8FF", "#FFFFFF", "#B9D4F0", "#0F2744", "#5B7391",
       "#0EA5E9", "#E0F2FE", "#0284C7", "#0EA5E9", "#0284C7", "#E11D48",
-      "#0A2F4D", "#E7F5FF", "#7EB6D9"};
+      "#EAF4FF", "#0F2744", "#5B7391"};
   static const Palette kMint{
       "#EAF8F2", "#F3FBF7", "#FFFFFF", "#B7DFCB", "#12352A", "#4F7466",
       "#10B981", "#D1FAE5", "#059669", "#059669", "#047857", "#DC2626",
-      "#0D2F26", "#E8FBF4", "#7DBFA8"};
+      "#EAF8F2", "#12352A", "#4F7466"};
   static const Palette kLavender{
       "#F2EEFF", "#F7F4FF", "#FFFFFF", "#D2C7EF", "#2A2148", "#6B6288",
       "#8B5CF6", "#EDE9FE", "#7C3AED", "#7C3AED", "#6D28D9", "#E11D48",
-      "#24183A", "#F3EDFF", "#B5A4D9"};
+      "#F2EEFF", "#2A2148", "#6B6288"};
   static const Palette kPeach{
       "#FFF1E8", "#FFF7F2", "#FFFFFF", "#F0CDB8", "#3B2418", "#8A6452",
       "#F97316", "#FFEDD5", "#EA580C", "#EA580C", "#C2410C", "#DC2626",
-      "#2E1A12", "#FFF4EC", "#D4A88A"};
+      "#FFF7F2", "#3B2418", "#8A6452"};
   if (id == "graphite") {
     return kGraphite;
   }
@@ -131,9 +131,9 @@ std::unordered_map<std::string, std::string> UiThemeCssVars(const std::string& i
   out["sidebar"] = p.sidebar;
   out["sidebar-text"] = p.sidebar_text;
   out["sidebar-muted"] = p.sidebar_muted;
-  out["sidebar-hover"] = RgbaFromHex(p.accent, 0.16f);
-  out["sidebar-active"] = RgbaFromHex(p.accent, 0.26f);
-  out["sidebar-line"] = RgbaFromHex(p.accent, 0.28f);
+  out["sidebar-hover"] = RgbaFromHex(p.accent, 0.12f);
+  out["sidebar-active"] = RgbaFromHex(p.accent, 0.18f);
+  out["sidebar-line"] = RgbaFromHex(p.accent, 0.18f);
   out["inlay"] = p.accent;
   return out;
 }

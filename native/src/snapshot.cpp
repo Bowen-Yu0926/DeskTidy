@@ -360,6 +360,33 @@ SnapshotCardData BuildSnapshotCard(const SnapshotInfo& info) {
   if (!focus_has && !card.boxes.empty()) {
     card.focus_page = card.boxes.front().page;
   }
+  // Shell icon dots for the schematic (cap payload; order preserved).
+  const auto shell = LoadShellIconsSidecar(info.path);
+  constexpr size_t kMaxPreviewIcons = 120;
+  card.icons.reserve((std::min)(shell.size(), kMaxPreviewIcons));
+  for (size_t i = 0; i < shell.size() && i < kMaxPreviewIcons; ++i) {
+    SnapshotPreviewIcon ic;
+    ic.x = shell[i].x;
+    ic.y = shell[i].y;
+    card.icons.push_back(ic);
+  }
+  // When pins sidecar is missing, count shell icons that sit inside each fence
+  // so the thumb still shows in-fence dots (older snapshots).
+  if (pins.empty() && !card.icons.empty()) {
+    for (auto& box : card.boxes) {
+      if (box.collapsed || box.icon_count > 0) {
+        continue;
+      }
+      int n = 0;
+      for (const auto& ic : card.icons) {
+        if (ic.x >= box.x && ic.x < box.x + box.w && ic.y >= box.y &&
+            ic.y < box.y + box.h) {
+          ++n;
+        }
+      }
+      box.icon_count = n;
+    }
+  }
   return card;
 }
 

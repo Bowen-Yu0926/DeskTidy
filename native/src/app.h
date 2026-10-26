@@ -48,9 +48,15 @@ class App {
   void OpenVault();
   void SeatAllFencesUnderApps();
   void PersistLayouts();
+  void SchedulePersistLayouts();
+  // Update public-float blocked rects + layout without rescanning the desktop.
+  void ReflowPublicFloats();
   void RefreshSettingsList();
   void RefreshOrganizeSettingsPage();
   void RefreshDesktopIcons();
+  // Python fence_rules.prune_missing_virtual_items: drop pins whose path has
+  // been missing past the sticky grace (45s) so save-then-rewrite keeps them.
+  void PruneStickyMissingPins();
   void RefreshIconGrids();
   void AddFence();
   void AddFenceAtRect(const RECT& screen);
@@ -82,14 +88,15 @@ class App {
   void SetFenceOpacityPctAt(int index, int opacity_pct);
   void ApplyDockPrefs();
   void SyncPageChrome();
-  void MaybeAutoSnapshot();
   void MaybeStartupUpdateCheck();
   void OnUpdateCheckDone(UpdateCheckResult* r);
   void OnUpdateInstallDone(UpdateInstallResult* r);
   void OnUpdateProgress(int pct);
-  void OrganizeVirtual(bool quiet = false);
+  // quiet: no toast/dialog. reassign: recompute targets for already-pinned
+  // items too (only pins whose target changed are written).
+  void OrganizeVirtual(bool quiet = false, bool reassign = false);
+  void OrganizeReassign();
   void OnOrganizeDone(struct OrganizeJobResult* job);
-  void OrganizePhysical();
   void SetOrganizeStartup(bool on);
   void SetOrganizeWatch(bool on);
   void SetDockVisible(bool on);
@@ -179,6 +186,8 @@ class App {
   void ConvergeDisplayChange();
   void DispatchHotkey(const std::string& id);
   void ScheduleDesktopBandRestore();
+  // False while settings/vault/todos (owned modals) should keep desktop chrome still.
+  bool DesktopChromeMayRestack() const;
   void StartForegroundHook();
   void StopForegroundHook();
   // Worker threads (vault pull / organize) are joined with a bounded wait on
@@ -210,6 +219,8 @@ class App {
   std::vector<std::wstring> recent_shots_;
   size_t recent_shot_i_ = 0;
   PinMap pins_;
+  std::unordered_map<std::wstring, ULONGLONG> pin_missing_since_;
+  ULONGLONG pin_prune_last_ms_ = 0;
   RuleMap rules_;
   std::vector<HotkeyDef> hotkeys_;
   HotkeyRelay hotkey_relay_;

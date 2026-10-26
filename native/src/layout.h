@@ -124,9 +124,8 @@ int HealFenceLayouts(std::vector<FenceLayout>* fences);
 
 // ---------------------------------------------------------------------------
 // G1 — snap a moving fence to screen work-area edges (Python snap_geometry,
-// EDGE_SNAP_THRESHOLD = 24). `others` are same-page sibling rects (reserved
-// for fence-to-fence alignment; Python currently snaps screen edges only).
-// Pure: no side effects; result is always clamped inside `work`.
+// EDGE_SNAP_THRESHOLD = 24) then to sibling edges/abuts (Fences-class align).
+// `others` = same-page sibling rects. Pure; result clamped inside `work`.
 // ---------------------------------------------------------------------------
 LayoutPoint SnapFencePosition(const LayoutRect& moving,
                               const std::vector<LayoutRect>& others,

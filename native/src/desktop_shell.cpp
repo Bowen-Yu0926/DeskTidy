@@ -1,5 +1,7 @@
 #include "desktop_shell.h"
 
+#include <algorithm>
+#include <cstdint>
 #include <cwchar>
 
 #ifndef GWLP_HWNDPARENT
@@ -291,4 +293,81 @@ void RaiseOverlayInDesktopBand(HWND hwnd) {
   SetWindowPos(hwnd, insert_after, 0, 0, 0, 0, flags);
 
   ShowOverlayNoActivate(hwnd);
+}
+
+void OverlayWindowBatch::Hide(HWND hwnd) {
+  if (!IsWindowAlive(hwnd)) {
+    return;
+  }
+  items_.push_back(Item{kHide, hwnd, 0, 0, 0, 0});
+}
+
+void OverlayWindowBatch::Show(HWND hwnd) {
+  if (!IsWindowAlive(hwnd)) {
+    return;
+  }
+  items_.push_back(Item{kShow, hwnd, 0, 0, 0, 0});
+}
+
+void OverlayWindowBatch::SetRect(HWND hwnd, int x, int y, int w, int h) {
+  if (!IsWindowAlive(hwnd) || w <= 0 || h <= 0) {
+    return;
+  }
+  items_.push_back(Item{kMove, hwnd, x, y, w, h});
+}
+
+void OverlayWindowBatch::Commit() {
+  std::vector<Item> items = std::move(items_);
+  items_.clear();
+  if (items.empty()) {
+    return;
+  }
+  // Hide leavers before showing arrivers — one-frame overlap flashes.
+  std::stable_sort(items.begin(), items.end(),
+                   [](const Item& a, const Item& b) {
+                     const int oa = a.op == kHide ? 0 : (a.op == kMove ? 1 : 2);
+                     const int ob = b.op == kHide ? 0 : (b.op == kMove ? 1 : 2);
+                     if (oa != ob) {
+                       return oa < ob;
+                     }
+                     return reinterpret_cast<uintptr_t>(a.hwnd) <
+                            reinterpret_cast<uintptr_t>(b.hwnd);
+                   });
+
+  auto flags_for = [](Op op) -> UINT {
+    const UINT base = SWP_NOZORDER | SWP_NOACTIVATE;
+    if (op == kHide) {
+      // NOREDRAW on hide avoids intermediate DWM frames.
+      return base | SWP_NOMOVE | SWP_NOSIZE | SWP_HIDEWINDOW | SWP_NOREDRAW |
+             SWP_NOCOPYBITS;
+    }
+    if (op == kShow) {
+      // No SWP_NOREDRAW / NOCOPYBITS on show — blank or discarded client flash.
+      return base | SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW;
+    }
+    return base | SWP_NOREDRAW | SWP_NOCOPYBITS;
+  };
+
+  auto apply_one = [&](const Item& it) {
+    SetWindowPos(it.hwnd, nullptr, it.x, it.y, it.w, it.h, flags_for(it.op));
+  };
+
+  HDWP hdwp = BeginDeferWindowPos(static_cast<int>(items.size()));
+  if (!hdwp) {
+    for (const auto& it : items) {
+      apply_one(it);
+    }
+    return;
+  }
+  for (const auto& it : items) {
+    hdwp = DeferWindowPos(hdwp, it.hwnd, nullptr, it.x, it.y, it.w, it.h,
+                          flags_for(it.op));
+    if (!hdwp) {
+      for (const auto& it2 : items) {
+        apply_one(it2);
+      }
+      return;
+    }
+  }
+  EndDeferWindowPos(hdwp);
 }

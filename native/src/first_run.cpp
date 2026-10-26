@@ -225,7 +225,7 @@ void MaybeShowFirstRun(HWND owner) {
       L"默认跳过 desktop.ini 与 DeskTidy（可改排除模式）。",
 
       L"· Ctrl+Shift+← / →：切换分区页\n"
-      L"· Ctrl+Space：Peek 暂时隐藏分区\n"
+      L"· Ctrl+Space：Peek 置顶查看分区（盖在其它窗口上）\n"
       L"· Ctrl+Shift+F：显示/隐藏分区　O：一键整理　H：桌面图标\n"
       L"· Ctrl+Alt+1：区域截图　2：贴图　3：录屏　4：搜索\n\n"
       L"托盘或设置 → 快捷键 可改绑。",

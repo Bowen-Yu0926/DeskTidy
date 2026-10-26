@@ -66,7 +66,52 @@ std::wstring ModuleDir() {
   return p;
 }
 
+bool FileExists(const std::wstring& path) {
+  return !path.empty() &&
+         GetFileAttributesW(path.c_str()) != INVALID_FILE_ATTRIBUTES;
+}
+
+// Match Python desknote_icon_path / _icon_location: prefer branded ICO next to
+// the exe (or repo assets in portable/dev), never a missing icons\desknote.ico.
+std::wstring ResolveDeskNoteIconFile() {
+  const std::wstring work = ModuleDir();
+  const std::wstring candidates[] = {
+      JoinPath(work, L"assets\\desknote_icon.ico"),
+      // native/build/Release → ../../../assets
+      JoinPath(work, L"..\\..\\..\\assets\\desknote_icon.ico"),
+      // native/build/Release → ../../../../assets (extra hop if nested)
+      JoinPath(work, L"..\\..\\..\\..\\assets\\desknote_icon.ico"),
+  };
+  for (const auto& c : candidates) {
+    if (FileExists(c)) {
+      return c;
+    }
+  }
+  return {};
+}
+
+void NotifyShortcutChanged(const std::wstring& link) {
+  if (!link.empty()) {
+    SHChangeNotify(SHCNE_UPDATEITEM, SHCNF_PATHW | SHCNF_FLUSHNOWAIT,
+                   link.c_str(), nullptr);
+  }
+}
+
 }  // namespace
+
+std::wstring DeskNoteIconPath() {
+  const std::wstring ico = ResolveDeskNoteIconFile();
+  if (!ico.empty()) {
+    return ico;
+  }
+  // Frozen / post-build: PE embeds IDI_ICON1 from desknote_icon.rc.
+  if (DeskNoteExeExists()) {
+    return DeskNoteExePath();
+  }
+  wchar_t host[MAX_PATH] = {};
+  GetModuleFileNameW(nullptr, host, MAX_PATH);
+  return host;
+}
 
 std::wstring DeskNoteExePath() {
   return JoinPath(ModuleDir(), L"deskNote.exe");
@@ -229,29 +274,31 @@ void SyncDeskNoteShortcuts(bool enabled) {
     if (slash != std::wstring::npos) {
       work.resize(slash);
     }
+    const std::wstring icon = DeskNoteIconPath();
     if (!desk_link.empty()) {
       WriteShellLink(desk_link, host, L"--notes", work, L"DeskNote 记事本",
-                     host);
+                     icon);
+      NotifyShortcutChanged(desk_link);
     }
     if (!start_link.empty()) {
       WriteShellLink(start_link, host, L"--notes", work, L"DeskNote 记事本",
-                     host);
+                     icon);
+      NotifyShortcutChanged(start_link);
     }
     return;
   }
 
   const std::wstring work = ModuleDir();
-  std::wstring icon = JoinPath(work, L"assets\\icons\\desknote.ico");
-  if (GetFileAttributesW(icon.c_str()) == INVALID_FILE_ATTRIBUTES) {
-    icon = target;
-  }
+  const std::wstring icon = DeskNoteIconPath();
   if (!desk_link.empty()) {
     WriteShellLink(desk_link, target, L"", work, L"DeskNote 记事本", icon);
     ApplyShortcutAppUserModelId(desk_link, kDeskNoteAumid);
+    NotifyShortcutChanged(desk_link);
   }
   if (!start_link.empty()) {
     WriteShellLink(start_link, target, L"", work, L"DeskNote 记事本", icon);
     ApplyShortcutAppUserModelId(start_link, kDeskNoteAumid);
+    NotifyShortcutChanged(start_link);
   }
 }
 

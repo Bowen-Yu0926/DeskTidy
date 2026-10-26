@@ -37,6 +37,7 @@
 #include <cwctype>
 #include <fstream>
 #include <functional>
+#include <regex>
 #include <sstream>
 #include <string>
 
@@ -112,6 +113,12 @@ constexpr int kMenuBullet = 2160;
 constexpr int kMenuQuote = 2161;
 constexpr int kMenuHRule = 2162;
 constexpr int kMenuDateTime = 2163;
+constexpr int kMenuDupLine = 2164;
+constexpr int kMenuMoveLineUp = 2165;
+constexpr int kMenuMoveLineDown = 2166;
+constexpr int kMenuToggleBookmark = 2167;
+constexpr int kMenuNextBookmark = 2168;
+constexpr int kMenuPrevBookmark = 2169;
 constexpr int kEditCtxUndo = 3201;
 constexpr int kEditCtxCut = 3202;
 constexpr int kEditCtxCopy = 3203;
@@ -123,8 +130,10 @@ constexpr int kOutlineId = 2002;
 constexpr int kSidebarRefreshId = 2009;
 constexpr int kModeStripId = 2010;
 constexpr int kOutlineStripId = 2011;
+constexpr int kGutterId = 2012;
 constexpr int kOutlineStripW = 28;
 constexpr int kOutlineExpandedW = 150;
+constexpr wchar_t kGutterClass[] = L"DeskNoteGutter";
 constexpr int kTabsId = 2003;
 constexpr int kSidebarId = 2004;
 constexpr int kSidebarSearchId = 2005;
@@ -499,7 +508,8 @@ bool NotesWindow::Create(HINSTANCE instance) {
   AppendMenuW(enc, MF_STRING, kMenuEncUtf8, L"UTF-8");
   AppendMenuW(enc, MF_STRING, kMenuEncUtf8Bom, L"UTF-8 带 BOM");
   AppendMenuW(enc, MF_STRING, kMenuEncAcp, L"系统 ANSI（如 GBK）");
-  AppendMenuW(file, MF_POPUP, reinterpret_cast<UINT_PTR>(enc), L"保存编码");
+  AppendMenuW(file, MF_POPUP, reinterpret_cast<UINT_PTR>(enc),
+              L"编码转换（保存）");
   AppendMenuW(file, MF_STRING, kMenuLibrary, Tr("notes_library").c_str());
   AppendMenuW(file, MF_STRING, kMenuOpenFolder, Tr("notes_open_folder").c_str());
   AppendMenuW(file, MF_STRING, kMenuSearchLib, L"搜索笔记库\tCtrl+Shift+F");
@@ -530,6 +540,16 @@ bool NotesWindow::Create(HINSTANCE instance) {
   AppendMenuW(editm, MF_STRING, kMenuFindPrev, L"查找上一个\tShift+F3");
   AppendMenuW(editm, MF_STRING, kMenuReplace, L"替换…\tCtrl+H");
   AppendMenuW(editm, MF_STRING, kMenuGotoLine, L"转到行…\tCtrl+G");
+  AppendMenuW(editm, MF_SEPARATOR, 0, nullptr);
+  AppendMenuW(editm, MF_STRING, kMenuDupLine, L"复制当前行\tCtrl+D");
+  AppendMenuW(editm, MF_STRING, kMenuMoveLineUp, L"上移当前行\tCtrl+Shift+↑");
+  AppendMenuW(editm, MF_STRING, kMenuMoveLineDown,
+              L"下移当前行\tCtrl+Shift+↓");
+  AppendMenuW(editm, MF_SEPARATOR, 0, nullptr);
+  AppendMenuW(editm, MF_STRING, kMenuToggleBookmark,
+              L"切换书签\tCtrl+F2");
+  AppendMenuW(editm, MF_STRING, kMenuNextBookmark, L"下一书签\tF2");
+  AppendMenuW(editm, MF_STRING, kMenuPrevBookmark, L"上一书签\tShift+F2");
   AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(editm),
               Tr("edit").c_str());
   HMENU view = CreatePopupMenu();
@@ -612,6 +632,7 @@ bool NotesWindow::Create(HINSTANCE instance) {
   SetFontSize(font_pt_);
   ApplyWordWrap();
   ApplyChrome();
+  EnsureGutter();
   outline_list_ = CreateWindowExW(
       0, L"LISTBOX", L"",
       WS_CHILD | WS_VSCROLL | WS_BORDER | LBS_NOTIFY | LBS_NOINTEGRALHEIGHT, 6, 6,
@@ -829,6 +850,17 @@ void NotesWindow::ApplyUiTheme(const std::string& ui_theme) {
   text_color_ = pick("text", RGB(26, 35, 50));
   muted_color_ = pick("muted", RGB(100, 116, 139));
   ApplyChrome();
+  // P2: preview/WYSIWYG follow the product theme (not only OS light/dark).
+  // All shipped UI themes use light content panes → "light" chrome.
+  const std::wstring web_theme = L"light";
+  web_.SetTheme(web_theme);
+  preview_web_.SetTheme(web_theme);
+  if (preview_ && PathLooksMarkdown()) {
+    SchedulePreviewRefresh();
+  }
+  if (wysiwyg_) {
+    web_.SetMarkdown(CurrentPlainText());
+  }
 }
 
 void NotesWindow::RefreshTitle() {
@@ -922,6 +954,13 @@ void NotesWindow::BuildAccelerators() {
       {FVIRTKEY | FSHIFT, VK_F3, static_cast<WORD>(kMenuFindPrev)},
       {FVIRTKEY, VK_F5, static_cast<WORD>(kMenuReload)},
       {FVIRTKEY, VK_F11, static_cast<WORD>(kMenuFocus)},
+      {FVIRTKEY | FCONTROL, 'D', static_cast<WORD>(kMenuDupLine)},
+      {FVIRTKEY | FCONTROL | FSHIFT, VK_UP, static_cast<WORD>(kMenuMoveLineUp)},
+      {FVIRTKEY | FCONTROL | FSHIFT, VK_DOWN,
+       static_cast<WORD>(kMenuMoveLineDown)},
+      {FVIRTKEY | FCONTROL, VK_F2, static_cast<WORD>(kMenuToggleBookmark)},
+      {FVIRTKEY, VK_F2, static_cast<WORD>(kMenuNextBookmark)},
+      {FVIRTKEY | FSHIFT, VK_F2, static_cast<WORD>(kMenuPrevBookmark)},
   };
   accel_ = CreateAcceleratorTableW(
       table, static_cast<int>(sizeof(table) / sizeof(table[0])));
@@ -1901,6 +1940,7 @@ void NotesWindow::Load() {
   if (!edit_) {
     return;
   }
+  bookmarks_.clear();
   loading_ = true;
   dirty_ = false;
   std::ifstream in(path_, std::ios::binary);
@@ -1909,6 +1949,7 @@ void NotesWindow::Load() {
     if (!legacy) {
       loading_ = false;
       UpdateStatusBar();
+      RefreshGutter();
       return;
     }
     std::ostringstream ss;
@@ -1916,6 +1957,7 @@ void NotesWindow::Load() {
     SetWindowTextW(edit_, WidenUtf8(ss.str()).c_str());
     loading_ = false;
     UpdateStatusBar();
+    RefreshGutter();
     return;
   }
   std::ostringstream ss;
@@ -1940,6 +1982,7 @@ void NotesWindow::Load() {
       SetWindowTextW(edit_, wide.c_str());
       loading_ = false;
       UpdateStatusBar();
+      RefreshGutter();
       return;
     }
     text_enc_ = enc;
@@ -1948,6 +1991,7 @@ void NotesWindow::Load() {
   loading_ = false;
   dirty_ = false;
   UpdateStatusBar();
+  RefreshGutter();
 }
 
 bool NotesWindow::OfferElevatedSave(const std::wstring& path,
@@ -2648,6 +2692,29 @@ void NotesWindow::HandleTabContextMenu(int index, POINT screen_pt) {
   }
 }
 
+std::wstring NotesWindow::EditTextCpAligned() const {
+  if (!edit_) {
+    return {};
+  }
+  GETTEXTLENGTHEX tl{};
+  tl.flags = GTL_DEFAULT | GTL_NUMCHARS;
+  tl.codepage = 1200;
+  const LRESULT n =
+      SendMessageW(edit_, EM_GETTEXTLENGTHEX, reinterpret_cast<WPARAM>(&tl), 0);
+  if (n <= 0) {
+    return {};
+  }
+  std::wstring wide(static_cast<size_t>(n) + 1, L'\0');
+  GETTEXTEX gt{};
+  gt.cb = static_cast<DWORD>((n + 1) * sizeof(wchar_t));
+  gt.flags = GT_DEFAULT;
+  gt.codepage = 1200;
+  SendMessageW(edit_, EM_GETTEXTEX, reinterpret_cast<WPARAM>(&gt),
+               reinterpret_cast<LPARAM>(wide.data()));
+  wide.resize(static_cast<size_t>(n));
+  return wide;
+}
+
 std::wstring NotesWindow::CurrentPlainText() const {
   if (!edit_) {
     return {};
@@ -2672,7 +2739,7 @@ void NotesWindow::PreviewMarkdown() {
       return;
     }
   }
-  PreviewMarkdownText(hwnd_, CurrentPlainText(), L"便签预览");
+  PreviewMarkdownText(hwnd_, CurrentPlainText(), L"便签预览", NoteBaseDir());
 }
 
 void NotesWindow::ExportHtml() {
@@ -2688,11 +2755,11 @@ void NotesWindow::ExportHtml() {
   if (!GetSaveFileNameW(&ofn)) {
     return;
   }
-  // P1-21: reuse MarkdownToHtmlDocument (headings/lists/bold/italic/code).
+  // P1-21: full markdown body + P1-20 relative images via base_dir.
   const std::wstring title =
       path_.empty() ? L"DeskTidy" : TabLabel(path_);
   const std::wstring html =
-      MarkdownToHtmlDocument(CurrentPlainText(), title);
+      MarkdownToHtmlDocument(CurrentPlainText(), title, NoteBaseDir());
   std::ofstream out(file, std::ios::binary);
   if (!out) {
     return;
@@ -3394,11 +3461,332 @@ void NotesWindow::LayoutClient() {
       preview_web_.Hide();
     }
     if (edit_) {
+      EnsureGutter();
+      const int pane_h = (std::max)(40, bottom - top);
+      LayoutGutter(left, top, pane_h);
+      const int edit_left = left + (gutter_ ? gutter_width_ : 0);
       ShowWindow(edit_, SW_SHOW);
-      MoveWindow(edit_, left, top, (std::max)(40, right - left),
-                 (std::max)(40, bottom - top), TRUE);
+      MoveWindow(edit_, edit_left, top, (std::max)(40, right - edit_left),
+                 pane_h, TRUE);
+      RefreshGutter();
+    } else if (gutter_) {
+      ShowWindow(gutter_, SW_HIDE);
     }
   }
+  if (wysiwyg_ || md_preview) {
+    if (gutter_) {
+      ShowWindow(gutter_, SW_HIDE);
+    }
+  }
+}
+
+void NotesWindow::EnsureGutter() {
+  if (gutter_ || !hwnd_) {
+    return;
+  }
+  WNDCLASSEXW wc{};
+  wc.cbSize = sizeof(wc);
+  if (!GetClassInfoExW(GetModuleHandleW(nullptr), kGutterClass, &wc)) {
+    wc = {};
+    wc.cbSize = sizeof(wc);
+    wc.lpfnWndProc = NotesWindow::GutterProc;
+    wc.hInstance = GetModuleHandleW(nullptr);
+    wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
+    wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_BTNFACE + 1);
+    wc.lpszClassName = kGutterClass;
+    RegisterClassExW(&wc);
+  }
+  gutter_ = CreateWindowExW(
+      0, kGutterClass, L"", WS_CHILD | WS_CLIPSIBLINGS, 0, 0, gutter_width_, 100,
+      hwnd_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kGutterId)),
+      GetModuleHandleW(nullptr), this);
+  if (gutter_) {
+    SetWindowLongPtrW(gutter_, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(this));
+  }
+}
+
+void NotesWindow::LayoutGutter(int left, int top, int height) {
+  if (!gutter_) {
+    return;
+  }
+  int lines = 1;
+  if (edit_) {
+    lines = (std::max)(
+        1, static_cast<int>(SendMessageW(edit_, EM_GETLINECOUNT, 0, 0)));
+  }
+  int digits = 1;
+  for (int n = lines; n >= 10; n /= 10) {
+    ++digits;
+  }
+  gutter_width_ = (std::max)(36, 12 + digits * 9 + 10);
+  MoveWindow(gutter_, left, top, gutter_width_, height, TRUE);
+  ShowWindow(gutter_, SW_SHOW);
+}
+
+void NotesWindow::RefreshGutter() {
+  if (gutter_ && IsWindowVisible(gutter_)) {
+    InvalidateRect(gutter_, nullptr, TRUE);
+  }
+}
+
+LRESULT CALLBACK NotesWindow::GutterProc(HWND hwnd, UINT msg, WPARAM wparam,
+                                         LPARAM lparam) {
+  auto* self =
+      reinterpret_cast<NotesWindow*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+  if (msg == WM_NCCREATE) {
+    auto* cs = reinterpret_cast<CREATESTRUCTW*>(lparam);
+    self = static_cast<NotesWindow*>(cs->lpCreateParams);
+    SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(self));
+  }
+  switch (msg) {
+    case WM_PAINT: {
+      PAINTSTRUCT ps{};
+      HDC hdc = BeginPaint(hwnd, &ps);
+      RECT rc{};
+      GetClientRect(hwnd, &rc);
+      const COLORREF bg = self ? self->content_bg_ : RGB(238, 241, 246);
+      const COLORREF fg = self ? self->muted_color_ : RGB(100, 116, 139);
+      HBRUSH brush = CreateSolidBrush(bg);
+      FillRect(hdc, &rc, brush);
+      DeleteObject(brush);
+      if (self && self->edit_) {
+        const int first = static_cast<int>(
+            SendMessageW(self->edit_, EM_GETFIRSTVISIBLELINE, 0, 0));
+        const int total = static_cast<int>(
+            SendMessageW(self->edit_, EM_GETLINECOUNT, 0, 0));
+        HFONT old = nullptr;
+        if (self->font_) {
+          old = static_cast<HFONT>(SelectObject(hdc, self->font_));
+        }
+        SetBkMode(hdc, TRANSPARENT);
+        SetTextColor(hdc, fg);
+        const LONG first_cp = static_cast<LONG>(
+            SendMessageW(self->edit_, EM_LINEINDEX, first, 0));
+        POINTL pt0{};
+        SendMessageW(self->edit_, EM_POSFROMCHAR,
+                     reinterpret_cast<WPARAM>(&pt0), first_cp);
+        int line_h = 16;
+        if (first + 1 < total) {
+          const LONG next_cp = static_cast<LONG>(
+              SendMessageW(self->edit_, EM_LINEINDEX, first + 1, 0));
+          POINTL pt1{};
+          SendMessageW(self->edit_, EM_POSFROMCHAR,
+                       reinterpret_cast<WPARAM>(&pt1), next_cp);
+          if (pt1.y > pt0.y) {
+            line_h = static_cast<int>(pt1.y - pt0.y);
+          }
+        } else {
+          TEXTMETRICW tm{};
+          GetTextMetricsW(hdc, &tm);
+          line_h = tm.tmHeight + tm.tmExternalLeading;
+        }
+        const int visible =
+            (std::max)(1, static_cast<int>(rc.bottom - rc.top) /
+                                  (std::max)(1, line_h) +
+                              2);
+        for (int i = 0; i < visible; ++i) {
+          const int line = first + i;
+          if (line >= total) {
+            break;
+          }
+          const int y = static_cast<int>(pt0.y) + i * line_h;
+          if (y > rc.bottom) {
+            break;
+          }
+          const bool marked =
+              self->bookmarks_.find(line) != self->bookmarks_.end();
+          if (marked) {
+            HBRUSH mark = CreateSolidBrush(RGB(29, 78, 216));
+            RECT dot{4, y + 4, 12, y + 12};
+            FillRect(hdc, &dot, mark);
+            DeleteObject(mark);
+          }
+          wchar_t buf[16];
+          swprintf_s(buf, L"%d", line + 1);
+          RECT tr{14, y, rc.right - 2, y + line_h};
+          DrawTextW(hdc, buf, -1, &tr, DT_RIGHT | DT_TOP | DT_SINGLELINE);
+        }
+        if (old) {
+          SelectObject(hdc, old);
+        }
+      }
+      EndPaint(hwnd, &ps);
+      return 0;
+    }
+    case WM_ERASEBKGND:
+      return 1;
+    case WM_LBUTTONDBLCLK:
+      if (self) {
+        self->ToggleBookmarkAtCaret();
+      }
+      return 0;
+    default:
+      break;
+  }
+  return DefWindowProcW(hwnd, msg, wparam, lparam);
+}
+
+void NotesWindow::ToggleBookmarkAtCaret() {
+  if (!edit_) {
+    return;
+  }
+  CHARRANGE cr{};
+  SendMessageW(edit_, EM_EXGETSEL, 0, reinterpret_cast<LPARAM>(&cr));
+  const int line =
+      static_cast<int>(SendMessageW(edit_, EM_EXLINEFROMCHAR, 0, cr.cpMin));
+  if (bookmarks_.count(line)) {
+    bookmarks_.erase(line);
+  } else {
+    bookmarks_.insert(line);
+  }
+  RefreshGutter();
+}
+
+void NotesWindow::GotoBookmark(bool next) {
+  if (!edit_ || bookmarks_.empty()) {
+    return;
+  }
+  CHARRANGE cr{};
+  SendMessageW(edit_, EM_EXGETSEL, 0, reinterpret_cast<LPARAM>(&cr));
+  const int cur =
+      static_cast<int>(SendMessageW(edit_, EM_EXLINEFROMCHAR, 0, cr.cpMin));
+  int target = -1;
+  if (next) {
+    auto it = bookmarks_.upper_bound(cur);
+    target = (it != bookmarks_.end()) ? *it : *bookmarks_.begin();
+  } else {
+    auto it = bookmarks_.lower_bound(cur);
+    if (it == bookmarks_.begin()) {
+      target = *bookmarks_.rbegin();
+    } else {
+      --it;
+      target = *it;
+    }
+  }
+  if (target >= 0) {
+    GotoLine(target);
+  }
+}
+
+void NotesWindow::DuplicateCurrentLine() {
+  if (!edit_) {
+    return;
+  }
+  CHARRANGE cr{};
+  SendMessageW(edit_, EM_EXGETSEL, 0, reinterpret_cast<LPARAM>(&cr));
+  const int line =
+      static_cast<int>(SendMessageW(edit_, EM_EXLINEFROMCHAR, 0, cr.cpMin));
+  const LONG start =
+      static_cast<LONG>(SendMessageW(edit_, EM_LINEINDEX, line, 0));
+  const int total =
+      static_cast<int>(SendMessageW(edit_, EM_GETLINECOUNT, 0, 0));
+  LONG end = 0;
+  if (line + 1 < total) {
+    end = static_cast<LONG>(SendMessageW(edit_, EM_LINEINDEX, line + 1, 0));
+  } else {
+    GETTEXTLENGTHEX tl{};
+    tl.flags = GTL_DEFAULT | GTL_NUMCHARS;
+    tl.codepage = 1200;
+    end = static_cast<LONG>(
+        SendMessageW(edit_, EM_GETTEXTLENGTHEX, reinterpret_cast<WPARAM>(&tl),
+                     0));
+  }
+  if (end < start) {
+    return;
+  }
+  std::wstring chunk(static_cast<size_t>(end - start) + 1, L'\0');
+  TEXTRANGEW tr{};
+  tr.chrg.cpMin = start;
+  tr.chrg.cpMax = end;
+  tr.lpstrText = chunk.data();
+  SendMessageW(edit_, EM_GETTEXTRANGE, 0, reinterpret_cast<LPARAM>(&tr));
+  chunk.resize(static_cast<size_t>(end - start));
+  if (line + 1 >= total &&
+      (chunk.empty() || (chunk.back() != L'\r' && chunk.back() != L'\n'))) {
+    chunk.push_back(L'\r');
+  }
+  CHARRANGE ins{end, end};
+  SendMessageW(edit_, EM_EXSETSEL, 0, reinterpret_cast<LPARAM>(&ins));
+  SendMessageW(edit_, EM_REPLACESEL, TRUE,
+               reinterpret_cast<LPARAM>(chunk.c_str()));
+  MarkDirty();
+  RefreshGutter();
+}
+
+void NotesWindow::MoveCurrentLine(int delta) {
+  if (!edit_ || delta == 0) {
+    return;
+  }
+  CHARRANGE cr{};
+  SendMessageW(edit_, EM_EXGETSEL, 0, reinterpret_cast<LPARAM>(&cr));
+  const int line =
+      static_cast<int>(SendMessageW(edit_, EM_EXLINEFROMCHAR, 0, cr.cpMin));
+  const int total =
+      static_cast<int>(SendMessageW(edit_, EM_GETLINECOUNT, 0, 0));
+  const int other = line + delta;
+  if (other < 0 || other >= total) {
+    return;
+  }
+  auto line_range = [&](int ln, LONG* a, LONG* b) {
+    *a = static_cast<LONG>(SendMessageW(edit_, EM_LINEINDEX, ln, 0));
+    if (ln + 1 < total) {
+      *b = static_cast<LONG>(SendMessageW(edit_, EM_LINEINDEX, ln + 1, 0));
+    } else {
+      GETTEXTLENGTHEX tl{};
+      tl.flags = GTL_DEFAULT | GTL_NUMCHARS;
+      tl.codepage = 1200;
+      *b = static_cast<LONG>(SendMessageW(
+          edit_, EM_GETTEXTLENGTHEX, reinterpret_cast<WPARAM>(&tl), 0));
+    }
+  };
+  LONG a0 = 0, a1 = 0, b0 = 0, b1 = 0;
+  if (delta < 0) {
+    line_range(other, &a0, &a1);
+    line_range(line, &b0, &b1);
+  } else {
+    line_range(line, &a0, &a1);
+    line_range(other, &b0, &b1);
+  }
+  auto grab = [&](LONG s, LONG e) {
+    std::wstring out(static_cast<size_t>(e - s) + 1, L'\0');
+    TEXTRANGEW tr{};
+    tr.chrg.cpMin = s;
+    tr.chrg.cpMax = e;
+    tr.lpstrText = out.data();
+    SendMessageW(edit_, EM_GETTEXTRANGE, 0, reinterpret_cast<LPARAM>(&tr));
+    out.resize(static_cast<size_t>(e - s));
+    return out;
+  };
+  const std::wstring first = grab(a0, a1);
+  const std::wstring second = grab(b0, b1);
+  std::wstring swapped = second + first;
+  CHARRANGE sel{a0, b1};
+  SendMessageW(edit_, EM_EXSETSEL, 0, reinterpret_cast<LPARAM>(&sel));
+  SendMessageW(edit_, EM_REPLACESEL, TRUE,
+               reinterpret_cast<LPARAM>(swapped.c_str()));
+  // Restore caret on the moved line.
+  const int new_line = other;
+  const LONG new_start =
+      static_cast<LONG>(SendMessageW(edit_, EM_LINEINDEX, new_line, 0));
+  CHARRANGE caret{new_start, new_start};
+  SendMessageW(edit_, EM_EXSETSEL, 0, reinterpret_cast<LPARAM>(&caret));
+  // Keep bookmarks attached to content lines when swapping neighbors.
+  const bool mark_a = bookmarks_.count(line) != 0;
+  const bool mark_b = bookmarks_.count(other) != 0;
+  if (mark_a) {
+    bookmarks_.erase(line);
+  }
+  if (mark_b) {
+    bookmarks_.erase(other);
+  }
+  if (mark_a) {
+    bookmarks_.insert(other);
+  }
+  if (mark_b) {
+    bookmarks_.insert(line);
+  }
+  MarkDirty();
+  RefreshGutter();
 }
 
 void NotesWindow::RebuildOutline() {
@@ -3544,6 +3932,94 @@ bool NotesWindow::RunFindOnce(bool down, bool wrap, bool match_case, bool whole,
     }
     return false;
   }
+
+  auto select_range = [&](LONG a, LONG b) {
+    CHARRANGE cr{a, b};
+    SendMessageW(edit_, EM_EXSETSEL, 0, reinterpret_cast<LPARAM>(&cr));
+    SendMessageW(edit_, EM_SCROLLCARET, 0, 0);
+  };
+
+  if (find_regex_) {
+    const std::wstring hay = EditTextCpAligned();
+    std::wstring pat = find_what_;
+    if (whole) {
+      pat = L"\\b(?:" + pat + L")\\b";
+    }
+    std::wregex::flag_type flags = std::regex_constants::ECMAScript;
+    if (!match_case) {
+      flags |= std::regex_constants::icase;
+    }
+    std::wregex re;
+    try {
+      re = std::wregex(pat, flags);
+    } catch (const std::regex_error&) {
+      if (status_out) {
+        *status_out = L"正则表达式无效";
+      }
+      return false;
+    }
+    CHARRANGE sel{};
+    SendMessageW(edit_, EM_EXGETSEL, 0, reinterpret_cast<LPARAM>(&sel));
+    auto try_forward = [&](size_t from) -> bool {
+      std::wsmatch m;
+      const std::wstring slice = hay.substr(from);
+      if (!std::regex_search(slice, m, re) || m.empty()) {
+        return false;
+      }
+      const LONG start = static_cast<LONG>(from + static_cast<size_t>(m.position(0)));
+      const LONG end = start + static_cast<LONG>(m.length(0));
+      select_range(start, end);
+      return true;
+    };
+    auto try_backward = [&](size_t until) -> bool {
+      bool found = false;
+      LONG best_s = 0;
+      LONG best_e = 0;
+      size_t pos = 0;
+      while (pos < until) {
+        std::wsmatch m;
+        const std::wstring slice = hay.substr(pos);
+        if (!std::regex_search(slice, m, re) || m.empty()) {
+          break;
+        }
+        const size_t abs = pos + static_cast<size_t>(m.position(0));
+        const size_t abs_end = abs + static_cast<size_t>(m.length(0));
+        if (abs_end > until) {
+          break;
+        }
+        found = true;
+        best_s = static_cast<LONG>(abs);
+        best_e = static_cast<LONG>(abs_end);
+        pos = abs + (m.length(0) == 0 ? 1 : static_cast<size_t>(m.length(0)));
+        if (pos >= until) {
+          break;
+        }
+      }
+      if (found) {
+        select_range(best_s, best_e);
+      }
+      return found;
+    };
+    bool found = false;
+    if (down) {
+      const size_t from = static_cast<size_t>((std::max)(0L, sel.cpMax));
+      found = try_forward(from);
+      if (!found && wrap) {
+        found = try_forward(0);
+      }
+    } else {
+      const size_t until = static_cast<size_t>((std::max)(0L, sel.cpMin));
+      found = try_backward(until);
+      if (!found && wrap) {
+        found = try_backward(hay.size());
+      }
+    }
+    if (status_out) {
+      *status_out = found ? L"" : L"未找到";
+    }
+    return found;
+  }
+
   DWORD flags = 0;
   if (match_case) {
     flags |= FR_MATCHCASE;
@@ -3595,8 +4071,38 @@ bool NotesWindow::RunReplaceOnce(bool match_case, bool whole, bool wrap,
   CHARRANGE sel{};
   SendMessageW(edit_, EM_EXGETSEL, 0, reinterpret_cast<LPARAM>(&sel));
   if (sel.cpMax > sel.cpMin) {
-    SendMessageW(edit_, EM_REPLACESEL, TRUE,
-                 reinterpret_cast<LPARAM>(replace_with_));
+    if (find_regex_) {
+      const std::wstring hay = EditTextCpAligned();
+      if (sel.cpMin >= 0 &&
+          static_cast<size_t>(sel.cpMax) <= hay.size()) {
+        const std::wstring matched =
+            hay.substr(static_cast<size_t>(sel.cpMin),
+                       static_cast<size_t>(sel.cpMax - sel.cpMin));
+        std::wstring pat = find_what_;
+        if (whole) {
+          pat = L"\\b(?:" + pat + L")\\b";
+        }
+        std::wregex::flag_type flags = std::regex_constants::ECMAScript;
+        if (!match_case) {
+          flags |= std::regex_constants::icase;
+        }
+        try {
+          const std::wregex re(pat, flags);
+          const std::wstring repl =
+              std::regex_replace(matched, re, std::wstring(replace_with_));
+          SendMessageW(edit_, EM_REPLACESEL, TRUE,
+                       reinterpret_cast<LPARAM>(repl.c_str()));
+        } catch (const std::regex_error&) {
+          if (status_out) {
+            *status_out = L"正则表达式无效";
+          }
+          return false;
+        }
+      }
+    } else {
+      SendMessageW(edit_, EM_REPLACESEL, TRUE,
+                   reinterpret_cast<LPARAM>(replace_with_));
+    }
   }
   return RunFindOnce(true, wrap, match_case, whole, status_out);
 }
@@ -3604,6 +4110,46 @@ bool NotesWindow::RunReplaceOnce(bool match_case, bool whole, bool wrap,
 int NotesWindow::RunReplaceAll(bool match_case, bool whole) {
   if (!edit_ || find_what_[0] == 0) {
     return 0;
+  }
+  if (find_regex_) {
+    std::wstring hay = EditTextCpAligned();
+    std::wstring pat = find_what_;
+    if (whole) {
+      pat = L"\\b(?:" + pat + L")\\b";
+    }
+    std::wregex::flag_type flags = std::regex_constants::ECMAScript;
+    if (!match_case) {
+      flags |= std::regex_constants::icase;
+    }
+    try {
+      const std::wregex re(pat, flags);
+      int n = 0;
+      {
+        std::wsregex_iterator it(hay.begin(), hay.end(), re);
+        std::wsregex_iterator end;
+        for (; it != end; ++it) {
+          ++n;
+          if (n > 100000) {
+            break;
+          }
+        }
+      }
+      if (n <= 0) {
+        return 0;
+      }
+      const std::wstring out =
+          std::regex_replace(hay, re, std::wstring(replace_with_));
+      SETTEXTEX st{};
+      st.flags = ST_DEFAULT;
+      st.codepage = 1200;
+      SendMessageW(edit_, EM_SETTEXTEX, reinterpret_cast<WPARAM>(&st),
+                   reinterpret_cast<LPARAM>(out.c_str()));
+      MarkDirty();
+      RefreshGutter();
+      return n;
+    } catch (const std::regex_error&) {
+      return 0;
+    }
   }
   int n = 0;
   CHARRANGE top{};
@@ -3676,6 +4222,43 @@ int ReplaceAllInWideString(std::wstring* text, const std::wstring& find,
   }
   return n;
 }
+
+int ReplaceAllRegexInWideString(std::wstring* text, const std::wstring& find,
+                                const std::wstring& repl, bool match_case,
+                                bool whole) {
+  if (!text || find.empty()) {
+    return 0;
+  }
+  std::wstring pat = find;
+  if (whole) {
+    pat = L"\\b(?:" + pat + L")\\b";
+  }
+  std::wregex::flag_type flags = std::regex_constants::ECMAScript;
+  if (!match_case) {
+    flags |= std::regex_constants::icase;
+  }
+  try {
+    const std::wregex re(pat, flags);
+    int n = 0;
+    {
+      std::wsregex_iterator it(text->begin(), text->end(), re);
+      std::wsregex_iterator end;
+      for (; it != end; ++it) {
+        ++n;
+        if (n > 100000) {
+          break;
+        }
+      }
+    }
+    if (n <= 0) {
+      return 0;
+    }
+    *text = std::regex_replace(*text, re, repl);
+    return n;
+  } catch (const std::regex_error&) {
+    return 0;
+  }
+}
 }  // namespace
 
 int NotesWindow::RunReplaceAllTabs(bool match_case, bool whole) {
@@ -3685,6 +4268,7 @@ int NotesWindow::RunReplaceAllTabs(bool match_case, bool whole) {
   int total = RunReplaceAll(match_case, whole);
   const std::wstring find = find_what_;
   const std::wstring repl = replace_with_;
+  const bool use_regex = find_regex_;
   const int cur = tab_index_;
   for (size_t i = 0; i < tab_paths_.size(); ++i) {
     if (static_cast<int>(i) == cur) {
@@ -3706,7 +4290,10 @@ int NotesWindow::RunReplaceAllTabs(bool match_case, bool whole) {
     if (!DecodeTextFileBytes(data, &wide, &enc)) {
       continue;
     }
-    const int n = ReplaceAllInWideString(&wide, find, repl, match_case, whole);
+    const int n =
+        use_regex
+            ? ReplaceAllRegexInWideString(&wide, find, repl, match_case, whole)
+            : ReplaceAllInWideString(&wide, find, repl, match_case, whole);
     if (n <= 0) {
       continue;
     }
@@ -3747,6 +4334,8 @@ void NotesWindow::ShowFind(bool replace) {
     json += find_match_case_ ? L"true" : L"false";
     json += L",\"whole_word\":";
     json += find_whole_word_ ? L"true" : L"false";
+    json += L",\"regex\":";
+    json += find_regex_ ? L"true" : L"false";
     json += L",\"wrap\":";
     json += find_wrap_ ? L"true" : L"false";
     json += L",\"all_tabs\":";
@@ -3763,6 +4352,7 @@ void NotesWindow::ShowFind(bool replace) {
               _TRUNCATE);
     find_match_case_ = json.find(L"\"match_case\":true") != std::wstring::npos;
     find_whole_word_ = json.find(L"\"whole_word\":true") != std::wstring::npos;
+    find_regex_ = json.find(L"\"regex\":true") != std::wstring::npos;
     find_wrap_ = json.find(L"\"wrap\":false") == std::wstring::npos;
     find_all_tabs_ = json.find(L"\"all_tabs\":true") != std::wstring::npos;
   };
@@ -3809,7 +4399,7 @@ void NotesWindow::ShowFind(bool replace) {
     return false;
   };
   MistWebDialogRun(&dlg, replace ? L"替换" : L"查找", 480,
-                   replace ? 360 : 300);
+                   replace ? 380 : 320);
 }
 
 void NotesWindow::InsertTemplate() {
@@ -4092,9 +4682,21 @@ void NotesWindow::OpenSidebarResult(int index) {
   }
   const NoteSearchHit& hit = sidebar_hits_[static_cast<size_t>(index)];
   OpenOrActivatePath(hit.path);
-  if (hit.line >= 0) {
-    GotoLine(hit.line);
+  if (hit.line < 0) {
+    return;
   }
+  // Leave preview/WYSIWYG so the RichEdit caret jump is visible (P1-19).
+  if (wysiwyg_) {
+    wysiwyg_ = false;
+    ApplyWysiwygVisibility();
+  }
+  if (preview_ && preview_web_.Host()) {
+    preview_web_.Hide();
+  }
+  // SwitchToTab restores a saved caret after Load — jump once more deferred
+  // so the search hit wins over the session caret.
+  pending_goto_line_ = hit.line;
+  PostMessageW(hwnd_, WM_APP + 60, 0, 0);
 }
 
 void NotesWindow::RebuildSidebar() {
@@ -4615,6 +5217,26 @@ LRESULT CALLBACK NotesWindow::EditProc(HWND hwnd, UINT msg, WPARAM wparam,
       self->FindAgain(!shift);
       return 0;
     }
+    if (wparam == VK_F2) {
+      if (ctrl) {
+        self->ToggleBookmarkAtCaret();
+      } else {
+        self->GotoBookmark(!shift);
+      }
+      return 0;
+    }
+    if (ctrl && !shift && (wparam == 'D' || wparam == 'd')) {
+      self->DuplicateCurrentLine();
+      return 0;
+    }
+    if (ctrl && shift && wparam == VK_UP) {
+      self->MoveCurrentLine(-1);
+      return 0;
+    }
+    if (ctrl && shift && wparam == VK_DOWN) {
+      self->MoveCurrentLine(1);
+      return 0;
+    }
     if (ctrl && !shift && (wparam == 'G' || wparam == 'g')) {
       self->PromptGotoLine();
       return 0;
@@ -4823,6 +5445,24 @@ LRESULT NotesWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
           return 0;
         case kMenuGotoLine:
           PromptGotoLine();
+          return 0;
+        case kMenuDupLine:
+          DuplicateCurrentLine();
+          return 0;
+        case kMenuMoveLineUp:
+          MoveCurrentLine(-1);
+          return 0;
+        case kMenuMoveLineDown:
+          MoveCurrentLine(1);
+          return 0;
+        case kMenuToggleBookmark:
+          ToggleBookmarkAtCaret();
+          return 0;
+        case kMenuNextBookmark:
+          GotoBookmark(true);
+          return 0;
+        case kMenuPrevBookmark:
+          GotoBookmark(false);
           return 0;
         case kMenuCloseWindow:
           PostMessageW(hwnd_, WM_CLOSE, 0, 0);
@@ -5053,6 +5693,7 @@ LRESULT NotesWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
       }
       if (LOWORD(wparam) == kEditId && HIWORD(wparam) == EN_CHANGE) {
         MarkDirty();
+        RefreshGutter();
         if (preview_) {
           SchedulePreviewRefresh();
         }
@@ -5067,6 +5708,7 @@ LRESULT NotesWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
         if (HIWORD(wparam) == EN_SELCHANGE) {
           UpdateStatusBar();
         }
+        RefreshGutter();
         if (preview_ && !syncing_scroll_) {
           SetTimer(hwnd_, kScrollTimer, 60, nullptr);
         }
@@ -5120,6 +5762,26 @@ LRESULT NotesWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
     }
     case WM_SIZE:
       LayoutClient();
+      return 0;
+    case WM_APP + 60:
+      if (pending_goto_line_ >= 0) {
+        const int line = pending_goto_line_;
+        pending_goto_line_ = -1;
+        GotoLine(line);
+        if (edit_) {
+          const LRESULT start =
+              SendMessageW(edit_, EM_LINEINDEX, static_cast<WPARAM>(line), 0);
+          if (start >= 0) {
+            const LRESULT len = SendMessageW(
+                edit_, EM_LINELENGTH, static_cast<WPARAM>(start), 0);
+            CHARRANGE cr{};
+            cr.cpMin = static_cast<LONG>(start);
+            cr.cpMax = static_cast<LONG>(start + (std::max)(LRESULT{0}, len));
+            SendMessageW(edit_, EM_EXSETSEL, 0, reinterpret_cast<LPARAM>(&cr));
+            SendMessageW(edit_, EM_SCROLLCARET, 0, 0);
+          }
+        }
+      }
       return 0;
     case WM_TIMER:
       if (wparam == kPreviewTimer) {

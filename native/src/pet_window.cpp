@@ -1957,11 +1957,20 @@ void PetWindow::SetToolFlags(bool record, bool minutes, bool calculator,
 }
 
 void PetWindow::SetPages(const std::vector<std::wstring>& names, int current) {
+  const bool names_changed = names != page_names_;
+  const bool page_changed = current != current_page_;
   page_names_ = names;
   current_page_ = current;
-  RebuildChromeItems();
-  if (pages_) {
-    PlacePages();
+  // Page-switch only changes the highlight — skip SetWindowPos (page flash).
+  if (names_changed) {
+    RebuildChromeItems();
+    if (pages_) {
+      PlacePages();
+    }
+    return;
+  }
+  if (page_changed && pages_ && IsWindowVisible(pages_)) {
+    PaintPages(nullptr);
   }
 }
 
@@ -2720,22 +2729,35 @@ void PetWindow::Show() {
   if (!hwnd_) {
     return;
   }
-  ShowWindow(hwnd_, SW_SHOWNOACTIVATE);
+  const bool was = IsWindowVisible(hwnd_) != FALSE;
+  if (!was) {
+    ShowWindow(hwnd_, SW_SHOWNOACTIVATE);
+  }
   AttachToDesktopLayer();
-  Present();
+  if (!was) {
+    Present();
+  }
   // Buoy (走/爬/落) is superseded by the ⋯ action menu, matching Python.
   if (pages_) {
-    ShowWindow(pages_, SW_SHOWNOACTIVATE);
-    AttachOverlayToDesktop(pages_, true);
-    PlaceOverlayInDesktopBand(pages_, true);
-    RaiseOverlayInDesktopBand(pages_);
+    if (!IsWindowVisible(pages_)) {
+      ShowWindow(pages_, SW_SHOWNOACTIVATE);
+    }
+    if (!IsAttachedToDesktop(pages_)) {
+      AttachOverlayToDesktop(pages_, true);
+      PlaceOverlayInDesktopBand(pages_, true);
+      RaiseOverlayInDesktopBand(pages_);
+    }
     PlacePages();
   }
   if (menu_) {
-    ShowWindow(menu_, SW_SHOWNOACTIVATE);
-    AttachOverlayToDesktop(menu_, true);
-    PlaceOverlayInDesktopBand(menu_, true);
-    RaiseOverlayInDesktopBand(menu_);
+    if (!IsWindowVisible(menu_)) {
+      ShowWindow(menu_, SW_SHOWNOACTIVATE);
+    }
+    if (!IsAttachedToDesktop(menu_)) {
+      AttachOverlayToDesktop(menu_, true);
+      PlaceOverlayInDesktopBand(menu_, true);
+      RaiseOverlayInDesktopBand(menu_);
+    }
     PlaceMenu();
   }
 }
@@ -2765,6 +2787,9 @@ void PetWindow::SetVisible(bool on) {
 
 void PetWindow::AttachToDesktopLayer() {
   if (!hwnd_) {
+    return;
+  }
+  if (IsAttachedToDesktop(hwnd_)) {
     return;
   }
   AttachOverlayToDesktop(hwnd_, true);

@@ -5,15 +5,15 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>DeskTidy 设置</title>
 <style>
-  /* Mist palette — mirror src/ui/styles.py get_theme_palette("mist") */
+  /* Mist palette — mirror src/ui/styles.py get_theme_palette("mist") (360 light rail) */
   :root {
     --window: #EEF1F6;
-    --sidebar: #1A2740;
-    --sidebar-text: #EAF0FA;
-    --sidebar-muted: #93A4BF;
-    --sidebar-hover: rgba(29, 78, 216, 0.16);
-    --sidebar-active: rgba(29, 78, 216, 0.26);
-    --sidebar-line: rgba(29, 78, 216, 0.28);
+    --sidebar: #F5F7FA;
+    --sidebar-text: #1A2332;
+    --sidebar-muted: #64748B;
+    --sidebar-hover: rgba(29, 78, 216, 0.12);
+    --sidebar-active: rgba(29, 78, 216, 0.18);
+    --sidebar-line: rgba(29, 78, 216, 0.18);
     --content: #F4F6F9;
     --card: #FFFFFF;
     --border: #C9D2DE;
@@ -26,6 +26,7 @@
     --primary-hover: #15803D;
     --danger: #DC2626;
     --inlay: #1D4ED8;
+    --nav-active: #1E3A8A;
   }
   * { box-sizing: border-box; }
   html, body {
@@ -54,12 +55,12 @@
   .brand-mark svg { width: 40px; height: 40px; display: block; }
   .brand-title {
     color: var(--sidebar-text);
-    font-size: 17px; font-weight: 800; letter-spacing: 0.2px;
+    font-size: 17px; font-weight: 600; letter-spacing: 0.2px;
     line-height: 1.2;
   }
   .brand-tag {
     color: var(--inlay);
-    font-size: 10px; font-weight: 800; letter-spacing: 2.4px;
+    font-size: 10px; font-weight: 600; letter-spacing: 1.2px;
     margin-top: 2px;
   }
   .brand-ver {
@@ -69,27 +70,26 @@
   .nav {
     display: flex; align-items: center; gap: 8px;
     border: 0; background: transparent; text-align: left;
-    padding: 7px 10px 7px 8px; border-radius: 8px; cursor: pointer;
+    padding: 8px 12px; border-radius: 10px; cursor: pointer;
     color: var(--sidebar-muted); font: inherit; font-size: 13px;
+    margin: 0 2px;
   }
   .nav svg { width: 18px; height: 18px; flex-shrink: 0; stroke: currentColor; fill: none; stroke-width: 1.55; stroke-linecap: round; stroke-linejoin: round; }
   .nav:hover { background: var(--sidebar-hover); color: var(--sidebar-text); }
   .nav.active {
     background: var(--sidebar-active);
-    color: var(--sidebar-text);
-    font-weight: 700;
-    border-left: 3px solid var(--inlay);
-    padding-left: 7px;
+    color: var(--nav-active);
+    font-weight: 600;
   }
   .account-card {
     display: none; margin: 0 2px; padding: 10px 10px;
-    border-radius: 10px; background: rgba(29, 78, 216, 0.18);
-    border: 1px solid rgba(147, 197, 253, 0.28); cursor: pointer;
+    border-radius: 10px; background: var(--card);
+    border: 1px solid var(--border); cursor: pointer;
   }
   .account-card.on { display: block; }
-  .account-card:hover { background: rgba(29, 78, 216, 0.26); }
+  .account-card:hover { background: var(--sidebar-hover); }
   .account-card .ac-name {
-    color: var(--sidebar-text); font-size: 13px; font-weight: 800;
+    color: var(--sidebar-text); font-size: 13px; font-weight: 600;
     line-height: 1.3; word-break: break-word;
   }
   .account-card .ac-login {
@@ -109,7 +109,7 @@
   }
   .page-header { margin-bottom: 18px; }
   .page-title {
-    margin: 0; font-size: 22px; font-weight: 800;
+    margin: 0; font-size: 22px; font-weight: 600;
     letter-spacing: -0.2px; color: var(--text);
   }
   .page-sub {
@@ -122,19 +122,12 @@
     background: var(--card);
     border: 1px solid var(--border);
     border-radius: 14px;
-    padding: 14px 16px 14px 18px;
+    padding: 14px 16px;
     margin-bottom: 14px;
     overflow: visible;
   }
-  .card::before {
-    content: "";
-    position: absolute; left: 0; top: 0; bottom: 0; width: 3px;
-    background: var(--inlay);
-    border-top-left-radius: 14px;
-    border-bottom-left-radius: 14px;
-  }
   .card h3 {
-    margin: 0; font-size: 15px; font-weight: 800; color: var(--text); letter-spacing: -0.1px;
+    margin: 0; font-size: 15px; font-weight: 600; color: var(--text); letter-spacing: -0.1px;
   }
   .card > h3 + .hint { margin-top: 4px; }
   .card > .hint { margin-bottom: 12px; }
@@ -571,6 +564,20 @@
   .st-thumb .st-fence .st-bar {
     height: 14%; min-height: 3px; max-height: 10px; opacity: 0.55;
   }
+  .st-thumb .st-fence .st-pins {
+    display: flex; flex-wrap: wrap; gap: 3px; padding: 3px 4px; align-content: flex-start;
+  }
+  .st-thumb .st-fence .st-pin {
+    width: 6px; height: 6px; border-radius: 2px; background: rgba(255,255,255,0.45);
+    border: 1px solid rgba(15,23,42,0.2); flex-shrink: 0; box-sizing: border-box;
+  }
+  .st-thumb .st-icon {
+    position: absolute; width: 6px; height: 6px; border-radius: 2px; z-index: 2;
+    background: rgba(248,250,252,0.85); border: 1px solid rgba(15,23,42,0.3);
+    box-sizing: border-box; pointer-events: none;
+  }
+  .snap-preview-card .st-thumb .st-icon { width: 9px; height: 9px; border-radius: 2px; }
+  .snap-preview-card .st-thumb .st-fence .st-pin { width: 8px; height: 8px; }
   .st-thumb .st-empty {
     position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
     color: #8B97A8; font-size: 12px; font-weight: 600;
@@ -781,10 +788,11 @@
         <div class="card-head">
           <div class="titles">
             <h3>待整理</h3>
-            <p class="hint">已归入分区的项目不会出现。</p>
+            <p class="hint">已归入分区的项目不会出现。「一键整理」只处理未归入项；「重新整理」按当前规则重排全部。</p>
           </div>
           <div class="actions">
             <button class="btn primary" data-act="org_virtual">一键整理</button>
+            <button class="btn" data-act="org_reassign" title="按当前分区规则重新分配桌面上的全部项目（含已归入的）">重新整理</button>
             <button class="btn" data-act="org_preview">预览</button>
             <button class="btn" data-act="refresh">刷新</button>
           </div>
@@ -1197,6 +1205,10 @@
           <h3>全局快捷键</h3>
           <p class="hint">点击输入框后按下组合键即可设置；Delete/Backspace 清空表示不绑定。</p>
           <div id="hotkey-list" class="hk-list"></div>
+          <label class="row" style="margin-top:12px;gap:10px;align-items:center">
+            <input type="checkbox" id="ext_elevate_hotkey" />
+            <span>提权热键助手（覆盖全屏/管理员窗口；首次开启会弹出 UAC）</span>
+          </label>
         </div>
       </div>
       <div class="subpanel" id="sub-rules">
@@ -1274,7 +1286,7 @@
     dock: false, pet: true, autostart: false,
     org_startup: false, org_watch: false, preview: [],
     org_pending: 0, org_organized: 0, org_total: 0, org_files: [],
-    minutes_on_bar: true, notepad_enabled: true, record_on_bar: false,
+    minutes_on_bar: true, notepad_enabled: true, elevate_hotkey_helper: false, record_on_bar: false,
     calculator_on_bar: false, todos_on_bar: false, screenshot_auto_pin: false,
     minutes_enabled: false, calculator_enabled: false, todos_enabled: false,
     record_enabled: false,
@@ -1688,14 +1700,28 @@
     });
   }
 
+  function appendFencePins(el, count, large) {
+    const n = Math.min(large ? 24 : 12, Math.max(0, Number(count) || 0));
+    if (n <= 0) return;
+    const wrap = document.createElement('div');
+    wrap.className = 'st-pins';
+    for (let i = 0; i < n; i++) {
+      const pin = document.createElement('div');
+      pin.className = 'st-pin';
+      wrap.appendChild(pin);
+    }
+    el.appendChild(wrap);
+  }
+
   function paintSnapThumb(thumbEl, it, large) {
     if (!thumbEl) return;
     thumbEl.innerHTML = '';
     const boxes = Array.isArray(it && it.preview) ? it.preview : [];
+    const icons = Array.isArray(it && it.icons) ? it.icons : [];
     const focus = (it && typeof it.focus_page === 'number') ? it.focus_page : 0;
     let pageBoxes = boxes.filter((b) => (b.page || 0) === focus);
     if (!pageBoxes.length) pageBoxes = boxes.slice();
-    if (!pageBoxes.length) {
+    if (!pageBoxes.length && !icons.length) {
       const empty = document.createElement('div');
       empty.className = 'st-empty';
       empty.textContent = '暂无预览';
@@ -1713,6 +1739,15 @@
       minX = Math.min(minX, x); minY = Math.min(minY, y);
       maxX = Math.max(maxX, x + w); maxY = Math.max(maxY, y + h);
     });
+    // Include shell-icon positions so free desktop icons appear in the schematic.
+    icons.forEach((ic) => {
+      const x = Number(ic.x) || 0, y = Number(ic.y) || 0;
+      minX = Math.min(minX, x); minY = Math.min(minY, y);
+      maxX = Math.max(maxX, x + 48); maxY = Math.max(maxY, y + 48);
+    });
+    if (!isFinite(minX)) {
+      minX = 0; minY = 0; maxX = 400; maxY = 300;
+    }
     let spanW = Math.max(1, maxX - minX);
     let spanH = Math.max(1, maxY - minY);
     const pad = 0.12;
@@ -1721,7 +1756,7 @@
     // Wide short desktop fences crush in a tiny thumb — stack for readability.
     // Enlarged modal always uses mapped geometry so it matches the real layout.
     const useStack = !large && pageBoxes.length >= 1 &&
-      (spanH / pageBoxes.length) < 70;
+      (spanH / Math.max(1, pageBoxes.length)) < 70;
     if (useStack) {
       const n = pageBoxes.length;
       pageBoxes.forEach((b, idx) => {
@@ -1740,8 +1775,22 @@
         bar.className = 'st-bar';
         bar.style.background = colors.accent;
         el.appendChild(bar);
+        appendFencePins(el, b.icon_count, false);
         desk.appendChild(el);
       });
+      // Stack mode can't map absolute icon coords — show a compact strip.
+      if (icons.length) {
+        const strip = document.createElement('div');
+        strip.style.cssText = 'position:absolute;left:4%;right:4%;bottom:3%;height:10px;display:flex;gap:2px;flex-wrap:wrap;overflow:hidden;';
+        const maxDots = Math.min(icons.length, 28);
+        for (let i = 0; i < maxDots; i++) {
+          const d = document.createElement('div');
+          d.className = 'st-icon';
+          d.style.position = 'relative';
+          strip.appendChild(d);
+        }
+        desk.appendChild(strip);
+      }
       return;
     }
     pageBoxes.forEach((b) => {
@@ -1769,7 +1818,17 @@
         lab.textContent = (b.title || '分区') + (b.collapsed ? ' · 已折叠' : '');
         el.appendChild(lab);
       }
+      appendFencePins(el, b.icon_count, large);
       desk.appendChild(el);
+    });
+    // Free / shell icons as absolute dots on the desk.
+    icons.forEach((ic) => {
+      const x = Number(ic.x) || 0, y = Number(ic.y) || 0;
+      const d = document.createElement('div');
+      d.className = 'st-icon';
+      d.style.left = ((x - minX) / spanW * 100) + '%';
+      d.style.top = ((y - minY) / spanH * 100) + '%';
+      desk.appendChild(d);
     });
   }
 
@@ -1980,6 +2039,7 @@
     set('ext_minutes_bar', state.minutes_on_bar);
     set('ext_minutes_enabled', state.minutes_enabled);
     set('ext_notepad', state.notepad_enabled);
+    set('ext_elevate_hotkey', state.elevate_hotkey_helper);
     set('ext_record_bar', state.record_on_bar);
     set('ext_record_enabled', state.record_enabled);
     set('ext_calc_bar', state.calculator_on_bar);
@@ -2490,7 +2550,8 @@
   function applyState(msg) {
     if (!msg || typeof msg !== 'object') return;
     if (msg.type === 'ui_theme') { applyUiTheme(msg); return; }
-    if (Array.isArray(msg.fences)) state.fences = msg.fences;
+    // Never wipe a good list with an empty host array (WarmWebView race).
+    if (Array.isArray(msg.fences) && msg.fences.length) state.fences = msg.fences;
     // Host pages always win (including legacy「第 N 页」→ 工作/文档 migration).
     if (Array.isArray(msg.pages) && msg.pages.length) {
       state.pages = msg.pages.map((n, i) => {
@@ -2517,7 +2578,7 @@
     const copyBool = (k) => { if (typeof msg[k] === 'boolean') state[k] = msg[k]; };
     const copyStr = (k) => { if (typeof msg[k] === 'string') state[k] = msg[k]; };
     const copyNum = (k) => { if (typeof msg[k] === 'number') state[k] = msg[k]; };
-    ['minutes_on_bar','notepad_enabled','record_on_bar','calculator_on_bar',
+    ['minutes_on_bar','notepad_enabled','elevate_hotkey_helper','record_on_bar','calculator_on_bar',
      'todos_on_bar','screenshot_auto_pin','search_desktop','search_documents',
      'search_downloads','search_all_drives','pet_auto_wander','pet_show_bubbles',
      'check_update_on_startup',
@@ -2546,6 +2607,16 @@
     if (Array.isArray(msg.ui_themes)) state.ui_themes = msg.ui_themes;
     if (Array.isArray(msg.fence_cards) && msg.fence_cards.length) {
       state.fence_cards = msg.fence_cards;
+    }
+    // Recover blank 分页 when cards arrived but pages[] was empty in an early push.
+    if ((!Array.isArray(state.pages) || !state.pages.length) &&
+        Array.isArray(state.fence_cards) && state.fence_cards.length) {
+      const maxPage = state.fence_cards.reduce(
+        (m, c) => Math.max(m, Number(c.page) || 0), 0);
+      state.pages = [];
+      for (let i = 0; i <= maxPage; i++) {
+        state.pages.push(i === 0 ? '工作' : (i === 1 ? '文档' : ('页' + (i + 1))));
+      }
     }
     if (Array.isArray(msg.snapshots) && msg.snapshots.length) {
       state.snapshots = msg.snapshots;
@@ -2664,6 +2735,7 @@
     ext_minutes_bar: 'minutes_on_bar',
     ext_minutes_enabled: 'minutes_enabled',
     ext_notepad: 'notepad_enabled',
+    ext_elevate_hotkey: 'elevate_hotkey_helper',
     ext_record_bar: 'record_on_bar',
     ext_record_enabled: 'record_enabled',
     ext_calc_bar: 'calculator_on_bar',

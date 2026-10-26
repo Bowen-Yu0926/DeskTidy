@@ -231,8 +231,10 @@ void DockWindow::ApplyVisibility() {
     ShowWindow(hwnd_, SW_HIDE);
     return;
   }
-  ShowWindow(hwnd_, SW_SHOWNOACTIVATE);
-  AttachToDesktopLayer();
+  if (!IsWindowVisible(hwnd_)) {
+    ShowWindow(hwnd_, SW_SHOWNOACTIVATE);
+  }
+  AttachToDesktopLayer();  // no-op when already seated (avoids page flash)
   Present();
 }
 
@@ -243,6 +245,9 @@ void DockWindow::SetVisible(bool on) {
 
 void DockWindow::AttachToDesktopLayer() {
   if (!hwnd_) {
+    return;
+  }
+  if (IsAttachedToDesktop(hwnd_)) {
     return;
   }
   AttachOverlayToDesktop(hwnd_, true);

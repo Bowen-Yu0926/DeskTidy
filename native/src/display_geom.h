@@ -18,8 +18,14 @@ RECT VirtualScreenRect();
 RECT PrimaryWorkArea();
 // Monitor containing pt (or nearest).
 RECT WorkAreaAtPoint(POINT pt);
+// Work area for a window rect (Python snap_geometry screen pick): largest
+// overlap with any monitor; if overlapping 2+ screens prefer primary.
+RECT WorkAreaForRect(const RECT& rc);
 // Clamp window rect into nearest monitor work area (keeps size if possible).
 void ClampRectToWorkArea(RECT* rc);
+// Magnetic snap to work-area edges then clamp (Python snap_geometry).
+// threshold<=0 uses 24 px @ 96 DPI, scaled by monitor DPI (min 24).
+void SnapRectToWorkArea(RECT* rc, int threshold = 0);
 
 // Stable key: sorted monitors as `{x},{y},{w}x{h}@{mmW}x{mmH}mm@{dpr}` joined by `|`.
 std::string DisplayFingerprint();

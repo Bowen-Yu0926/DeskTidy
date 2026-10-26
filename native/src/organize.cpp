@@ -6,33 +6,12 @@
 #include "whitelist.h"
 
 #include <Windows.h>
-#include <ShlObj.h>
 
 #include <cwctype>
-#include <filesystem>
 #include <string>
 #include <vector>
 
-namespace fs = std::filesystem;
-
 namespace {
-
-std::wstring DesktopDir() {
-  PWSTR p = nullptr;
-  if (FAILED(SHGetKnownFolderPath(FOLDERID_Desktop, 0, nullptr, &p)) || !p) {
-    return {};
-  }
-  std::wstring out = p;
-  CoTaskMemFree(p);
-  return out;
-}
-
-bool IsUnderDir(const std::wstring& path, const std::wstring& dir) {
-  if (path.size() < dir.size()) {
-    return false;
-  }
-  return _wcsnicmp(path.c_str(), dir.c_str(), dir.size()) == 0;
-}
 
 std::string NormalizeOrganizeTarget(std::string id) {
   if (id == "system_software") {
@@ -52,8 +31,8 @@ std::wstring TitleForFence(
 }
 
 bool ShouldSkipVirtual(const DesktopItem& it, const PinMap& pins,
-                       const std::vector<std::wstring>& wl) {
-  if (FindPin(pins, it.path)) {
+                       const std::vector<std::wstring>& wl, bool reassign) {
+  if (!reassign && FindPin(pins, it.path)) {
     return true;
   }
   if (IsOrganizeSuppressed(it.path)) {
@@ -71,50 +50,35 @@ int OrganizeApplyDefaultPins(PinMap* pins, const std::vector<DesktopItem>& items
                              const RuleMap& rules,
                              const std::string& software_id,
                              const std::string& common_id,
-                             const std::vector<FenceLayout>* fences) {
+                             const std::vector<FenceLayout>* fences,
+                             int current_page, bool reassign) {
   if (!pins) {
     return 0;
   }
   const auto wl = LoadWhitelist();
   int n = 0;
   for (const auto& it : items) {
-    if (ShouldSkipVirtual(it, *pins, wl)) {
+    if (ShouldSkipVirtual(it, *pins, wl, reassign)) {
       continue;
     }
+    const std::string prev =
+        reassign ? (FindPin(*pins, it.path) ? *FindPin(*pins, it.path) : "")
+                 : std::string();
     // P1-4: kinds-aware fence first (Python resolve_organize_target).
     std::string target;
     if (fences && !fences->empty()) {
-      target = ResolveFenceByKind(it, *fences);
+      target = ResolveFenceByKind(it, *fences, current_page);
     }
     if (target.empty()) {
       target = ResolveFenceId(it.path, it.is_link, *pins, rules, software_id,
                              common_id);
     }
     target = NormalizeOrganizeTarget(std::move(target));
+    // Reassign only rewrites pins whose computed target actually changed.
+    if (reassign && prev == target) {
+      continue;
+    }
     SetPin(pins, it.path, target);
-    ++n;
-  }
-  return n;
-}
-
-int OrganizeCountPhysicalMoves(const std::vector<DesktopItem>& items) {
-  const std::wstring desktop = DesktopDir();
-  if (desktop.empty()) {
-    return 0;
-  }
-  const fs::path root = fs::path(desktop) / L"DeskTidy";
-  const auto wl = LoadWhitelist();
-  int n = 0;
-  for (const auto& it : items) {
-    if (!IsUnderDir(it.path, desktop)) {
-      continue;
-    }
-    if (IsUnderDir(it.path, root.wstring())) {
-      continue;
-    }
-    if (IsWhitelisted(it.path, wl) || IsWhitelisted(it.name, wl)) {
-      continue;
-    }
     ++n;
   }
   return n;
@@ -125,16 +89,16 @@ std::vector<std::wstring> OrganizePreviewVirtualPins(
     const RuleMap& rules,
     const std::unordered_map<std::string, std::wstring>& fence_titles,
     const std::string& software_id, const std::string& common_id,
-    const std::vector<FenceLayout>* fences) {
+    const std::vector<FenceLayout>* fences, int current_page) {
   std::vector<std::wstring> lines;
   const auto wl = LoadWhitelist();
   for (const auto& it : items) {
-    if (ShouldSkipVirtual(it, pins, wl)) {
+    if (ShouldSkipVirtual(it, pins, wl, /*reassign=*/false)) {
       continue;
     }
     std::string target;
     if (fences && !fences->empty()) {
-      target = ResolveFenceByKind(it, *fences);
+      target = ResolveFenceByKind(it, *fences, current_page);
     }
     if (target.empty()) {
       target = ResolveFenceId(it.path, it.is_link, pins, rules, software_id,
@@ -148,94 +112,6 @@ std::vector<std::wstring> OrganizePreviewVirtualPins(
     }
   }
   return lines;
-}
-
-std::vector<std::wstring> OrganizePreviewPhysicalMoves(
-    const std::vector<DesktopItem>& items) {
-  std::vector<std::wstring> names;
-  const std::wstring desktop = DesktopDir();
-  if (desktop.empty()) {
-    return names;
-  }
-  const fs::path root = fs::path(desktop) / L"DeskTidy";
-  const auto wl = LoadWhitelist();
-  for (const auto& it : items) {
-    if (!IsUnderDir(it.path, desktop)) {
-      continue;
-    }
-    if (IsUnderDir(it.path, root.wstring())) {
-      continue;
-    }
-    if (IsWhitelisted(it.path, wl) || IsWhitelisted(it.name, wl)) {
-      continue;
-    }
-    names.push_back(it.name.empty() ? it.path : it.name);
-    if (names.size() >= 40) {
-      break;
-    }
-  }
-  return names;
-}
-
-bool OrganizeConfirmPhysical(HWND owner, const std::vector<DesktopItem>& items) {
-  const auto names = OrganizePreviewPhysicalMoves(items);
-  const int will = OrganizeCountPhysicalMoves(items);
-  std::wstring msg = L"将把约 " + std::to_wstring(will) +
-                     L" 个桌面项目移入 Desktop\\DeskTidy（白名单除外）。\n\n";
-  if (names.empty()) {
-    msg += L"（没有可移动项）\n";
-  } else {
-    msg += L"预览：\n";
-    for (size_t i = 0; i < names.size(); ++i) {
-      msg += L" · " + names[i] + L"\n";
-    }
-    if (will > static_cast<int>(names.size())) {
-      msg += L" · …\n";
-    }
-  }
-  msg += L"\n继续？";
-  return MessageBoxW(owner, msg.c_str(), L"物理整理",
-                     MB_YESNO | MB_ICONWARNING) == IDYES;
-}
-
-int OrganizeMoveIntoFolders(const std::vector<DesktopItem>& items) {
-  const std::wstring desktop = DesktopDir();
-  if (desktop.empty()) {
-    return 0;
-  }
-  const fs::path root = fs::path(desktop) / L"DeskTidy";
-  const fs::path links = root / L"软件";
-  const fs::path files = root / L"常用";
-  std::error_code ec;
-  fs::create_directories(links, ec);
-  fs::create_directories(files, ec);
-  const auto wl = LoadWhitelist();
-  int moved = 0;
-  for (const auto& it : items) {
-    if (!IsUnderDir(it.path, desktop)) {
-      continue;
-    }
-    if (IsUnderDir(it.path, root.wstring())) {
-      continue;
-    }
-    if (IsWhitelisted(it.path, wl) || IsWhitelisted(it.name, wl)) {
-      continue;
-    }
-    const fs::path src(it.path);
-    const fs::path dest_dir = it.is_link ? links : files;
-    fs::path dest = dest_dir / src.filename();
-    if (fs::exists(dest, ec)) {
-      dest = dest_dir /
-             (src.stem().wstring() + L"_" + std::to_wstring(GetTickCount()) +
-              src.extension().wstring());
-    }
-    ec.clear();
-    fs::rename(src, dest, ec);
-    if (!ec) {
-      ++moved;
-    }
-  }
-  return moved;
 }
 
 // ---------------------------------------------------------------------------
@@ -347,9 +223,38 @@ bool FenceAcceptsItem(const std::vector<std::string>& organize_kinds,
   return false;
 }
 
+// Fence membership on a page (FenceLayout.pages when set, else .page).
+static bool FenceOnPage(const FenceLayout& f, int page) {
+  if (page < 0) {
+    return false;
+  }
+  if (f.pages.empty()) {
+    return f.page == page;
+  }
+  for (int p : f.pages) {
+    if (p == page) {
+      return true;
+    }
+  }
+  return false;
+}
+
 std::string ResolveFenceByKind(const DesktopItem& item,
-                               const std::vector<FenceLayout>& fences) {
+                               const std::vector<FenceLayout>& fences,
+                               int current_page) {
+  // Python resolve_organize_target: try the current page first, then others.
+  if (current_page >= 0) {
+    for (const auto& f : fences) {
+      if (FenceOnPage(f, current_page) &&
+          FenceAcceptsItem(f.organize_kinds, item)) {
+        return f.id;
+      }
+    }
+  }
   for (const auto& f : fences) {
+    if (FenceOnPage(f, current_page)) {
+      continue;
+    }
     if (FenceAcceptsItem(f.organize_kinds, item)) {
       return f.id;
     }

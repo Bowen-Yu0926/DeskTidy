@@ -485,6 +485,8 @@ std::wstring SettingsWindow::BuildStateJson() const {
   json += flag(ext_.minutes_on_bar);
   json += L",\"notepad_enabled\":";
   json += flag(ext_.notepad_enabled);
+  json += L",\"elevate_hotkey_helper\":";
+  json += flag(ext_.elevate_hotkey_helper);
   json += L",\"record_on_bar\":";
   json += flag(ext_.record_on_bar);
   json += L",\"calculator_on_bar\":";
@@ -643,8 +645,6 @@ std::wstring SettingsWindow::BuildStateJson() const {
   json += L"\"";
   json += L",\"check_update_on_startup\":";
   json += flag(ext_.check_update_on_startup);
-  json += L",\"auto_snapshot_on_change\":";
-  json += flag(ext_.auto_snapshot_on_change);
   json += L",\"desktop_right_click_menu\":";
   json += flag(ext_.desktop_right_click_menu);
   json += L",\"close_to_tray\":";
@@ -764,6 +764,19 @@ std::wstring SettingsWindow::BuildStateJson() const {
       json += JsonEscape(WidenUtf8(b.style_id));
       json += L"\",\"collapsed\":";
       json += b.collapsed ? L"true" : L"false";
+      json += L",\"icon_count\":";
+      json += std::to_wstring(b.icon_count);
+      json += L'}';
+    }
+    json += L"],\"icons\":[";
+    for (size_t k = 0; k < s.icons.size(); ++k) {
+      if (k) {
+        json += L',';
+      }
+      json += L"{\"x\":";
+      json += std::to_wstring(s.icons[k].x);
+      json += L",\"y\":";
+      json += std::to_wstring(s.icons[k].y);
       json += L'}';
     }
     json += L"]}";
@@ -1044,8 +1057,6 @@ void SettingsWindow::DispatchAction(const std::wstring& json) {
     }
   } else if (id == L"org_virtual" && on_org_virtual_) {
     on_org_virtual_();
-  } else if (id == L"org_physical" && on_org_physical_) {
-    on_org_physical_();
   } else if (id == L"rules" && on_edit_rules_) {
     on_edit_rules_();
   } else if (id == L"whitelist" && on_whitelist_) {
@@ -1059,6 +1070,8 @@ void SettingsWindow::DispatchAction(const std::wstring& json) {
                 std::to_wstring(JsonIntField(json, L"index", -1)));
   } else if (id == L"org_preview" && on_org_preview_) {
     on_org_preview_();
+  } else if (id == L"org_reassign" && on_org_reassign_) {
+    on_org_reassign_();
   } else if (id == L"folders" && on_page_folders_) {
     on_page_folders_();
   } else if (id == L"folder_remove" && on_command_) {
@@ -1255,6 +1268,8 @@ bool SettingsWindow::ApplyExtToggleLocal(const std::wstring& id, bool value) {
     ext_.record_enabled = value;
   } else if (id == L"notepad_enabled") {
     ext_.notepad_enabled = value;
+  } else if (id == L"elevate_hotkey_helper") {
+    ext_.elevate_hotkey_helper = value;
   } else if (id == L"record_on_bar") {
     ext_.record_on_bar = value;
   } else if (id == L"calculator_on_bar") {
@@ -1307,7 +1322,9 @@ void SettingsWindow::SetFenceNames(const std::vector<std::wstring>& names) {
     selected_ = fence_names_.empty() ? 0
                                      : static_cast<int>(fence_names_.size()) - 1;
   }
-  PushState();
+  // Do not PushState here — callers (RefreshSettingsList / OnReady) follow with
+  // PushExtensionSettings so pages + fence_cards arrive in one payload. An early
+  // push with empty page_names_ painted a blank 桌面分区 page.
 }
 
 void SettingsWindow::SetToggles(bool dock_on, bool pet_on, bool autostart_on) {
@@ -1354,20 +1371,18 @@ void SettingsWindow::SetOrganizePreview(
 
 void SettingsWindow::SetHandlers(VoidFn on_add, IndexFn on_remove, VoidFn on_seat,
                                  RenameFn on_rename, PageFn on_page,
-                                 VoidFn on_org_virtual, VoidFn on_org_physical,
-                                 BoolFn on_dock, BoolFn on_pet,
-                                 VoidFn on_edit_rules, BoolFn on_autostart,
-                                 VoidFn on_whitelist, VoidFn on_page_folders,
-                                 VoidFn on_help, BoolFn on_org_startup,
-                                 BoolFn on_org_watch, VoidFn on_record_cfg,
-                                 VoidFn on_org_preview) {
+                                 VoidFn on_org_virtual, BoolFn on_dock,
+                                 BoolFn on_pet, VoidFn on_edit_rules,
+                                 BoolFn on_autostart, VoidFn on_whitelist,
+                                 VoidFn on_page_folders, VoidFn on_help,
+                                 BoolFn on_org_startup, BoolFn on_org_watch,
+                                 VoidFn on_record_cfg, VoidFn on_org_preview) {
   on_add_ = std::move(on_add);
   on_remove_ = std::move(on_remove);
   on_seat_ = std::move(on_seat);
   on_rename_ = std::move(on_rename);
   on_page_ = std::move(on_page);
   on_org_virtual_ = std::move(on_org_virtual);
-  on_org_physical_ = std::move(on_org_physical);
   on_dock_ = std::move(on_dock);
   on_pet_ = std::move(on_pet);
   on_edit_rules_ = std::move(on_edit_rules);

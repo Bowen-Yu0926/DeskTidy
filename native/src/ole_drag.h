@@ -11,12 +11,11 @@
 // Returns true if a drop completed (DRAGDROP_S_DROP).
 bool ShellDoDragFiles(const std::vector<std::wstring>& paths);
 
-// Start a pin-transfer drag: the IDataObject offers both CF_HDROP (so a drop
-// onto Explorer / the Recycle Bin keeps normal shell move/copy semantics) and
-// the private "DeskTidyPinTransfer" format (payload = src_fence_id + '\n' +
-// path1 + '\n' + path2 …, UTF-16, NUL-terminated). Returns true when the drop
-// was consumed as a pin transfer (a DeskTidy fence accepted it); false on
-// cancel or an external CF_HDROP drop.
+// Start a pin-transfer drag: CF_HDROP (Explorer folders / Recycle Bin) plus
+// private "DeskTidyPinTransfer" (src_fence_id + paths). Releasing over the
+// real desktop / public float host cancels OLE so Explorer never gets a
+// same-folder CF_HDROP (「源相同」); the caller then unpins. Returns true when
+// a DeskTidy fence consumed the pin transfer.
 bool ShellDoDragPins(const std::vector<std::wstring>& paths,
                      const std::wstring& src_fence_id);
 

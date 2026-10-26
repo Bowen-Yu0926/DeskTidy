@@ -357,16 +357,3 @@ std::vector<std::wstring> HotkeyFallbacks(const std::string& id) {
   }
   return {};
 }
-
-void EditHotkeysDialog(HWND owner, std::vector<HotkeyDef>* keys) {
-  // Legacy MessageBox editor — prefer settings UI. Keep for tray fallback:
-  // capture first item only if list empty path unused.
-  if (!keys || keys->empty()) {
-    return;
-  }
-  std::wstring msg = L"请在「设置 → 快捷键」中修改。\n\n当前绑定：\n\n";
-  for (const auto& k : *keys) {
-    msg += k.label + L"  =  " + FormatHotkey(k.modifiers, k.vk) + L"\n";
-  }
-  MessageBoxW(owner, msg.c_str(), L"快捷键", MB_OK | MB_ICONINFORMATION);
-}

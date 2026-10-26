@@ -68,8 +68,10 @@ struct AppPrefs {
   // borrows the system_software fence pins.
   std::vector<std::wstring> dock_items;
   bool check_update_on_startup = true;
+  // Opt-in: ShellExecute runas hotkey helper for elevated/fullscreen FG (P1-28).
+  // Default false — never UAC on every cold start (market: normal-priv always-on).
+  bool elevate_hotkey_helper = false;
   std::wstring update_notified_tag;
-  bool auto_snapshot_on_change = false;
   // Desktop background cascade menu (Python desktop_right_click_menu).
   bool desktop_right_click_menu = true;
   // Account vault (Python account_vault).

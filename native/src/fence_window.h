@@ -135,7 +135,8 @@ class FenceWindow {
     return page_geometries_;
   }
   FencePageGeometry GeometryForPage(int page) const;
-  void ApplyPageGeometry(const FencePageGeometry& geo);
+  // present=false: move/resize only (page-switch batches Present after show).
+  void ApplyPageGeometry(const FencePageGeometry& geo, bool present = true);
   bool Visible() const { return visible_; }
   void SetVisible(bool visible) { visible_ = visible; }
   bool VisibleOnPage(int page) const;
@@ -247,7 +248,6 @@ class FenceWindow {
   void CommitDragOutPins(std::vector<std::wstring> paths);
   int InsertIndexAt(int x, int y) const;
   void CommitReorder(int insert_index);
-  void CommitDragOutUnpin();
   // F4: icon zoom + geometry helpers.
   int IconSizePx() const;
   int CellWidthPx() const;

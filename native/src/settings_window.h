@@ -52,6 +52,8 @@ class SettingsWindow {
     bool calculator_enabled = false;
     bool todos_enabled = false;
     bool notepad_enabled = true;
+    // Opt-in UAC hotkey helper for elevated/fullscreen FG (default off).
+    bool elevate_hotkey_helper = false;
     bool record_on_bar = false;
     // U1 screen_record.enabled (tray T1 gating).
     bool record_enabled = false;
@@ -103,7 +105,6 @@ class SettingsWindow {
     std::wstring category_fence_map_text;
     std::wstring filename_rules_text;
     bool check_update_on_startup = true;
-    bool auto_snapshot_on_change = false;
     bool desktop_right_click_menu = true;
     bool vault_enabled = false;
     std::wstring vault_api_base;
@@ -150,12 +151,18 @@ class SettingsWindow {
       int page = 0;
       std::string style_id = "charcoal";
       bool collapsed = false;
+      int icon_count = 0;
+    };
+    struct SnapPreviewIcon {
+      int x = 0;
+      int y = 0;
     };
     struct SnapCard {
       std::wstring name;
       std::wstring meta;
       int focus_page = 0;
       std::vector<SnapPreviewBox> preview;
+      std::vector<SnapPreviewIcon> icons;
     };
     std::vector<SnapCard> snapshots;
     struct VaultItem {
@@ -211,12 +218,13 @@ class SettingsWindow {
   }
   void SetHandlers(VoidFn on_add, IndexFn on_remove, VoidFn on_seat,
                    RenameFn on_rename, PageFn on_page, VoidFn on_org_virtual,
-                   VoidFn on_org_physical, BoolFn on_dock, BoolFn on_pet,
-                   VoidFn on_edit_rules, BoolFn on_autostart,
-                   VoidFn on_whitelist = {}, VoidFn on_page_folders = {},
-                   VoidFn on_help = {}, BoolFn on_org_startup = {},
-                   BoolFn on_org_watch = {}, VoidFn on_record_cfg = {},
-                   VoidFn on_org_preview = {});
+                   BoolFn on_dock, BoolFn on_pet, VoidFn on_edit_rules,
+                   BoolFn on_autostart, VoidFn on_whitelist = {},
+                   VoidFn on_page_folders = {}, VoidFn on_help = {},
+                   BoolFn on_org_startup = {}, BoolFn on_org_watch = {},
+                   VoidFn on_record_cfg = {}, VoidFn on_org_preview = {});
+  // Optional: recompute pins for every desktop item ("重新整理").
+  void SetOnOrganizeReassign(VoidFn fn) { on_org_reassign_ = std::move(fn); }
   void SetExtraHandlers(VoidFn on_snap_save, VoidFn on_snap_manage,
                         VoidFn on_vault, VoidFn on_minutes, VoidFn on_wallpaper,
                         VoidFn on_layout, VoidFn on_notes, VoidFn on_theme,
@@ -257,7 +265,7 @@ class SettingsWindow {
   RenameFn on_rename_;
   PageFn on_page_;
   VoidFn on_org_virtual_;
-  VoidFn on_org_physical_;
+  VoidFn on_org_reassign_;
   BoolFn on_dock_;
   BoolFn on_pet_;
   VoidFn on_edit_rules_;

@@ -38,8 +38,119 @@ std::string EscapeHtml(const std::string& s) {
   return o;
 }
 
-std::string InlineFormat(const std::string& line) {
-  std::string s = EscapeHtml(line);
+std::string PathToFileUri(const std::wstring& abs_path) {
+  std::string utf8 = NarrowUtf8(abs_path);
+  for (char& c : utf8) {
+    if (c == '\\') {
+      c = '/';
+    }
+  }
+  // file:///C:/foo/bar.png
+  std::string uri = "file:///";
+  for (unsigned char c : utf8) {
+    if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+        (c >= '0' && c <= '9') || c == '/' || c == ':' || c == '-' ||
+        c == '_' || c == '.' || c == '~') {
+      uri.push_back(static_cast<char>(c));
+    } else {
+      char buf[8];
+      sprintf_s(buf, "%%%02X", c);
+      uri += buf;
+    }
+  }
+  return uri;
+}
+
+std::string ResolveImageSrc(const std::string& src,
+                            const std::wstring& base_dir) {
+  if (src.empty() || src.rfind("http://", 0) == 0 ||
+      src.rfind("https://", 0) == 0 || src.rfind("data:", 0) == 0 ||
+      src.rfind("file:", 0) == 0 || src[0] == '#') {
+    return src;
+  }
+  if (base_dir.empty()) {
+    return src;
+  }
+  std::wstring rel = WidenUtf8(src);
+  for (wchar_t& c : rel) {
+    if (c == L'/') {
+      c = L'\\';
+    }
+  }
+  const std::wstring full = JoinPath(base_dir, rel);
+  wchar_t canon[MAX_PATH * 4] = {};
+  const DWORD n =
+      GetFullPathNameW(full.c_str(), static_cast<DWORD>(MAX_PATH * 4), canon,
+                       nullptr);
+  if (n == 0 || n >= MAX_PATH * 4) {
+    return src;
+  }
+  return PathToFileUri(canon);
+}
+
+std::string InlineFormat(const std::string& line,
+                         const std::wstring& base_dir) {
+  // Convert ![alt](src) before HTML-escaping the rest.
+  std::string work;
+  work.reserve(line.size() + 16);
+  size_t i = 0;
+  while (i < line.size()) {
+    if (line[i] == '!' && i + 1 < line.size() && line[i + 1] == '[') {
+      const size_t alt_end = line.find(']', i + 2);
+      if (alt_end != std::string::npos && alt_end + 1 < line.size() &&
+          line[alt_end + 1] == '(') {
+        const size_t src_end = line.find(')', alt_end + 2);
+        if (src_end != std::string::npos) {
+          const std::string alt = line.substr(i + 2, alt_end - (i + 2));
+          const std::string src =
+              ResolveImageSrc(line.substr(alt_end + 2, src_end - (alt_end + 2)),
+                              base_dir);
+          work += "<img src=\"";
+          work += EscapeHtml(src);
+          work += "\" alt=\"";
+          work += EscapeHtml(alt);
+          work += "\">";
+          i = src_end + 1;
+          continue;
+        }
+      }
+    }
+    work.push_back(line[i]);
+    ++i;
+  }
+
+  std::string s;
+  s.reserve(work.size() + 16);
+  i = 0;
+  while (i < work.size()) {
+    if (work.compare(i, 4, "<img") == 0) {
+      const size_t end = work.find('>', i);
+      if (end != std::string::npos) {
+        s.append(work, i, end - i + 1);
+        i = end + 1;
+        continue;
+      }
+    }
+    switch (work[i]) {
+      case '&':
+        s += "&amp;";
+        break;
+      case '<':
+        s += "&lt;";
+        break;
+      case '>':
+        s += "&gt;";
+        break;
+      case '"':
+        s += "&quot;";
+        break;
+      default:
+        s.push_back(work[i]);
+        break;
+    }
+    ++i;
+  }
+
   // **bold**
   size_t p = 0;
   while ((p = s.find("**", p)) != std::string::npos) {
@@ -80,7 +191,8 @@ std::string InlineFormat(const std::string& line) {
   return s;
 }
 
-std::string ConvertMarkdown(const std::string& md) {
+std::string ConvertMarkdown(const std::string& md,
+                            const std::wstring& base_dir) {
   std::istringstream in(md);
   std::ostringstream body;
   std::string line;
@@ -128,8 +240,9 @@ std::string ConvertMarkdown(const std::string& md) {
     if (heading > 0 && heading <= 6 && heading < static_cast<int>(line.size()) &&
         line[heading] == ' ') {
       close_lists();
-      body << "<h" << heading << ">" << InlineFormat(line.substr(heading + 1))
-           << "</h" << heading << ">\n";
+      body << "<h" << heading << ">"
+           << InlineFormat(line.substr(heading + 1), base_dir) << "</h"
+           << heading << ">\n";
       continue;
     }
     if (line.rfind("- ", 0) == 0 || line.rfind("* ", 0) == 0) {
@@ -141,7 +254,7 @@ std::string ConvertMarkdown(const std::string& md) {
         body << "<ul>\n";
         in_ul = true;
       }
-      body << "<li>" << InlineFormat(line.substr(2)) << "</li>\n";
+      body << "<li>" << InlineFormat(line.substr(2), base_dir) << "</li>\n";
       continue;
     }
     if (line.size() >= 3 && line[0] >= '0' && line[0] <= '9' &&
@@ -154,11 +267,11 @@ std::string ConvertMarkdown(const std::string& md) {
         body << "<ol>\n";
         in_ol = true;
       }
-      body << "<li>" << InlineFormat(line.substr(3)) << "</li>\n";
+      body << "<li>" << InlineFormat(line.substr(3), base_dir) << "</li>\n";
       continue;
     }
     close_lists();
-    body << "<p>" << InlineFormat(line) << "</p>\n";
+    body << "<p>" << InlineFormat(line, base_dir) << "</p>\n";
   }
   close_lists();
   if (in_code) {
@@ -170,7 +283,8 @@ std::string ConvertMarkdown(const std::string& md) {
 }  // namespace
 
 std::wstring MarkdownToHtmlDocument(const std::wstring& md,
-                                    const std::wstring& title) {
+                                    const std::wstring& title,
+                                    const std::wstring& base_dir) {
   std::ostringstream html;
   html << "<!DOCTYPE html><html><head><meta charset=\"utf-8\">"
        << "<title>" << EscapeHtml(NarrowUtf8(title)) << "</title>"
@@ -181,14 +295,16 @@ std::wstring MarkdownToHtmlDocument(const std::wstring& md,
        << "pre{background:#111827;color:#e5e7eb;padding:12px;border-radius:8px;"
        << "overflow:auto;}"
        << "h1,h2,h3{color:#111827;}"
+       << "img{max-width:100%;height:auto;}"
        << "</style></head><body>\n"
-       << ConvertMarkdown(NarrowUtf8(md)) << "</body></html>";
+       << ConvertMarkdown(NarrowUtf8(md), base_dir) << "</body></html>";
   return WidenUtf8(html.str());
 }
 
 bool PreviewMarkdownText(HWND owner, const std::wstring& md,
-                         const std::wstring& title) {
-  const std::wstring html = MarkdownToHtmlDocument(md, title);
+                         const std::wstring& title,
+                         const std::wstring& base_dir) {
+  const std::wstring html = MarkdownToHtmlDocument(md, title, base_dir);
   const std::wstring path = JoinPath(NativeDataDir(), L"preview_note.html");
   {
     std::ofstream out(path, std::ios::binary);
@@ -222,7 +338,12 @@ bool PreviewMarkdownFile(HWND owner, const std::wstring& path) {
                 L"预览", MB_OK | MB_ICONINFORMATION);
     return false;
   }
-  return PreviewMarkdownText(owner, WidenUtf8(raw), path);
+  std::wstring base;
+  const size_t slash = path.find_last_of(L"\\/");
+  if (slash != std::wstring::npos) {
+    base = path.substr(0, slash);
+  }
+  return PreviewMarkdownText(owner, WidenUtf8(raw), path, base);
 }
 
 namespace {

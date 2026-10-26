@@ -8,7 +8,7 @@ Native Win32 host — feature MVP map vs Python product.
 |---------|--------|
 | Fences / OLE / pins / rules / pages | done |
 | Fence style presets (RMB) | done |
-| Organize / whitelist / confirm physical | done |
+| Organize / whitelist (virtual-only) | done |
 | Dock / public strip | done |
 | Pet + drop→Recycle (+ optional `pet.png`) | done |
 | Notes (save / save-as / font / template) | done |
@@ -34,7 +34,7 @@ Native Win32 host — feature MVP map vs Python product.
 | Calculator / page folders / help | done |
 | Record pick monitor | done |
 | Snapshot + shell icon positions | done |
-| Organize physical preview | done |
+| Organize virtual preview | done |
 | Vault ZK (enc_ver=1 PBKDF2+AES-GCM) | done |
 | Notes library (multi file under notes\) | done |
 | Pet pose packs (idle/walk/sleep RMB) | done |

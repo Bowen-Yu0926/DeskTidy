@@ -1,8 +1,18 @@
 cmake_minimum_required(VERSION 3.20)
-project(DeskTidyNative LANGUAGES CXX RC)
+project(DeskTidyNative LANGUAGES C CXX RC)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+# ARGON2_NO_THREADS: fill lanes sequentially; hash still matches Python
+# argon2-cffi (parallelism=2 defines lanes, not a wire-format change).
+set(ARGON2_SOURCES
+  third_party/argon2/src/argon2.c
+  third_party/argon2/src/core.c
+  third_party/argon2/src/encoding.c
+  third_party/argon2/src/ref.c
+  third_party/argon2/src/blake2/blake2b.c
+)
 
 add_executable(desktidy_native WIN32
   src/main.cpp
@@ -79,6 +89,7 @@ add_executable(desktidy_native WIN32
   src/cli_ipc.cpp
   src/file_assoc.cpp
   src/version.rc
+  ${ARGON2_SOURCES}
 )
 
 # Standalone DeskNote (sibling of desktidy_native.exe).
@@ -104,6 +115,7 @@ add_executable(deskNote WIN32
   src/display_geom.cpp
   src/log.cpp
   src/version.rc
+  src/desknote_icon.rc
 )
 
 target_include_directories(deskNote PRIVATE
@@ -134,8 +146,11 @@ add_custom_command(TARGET deskNote POST_BUILD
 target_include_directories(desktidy_native PRIVATE
   src
   ${CMAKE_CURRENT_SOURCE_DIR}/third_party/webview2-include
+  ${CMAKE_CURRENT_SOURCE_DIR}/third_party/argon2/include
+  ${CMAKE_CURRENT_SOURCE_DIR}/third_party/argon2/src
 )
-target_compile_definitions(desktidy_native PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+target_compile_definitions(desktidy_native PRIVATE
+  UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX ARGON2_NO_THREADS)
 target_link_libraries(desktidy_native PRIVATE
   user32 gdi32 shell32 ole32 oleaut32 uuid comctl32 advapi32
   gdiplus comdlg32 crypt32 winhttp bcrypt msimg32 version propsys
@@ -155,6 +170,11 @@ add_custom_command(TARGET desktidy_native POST_BUILD
           $<TARGET_FILE_DIR:desktidy_native>/assets/dialogs
   COMMAND ${CMAKE_COMMAND} -E make_directory
           $<TARGET_FILE_DIR:desktidy_native>/assets/overlays
+  COMMAND ${CMAKE_COMMAND} -E make_directory
+          $<TARGET_FILE_DIR:desktidy_native>/assets
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          ${CMAKE_CURRENT_SOURCE_DIR}/../assets/desknote_icon.ico
+          $<TARGET_FILE_DIR:desktidy_native>/assets/desknote_icon.ico
   COMMAND ${CMAKE_COMMAND} -E make_directory
           $<TARGET_FILE_DIR:desktidy_native>/docs
   COMMAND ${CMAKE_COMMAND} -E copy_if_different

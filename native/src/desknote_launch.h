@@ -9,6 +9,9 @@
 std::wstring DeskNoteExePath();
 bool DeskNoteExeExists();
 
+// Product icon for shortcuts / ProgId (assets\\desknote_icon.ico, else exe).
+std::wstring DeskNoteIconPath();
+
 // Desktop + Start Menu DeskNote.lnk → deskNote.exe (no args).
 void SyncDeskNoteShortcuts(bool enabled);
 

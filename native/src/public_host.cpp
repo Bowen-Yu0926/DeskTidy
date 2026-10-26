@@ -12,8 +12,10 @@
 #include <windowsx.h>
 
 #include <algorithm>
+#include <climits>
 #include <cstring>
 #include <string>
+#include <vector>
 
 #pragma comment(lib, "gdiplus.lib")
 
@@ -33,6 +35,120 @@ void EnsureGdiplus() {
   }
   Gdiplus::GdiplusStartupInput input;
   Gdiplus::GdiplusStartup(&g_gdiplus, &input, nullptr);
+}
+
+// DrawIconEx straight into the 32bpp ULW bitmap leaves alpha at 0 for the
+// glyph pixels, so UpdateLayeredWindow(ULW_ALPHA) made the float icons fully
+// transparent: only the header plate showed and clicks missed the icons.
+// Compose through a premultiplied GDI+ bitmap (same approach as
+// fence_window's DrawIconSharp, duplicated here to avoid a shared header
+// change while that file is in flux).
+void DrawIconAlpha(Gdiplus::Graphics& g, HICON icon, int x, int y, int dest) {
+  if (!icon || dest <= 0) {
+    return;
+  }
+  ICONINFO ii{};
+  int src = dest;
+  if (GetIconInfo(icon, &ii)) {
+    BITMAP bm{};
+    if (ii.hbmColor && GetObject(ii.hbmColor, sizeof(bm), &bm) == sizeof(bm) &&
+        bm.bmWidth > 0) {
+      src = bm.bmWidth;
+    }
+    if (ii.hbmColor) {
+      DeleteObject(ii.hbmColor);
+    }
+    if (ii.hbmMask) {
+      DeleteObject(ii.hbmMask);
+    }
+  }
+  src = (std::max)(dest, (std::min)(src, 256));
+
+  BITMAPINFO bmi{};
+  bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+  bmi.bmiHeader.biWidth = src;
+  bmi.bmiHeader.biHeight = -src;
+  bmi.bmiHeader.biPlanes = 1;
+  bmi.bmiHeader.biBitCount = 32;
+  bmi.bmiHeader.biCompression = BI_RGB;
+  void* bits = nullptr;
+  HDC screen = GetDC(nullptr);
+  HDC mem = CreateCompatibleDC(screen);
+  HBITMAP dib = CreateDIBSection(screen, &bmi, DIB_RGB_COLORS, &bits, nullptr, 0);
+  if (!dib || !bits) {
+    if (dib) {
+      DeleteObject(dib);
+    }
+    DeleteDC(mem);
+    ReleaseDC(nullptr, screen);
+    return;
+  }
+  HGDIOBJ old = SelectObject(mem, dib);
+  std::memset(bits, 0, static_cast<size_t>(src) * static_cast<size_t>(src) * 4);
+  DrawIconEx(mem, 0, 0, icon, src, src, 0, nullptr, DI_NORMAL);
+  auto* px = static_cast<BYTE*>(bits);
+  const int n = src * src;
+  for (int i = 0; i < n; ++i) {
+    BYTE* p = px + i * 4;
+    BYTE a = p[3];
+    if (a == 0 && (p[0] | p[1] | p[2])) {
+      a = 255;
+    }
+    p[0] = static_cast<BYTE>((p[0] * a) / 255);
+    p[1] = static_cast<BYTE>((p[1] * a) / 255);
+    p[2] = static_cast<BYTE>((p[2] * a) / 255);
+    p[3] = a;
+  }
+  {
+    Gdiplus::Bitmap bmp(src, src, src * 4, PixelFormat32bppPARGB,
+                        static_cast<BYTE*>(bits));
+    g.DrawImage(&bmp, x, y, dest, dest);
+  }
+  SelectObject(mem, old);
+  DeleteObject(dib);
+  DeleteDC(mem);
+  ReleaseDC(nullptr, screen);
+}
+
+// Explorer/DefView desktop caption (Python _qt_explorer_caption): white glyph
+// + soft dark glow so names stay readable on light wallpaper. Plain near-white
+// ink vanishes on pale desktops (「拖到桌面不显示名字」).
+void DrawExplorerCaption(Gdiplus::Graphics& g, const std::wstring& text,
+                         const Gdiplus::RectF& box, const Gdiplus::Font& font,
+                         const Gdiplus::StringFormat& fmt) {
+  if (text.empty()) {
+    return;
+  }
+  auto paint_at = [&](BYTE a, float dx, float dy) {
+    Gdiplus::SolidBrush br(Gdiplus::Color(a, 0, 0, 0));
+    Gdiplus::RectF r = box;
+    r.X += dx;
+    r.Y += dy;
+    g.DrawString(text.c_str(), -1, &font, r, &fmt, &br);
+  };
+  // Outer soft ring.
+  for (int dy = -2; dy <= 2; ++dy) {
+    for (int dx = -2; dx <= 2; ++dx) {
+      if (dx == 0 && dy == 0) {
+        continue;
+      }
+      if (dx * dx + dy * dy > 4) {
+        continue;
+      }
+      paint_at(70, static_cast<float>(dx), static_cast<float>(dy));
+    }
+  }
+  // Inner ring.
+  for (int dy = -1; dy <= 1; ++dy) {
+    for (int dx = -1; dx <= 1; ++dx) {
+      if (dx == 0 && dy == 0) {
+        continue;
+      }
+      paint_at(110, static_cast<float>(dx), static_cast<float>(dy));
+    }
+  }
+  Gdiplus::SolidBrush ink(Gdiplus::Color(255, 255, 255, 255));
+  g.DrawString(text.c_str(), -1, &font, box, &fmt, &ink);
 }
 }  // namespace
 
@@ -81,12 +197,24 @@ void PublicHost::ApplyVisibility() {
   if (!hwnd_) {
     return;
   }
-  if (!want_visible_ || slots_.empty()) {
+  // Hide when nothing can actually be drawn: an empty slot list, or slots
+  // whose icon failed to load. Either case used to leave a bare header plate
+  // floating over the wallpaper that also swallowed clicks.
+  bool drawable = false;
+  for (const auto& s : slots_) {
+    if (s.icon) {
+      drawable = true;
+      break;
+    }
+  }
+  if (!want_visible_ || slots_.empty() || !drawable) {
     ShowWindow(hwnd_, SW_HIDE);
     return;
   }
-  ShowWindow(hwnd_, SW_SHOWNOACTIVATE);
-  AttachToDesktopLayer();
+  if (!IsWindowVisible(hwnd_)) {
+    ShowWindow(hwnd_, SW_SHOWNOACTIVATE);
+  }
+  AttachToDesktopLayer();  // no-op when already seated (avoids page flash)
   Present();
 }
 
@@ -99,9 +227,24 @@ void PublicHost::AttachToDesktopLayer() {
   if (!hwnd_) {
     return;
   }
+  if (IsAttachedToDesktop(hwnd_)) {
+    return;
+  }
   AttachOverlayToDesktop(hwnd_, true);
   PlaceOverlayInDesktopBand(hwnd_, true);
   RaiseOverlayInDesktopBand(hwnd_);
+}
+
+void PublicHost::SetBlockedRects(std::vector<RECT> rects) {
+  blocked_ = std::move(rects);
+}
+
+void PublicHost::Reflow() {
+  if (!hwnd_ || slots_.empty()) {
+    return;
+  }
+  Layout();
+  ApplyVisibility();
 }
 
 void PublicHost::SetItems(std::vector<DesktopItem> items) {
@@ -135,26 +278,115 @@ void PublicHost::Layout() {
   const int cell_h = (std::max)(56, metrics_.cell_h);
   const int icon = (std::max)(16, metrics_.icon_size);
   const RECT work = PrimaryWorkArea();
-  const int avail_h = (std::max)(
-      1, static_cast<int>(work.bottom - work.top) - 2 * kMargin - kHeaderH);
-  const int per_col = (std::max)(1, avail_h / (cell_h + kGapY));
-  const int n = static_cast<int>(slots_.size());
-  const int cols = (n + per_col - 1) / per_col;
-  const int w = (std::max)(kHeaderH, cols * cell_w +
-                                        (std::max)(0, cols - 1) * kGapX);
-  const int h = kHeaderH + per_col * cell_h +
-                (std::max)(0, per_col - 1) * kGapY;
-  SetWindowPos(hwnd_, nullptr, work.left + kMargin, work.top + kMargin, w, h,
+  const int step_x = cell_w + kGapX;
+  const int step_y = cell_h + kGapY;
+
+  auto intersects_blocked = [this](const RECT& slot) {
+    for (const RECT& b : blocked_) {
+      if (slot.left < b.right && slot.right > b.left && slot.top < b.bottom &&
+          slot.bottom > b.top) {
+        return true;
+      }
+    }
+    return false;
+  };
+
+  // Expand search region below/right of fences when the work area is crowded
+  // (never place into a blocked cell — Python find_auto_slot parity).
+  int search_bottom = work.bottom - kMargin;
+  int search_right = work.right - kMargin;
+  for (const RECT& b : blocked_) {
+    search_bottom = (std::max)(search_bottom, static_cast<int>(b.bottom) + step_y);
+    search_right = (std::max)(search_right, static_cast<int>(b.right) + step_x);
+  }
+  // Cap to virtual screen so we don't walk forever.
+  const RECT virt = VirtualScreenRect();
+  search_bottom =
+      (std::min)(search_bottom, static_cast<int>(virt.bottom) - kMargin);
+  search_right =
+      (std::min)(search_right, static_cast<int>(virt.right) - kMargin);
+
+  std::vector<RECT> free_slots;
+  free_slots.reserve(slots_.size() + 8);
+  for (int x = work.left + kMargin; x + cell_w <= search_right; x += step_x) {
+    for (int y = work.top + kMargin; y + cell_h <= search_bottom; y += step_y) {
+      const RECT slot{x, y, x + cell_w, y + cell_h};
+      if (intersects_blocked(slot)) {
+        continue;
+      }
+      free_slots.push_back(slot);
+      if (free_slots.size() >= slots_.size()) {
+        break;
+      }
+    }
+    if (free_slots.size() >= slots_.size()) {
+      break;
+    }
+  }
+
+  // Last resort: stack just below the lowest fence (still outside blocked).
+  if (free_slots.size() < slots_.size()) {
+    int y0 = work.top + kMargin;
+    for (const RECT& b : blocked_) {
+      y0 = (std::max)(y0, static_cast<int>(b.bottom) + kGapY);
+    }
+    int x = work.left + kMargin;
+    int y = y0;
+    while (free_slots.size() < slots_.size()) {
+      RECT slot{x, y, x + cell_w, y + cell_h};
+      if (!intersects_blocked(slot)) {
+        free_slots.push_back(slot);
+      }
+      y += step_y;
+      if (y + cell_h > search_bottom) {
+        y = y0;
+        x += step_x;
+        if (x + cell_w > search_right) {
+          break;
+        }
+      }
+    }
+  }
+
+  if (free_slots.empty()) {
+    // Absolute fallback: one cell at work origin (should be rare).
+    free_slots.push_back({work.left + kMargin, work.top + kMargin,
+                          work.left + kMargin + cell_w,
+                          work.top + kMargin + cell_h});
+  }
+  while (free_slots.size() < slots_.size()) {
+    free_slots.push_back(free_slots.back());
+  }
+
+  LONG min_l = LONG_MAX;
+  LONG min_t = LONG_MAX;
+  LONG max_r = LONG_MIN;
+  LONG max_b = LONG_MIN;
+  for (size_t i = 0; i < slots_.size(); ++i) {
+    const RECT& sc = free_slots[i];
+    min_l = (std::min)(min_l, sc.left);
+    min_t = (std::min)(min_t, sc.top);
+    max_r = (std::max)(max_r, sc.right);
+    max_b = (std::max)(max_b, sc.bottom);
+  }
+  // Host hugs placed cells only — never a transparent plate over fences.
+  const int origin_x = static_cast<int>(min_l);
+  const int origin_y = static_cast<int>(min_t) - kHeaderH;
+  const int w =
+      (std::max)(kHeaderH, static_cast<int>(max_r) - origin_x);
+  const int h = (std::max)(kHeaderH + cell_h,
+                           static_cast<int>(max_b) - origin_y);
+  SetWindowPos(hwnd_, nullptr, origin_x, origin_y, w, h,
                SWP_NOZORDER | SWP_NOACTIVATE);
+
   const int icon_pad = (cell_w - icon) / 2;
-  for (int i = 0; i < n; ++i) {
-    const int col = i / per_col;
-    const int row = i % per_col;
-    const int cx = col * (cell_w + kGapX);
-    const int cy = kHeaderH + row * (cell_h + kGapY);
-    slots_[static_cast<size_t>(i)].bounds = {cx, cy, cx + cell_w, cy + cell_h};
-    slots_[static_cast<size_t>(i)].icon_rc = {
-        cx + icon_pad, cy + 4, cx + icon_pad + icon, cy + 4 + icon};
+  for (size_t i = 0; i < slots_.size(); ++i) {
+    const RECT& sc = free_slots[i];
+    const int cx = sc.left - origin_x;
+    const int cy = sc.top - origin_y;
+    slots_[i].bounds = {cx, cy, cx + cell_w, cy + cell_h};
+    slots_[i].icon_rc = {cx + icon_pad, cy + 4, cx + icon_pad + icon,
+                         cy + 4 + icon};
   }
   Present();
 }
@@ -353,17 +585,21 @@ void PublicHost::Paint(HDC hdc) {
   // P1-9: header/title bar (matches fence chrome, anchors the float area).
   RECT wr{};
   GetClientRect(hwnd_, &wr);
+  EnsureGdiplus();
   {
-    EnsureGdiplus();
     Gdiplus::Graphics g0(hdc);
     g0.Clear(Gdiplus::Color(0, 0, 0, 0));
-    Gdiplus::SolidBrush head(Gdiplus::Color(28, 255, 255, 255));
+    g0.SetTextRenderingHint(Gdiplus::TextRenderingHintAntiAliasGridFit);
+    g0.SetTextContrast(4);
+    // Subtle plate so the title anchors; caption itself uses Explorer glow.
+    Gdiplus::SolidBrush head(Gdiplus::Color(40, 15, 23, 42));
     g0.FillRectangle(&head, 0, 0, static_cast<int>(wr.right - wr.left),
                      kHeaderH);
-    Gdiplus::FontFamily hf(L"Segoe UI");
-    Gdiplus::Font hfont(&hf, 10.f, Gdiplus::FontStyleBold,
+    Gdiplus::FontFamily hf(L"Microsoft YaHei UI");
+    const Gdiplus::FontFamily* hface =
+        hf.IsAvailable() ? &hf : Gdiplus::FontFamily::GenericSansSerif();
+    Gdiplus::Font hfont(hface, 11.f, Gdiplus::FontStyleBold,
                         Gdiplus::UnitPixel);
-    Gdiplus::SolidBrush hbr(Gdiplus::Color(235, 245, 245, 245));
     Gdiplus::StringFormat hfmt;
     hfmt.SetAlignment(Gdiplus::StringAlignmentNear);
     hfmt.SetLineAlignment(Gdiplus::StringAlignmentCenter);
@@ -371,26 +607,32 @@ void PublicHost::Paint(HDC hdc) {
     Gdiplus::RectF hbox(8.f, 0.f,
                         static_cast<Gdiplus::REAL>(wr.right - wr.left - 16),
                         static_cast<Gdiplus::REAL>(kHeaderH));
-    g0.DrawString(title_.c_str(), -1, &hfont, hbox, &hfmt, &hbr);
+    DrawExplorerCaption(g0, title_, hbox, hfont, hfmt);
   }
-  for (const auto& s : slots_) {
-    if (s.icon) {
-      DrawIconEx(hdc, s.icon_rc.left, s.icon_rc.top, s.icon, icon, icon, 0,
-                 nullptr, DI_NORMAL);
+  // Icons must be composited through GDI+ (see DrawIconAlpha) so the alpha
+  // channel survives ULW_ALPHA; plain DrawIconEx left them invisible.
+  {
+    Gdiplus::Graphics gi(hdc);
+    for (const auto& s : slots_) {
+      if (s.icon) {
+        DrawIconAlpha(gi, s.icon, s.icon_rc.left, s.icon_rc.top, icon);
+      }
     }
   }
-  // P1-9: captions via GDI+ so layered alpha stays valid.
-  EnsureGdiplus();
+  // Captions: Explorer white + dark glow (readable on light wallpaper).
   Gdiplus::Graphics g(hdc);
   g.SetTextRenderingHint(Gdiplus::TextRenderingHintAntiAliasGridFit);
-  Gdiplus::FontFamily family(L"Segoe UI");
-  Gdiplus::Font font(&family, 11.f, Gdiplus::FontStyleRegular,
+  g.SetTextContrast(4);
+  Gdiplus::FontFamily family(L"Microsoft YaHei UI");
+  const Gdiplus::FontFamily* face =
+      family.IsAvailable() ? &family : Gdiplus::FontFamily::GenericSansSerif();
+  Gdiplus::Font font(face, 12.f, Gdiplus::FontStyleRegular,
                      Gdiplus::UnitPixel);
-  Gdiplus::SolidBrush br(Gdiplus::Color(230, 245, 245, 245));
   Gdiplus::StringFormat fmt;
   fmt.SetAlignment(Gdiplus::StringAlignmentCenter);
   fmt.SetLineAlignment(Gdiplus::StringAlignmentNear);
   fmt.SetTrimming(Gdiplus::StringTrimmingEllipsisWord);
+  fmt.SetFormatFlags(Gdiplus::StringFormatFlagsLineLimit);
   for (const auto& s : slots_) {
     const std::wstring& name = s.item.name.empty() ? s.item.path : s.item.name;
     Gdiplus::RectF box(
@@ -398,7 +640,7 @@ void PublicHost::Paint(HDC hdc) {
         static_cast<Gdiplus::REAL>(s.icon_rc.bottom + 2),
         static_cast<Gdiplus::REAL>(s.bounds.right - s.bounds.left - 4),
         static_cast<Gdiplus::REAL>(s.bounds.bottom - s.icon_rc.bottom - 2));
-    g.DrawString(name.c_str(), -1, &font, box, &fmt, &br);
+    DrawExplorerCaption(g, name, box, font, fmt);
   }
 }
 

@@ -22,12 +22,19 @@ struct SnapshotPreviewBox {
   int icon_count = 0;  // pinned paths (virtual_items) in this fence
 };
 
+struct SnapshotPreviewIcon {
+  int x = 0;
+  int y = 0;
+};
+
 struct SnapshotCardData {
   std::wstring name;
   std::wstring path;
   std::wstring meta;
   int focus_page = 0;
   std::vector<SnapshotPreviewBox> boxes;
+  // Shell desktop icon positions from *.icons.json (schematic dots).
+  std::vector<SnapshotPreviewIcon> icons;
 };
 
 std::wstring SnapshotDir();

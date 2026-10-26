@@ -89,6 +89,21 @@ bool MoveOrCopyFileIntoDir(HWND owner, const std::wstring& src,
   if (name.empty()) {
     return false;
   }
+  // Already inside dest_dir: return the source itself. Without this,
+  // UniqueDestPath sees the file occupying its own name and hands back
+  // "name (2)", so re-dropping a file onto its own portal folder silently
+  // renamed it (Python shutil path returns early the same way).
+  {
+    const size_t slash = src.find_last_of(L"\\/");
+    const std::wstring parent =
+        slash == std::wstring::npos ? std::wstring() : src.substr(0, slash);
+    if (!parent.empty() && _wcsicmp(parent.c_str(), dest_dir.c_str()) == 0) {
+      if (landed) {
+        *landed = src;
+      }
+      return true;
+    }
+  }
   std::wstring dest = UniqueDestPath(dest_dir, name);
   if (_wcsicmp(src.c_str(), dest.c_str()) == 0) {
     if (landed) {

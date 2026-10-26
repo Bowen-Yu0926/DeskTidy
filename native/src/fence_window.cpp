@@ -329,6 +329,30 @@ void FenceWindow::PresentLayered() {
     } else {
       g.FillRectangle(&fill, 0, 0, rw, rh);
     }
+    // Soft header wash + left accent chip (360-like glass panel identity).
+    {
+      const bool rounded = rr > 2 && rr < rw && rr < rh;
+      const int header_h = S(hwnd_, kHeaderH0);
+      Gdiplus::SolidBrush wash(Gdiplus::Color(
+          light_panel_ ? 72 : 28, 255, 255, 255));
+      if (rounded) {
+        g.SetClip(&path);
+        g.FillRectangle(&wash, 0, 0, rw, header_h);
+        g.ResetClip();
+      } else {
+        g.FillRectangle(&wash, 0, 0, rw, header_h);
+      }
+      const int accent_w = (std::max)(3, S(hwnd_, 4));
+      Gdiplus::SolidBrush accent_br(Gdiplus::Color(
+          230, GetRValue(accent_), GetGValue(accent_), GetBValue(accent_)));
+      if (rounded) {
+        g.SetClip(&path);
+        g.FillRectangle(&accent_br, 0, 0, accent_w, h);
+        g.ResetClip();
+      } else {
+        g.FillRectangle(&accent_br, 0, 0, accent_w, h);
+      }
+    }
     COLORREF border = light_panel_ ? RGB(15, 23, 42) : RGB(255, 255, 255);
     const BYTE ba = light_panel_ ? 48 : 40;
     Gdiplus::Pen edge(Gdiplus::Color(ba, GetRValue(border), GetGValue(border),
@@ -527,7 +551,8 @@ FencePageGeometry FenceWindow::GeometryForPage(int page) const {
   return FenceGeometryForPage(CurrentLayout(), page);
 }
 
-void FenceWindow::ApplyPageGeometry(const FencePageGeometry& geo) {
+void FenceWindow::ApplyPageGeometry(const FencePageGeometry& geo,
+                                    bool present) {
   const int w = (std::max)(geo.w, 120);
   const int h = (std::max)(geo.h, 80);
   collapsed_ = geo.collapsed;
@@ -535,9 +560,13 @@ void FenceWindow::ApplyPageGeometry(const FencePageGeometry& geo) {
   if (hwnd_) {
     const int win_h = collapsed_ ? S(hwnd_, kCollapsedH0) : expanded_h_;
     SetWindowPos(hwnd_, nullptr, geo.x, geo.y, w, win_h,
-                 SWP_NOZORDER | SWP_NOACTIVATE);
+                 SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOREDRAW);
     LayoutCells();
-    PresentLayered();
+    // Skip expensive layered present for fences that are (or will stay) hidden
+    // on this page — page switches used to redraw every fence twice.
+    if (present && IsWindowVisible(hwnd_) && !IsIconic(hwnd_)) {
+      PresentLayered();
+    }
   }
 }
 
@@ -942,6 +971,9 @@ void FenceWindow::AttachToDesktopLayer() {
   if (!hwnd_) {
     return;
   }
+  if (IsAttachedToDesktop(hwnd_)) {
+    return;
+  }
   AttachOverlayToDesktop(hwnd_, true);
   PlaceOverlayInDesktopBand(hwnd_, true);
   RaiseOverlayInDesktopBand(hwnd_);
@@ -1180,30 +1212,11 @@ int FenceWindow::HitTestIcon(int x, int y) const {
   if (y < S(hwnd_, kHeaderH0)) {
     return -1;
   }
-  const bool list = view_mode_ == "list";
-  const int icon = IconSizePx();
-  const int cell_w = CellWidthPx();
-  const int font_px = S(hwnd_, list ? 13 : 12);
-  const int line_h = font_px + S(hwnd_, 5);
-  const int idle_label_h = line_h * 2 + S(hwnd_, 4);
+  // Full cell (grid + list) matches painted chrome / Python FenceIconItem.
+  // Gaps between cells stay blank so empty panel chrome clears selection.
   for (size_t i = 0; i < cells_.size(); ++i) {
     const RECT& b = cells_[i].bounds;
-    if (list) {
-      if (x >= b.left && x < b.right && y >= b.top && y < b.bottom) {
-        return static_cast<int>(i);
-      }
-      continue;
-    }
-    // Grid: hit glyph + caption shelf only — gaps between cells are blank
-    // (Explorer / Fences: click empty chrome clears selection).
-    const int ix = b.left + (cell_w - icon) / 2;
-    const int iy = b.top + 4;
-    const bool on_icon =
-        x >= ix && x < ix + icon && y >= iy && y < iy + icon;
-    const int label_top = iy + icon + 2;
-    const bool on_label = x >= b.left + 3 && x < b.right - 3 &&
-                          y >= label_top && y < label_top + idle_label_h;
-    if (on_icon || on_label) {
+    if (x >= b.left && x < b.right && y >= b.top && y < b.bottom) {
       return static_cast<int>(i);
     }
   }
@@ -1812,17 +1825,6 @@ void FenceWindow::CommitReorder(int insert_index) {
   }
   LogLine(L"[fence] reorder committed: %d items -> insert %d",
           static_cast<int>(dragged.size()), at);
-}
-
-void FenceWindow::CommitDragOutUnpin() {
-  // Drag-out of a plain (virtual) fence unpins; files stay on the desktop.
-  LogLine(L"[fence] drag-out unpin: %d items from %s",
-          static_cast<int>(drag_paths_.size()), title_.c_str());
-  for (const auto& p : drag_paths_) {
-    if (on_unpin_) {
-      on_unpin_(this, p);
-    }
-  }
 }
 
 void FenceWindow::CommitDragOutPins(std::vector<std::wstring> paths) {
@@ -2593,27 +2595,32 @@ LRESULT FenceWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
         POINT pt{};
         GetCursorPos(&pt);
         ScreenToClient(hwnd_, &pt);
-        const Edge e = HitTestEdge(pt.x, pt.y);
-        const int v = static_cast<int>(e);
-        if (v == (static_cast<int>(Edge::Left) | static_cast<int>(Edge::Top)) ||
-            v == (static_cast<int>(Edge::Right) |
-                 static_cast<int>(Edge::Bottom))) {
-          SetCursor(LoadCursor(nullptr, IDC_SIZENWSE));
-          return TRUE;
-        }
-        if (v == (static_cast<int>(Edge::Right) | static_cast<int>(Edge::Top)) ||
-            v == (static_cast<int>(Edge::Left) |
-                 static_cast<int>(Edge::Bottom))) {
-          SetCursor(LoadCursor(nullptr, IDC_SIZENESW));
-          return TRUE;
-        }
-        if (v & (static_cast<int>(Edge::Left) | static_cast<int>(Edge::Right))) {
-          SetCursor(LoadCursor(nullptr, IDC_SIZEWE));
-          return TRUE;
-        }
-        if (v & (static_cast<int>(Edge::Top) | static_cast<int>(Edge::Bottom))) {
-          SetCursor(LoadCursor(nullptr, IDC_SIZENS));
-          return TRUE;
+        // Icons own the cursor over resize strips (Python fence_widget parity).
+        if (HitTestIcon(pt.x, pt.y) < 0) {
+          const Edge e = HitTestEdge(pt.x, pt.y);
+          const int v = static_cast<int>(e);
+          if (v == (static_cast<int>(Edge::Left) | static_cast<int>(Edge::Top)) ||
+              v == (static_cast<int>(Edge::Right) |
+                   static_cast<int>(Edge::Bottom))) {
+            SetCursor(LoadCursor(nullptr, IDC_SIZENWSE));
+            return TRUE;
+          }
+          if (v == (static_cast<int>(Edge::Right) | static_cast<int>(Edge::Top)) ||
+              v == (static_cast<int>(Edge::Left) |
+                   static_cast<int>(Edge::Bottom))) {
+            SetCursor(LoadCursor(nullptr, IDC_SIZENESW));
+            return TRUE;
+          }
+          if (v &
+              (static_cast<int>(Edge::Left) | static_cast<int>(Edge::Right))) {
+            SetCursor(LoadCursor(nullptr, IDC_SIZEWE));
+            return TRUE;
+          }
+          if (v &
+              (static_cast<int>(Edge::Top) | static_cast<int>(Edge::Bottom))) {
+            SetCursor(LoadCursor(nullptr, IDC_SIZENS));
+            return TRUE;
+          }
         }
       }
       break;
@@ -2668,14 +2675,8 @@ LRESULT FenceWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
       if (icon < 0 && !ctrl) {
         ClearSelection();
       }
-      if (edge != Edge::None) {
-        resizing_ = true;
-        resize_edge_ = edge;
-        GetWindowRect(hwnd_, &resize_start_rc_);
-        GetCursorPos(&resize_start_pt_);
-        SetCapture(hwnd_);
-        return 0;
-      }
+      // Prefer icon over resize edge (bottom/side strips used to steal last-row
+      // and edge-column clicks — Python clears resize when over an icon).
       if (icon >= 0) {
         dragging_ = false;
         drag_moved_ = false;
@@ -2683,6 +2684,14 @@ LRESULT FenceWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
         rubber_additive_ = false;
         icon_press_ = true;
         icon_press_index_ = icon;
+        SetCapture(hwnd_);
+        return 0;
+      }
+      if (edge != Edge::None) {
+        resizing_ = true;
+        resize_edge_ = edge;
+        GetWindowRect(hwnd_, &resize_start_rc_);
+        GetCursorPos(&resize_start_pt_);
         SetCapture(hwnd_);
         return 0;
       }
@@ -2757,7 +2766,11 @@ LRESULT FenceWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
             b = t + 120;
           }
         }
-        SetWindowPos(hwnd_, nullptr, l, t, r - l, b - t,
+        // Live edge snap to monitor work area (Python snap_geometry on resize).
+        RECT snapped{l, t, r, b};
+        SnapRectToWorkArea(&snapped, 0);
+        SetWindowPos(hwnd_, nullptr, snapped.left, snapped.top,
+                     snapped.right - snapped.left, snapped.bottom - snapped.top,
                      SWP_NOZORDER | SWP_NOACTIVATE);
         return 0;
       }
@@ -2826,8 +2839,16 @@ LRESULT FenceWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
       UpdateHoverTip(-1);
       POINT pt{};
       GetCursorPos(&pt);
-      SetWindowPos(hwnd_, nullptr, pt.x - drag_offset_.x, pt.y - drag_offset_.y,
-                   0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+      RECT cur{};
+      GetWindowRect(hwnd_, &cur);
+      const int w = cur.right - cur.left;
+      const int h = cur.bottom - cur.top;
+      RECT next{pt.x - drag_offset_.x, pt.y - drag_offset_.y,
+                pt.x - drag_offset_.x + w, pt.y - drag_offset_.y + h};
+      // Live edge snap while dragging (Python fence_widget mouseMove).
+      SnapRectToWorkArea(&next, 0);
+      SetWindowPos(hwnd_, nullptr, next.left, next.top, 0, 0,
+                   SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
       drag_moved_ = true;
       return 0;
     }
@@ -2874,7 +2895,15 @@ LRESULT FenceWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
         resizing_ = false;
         resize_edge_ = Edge::None;
         AttachToDesktopLayer();
-        if (on_moved_) {
+        // Final snap + sibling resolve (same path as drag-end).
+        if (on_geometry_moved_) {
+          on_geometry_moved_(this);
+        } else if (on_moved_) {
+          RECT rc{};
+          GetWindowRect(hwnd_, &rc);
+          SnapRectToWorkArea(&rc, 0);
+          SetWindowPos(hwnd_, nullptr, rc.left, rc.top, rc.right - rc.left,
+                       rc.bottom - rc.top, SWP_NOZORDER | SWP_NOACTIVATE);
           on_moved_(this);
         }
         return 0;
@@ -2883,7 +2912,9 @@ LRESULT FenceWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
         const int idx = icon_press_index_;
         icon_press_ = false;
         icon_press_index_ = -1;
-        if (HitTestIcon(x, y) == idx) {
+        // Commit if release stays on the same cell, or never left the drag
+        // threshold (small slip off glyph/padding still counts as a click).
+        if (idx >= 0 && (HitTestIcon(x, y) == idx || !drag_moved_)) {
           const bool was_selected = IsSelected(idx);
           const DWORD now = GetTickCount();
           const UINT dbl = GetDoubleClickTime();
@@ -2923,7 +2954,7 @@ LRESULT FenceWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
           } else if (on_moved_) {
             RECT rc{};
             GetWindowRect(hwnd_, &rc);
-            ClampRectToWorkArea(&rc);
+            SnapRectToWorkArea(&rc, 0);
             SetWindowPos(hwnd_, nullptr, rc.left, rc.top, 0, 0,
                          SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
             on_moved_(this);
@@ -3041,9 +3072,19 @@ void FenceWindow::Paint(HDC hdc) {
   }();
   if (show_title_) {
     Gdiplus::RectF title_box(
-        0.f, static_cast<Gdiplus::REAL>(title_top),
+        static_cast<Gdiplus::REAL>(S(hwnd_, 6)),
+        static_cast<Gdiplus::REAL>(title_top),
         static_cast<Gdiplus::REAL>(chrome_left),
         static_cast<Gdiplus::REAL>(title_px + 6));
+    // Soft shadow for readability on glass (360-like caption).
+    Gdiplus::SolidBrush shadow_br(Gdiplus::Color(
+        light_panel_ ? 40 : 90,
+        light_panel_ ? 255 : 0, light_panel_ ? 255 : 0,
+        light_panel_ ? 255 : 0));
+    Gdiplus::RectF shadow_box = title_box;
+    shadow_box.Y += 1.f;
+    g.DrawString(title_.c_str(), -1, &title_font, shadow_box, &title_fmt,
+                 &shadow_br);
     g.DrawString(title_.c_str(), -1, &title_font, title_box, &title_fmt,
                  &title_brush);
   }

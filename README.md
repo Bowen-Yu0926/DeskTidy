@@ -1,108 +1,36 @@
-# DeskTidy - 桌面整理助手
+# DeskTidy（C++ 原生）
 
-一款功能完整的 Windows 桌面整理工具：自动分类、分区管理、分页桌面、区域截图、云端账号管理。
+Windows 桌面整理工具：分区、分页、钉选整理、布局快照、截图/录屏、云端账号库、DeskNote 便签。
 
-公开仓库与安装包：[github.com/Bowen-Yu0926/DeskTidy](https://github.com/Bowen-Yu0926/DeskTidy) · [v4.0.30 安装包](https://github.com/Bowen-Yu0926/DeskTidy-Releases/releases/download/v4.0.30/DeskTidy_Setup_4.0.30.exe)
+公开仓库与安装包：[github.com/Bowen-Yu0926/DeskTidy](https://github.com/Bowen-Yu0926/DeskTidy) · [Releases](https://github.com/Bowen-Yu0926/DeskTidy-Releases)
 
-**账号管理：** 侧栏启用后，桌面出现独立「账」浮标（不在分页栏）。单击打开清单，维护名称 / 账号 / 密码 / 网址，双击复制；手机号或邮箱登录后云端同步。默认关闭。本地零知识加密：主密码派生密钥仅存内存；云端只保存密文，服务器无法解密；未登录也可本地使用。
+> 本分支以 **`native/` Win32 实现** 为准。原 Python / PyQt 应用代码已移除。
 
-## 功能一览
+## 构建 / 运行
 
-| 模块 | 功能 |
+```bat
+cd native
+build.bat
+..\scripts\run_native.bat
+..\scripts\selftest_native.bat
+..\scripts\build_native_installer.bat
+```
+
+数据目录：`%LOCALAPPDATA%\DeskTidyNative\`
+
+说明见 [docs/cpp-greenfield.md](docs/cpp-greenfield.md) 与 [native/README.md](native/README.md)。
+
+## 仓库结构
+
+| 路径 | 内容 |
 |------|------|
-| 整理 | 一键/定时/实时监控自动分类，虚拟整理（只钉选、不移动文件） |
-| 分区 | 可拖拽缩放折叠，Folder Portal 镜像，拖放归类 |
-| 分页 | 多桌面页面，底部指示器，快捷键切换 |
-| 快照 | 保存/恢复桌面图标位置 |
-| 截图 | 区域截图，复制/保存/贴图 |
-| 录屏 | Ctrl+Alt+3 开始/结束桌面录屏（需 FFmpeg） |
-| 账号 | 云端账号保险库：桌面浮标入口，双击复制，后台定时同步 |
-| 快捷 | 全局热键，Peek 置顶，双击隐藏 |
+| `native/` | C++ 主程序（DeskTidy + DeskNote） |
+| `assets/` | 共享资源（宠物帧、对话框 HTML 等） |
+| `installer/DeskTidyNative.iss` | 原生安装包脚本 |
+| `server/` | 账号库 PHP API |
+| `scripts/` | 原生构建/自测、资源生成、站点上传 |
+| `docs/` | 产品与迁移文档 |
 
-## 安装运行
+## 版本
 
-```bash
-pip install -r requirements.txt
-python main.py
-```
-
-### C++ 绿场（实验）
-
-分支 `feat/cpp-greenfield` 在 `native/` 下用 Win32 重做 Fences 桌面层 MVP（分区挂 DefView、管理窗不被盖）。说明见 [docs/cpp-greenfield.md](docs/cpp-greenfield.md) 与 [native/README.md](native/README.md)。当前产品仍以 Python 版为准。
-
-## 打包
-
-```bash
-# 日常：仅 exe（跳过 pip / 版本号 / 安装包）— 最快
-scripts\build_fast.bat
-
-# 发布：exe + 安装包（默认跳过 pip；大二进制不二次压缩）
-scripts\build_installer.bat
-
-# 可选：强制重装依赖 / 更小安装包（更慢）
-set DESKTIDY_FORCE_PIP=1
-set DESKTIDY_INSTALLER_MAX=1
-scripts\build_installer.bat
-```
-
-慢点曾经在：每次 `pip install`、以及 Inno solid/max 对整包二次压缩。现在默认跳过 pip、`lzma2/fast` + `SolidCompression=no`，并在 `build.bat` 剪掉 WebEngine debug/DevTools/多余 locale，减小安装包以便首次双击时 Defender 扫描更快。`fd.exe` 使用 `nocompression`。
-
-| 输出文件 | 说明 |
-|----------|------|
-| `dist\DeskTidy.exe` | 绿色版，单文件直接运行 |
-| `dist\DeskTidy_Setup_x.y.z.exe` | 安装包，含卸载程序和快捷方式 |
-
-安装包功能：
-- 安装到 `C:\Users\你\AppData\Local\Programs\DeskTidy\`
-- 可选桌面快捷方式
-- 可选开机自动启动
-- 开始菜单 + 卸载入口
-
-## 默认快捷键
-
-| 快捷键 | 功能 |
-|--------|------|
-| `Ctrl+Shift+O` | 一键整理 |
-| `Ctrl+Shift+F` | 显示/隐藏分区 |
-| `Ctrl+Shift+H` | 显示/隐藏桌面图标 |
-| `Ctrl+Space` | 临时查看分区（Peek） |
-| `Ctrl+Shift+←/→` | 切换分页（上一页 / 下一页） |
-| `Ctrl+Alt+1` | 区域截图 |
-| `Ctrl+Alt+2` | 显示截图贴图 |
-| `Ctrl+Alt+3` | 录屏开始/结束 |
-| `Ctrl+Alt+4` | 文件搜索 |
-| `Ctrl+Alt+C` | 计算器 |
-
-## 录屏（FFmpeg）
-
-DeskTidy 使用开源 [FFmpeg](https://ffmpeg.org/) 做轻量桌面录屏（与 Captura 等工具同类方案）。
-
-**打包用精简 bundle（保留硬件编码，体积更小）：**
-
-```bash
-python scripts/prepare_ffmpeg_recording.py
-```
-
-默认安装 BtbN **gpl-shared**（`h264_mf` + `ddagrab` + `gdigrab` + `libx264`），安装目录约 **70–90 MB**，低于完整 static 版（~210 MB）。打包前会自动校验 `h264_mf` 可用，避免退化成高 CPU 的纯软件编码。
-
-1. 安装 FFmpeg 并加入 PATH，例如：`winget install Gyan.FFmpeg`
-2. 按 **Ctrl+Alt+3** 开始录屏，再按 **Ctrl+Alt+3** 结束
-3. 文件默认保存到 `%USERPROFILE%\\Videos\\DeskTidy\\`
-
-安装版默认在程序目录内置 FFmpeg（`assets\ffmpeg\`，含 `ffmpeg.exe` 与同目录 DLL），无需单独安装。若使用**未内置 FFmpeg** 的构建（绿色版无内置，或用 `DESKTIDY_NO_BUNDLE_FFMPEG=1` 打包的安装版），首次录屏时会**提示自动下载**（约 80 MB，来源 BtbN gpl-shared），也可自行安装并加入 PATH：`winget install Gyan.FFmpeg`。
-
-也可在托盘菜单「录屏（开始/结束）」或设置里修改快捷键。
-
-**维护者：** 设置环境变量 `DESKTIDY_NO_BUNDLE_FFMPEG=1`（或 `true`）后再构建，可产出**不含 FFmpeg** 的更小安装包（配合运行时按需下载）。构建日志会打印「已跳过内嵌 FFmpeg（运行时按需下载）」；默认（不设置）仍会内置 FFmpeg，发布流程不变。
-
-## Tab 说明
-
-- **整理规则** — 扩展名/文件名匹配
-- **桌面分区** — 分区 CRUD 与样式
-- **桌面分页** — 多页面管理
-- **布局快照** — 图标位置备份
-- **账号管理** — 云端账号保险库（浮标入口、登录、增删改查）
-- **扩展功能** — 区域截图、录屏、待办等
-- **设置** — 模式、热键、定时、导入导出
-
-配置目录：`%USERPROFILE%\.desktidy\`
+见根目录 `VERSION`。
