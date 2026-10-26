@@ -19,6 +19,9 @@
 #include <string>
 #include <vector>
 
+// Forward declaration (defined in app_prefs.cpp): normalizes record mic device.
+std::wstring NormalizeRecordMic(const std::wstring& mic);
+
 namespace {
 
 std::wstring MarkerPath() {
@@ -790,7 +793,10 @@ void MigratePythonPrefs(const std::string& json) {
     }
     std::string mic;
     if (FindString(rec, "audio_device", &mic)) {
-      prefs.record_mic = WidenUtf8(mic);
+      const std::wstring norm = NormalizeRecordMic(WidenUtf8(mic));
+      if (!norm.empty()) {
+        prefs.record_mic = norm;
+      }
     }
     std::string q;
     if (FindString(rec, "quality_preset", &q)) {

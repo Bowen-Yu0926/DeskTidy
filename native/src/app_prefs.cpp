@@ -140,6 +140,27 @@ bool LooksLikePrefsJson(const std::string& s) {
 
 }  // namespace
 
+// Normalize the record microphone device string. Python used to persist a
+// literal `""` (two quote characters) as the audio device; treat that and any
+// other pure-quote / whitespace value as "no device" so ffmpeg never receives
+// `audio=""""`.
+std::wstring NormalizeRecordMic(const std::wstring& mic) {
+  const std::wstring ws = L" \t\r\n";
+  const size_t b = mic.find_first_not_of(ws);
+  if (b == std::wstring::npos) {
+    return {};
+  }
+  const size_t e = mic.find_last_not_of(ws);
+  const std::wstring t = mic.substr(b, e - b + 1);
+  for (wchar_t c : t) {
+    if (c != L'"' && c != L'\'' && c != L' ' && c != L'\t' && c != L'\r' &&
+        c != L'\n') {
+      return t;
+    }
+  }
+  return {};
+}
+
 AppPrefs LoadAppPrefsFromPath(const std::wstring& path) {
   std::string json;
   if (!ReadTextFile(path, &json) || !LooksLikePrefsJson(json)) {
@@ -178,7 +199,10 @@ AppPrefs LoadAppPrefsFromPath(const std::wstring& path) {
   }
   const std::string mic = ParseStringField(json, "record_mic");
   if (!mic.empty()) {
-    prefs.record_mic = WidenUtf8(mic);
+    const std::wstring norm = NormalizeRecordMic(WidenUtf8(mic));
+    if (!norm.empty()) {
+      prefs.record_mic = norm;
+    }
   }
   const std::string theme = ParseStringField(json, "theme_id");
   if (!theme.empty()) {

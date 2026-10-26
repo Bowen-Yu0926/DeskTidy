@@ -25,6 +25,9 @@
 #include <string>
 #include <vector>
 
+// Forward declaration (defined in app_prefs.cpp): normalizes record mic device.
+std::wstring NormalizeRecordMic(const std::wstring& mic);
+
 namespace {
 
 constexpr wchar_t kBadgeClass[] = L"DeskTidyNativeRecBadge";
@@ -1305,9 +1308,10 @@ bool StartRecording(HWND owner) {
     g_capture_rc = r;
     g_capture_rc_set = true;
   }
-  if (!prefs.record_mic.empty()) {
+  const std::wstring mic = NormalizeRecordMic(prefs.record_mic);
+  if (!mic.empty()) {
     g_cmd.with_audio = true;
-    g_cmd.audio_in = L" -f dshow -i audio=\"" + prefs.record_mic + L"\"";
+    g_cmd.audio_in = L" -f dshow -i audio=\"" + mic + L"\"";
   }
 
   g_segments.clear();
