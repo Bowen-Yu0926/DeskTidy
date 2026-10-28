@@ -8,16 +8,38 @@
   <style>
     html, body, #editor {
       height: 100%;
+      width: 100%;
       margin: 0;
       padding: 0;
+      overflow: hidden;
       background: #fff;
     }
     body.theme-dark, body.theme-dark #editor {
       background: #1e1e1e;
     }
+    /* Toast height:100% alone collapses the WW pane under the toolbar. */
     .toastui-editor-defaultUI {
       border: none !important;
       height: 100% !important;
+      display: flex !important;
+      flex-direction: column !important;
+    }
+    .toastui-editor-toolbar {
+      flex: 0 0 auto !important;
+    }
+    .toastui-editor-main {
+      flex: 1 1 auto !important;
+      min-height: 0 !important;
+      height: auto !important;
+    }
+    .toastui-editor-main-container,
+    .toastui-editor-ww-container,
+    .toastui-editor-md-container {
+      height: 100% !important;
+    }
+    .toastui-editor-contents,
+    .ProseMirror {
+      min-height: 100%;
     }
   </style>
   <script src="vendor/toastui-editor-all.min.js"></script>
@@ -28,30 +50,160 @@
 (function () {
   var editor = null;
   var suppress = false;
+  var paddingExit = false;
+
+  // Offline zh-CN tooltips / dialogs (Toast defaults are English).
+  if (toastui && toastui.Editor && typeof toastui.Editor.setLanguage === "function") {
+    toastui.Editor.setLanguage(["zh-CN", "zh", "zh-cn"], {
+      Markdown: "Markdown",
+      WYSIWYG: "所见即所得",
+      Write: "编辑",
+      Preview: "预览",
+      Headings: "标题",
+      Paragraph: "正文",
+      Bold: "加粗",
+      Italic: "斜体",
+      Strike: "删除线",
+      Code: "行内代码",
+      Line: "水平线",
+      Blockquote: "引用",
+      "Unordered list": "无序列表",
+      "Ordered list": "有序列表",
+      Task: "任务列表",
+      Indent: "增加缩进",
+      Outdent: "减少缩进",
+      "Insert link": "插入链接",
+      "Insert CodeBlock": "插入代码块",
+      "Insert table": "插入表格",
+      "Insert image": "插入图片",
+      Heading: "标题",
+      "Image URL": "图片地址",
+      "Select image file": "选择图片文件",
+      "Choose a file": "选择文件",
+      "No file": "未选择文件",
+      Description: "说明",
+      OK: "确定",
+      More: "更多",
+      Cancel: "取消",
+      File: "文件",
+      URL: "链接地址",
+      "Link text": "链接文字",
+      "Add row to up": "在上方插入行",
+      "Add row to down": "在下方插入行",
+      "Add column to left": "在左侧插入列",
+      "Add column to right": "在右侧插入列",
+      "Remove row": "删除行",
+      "Remove column": "删除列",
+      "Align column to left": "左对齐",
+      "Align column to center": "居中对齐",
+      "Align column to right": "右对齐",
+      "Remove table": "删除表格",
+      "Would you like to paste as table?": "是否粘贴为表格？",
+      "Text color": "文字颜色",
+      "Auto scroll enabled": "已开启同步滚动",
+      "Auto scroll disabled": "已关闭同步滚动",
+      "Choose language": "选择语言"
+    });
+  }
+
+  // Toast UI / ProseMirror: cursor cannot sit after a trailing table/code block
+  // (nhn/tui.editor#2735). Ctrl+Enter exits, but market note apps (Typora-like)
+  // always leave a blank paragraph below so click / type outside works.
+  function lastContentBlockNeedsExitSlot(root) {
+    if (!root || !root.lastElementChild) return false;
+    var last = root.lastElementChild;
+    if (last.tagName === "TABLE") return true;
+    if (last.tagName === "PRE") return true;
+    if (last.classList && (
+        last.classList.contains("toastui-editor-ww-code-block") ||
+        last.classList.contains("toastui-editor-ww-code-block-group"))) {
+      return true;
+    }
+    // Code block widget is often a wrapper div whose only child is PRE / code-block.
+    if (last.querySelector && last.querySelector(
+        "table, pre, .toastui-editor-ww-code-block")) {
+      var only = last.children && last.children.length === 1;
+      if (only) return true;
+    }
+    return false;
+  }
+
+  function ensureTrailingExitSlot() {
+    if (!editor || suppress || paddingExit) return;
+    var root = document.querySelector(
+      ".toastui-editor-ww-container .ProseMirror");
+    if (!lastContentBlockNeedsExitSlot(root)) return;
+    paddingExit = true;
+    var view = editor.wwEditor && editor.wwEditor.view;
+    if (view && view.state && view.state.schema && view.state.schema.nodes.paragraph) {
+      try {
+        var state = view.state;
+        var para = state.schema.nodes.paragraph;
+        var node = (para.createAndFill && para.createAndFill()) || para.create();
+        if (node) {
+          // Keep current cell selection — only append an empty exit paragraph.
+          view.dispatch(state.tr.insert(state.doc.content.size, node));
+          return;
+        }
+      } catch (e) {
+        /* fall through to markdown pad */
+      } finally {
+        setTimeout(function () { paddingExit = false; }, 0);
+      }
+    }
+    try {
+      var md = editor.getMarkdown() || "";
+      if (/\n\n\s*$/.test(md)) return;
+      suppress = true;
+      editor.setMarkdown(md.replace(/\s*$/, "") + "\n\n", false);
+    } catch (e2) {
+    } finally {
+      setTimeout(function () {
+        paddingExit = false;
+        suppress = false;
+      }, 0);
+    }
+  }
 
   function boot(md, theme) {
     var el = document.getElementById("editor");
     el.innerHTML = "";
     var dark = String(theme || "").toLowerCase().indexOf("dark") >= 0;
     document.body.classList.toggle("theme-dark", dark);
+    var h = Math.max(120, window.innerHeight || el.clientHeight || 480);
     editor = new toastui.Editor({
       el: el,
-      height: "100%",
+      height: h + "px",
       initialEditType: "wysiwyg",
       previewStyle: "vertical",
       usageStatistics: false,
+      language: "zh-CN",
+      hideModeSwitch: true,
       initialValue: md || "",
       autofocus: true,
     });
     editor.on("change", function () {
       if (suppress) return;
+      // Pad after table/code insert so the caret can leave the block (parity: Typora).
+      setTimeout(ensureTrailingExitSlot, 0);
       post({ type: "changed", md: editor.getMarkdown() });
     });
+    // Host may finish resizing right after boot — keep WW pane filled.
+    setTimeout(function () {
+      try {
+        var nh = Math.max(120, window.innerHeight || 480);
+        if (editor && editor.setHeight) editor.setHeight(nh + "px");
+        window.dispatchEvent(new Event("resize"));
+        ensureTrailingExitSlot();
+      } catch (e) {}
+    }, 0);
   }
 
   function post(msg) {
     if (window.chrome && chrome.webview && chrome.webview.postMessage) {
-      chrome.webview.postMessage(msg);
+      // Stringify so C++ TryGetWebMessageAsString always gets parseable JSON
+      // (object posts were dropping `changed` / `md` and Save wrote empty files).
+      chrome.webview.postMessage(JSON.stringify(msg));
     }
   }
 
@@ -66,7 +218,10 @@
       var dark = String(theme || "").toLowerCase().indexOf("dark") >= 0;
       document.body.classList.toggle("theme-dark", dark);
     } finally {
-      setTimeout(function () { suppress = false; }, 50);
+      setTimeout(function () {
+        suppress = false;
+        ensureTrailingExitSlot();
+      }, 50);
     }
   };
 
@@ -74,11 +229,27 @@
     return editor ? editor.getMarkdown() : "";
   };
 
+  window.__desknoteWysiwygResize = function (h) {
+    var nh = Math.max(120, Number(h) || window.innerHeight || 480);
+    if (editor && typeof editor.setHeight === "function") {
+      editor.setHeight(nh + "px");
+    }
+    var root = document.querySelector(".toastui-editor-defaultUI");
+    if (root) {
+      root.style.height = nh + "px";
+    }
+  };
+
   if (window.chrome && chrome.webview) {
     chrome.webview.addEventListener("message", function (e) {
       var msg = e.data || {};
+      // PostWebMessageAsJson → object; AsString → parse if needed.
+      if (typeof msg === "string") {
+        try { msg = JSON.parse(msg); } catch (err) { msg = {}; }
+      }
       if (msg.type === "set") {
         window.__desknoteWysiwygSet(msg.md || "", msg.theme || "");
+        window.__desknoteWysiwygResize(window.innerHeight);
       } else if (msg.type === "get") {
         post({ type: "md", md: window.__desknoteWysiwygGet() });
       } else if (msg.type === "insert") {
@@ -94,12 +265,23 @@
 
   function ready() {
     post({ type: "ready" });
+    // If host pushed before the listener existed, ask for a re-push.
+    setTimeout(function () {
+      var cur = editor && editor.getMarkdown ? editor.getMarkdown() : "";
+      if (!cur) {
+        post({ type: "needContent" });
+      }
+      window.__desknoteWysiwygResize(window.innerHeight);
+    }, 50);
   }
   if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", ready);
   } else {
     ready();
   }
+  window.addEventListener("resize", function () {
+    window.__desknoteWysiwygResize(window.innerHeight);
+  });
 })();
   </script>
 </body>

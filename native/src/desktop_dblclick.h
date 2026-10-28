@@ -7,8 +7,12 @@
 // notify_msg      — WM_LBUTTONDBLCLK on blank desktop
 // notify_down_msg — WM_LBUTTONDOWN on blank desktop (0 = ignore); used to clear
 //                   fence icon selection like Explorer / Fences.
+// notify_paste_msg — Ctrl+V while foreground is the real desktop shell
+//                   (Progman/DefView/…); 0 = ignore. Used when Explorer icons
+//                   are hidden so DefView no longer handles file paste.
 void StartDesktopDblClickMonitor(HWND notify_hwnd, UINT notify_msg,
-                                 UINT notify_down_msg = 0);
+                                 UINT notify_down_msg = 0,
+                                 UINT notify_paste_msg = 0);
 void StopDesktopDblClickMonitor();
 bool IsDesktopBlankPoint(int screen_x, int screen_y);
 

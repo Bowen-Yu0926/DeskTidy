@@ -10,6 +10,7 @@
 #include <WebView2.h>
 #include <wrl.h>
 
+#include <algorithm>
 #include <string>
 
 using Microsoft::WRL::Callback;
@@ -38,7 +39,13 @@ std::wstring JsonEscape(const std::wstring& s) {
         o += L"\\t";
         break;
       default:
-        o.push_back(c);
+        if (c < 0x20) {
+          wchar_t buf[8];
+          swprintf_s(buf, L"\\u%04x", static_cast<unsigned>(c));
+          o += buf;
+        } else {
+          o.push_back(c);
+        }
         break;
     }
   }
@@ -145,6 +152,11 @@ bool NotesWebView::Create(HWND parent) {
   if (!parent_) {
     return false;
   }
+  // Idempotent: OpenPaths/Present can re-enter ShowPreviewMode while the
+  // WebView2 environment callback is still pending — never create a second host.
+  if (host_) {
+    return true;
+  }
   static bool registered = false;
   if (!registered) {
     WNDCLASSEXW wc{};
@@ -210,6 +222,34 @@ bool NotesWebView::Create(HWND parent) {
                               })
                               .Get(),
                           &token);
+                      // If the page scripts fail to post previewReady, still
+                      // flush pending markdown once navigation finishes.
+                      EventRegistrationToken nav_tok{};
+                      web->add_NavigationCompleted(
+                          Callback<ICoreWebView2NavigationCompletedEventHandler>(
+                              [this](ICoreWebView2*,
+                                     ICoreWebView2NavigationCompletedEventArgs*
+                                         args) -> HRESULT {
+                                BOOL ok = FALSE;
+                                if (args) {
+                                  args->get_IsSuccess(&ok);
+                                }
+                                if (ok && !ready_) {
+                                  OnReady();
+                                } else if (ok && ready_ &&
+                                           !pending_set_.empty()) {
+                                  if (kind_ == Kind::kViewer) {
+                                    SetPreview(pending_set_, pending_base_);
+                                  } else {
+                                    SetMarkdown(pending_set_);
+                                  }
+                                  pending_set_.clear();
+                                  pending_base_.clear();
+                                }
+                                return S_OK;
+                              })
+                              .Get(),
+                          &nav_tok);
                       NavigateHome();
                       return S_OK;
                     })
@@ -240,15 +280,22 @@ void NotesWebView::NavigateHome() {
 
 void NotesWebView::OnReady() {
   ready_ = true;
-  if (!pending_set_.empty()) {
-    if (kind_ == Kind::kViewer) {
-      SetPreview(pending_set_, pending_base_);
-    } else {
-      SetMarkdown(pending_set_);
-    }
-    pending_set_.clear();
-    pending_base_.clear();
+  // Prefer explicit pending push; else re-push cache. Always call SetMarkdown
+  // for WYSIWYG — even "" — so Toast boots (skipping empty left a blank host).
+  std::wstring md = pending_set_;
+  const std::wstring base = pending_base_;
+  pending_set_.clear();
+  pending_base_.clear();
+  if (md.empty()) {
+    md = pending_md_;
   }
+  if (kind_ == Kind::kViewer) {
+    if (!md.empty() || !base.empty()) {
+      SetPreview(md, base);
+    }
+    return;
+  }
+  SetMarkdown(md);
 }
 
 void NotesWebView::OnWebMessage(const std::wstring& json) {
@@ -258,6 +305,15 @@ void NotesWebView::OnWebMessage(const std::wstring& json) {
   } else if (type == L"md" || type == L"changed") {
     pending_md_ = JsonStringField(json, L"md");
     got_md_ = true;
+    if (type == L"changed" && on_changed) {
+      on_changed();
+    }
+  } else if (type == L"needContent") {
+    if (on_need_content) {
+      on_need_content();
+    } else if (!pending_md_.empty()) {
+      SetMarkdown(pending_md_);
+    }
   } else if (type == L"scroll") {
     scroll_ratio_ = JsonDoubleField(json, L"ratio", 0.0);
     got_scroll_ = true;
@@ -294,6 +350,9 @@ void NotesWebView::Destroy() {
 void NotesWebView::Show() {
   if (host_) {
     ShowWindow(host_, SW_SHOW);
+    if (controller_) {
+      static_cast<ICoreWebView2Controller*>(controller_)->put_IsVisible(TRUE);
+    }
     Resize();
   }
 }
@@ -301,6 +360,9 @@ void NotesWebView::Show() {
 void NotesWebView::Hide() {
   if (host_) {
     ShowWindow(host_, SW_HIDE);
+  }
+  if (controller_) {
+    static_cast<ICoreWebView2Controller*>(controller_)->put_IsVisible(FALSE);
   }
 }
 
@@ -316,9 +378,22 @@ void NotesWebView::Resize() {
   if (controller_) {
     static_cast<ICoreWebView2Controller*>(controller_)->put_Bounds(bounds);
   }
+  // Toast WW pane keeps its boot-time pixel height unless we nudge it.
+  auto* web = static_cast<ICoreWebView2*>(webview_);
+  if (web && ready_ && kind_ == Kind::kWysiwyg) {
+    const int h = (std::max)(120, static_cast<int>(bounds.bottom - bounds.top));
+    wchar_t script[160];
+    swprintf_s(script,
+               L"try{if(window.__desknoteWysiwygResize)__desknoteWysiwygResize(%d);}"
+               L"catch(e){}",
+               h);
+    web->ExecuteScript(script, nullptr);
+  }
 }
 
 void NotesWebView::SetMarkdown(const std::wstring& md) {
+  // Keep cache coherent so SyncFromWysiwyg / Save can skip PullMarkdown IPC.
+  pending_md_ = md;
   auto* web = static_cast<ICoreWebView2*>(webview_);
   if (!web || !ready_) {
     pending_set_ = md;
@@ -446,12 +521,74 @@ bool NotesWebView::PrintToPdf(const std::wstring& path, std::wstring* err) {
   return true;
 }
 
+namespace {
+std::wstring JsonUnquote(const std::wstring& s) {
+  if (s.size() < 2 || s.front() != L'"' || s.back() != L'"') {
+    return s;
+  }
+  std::wstring v;
+  v.reserve(s.size());
+  for (size_t i = 1; i + 1 < s.size(); ++i) {
+    if (s[i] == L'\\' && i + 1 + 1 <= s.size()) {
+      ++i;
+      switch (s[i]) {
+        case L'n':
+          v.push_back(L'\n');
+          break;
+        case L'r':
+          v.push_back(L'\r');
+          break;
+        case L't':
+          v.push_back(L'\t');
+          break;
+        case L'u':
+          if (i + 4 < s.size() - 1) {
+            unsigned code = 0;
+            for (int k = 0; k < 4; ++k) {
+              const wchar_t c = s[++i];
+              code <<= 4;
+              if (c >= L'0' && c <= L'9') {
+                code |= static_cast<unsigned>(c - L'0');
+              } else if (c >= L'a' && c <= L'f') {
+                code |= static_cast<unsigned>(c - L'a' + 10);
+              } else if (c >= L'A' && c <= L'F') {
+                code |= static_cast<unsigned>(c - L'A' + 10);
+              }
+            }
+            v.push_back(static_cast<wchar_t>(code));
+          }
+          break;
+        default:
+          v.push_back(s[i]);
+          break;
+      }
+    } else {
+      v.push_back(s[i]);
+    }
+  }
+  return v;
+}
+}  // namespace
+
 std::wstring NotesWebView::PullMarkdown(DWORD timeout_ms) {
   auto* web = static_cast<ICoreWebView2*>(webview_);
   if (!web || !ready_) {
     return pending_md_;
   }
   got_md_ = false;
+  // Prefer ExecuteScript — more reliable than postMessage round-trip on close.
+  web->ExecuteScript(
+      L"(function(){try{return (window.__desknoteWysiwygGet"
+      L"?window.__desknoteWysiwygGet():'');}catch(e){return '';}})()",
+      Callback<ICoreWebView2ExecuteScriptCompletedHandler>(
+          [this](HRESULT hr, LPCWSTR result_json) -> HRESULT {
+            if (SUCCEEDED(hr) && result_json) {
+              pending_md_ = JsonUnquote(result_json);
+            }
+            got_md_ = true;
+            return S_OK;
+          })
+          .Get());
   web->PostWebMessageAsJson(L"{\"type\":\"get\"}");
   const DWORD start = GetTickCount();
   MSG msg{};

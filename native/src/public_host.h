@@ -3,6 +3,7 @@
 #include "desktop_items.h"
 #include "display_geom.h"
 #include "float_placements.h"
+#include "ole_drag.h"
 
 #include <Windows.h>
 
@@ -35,6 +36,13 @@ class PublicHost {
     on_removed_ = std::move(fn);
   }
   void SetOnRefresh(std::function<void()> fn) { on_refresh_ = std::move(fn); }
+  // Fences: Ctrl+V / blank-area Paste lands files on the real Desktop folder.
+  void SetOnPaste(std::function<void()> fn) { on_paste_ = std::move(fn); }
+  // Explorer drop onto float chrome → copy into Desktop folder.
+  void SetOnPathsDropped(
+      std::function<void(const std::vector<std::wstring>&)> fn) {
+    on_paths_dropped_ = std::move(fn);
+  }
   void SetOnPlacementsChanged(
       std::function<void(const FloatPlacementMap&)> fn) {
     on_placements_changed_ = std::move(fn);
@@ -63,6 +71,9 @@ class PublicHost {
   void PersistSlotPlacements();
   void BeginOleDrag();
   void ShowSlotMenu(int index, POINT screen);
+  void ShowBackgroundMenu(POINT screen);
+  void PasteClipboardFiles();
+  void EnsureDropTarget();
 
   void EnsureSelSize();
   void ClearSelection();
@@ -72,11 +83,14 @@ class PublicHost {
   void SelectIntersecting(RECT client_rc);
   bool IsSelected(int index) const;
   std::vector<std::wstring> SelectedPaths() const;
+  void CopySelection();
+  void CutSelection();
   void DeleteSelection();
   void RenameSelection();
   void OpenSelection();
 
   HWND hwnd_ = nullptr;
+  PathDropTarget* drop_target_ = nullptr;
   bool want_visible_ = false;
   IconGridMetrics metrics_{};
   std::wstring title_ = L"桌面图标";
@@ -95,5 +109,7 @@ class PublicHost {
   std::function<void(const std::wstring&, const std::wstring&)> on_path_replaced_;
   std::function<void(const std::wstring&)> on_removed_;
   std::function<void()> on_refresh_;
+  std::function<void()> on_paste_;
+  std::function<void(const std::vector<std::wstring>&)> on_paths_dropped_;
   std::function<void(const FloatPlacementMap&)> on_placements_changed_;
 };

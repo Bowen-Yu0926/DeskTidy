@@ -37,6 +37,24 @@ std::wstring FileUrlFromPath(const std::wstring& path) {
   return L"file:///" + abs;
 }
 
+void MistFocusDialog(MistWebDialog* dlg) {
+  // WebView2 does not take keyboard input until the host + controller are
+  // focused — JS el.focus() alone leaves rename prompts needing a click.
+  if (!dlg || !dlg->hwnd || !IsWindow(dlg->hwnd)) {
+    return;
+  }
+  SetForegroundWindow(dlg->hwnd);
+  BringWindowToTop(dlg->hwnd);
+  SetActiveWindow(dlg->hwnd);
+  if (dlg->host && IsWindow(dlg->host)) {
+    SetFocus(dlg->host);
+  }
+  if (dlg->controller) {
+    static_cast<ICoreWebView2Controller*>(dlg->controller)
+        ->MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC);
+  }
+}
+
 void ResizeWeb(MistWebDialog* dlg) {
   if (!dlg || !dlg->hwnd || !dlg->host) {
     return;
@@ -130,6 +148,7 @@ void CreateWeb(MistWebDialog* dlg) {
                       }
                       ResizeWeb(dlg);
                       controller->put_IsVisible(TRUE);
+                      MistFocusDialog(dlg);
                       web->add_WebMessageReceived(
                           Callback<ICoreWebView2WebMessageReceivedEventHandler>(
                               [dlg](ICoreWebView2*,
@@ -162,6 +181,9 @@ void CreateWeb(MistWebDialog* dlg) {
                                 if (ok) {
                                   dlg->web_ready = true;
                                   MistWebDialogPushState(dlg);
+                                  MistFocusDialog(dlg);
+                                  // Second pass after HTML applyState focus/select.
+                                  PostMessageW(dlg->hwnd, WM_APP + 2, 0, 0);
                                 }
                                 return S_OK;
                               })
@@ -214,6 +236,11 @@ LRESULT CALLBACK MistWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
     case WM_APP + 1:
       if (dlg) {
         CreateWeb(dlg);
+      }
+      return 0;
+    case WM_APP + 2:
+      if (dlg) {
+        MistFocusDialog(dlg);
       }
       return 0;
     case WM_ERASEBKGND:
@@ -419,6 +446,7 @@ void MistWebDialogRun(MistWebDialog* dlg, const wchar_t* title, int width,
   }
   ShowWindow(hwnd, SW_SHOW);
   UpdateWindow(hwnd);
+  MistFocusDialog(dlg);
 
   MSG msg{};
   while (!dlg->done && GetMessageW(&msg, nullptr, 0, 0) > 0) {

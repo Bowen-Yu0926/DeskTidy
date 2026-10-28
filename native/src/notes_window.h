@@ -52,7 +52,8 @@ class NotesWindow {
   // Re-read current path from disk (prompts if dirty).
   void ReloadFromDisk();
   void PromptGotoLine();
-  void Save();
+  // authoritative_pull: Toast getMarkdown before write (close / Ctrl+S).
+  void Save(bool authoritative_pull = false);
   void SaveAs();
   // Notepad++ 式：打开系统 hosts（保存时遇 ACL 走提权）。
   void OpenHostsFile();
@@ -61,6 +62,8 @@ class NotesWindow {
   // Full-width Markdown preview (Python Ctrl+Shift+V / right strip).
   void ShowPreviewMode();
   void ToggleMdViewMode();
+  // Force .md onto Toast WYSIWYG (single edit surface).
+  void EnsureMarkdownEditor(bool force_reload = false);
   void UpdateModeStrip();
   void RenameSidebarSelected();
   // Commit inline / modal rename: stem only; keeps original suffix.

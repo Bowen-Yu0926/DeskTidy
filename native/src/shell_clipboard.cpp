@@ -2,6 +2,7 @@
 
 #include <ShlObj.h>
 #include <shellapi.h>
+#include <objidl.h>
 
 #include <cstring>
 #include <string>
@@ -154,36 +155,82 @@ bool ClipboardGetFilesWithEffect(std::vector<std::wstring>* paths, bool* cut) {
   if (cut) {
     *cut = false;
   }
-  if (!paths || !OpenClipboard(nullptr)) {
+  if (!paths) {
     return false;
   }
   paths->clear();
-  HANDLE data = GetClipboardData(CF_HDROP);
-  if (!data) {
+
+  auto read_hdrop = [&](HDROP drop) {
+    if (!drop) {
+      return;
+    }
+    const UINT n = DragQueryFileW(drop, 0xFFFFFFFF, nullptr, 0);
+    for (UINT i = 0; i < n; ++i) {
+      const UINT len = DragQueryFileW(drop, i, nullptr, 0);
+      std::wstring path(len, L'\0');
+      DragQueryFileW(drop, i, path.data(), len + 1);
+      if (!path.empty()) {
+        paths->push_back(std::move(path));
+      }
+    }
+  };
+  auto read_effect = [&](IDataObject* data, HANDLE win32_effect) {
+    if (!cut) {
+      return;
+    }
+    if (data) {
+      const UINT fmt = PreferredDropEffectFormat();
+      if (fmt) {
+        FORMATETC fe{static_cast<CLIPFORMAT>(fmt), nullptr, DVASPECT_CONTENT, -1,
+                     TYMED_HGLOBAL};
+        STGMEDIUM stg{};
+        if (SUCCEEDED(data->GetData(&fe, &stg)) && stg.hGlobal) {
+          auto* pe = static_cast<DWORD*>(GlobalLock(stg.hGlobal));
+          if (pe) {
+            *cut = (*pe & DROPEFFECT_MOVE) != 0;
+            GlobalUnlock(stg.hGlobal);
+          }
+          ReleaseStgMedium(&stg);
+          return;
+        }
+      }
+    }
+    if (win32_effect) {
+      auto* pe = static_cast<DWORD*>(GlobalLock(win32_effect));
+      if (pe) {
+        *cut = (*pe & DROPEFFECT_MOVE) != 0;
+        GlobalUnlock(win32_effect);
+      }
+    }
+  };
+
+  // Prefer OleGetClipboard — Explorer places shell transfers via OLE.
+  IDataObject* data = nullptr;
+  if (SUCCEEDED(OleGetClipboard(&data)) && data) {
+    FORMATETC fe{CF_HDROP, nullptr, DVASPECT_CONTENT, -1, TYMED_HGLOBAL};
+    STGMEDIUM stg{};
+    if (SUCCEEDED(data->GetData(&fe, &stg)) && stg.hGlobal) {
+      read_hdrop(static_cast<HDROP>(stg.hGlobal));
+      read_effect(data, nullptr);
+      ReleaseStgMedium(&stg);
+      data->Release();
+      return !paths->empty();
+    }
+    data->Release();
+  }
+
+  if (!OpenClipboard(nullptr)) {
+    return false;
+  }
+  HANDLE hdrop = GetClipboardData(CF_HDROP);
+  if (!hdrop) {
     CloseClipboard();
     return false;
   }
-  HDROP drop = static_cast<HDROP>(data);
-  const UINT n = DragQueryFileW(drop, 0xFFFFFFFF, nullptr, 0);
-  for (UINT i = 0; i < n; ++i) {
-    const UINT len = DragQueryFileW(drop, i, nullptr, 0);
-    std::wstring path(len, L'\0');
-    DragQueryFileW(drop, i, path.data(), len + 1);
-    if (!path.empty()) {
-      paths->push_back(std::move(path));
-    }
-  }
-  if (cut) {
-    const UINT fmt = PreferredDropEffectFormat();
-    HANDLE effect_data = fmt ? GetClipboardData(fmt) : nullptr;
-    if (effect_data) {
-      auto* pe = static_cast<DWORD*>(GlobalLock(effect_data));
-      if (pe) {
-        *cut = (*pe & DROPEFFECT_MOVE) != 0;
-        GlobalUnlock(effect_data);
-      }
-    }
-  }
+  read_hdrop(static_cast<HDROP>(hdrop));
+  const UINT fmt = PreferredDropEffectFormat();
+  HANDLE effect_data = fmt ? GetClipboardData(fmt) : nullptr;
+  read_effect(nullptr, effect_data);
   CloseClipboard();
   return !paths->empty();
 }

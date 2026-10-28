@@ -78,6 +78,36 @@ bool SameVolume(const std::wstring& a, const std::wstring& b) {
   return _wcsicmp(va, vb) == 0;
 }
 
+int PasteClipboardToDesktopFolder(HWND owner,
+                                  std::vector<std::wstring>* landed_paths) {
+  if (landed_paths) {
+    landed_paths->clear();
+  }
+  std::vector<std::wstring> paths;
+  bool cut = false;
+  if (!ClipboardGetFilesWithEffect(&paths, &cut) || paths.empty()) {
+    return 0;
+  }
+  PWSTR desk_raw = nullptr;
+  if (FAILED(SHGetKnownFolderPath(FOLDERID_Desktop, 0, nullptr, &desk_raw)) ||
+      !desk_raw) {
+    return 0;
+  }
+  const std::wstring desk = desk_raw;
+  CoTaskMemFree(desk_raw);
+  int ok = 0;
+  for (const auto& src : paths) {
+    std::wstring dest;
+    if (MoveOrCopyFileIntoDir(owner, src, desk, cut, &dest)) {
+      ++ok;
+      if (landed_paths && !dest.empty()) {
+        landed_paths->push_back(dest);
+      }
+    }
+  }
+  return ok;
+}
+
 bool MoveOrCopyFileIntoDir(HWND owner, const std::wstring& src,
                            const std::wstring& dest_dir, bool move,
                            std::wstring* landed) {

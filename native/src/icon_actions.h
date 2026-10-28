@@ -32,6 +32,12 @@ bool MoveOrCopyFileIntoDir(HWND owner, const std::wstring& src,
                            const std::wstring& dest_dir, bool move,
                            std::wstring* landed);
 
+// Fences / Explorer: paste CF_HDROP into the user Desktop folder (copy or
+// cut per Preferred DropEffect). Returns how many items landed; fills
+// *landed_paths when non-null.
+int PasteClipboardToDesktopFolder(HWND owner,
+                                  std::vector<std::wstring>* landed_paths);
+
 // Rename plan with extension protection (.lnk/.exe/.url keep their extension
 // on stem-only edits) and Windows name validation.
 struct RenamePlan {

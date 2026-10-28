@@ -105,7 +105,6 @@
 <script>
   let items = [];
   let sel = -1;
-  let debounce = null;
   let dragging = false;
 
   function post(msg) {
@@ -172,23 +171,18 @@
     document.getElementById('status').textContent = m.status || (items.length ? (items.length + ' 项') : '输入文件名');
     render();
   };
+  // Search only on explicit action (按钮 / Enter) — not while typing.
   document.getElementById('go').onclick = () => doSearch();
-  document.getElementById('q').oninput = () => {
-    clearTimeout(debounce);
-    debounce = setTimeout(() => doSearch(), 420);
-  };
   document.getElementById('q').onkeydown = e => {
-    if (e.key === 'Enter') { clearTimeout(debounce); doSearch(); }
+    if (e.key === 'Enter') doSearch();
     if (e.key === 'Escape') post({ type: 'action', id: 'hide' });
   };
   document.getElementById('all').onchange = () => {
     post({ type: 'action', id: 'all_drives', value: document.getElementById('all').checked });
-    if (document.getElementById('q').value.trim()) doSearch();
   };
   document.querySelectorAll('#types input[data-type]').forEach(el => {
     el.onchange = () => {
       post({ type: 'action', id: 'types', types: selectedTypes() });
-      if (document.getElementById('q').value.trim()) doSearch();
     };
   });
   document.getElementById('open').onclick = () => { if (sel >= 0) post({ type: 'action', id: 'open', index: sel }); };

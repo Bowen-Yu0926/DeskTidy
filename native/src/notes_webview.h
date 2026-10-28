@@ -26,6 +26,9 @@ class NotesWebView {
 
   // WYSIWYG editor (kWysiwyg).
   void SetMarkdown(const std::wstring& md);
+  // Last known markdown (updated by SetMarkdown / Toast `changed`) — no IPC.
+  const std::wstring& CachedMarkdown() const { return pending_md_; }
+  // Round-trip get (slow). Prefer CachedMarkdown when the cache is authoritative.
   std::wstring PullMarkdown(DWORD timeout_ms = 1500);
 
   // Preview viewer (kViewer).
@@ -41,6 +44,10 @@ class NotesWebView {
 
   // Invoked with the document scroll ratio (0..1) whenever the page scrolls.
   std::function<void(double)> on_scroll;
+  // WYSIWYG document changed (Toast `changed` message).
+  std::function<void()> on_changed;
+  // Page booted empty / resized and wants the host to re-push markdown.
+  std::function<void()> on_need_content;
 
  private:
   void NavigateHome();

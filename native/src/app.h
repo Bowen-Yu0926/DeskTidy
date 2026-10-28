@@ -145,6 +145,10 @@ class App {
   void OnDesktopBlankDoubleClick();
   // Explorer / Fences: left-click blank desktop clears fence icon selection.
   void OnDesktopBlankLeftDown();
+  // Organized mode: paste clipboard files onto the real Desktop folder (floats).
+  void OnDesktopPaste();
+  // Explorer drop onto public float chrome → copy into Desktop folder.
+  void OnDesktopDropPaths(const std::vector<std::wstring>& paths);
   // P1-6: double-click toggles stock Explorer desktop ↔ organized DeskTidy view.
   void ShowStockDesktopView();
   void ShowOrganizedDesktopView();

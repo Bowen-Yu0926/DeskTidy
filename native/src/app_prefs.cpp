@@ -318,8 +318,8 @@ AppPrefs LoadAppPrefsFromPath(const std::wstring& path) {
     prefs.update_notified_tag = WidenUtf8(notified);
   }
   // auto_snapshot_on_change removed — ignore if present in older prefs files.
-  prefs.desktop_right_click_menu =
-      ParseBoolField(json, "desktop_right_click_menu", true);
+  // Always on; settings toggle removed (parity: shell verbs stay registered).
+  prefs.desktop_right_click_menu = true;
   prefs.vault_enabled = ParseBoolField(json, "vault_enabled", false);
   const std::string vault_api = ParseStringField(json, "vault_api_base");
   if (!vault_api.empty()) {
@@ -346,8 +346,8 @@ AppPrefs LoadAppPrefsFromPath(const std::wstring& path) {
   prefs.session_active = ParseBoolField(json, "session_active", false);
   prefs.show_fences = true;  // always shown; ignore persisted false
   prefs.double_click_hide = false;  // feature removed
-  prefs.enable_public_desktop =
-      ParseBoolField(json, "enable_public_desktop", false);
+  // Default off; settings toggle removed (floats stay page-local).
+  prefs.enable_public_desktop = false;
   prefs.vault_launcher_x = ParseIntField(json, "vault_launcher_x", -1);
   prefs.vault_launcher_y = ParseIntField(json, "vault_launcher_y", -1);
   prefs.show_page_indicator =

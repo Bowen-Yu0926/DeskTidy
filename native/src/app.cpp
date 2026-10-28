@@ -90,6 +90,7 @@ constexpr UINT kTimerReflowPublic = 53;
 constexpr UINT kMsgVaultPullDone = WM_APP + 48;
 constexpr UINT kMsgOrganizeDone = WM_APP + 49;
 constexpr UINT kMsgDesktopBlankDown = WM_APP + 50;
+constexpr UINT kMsgDesktopPaste = WM_APP + 51;
 constexpr DWORD kTrayOpenDebounceMs = 450;
 constexpr wchar_t kMsgClass[] = L"DeskTidyNativeMsg";
 bool g_organize_busy = false;
@@ -1151,6 +1152,9 @@ bool App::Init(HINSTANCE instance) {
     RebuildPublicItems();
   });
   public_host_.SetOnRefresh([this]() { RebuildPublicItems(); });
+  public_host_.SetOnPaste([this]() { OnDesktopPaste(); });
+  public_host_.SetOnPathsDropped(
+      [this](const std::vector<std::wstring>& paths) { OnDesktopDropPaths(paths); });
   public_host_.SetOnPlacementsChanged([this](const FloatPlacementMap& m) {
     float_placements_ = m;
     SaveFloatPlacements(float_placements_);
@@ -1362,7 +1366,7 @@ bool App::Init(HINSTANCE instance) {
   }
   StartForegroundHook();
   StartDesktopDblClickMonitor(message_hwnd_, kMsgDesktopDblClick,
-                              kMsgDesktopBlankDown);
+                              kMsgDesktopBlankDown, kMsgDesktopPaste);
   settings_.SetOnExit([this]() { HandleSettingsClose(); });
   settings_.SetOnHideToTray([this]() {
     // P2-1: tray balloon (Shell_NotifyIcon NIF_INFO), not the custom toast.
@@ -3168,6 +3172,59 @@ void App::OnDesktopBlankLeftDown() {
       fence->ClearSelection();
     }
   }
+}
+
+void App::OnDesktopPaste() {
+  // Stock view: Explorer DefView owns paste. Organized view hides the listview,
+  // so we land CF_HDROP into the Desktop folder and show floats (Fences).
+  if (icons_visible_intent_) {
+    return;
+  }
+  std::vector<std::wstring> landed;
+  const int n =
+      PasteClipboardToDesktopFolder(message_hwnd_ ? message_hwnd_ : nullptr,
+                                    &landed);
+  if (n <= 0) {
+    ShowToast(L"剪贴板里没有文件");
+    return;
+  }
+  for (const auto& p : landed) {
+    SuppressOrganizePath(p);
+  }
+  InvalidateDesktopScanCache();
+  RefreshDesktopIcons();
+  ShowToast(L"已粘贴 " + std::to_wstring(n) + L" 项到桌面");
+}
+
+void App::OnDesktopDropPaths(const std::vector<std::wstring>& paths) {
+  if (icons_visible_intent_ || paths.empty()) {
+    return;
+  }
+  PWSTR desk_raw = nullptr;
+  if (FAILED(SHGetKnownFolderPath(FOLDERID_Desktop, 0, nullptr, &desk_raw)) ||
+      !desk_raw) {
+    return;
+  }
+  const std::wstring desk = desk_raw;
+  CoTaskMemFree(desk_raw);
+  HWND owner = message_hwnd_ ? message_hwnd_ : nullptr;
+  int ok = 0;
+  for (const auto& src : paths) {
+    std::wstring dest;
+    if (MoveOrCopyFileIntoDir(owner, src, desk, /*move=*/false, &dest)) {
+      ++ok;
+      if (!dest.empty()) {
+        SuppressOrganizePath(dest);
+      }
+    }
+  }
+  if (ok <= 0) {
+    ShowToast(L"未能放到桌面");
+    return;
+  }
+  InvalidateDesktopScanCache();
+  RefreshDesktopIcons();
+  ShowToast(L"已放入桌面 " + std::to_wstring(ok) + L" 项");
 }
 
 void App::ShowStockDesktopView() {
@@ -5293,6 +5350,9 @@ LRESULT CALLBACK App::TrayWndProc(HWND hwnd, UINT msg, WPARAM wparam,
       return 0;
     case kMsgDesktopBlankDown:
       self->OnDesktopBlankLeftDown();
+      return 0;
+    case kMsgDesktopPaste:
+      self->OnDesktopPaste();
       return 0;
     case WM_CLIPBOARDUPDATE:
       // Refresh cut-ghost opacity when CF_HDROP / Preferred DropEffect changes

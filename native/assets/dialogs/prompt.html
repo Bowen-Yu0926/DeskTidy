@@ -66,15 +66,21 @@
   function post(msg) {
     try { chrome.webview.postMessage(JSON.stringify(msg)); } catch (e) {}
   }
+  function focusVal() {
+    const el = document.getElementById('val');
+    if (!el) return;
+    el.focus();
+    el.select();
+  }
   window.applyState = function(m) {
     if (!m || m.type !== 'state') return;
     if (m.title) document.getElementById('title').textContent = m.title;
     document.getElementById('label').textContent = m.label || '';
     document.getElementById('val').value = m.value || '';
-    setTimeout(() => {
-      const el = document.getElementById('val');
-      el.focus(); el.select();
-    }, 40);
+    // Host MoveFocus + retries: WebView2 often ignores the first focus().
+    focusVal();
+    setTimeout(focusVal, 50);
+    setTimeout(focusVal, 160);
   };
   document.getElementById('ok').onclick = () => {
     post({ type: 'action', id: 'ok', value: document.getElementById('val').value });

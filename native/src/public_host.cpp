@@ -6,9 +6,12 @@
 #include "icon_actions.h"
 #include "ole_drag.h"
 #include "pin_store.h"
+#include "shell_clipboard.h"
 #include "shell_context_menu.h"
+#include "toast.h"
 
 #include <Shellapi.h>
+#include <ShlObj.h>
 #include <objidl.h>
 #include <gdiplus.h>
 #include <windowsx.h>
@@ -178,7 +181,39 @@ bool PublicHost::Create(HINSTANCE instance) {
     return false;
   }
   SetWindowLongPtrW(hwnd_, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(this));
+  EnsureDropTarget();
   return true;
+}
+
+void PublicHost::EnsureDropTarget() {
+  if (!hwnd_ || drop_target_) {
+    return;
+  }
+  drop_target_ = new PathDropTarget([this](const std::vector<std::wstring>& paths) {
+    if (on_paths_dropped_) {
+      on_paths_dropped_(paths);
+      return;
+    }
+    // Fallback: copy into Desktop then refresh floats.
+    PWSTR desk_raw = nullptr;
+    if (FAILED(SHGetKnownFolderPath(FOLDERID_Desktop, 0, nullptr, &desk_raw)) ||
+        !desk_raw) {
+      return;
+    }
+    const std::wstring desk = desk_raw;
+    CoTaskMemFree(desk_raw);
+    for (const auto& src : paths) {
+      std::wstring dest;
+      MoveOrCopyFileIntoDir(hwnd_, src, desk, /*move=*/false, &dest);
+    }
+    if (on_refresh_) {
+      on_refresh_();
+    }
+  });
+  if (!RegisterPathDropTarget(hwnd_, drop_target_)) {
+    drop_target_->Release();
+    drop_target_ = nullptr;
+  }
 }
 
 void PublicHost::Destroy() {
@@ -189,8 +224,13 @@ void PublicHost::Destroy() {
   }
   slots_.clear();
   if (hwnd_) {
+    RevokePathDropTarget(hwnd_);
     DestroyWindow(hwnd_);
     hwnd_ = nullptr;
+  }
+  if (drop_target_) {
+    drop_target_->Release();
+    drop_target_ = nullptr;
   }
 }
 
@@ -443,6 +483,46 @@ void PublicHost::Layout() {
   Present();
 }
 
+void PublicHost::PasteClipboardFiles() {
+  if (on_paste_) {
+    on_paste_();
+    return;
+  }
+  if (PasteClipboardToDesktopFolder(hwnd_, nullptr) <= 0) {
+    ShowToast(L"剪贴板里没有文件");
+    return;
+  }
+  if (on_refresh_) {
+    on_refresh_();
+  }
+}
+
+void PublicHost::ShowBackgroundMenu(POINT screen) {
+  PWSTR desk_raw = nullptr;
+  std::wstring desk;
+  if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Desktop, 0, nullptr, &desk_raw)) &&
+      desk_raw) {
+    desk = desk_raw;
+    CoTaskMemFree(desk_raw);
+  }
+  if (desk.empty()) {
+    return;
+  }
+  const std::vector<ShellMenuExtra> extras{{L"刷新", kExtPublicRefresh}};
+  ShellVerbFn on_verb = [this](const std::wstring& verb) {
+    if ((verb == L"refresh" || verb == L"paste" || verb == L"newfolder" ||
+         verb == L"undo") &&
+        on_refresh_) {
+      on_refresh_();
+    }
+  };
+  const int rc = TrackShellFolderBackgroundMenu(hwnd_, screen, desk, extras,
+                                                on_verb, nullptr);
+  if (rc == kExtPublicRefresh && on_refresh_) {
+    on_refresh_();
+  }
+}
+
 void PublicHost::ShowSlotMenu(int index, POINT screen) {
   if (index < 0 || index >= static_cast<int>(slots_.size())) {
     return;
@@ -689,6 +769,21 @@ std::vector<std::pair<std::wstring, RECT>> PublicHost::SlotScreenRects() const {
   return out;
 }
 
+void PublicHost::CopySelection() {
+  const auto paths = SelectedPaths();
+  if (!paths.empty() && ClipboardSetFiles(hwnd_, paths, false)) {
+    ShowToast(L"已复制到剪贴板");
+  }
+}
+
+void PublicHost::CutSelection() {
+  const auto paths = SelectedPaths();
+  if (!paths.empty() && ClipboardSetFiles(hwnd_, paths, true)) {
+    ShowToast(L"已剪切到剪贴板");
+    Present();
+  }
+}
+
 void PublicHost::DeleteSelection() {
   auto paths = SelectedPaths();
   if (paths.empty()) {
@@ -915,15 +1010,18 @@ LRESULT PublicHost::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
     }
     case WM_RBUTTONUP: {
       const int hit = HitTest(GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam));
+      POINT pt{};
+      GetCursorPos(&pt);
       if (hit >= 0) {
         EnsureSelSize();
         if (!IsSelected(hit)) {
           SelectOnly(hit);
         }
         Present();
-        POINT pt{};
-        GetCursorPos(&pt);
         ShowSlotMenu(hit, pt);
+      } else {
+        // Blank float chrome: Explorer desktop background menu (Paste / New…).
+        ShowBackgroundMenu(pt);
       }
       return 0;
     }
@@ -952,9 +1050,24 @@ LRESULT PublicHost::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
         Present();
         return 0;
       }
+      if (vk == L'C' && (GetKeyState(VK_CONTROL) & 0x8000)) {
+        CopySelection();
+        return 0;
+      }
+      if (vk == L'X' && (GetKeyState(VK_CONTROL) & 0x8000)) {
+        CutSelection();
+        return 0;
+      }
+      if (vk == L'V' && (GetKeyState(VK_CONTROL) & 0x8000)) {
+        PasteClipboardFiles();
+        return 0;
+      }
       return 0;
     }
     case WM_DESTROY:
+      if (hwnd_) {
+        RevokePathDropTarget(hwnd_);
+      }
       hwnd_ = nullptr;
       return 0;
     default:

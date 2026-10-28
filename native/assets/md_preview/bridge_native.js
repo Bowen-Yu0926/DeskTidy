@@ -85,43 +85,64 @@
     return html;
   }
 
+  // marked v12 Renderer overrides still use classic signatures
+  // (heading(text, level, raw) / code(code, infostring, escaped)), not tokens.
+  // Calling this.parser.parseInline here throws: parser is undefined on Renderer.
+  var markedConfigured = false;
+  function ensureMarked() {
+    if (markedConfigured || !window.marked) return;
+    markedConfigured = true;
+    marked.use({
+      gfm: true,
+      breaks: false,
+      renderer: {
+        heading: function (text, level, raw) {
+          var plain = String(raw != null ? raw : text || "").replace(/<[^>]+>/g, "");
+          var id = slugify(plain);
+          lastHeadings.push({ level: level, text: plain, id: id });
+          return (
+            "<h" + level + ' id="' + id + '">' + text + "</h" + level + ">\n"
+          );
+        },
+        code: function (code, infostring) {
+          var src = code || "";
+          var lang = String(infostring || "")
+            .trim()
+            .split(/\s+/)[0] || "";
+          if (lang === "mermaid") {
+            mermaidId += 1;
+            return (
+              '<div class="mermaid" id="mermaid-' +
+              mermaidId +
+              '">' +
+              escapeHtml(src) +
+              "</div>\n"
+            );
+          }
+          var highlighted;
+          try {
+            if (lang && window.hljs && hljs.getLanguage(lang)) {
+              highlighted = hljs.highlight(src, { language: lang }).value;
+            } else if (window.hljs) {
+              highlighted = hljs.highlightAuto(src).value;
+            } else {
+              highlighted = escapeHtml(src);
+            }
+          } catch (e) {
+            highlighted = escapeHtml(src);
+          }
+          var cls = lang
+            ? ' class="hljs language-' + lang + '"'
+            : ' class="hljs"';
+          return "<pre><code" + cls + ">" + highlighted + "</code></pre>\n";
+        },
+      },
+    });
+  }
+
   function parseMarkdown(md) {
     lastHeadings = [];
-    var renderer = {
-      heading: function (token) {
-        var text = this.parser.parseInline(token.tokens);
-        var plain = text.replace(/<[^>]+>/g, "");
-        var id = slugify(plain);
-        lastHeadings.push({ level: token.depth, text: plain, id: id });
-        return "<h" + token.depth + ' id="' + id + '">' + text + "</h" + token.depth + ">\n";
-      },
-      code: function (token) {
-        var code = token.text || "";
-        var lang = (token.lang || "").trim().split(/\s+/)[0] || "";
-        if (lang === "mermaid") {
-          mermaidId += 1;
-          return (
-            '<div class="mermaid" id="mermaid-' + mermaidId + '">' +
-            escapeHtml(code) + "</div>\n"
-          );
-        }
-        var highlighted;
-        try {
-          if (lang && window.hljs && hljs.getLanguage(lang)) {
-            highlighted = hljs.highlight(code, { language: lang }).value;
-          } else if (window.hljs) {
-            highlighted = hljs.highlightAuto(code).value;
-          } else {
-            highlighted = escapeHtml(code);
-          }
-        } catch (e) {
-          highlighted = escapeHtml(code);
-        }
-        var cls = lang ? ' class="hljs language-' + lang + '"' : ' class="hljs"';
-        return "<pre><code" + cls + ">" + highlighted + "</code></pre>\n";
-      },
-    };
-    marked.use({ renderer: renderer, gfm: true, breaks: false });
+    ensureMarked();
     return marked.parse(md);
   }
 
@@ -229,10 +250,18 @@
       chrome.webview.addEventListener("message", function (e) {
         var msg = e.data || {};
         if (msg.type === "set") {
-          window.__desknoteSetMarkdown(msg.md || "", {
-            theme: msg.theme || "",
-            baseUrl: msg.baseUrl || "",
-          });
+          try {
+            window.__desknoteSetMarkdown(msg.md || "", {
+              theme: msg.theme || "",
+              baseUrl: msg.baseUrl || "",
+            });
+          } catch (err) {
+            var root = document.getElementById("content");
+            if (root) {
+              root.textContent =
+                "预览渲染失败：" + (err && err.message ? err.message : String(err));
+            }
+          }
         } else if (msg.type === "scrollTo") {
           window.__desknoteSetScrollRatio(msg.ratio);
         } else if (msg.type === "getScroll") {

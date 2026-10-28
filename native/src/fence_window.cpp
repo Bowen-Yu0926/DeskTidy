@@ -2413,7 +2413,10 @@ void FenceWindow::ShowFenceMenu(POINT screen) {
       {Tr("fence_dissolve"), kExtFenceDissolve},
   };
   ShellVerbFn on_verb = [this](const std::wstring& verb) {
-    if (verb == L"refresh" && on_refresh_) {
+    // Paste / New / Undo mutate the Desktop folder — re-scan floats + fences.
+    if ((verb == L"refresh" || verb == L"paste" || verb == L"newfolder" ||
+         verb == L"undo") &&
+        on_refresh_) {
       on_refresh_(this);
     }
   };

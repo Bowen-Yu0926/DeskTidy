@@ -817,6 +817,18 @@ bool NotesWindow::Create(HINSTANCE instance) {
   }
   DragAcceptFiles(hwnd_, TRUE);
   web_.Create(hwnd_);
+  web_.on_changed = [this]() {
+    // Mirror Toast → RichEdit so Save/close always has bytes even if pull lags.
+    const std::wstring& md = web_.CachedMarkdown();
+    if (edit_ && !md.empty()) {
+      SetWindowTextW(edit_, md.c_str());
+    }
+    MarkDirty();
+  };
+  web_.on_need_content = [this]() {
+    // Always re-push (empty notes included) so Toast can boot its UI.
+    web_.SetMarkdown(CurrentPlainText());
+  };
   {
     const std::wstring theme =
         SystemAppsUseLightTheme() ? L"light" : L"dark";
@@ -842,19 +854,14 @@ bool NotesWindow::Create(HINSTANCE instance) {
   if (outline_) {
     RebuildOutline();
   }
-  // Start in edit mode (preview is opt-in via right strip) — blank preview
-  // stage made new notes look broken.
-  if (preview_ && PathLooksMarkdown() && preview_web_.Host()) {
-    ShowPreviewMode();
-  } else {
-    preview_ = false;
-  }
+  preview_ = false;
   if (always_on_top_ && !toast_) {
     CheckMenuItem(menu_, kMenuAlwaysOnTop, MF_BYCOMMAND | MF_CHECKED);
     SetWindowPos(hwnd_, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
   }
   UpdateModeStrip();
   LayoutClient();
+  EnsureMarkdownEditor(true);
   RefreshTitle();
   UpdateStatusBar();
   PersistViewSettings();
@@ -1086,13 +1093,12 @@ void NotesWindow::RefreshTitle() {
   if (toast_) {
     title += L" · 便签条";
   } else if (wysiwyg_) {
-    title += L" · WYSIWYG";
   }
   SetWindowTextW(hwnd_, title.c_str());
 }
 
 void NotesWindow::Destroy() {
-  Save();
+  Save(true);
   PersistTabs();
   PersistViewSettings();
   if (hwnd_) {
@@ -1813,13 +1819,15 @@ void NotesWindow::RelayoutTabChips() {
     SIZE sz{};
     GetTextExtentPoint32W(hdc, label.c_str(), static_cast<int>(label.size()),
                           &sz);
-    const int lead = pinned ? 18 : 12;
-    int w = sz.cx + lead + 24;  // label + close
-    if (w < 72) {
-      w = 72;
+    // Left pad + optional pin glyph + label + close hit plate (match PaintTabBar).
+    const int lead = pinned ? 28 : 14;
+    const int close_w = 28;
+    int w = sz.cx + lead + close_w;
+    if (w < 100) {
+      w = 100;
     }
-    if (w > 200) {
-      w = 200;
+    if (w > 220) {
+      w = 220;
     }
     tab_chip_rects_.push_back(RECT{x, y, x + w, y + h});
     x += w + 4;
@@ -1887,21 +1895,25 @@ void NotesWindow::PaintTabBar(HDC hdc) {
         use ? static_cast<HFONT>(SelectObject(hdc, use)) : nullptr;
     SetTextColor(hdc, on ? text_color_ : muted_color_);
 
-    int text_left = chip.left + 14;
+    int text_left = chip.left + 12;
     if (pinned) {
-      Gdiplus::SolidBrush pin(Gdiplus::Color(255, 100, 116, 139));
-      g.FillEllipse(&pin, x + 10.f, y + h * 0.5f - 3.f, 6.f, 6.f);
-      text_left = chip.left + 22;
+      // ★ matches sidebar pin mark — clearer than a 6px dot at compact widths.
+      RECT pin_rc{chip.left + 8, chip.top, chip.left + 26, chip.bottom};
+      SetTextColor(hdc, RGB(100, 116, 139));
+      DrawTextW(hdc, L"★", -1, &pin_rc,
+                DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+      text_left = chip.left + 26;
+      SetTextColor(hdc, on ? text_color_ : muted_color_);
     }
 
     std::wstring label = TabLabel(path_s);
-    RECT text_rc{text_left, chip.top, chip.right - 26, chip.bottom};
+    RECT text_rc{text_left, chip.top, chip.right - 28, chip.bottom};
     DrawTextW(hdc, label.c_str(), -1, &text_rc,
               DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
 
     // Close always visible (faint); hot plate on hover.
     const bool close_hot = hover && tab_hover_zone_ == 2;
-    RECT close_rc{chip.right - 24, chip.top + 6, chip.right - 6,
+    RECT close_rc{chip.right - 26, chip.top + 6, chip.right - 6,
                   chip.bottom - 6};
     if (close_hot) {
       Gdiplus::GraphicsPath cp;
@@ -1962,9 +1974,9 @@ int NotesWindow::HitTestTabBar(POINT client, int* out_zone) const {
     if (out_zone) {
       const bool pinned =
           i < tab_paths_.size() && PathIsPinned(tab_paths_[i]);
-      if (pinned && client.x <= chip.left + 18) {
+      if (pinned && client.x <= chip.left + 26) {
         *out_zone = 1;  // pin
-      } else if (client.x >= chip.right - 26) {
+      } else if (client.x >= chip.right - 28) {
         *out_zone = 2;  // close
       } else {
         *out_zone = 0;
@@ -2285,9 +2297,8 @@ void NotesWindow::NewTab() {
 
 void NotesWindow::CloseTabOnly() {
   // Silent autosave (Notepad++ / Fences-class: closing a tab does not discard).
-  SyncFromWysiwyg();
   if (!path_.empty()) {
-    Save();
+    Save(true);
   }
   EnsureTabStates();
   if (tab_paths_.size() <= 1) {
@@ -2541,6 +2552,9 @@ void NotesWindow::Load() {
       return;
     }
     text_enc_ = enc;
+    if (wide.empty() && PathLooksMarkdown()) {
+      wide = L"# \n\n";
+    }
     SetWindowTextW(edit_, wide.c_str());
   }
   loading_ = false;
@@ -2595,18 +2609,9 @@ bool NotesWindow::OfferElevatedSave(const std::wstring& path,
 }
 
 void NotesWindow::UpdateModeStrip() {
-  if (!mode_strip_) {
-    return;
+  if (mode_strip_) {
+    ShowWindow(mode_strip_, SW_HIDE);
   }
-  const bool show =
-      PathLooksMarkdown() && !focus_ && !toast_ && !wysiwyg_;
-  ShowWindow(mode_strip_, show ? SW_SHOW : SW_HIDE);
-  if (!show) {
-    return;
-  }
-  // Toggle chip: editing → "预览"; previewing → "编辑".
-  SetWindowTextW(mode_strip_, preview_ ? L"编辑" : L"预览");
-  InvalidateRect(mode_strip_, nullptr, FALSE);
 }
 
 void NotesWindow::ShowPreviewMode() {
@@ -2641,19 +2646,18 @@ void NotesWindow::ShowPreviewMode() {
 }
 
 void NotesWindow::ToggleMdViewMode() {
-  if (!PathLooksMarkdown() || focus_) {
-    return;
-  }
-  if (preview_) {
-    ShowEditMode();
-  } else {
-    ShowPreviewMode();
-  }
+  EnsureMarkdownEditor(true);
 }
 
 void NotesWindow::ShowEditMode() {
+  if (PathLooksMarkdown() && !toast_) {
+    EnsureMarkdownEditor(true);
+    return;
+  }
   if (wysiwyg_) {
-    ToggleWysiwyg();
+    SyncFromWysiwyg();
+    wysiwyg_ = false;
+    ApplyWysiwygVisibility();
   }
   if (preview_) {
     preview_ = false;
@@ -2674,8 +2678,23 @@ void NotesWindow::ShowEditMode() {
   LayoutClient();
 }
 
-void NotesWindow::Save() {
-  SyncFromWysiwyg();
+void NotesWindow::Save(bool authoritative_pull) {
+  if (wysiwyg_) {
+    std::wstring from_toast;
+    if (authoritative_pull && web_.Ready()) {
+      from_toast = web_.PullMarkdown(1500);
+    }
+    if (from_toast.empty()) {
+      from_toast = web_.CachedMarkdown();
+    }
+    if (from_toast.empty()) {
+      SyncFromWysiwyg();
+    } else if (edit_) {
+      SetWindowTextW(edit_, from_toast.c_str());
+    }
+  } else {
+    SyncFromWysiwyg();
+  }
   if (!edit_) {
     return;
   }
@@ -2686,6 +2705,20 @@ void NotesWindow::Save() {
   const std::wstring plain = CurrentPlainText();
   // Plain text for md/txt/code/hosts；.rtf 仍走 RTF（对标 Notepad++ 文本保存）。
   if (PathLooksTextish()) {
+    // Never replace an existing note with empty bytes (failed Toast sync).
+    if (plain.empty()) {
+      WIN32_FILE_ATTRIBUTE_DATA fad{};
+      if (GetFileAttributesExW(path_.c_str(), GetFileExInfoStandard, &fad)) {
+        const ULONGLONG sz =
+            (static_cast<ULONGLONG>(fad.nFileSizeHigh) << 32) | fad.nFileSizeLow;
+        if (sz > 0) {
+          return;
+        }
+      }
+      if (dirty_ && wysiwyg_ && !authoritative_pull) {
+        return;
+      }
+    }
     std::string bytes;
     if (!EncodeTextFileBytes(plain, text_enc_, &bytes)) {
       MistAlert(hwnd_, L"保存失败",
@@ -3447,55 +3480,92 @@ void NotesWindow::ToggleToast() {
 }
 
 void NotesWindow::SyncFromWysiwyg() {
-  if (!wysiwyg_ || !web_.Ready()) {
+  if (!wysiwyg_) {
     return;
   }
-  const std::wstring md = web_.PullMarkdown();
-  if (edit_) {
+  MSG msg{};
+  for (int i = 0; i < 64; ++i) {
+    if (!PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
+      break;
+    }
+    TranslateMessage(&msg);
+    DispatchMessageW(&msg);
+  }
+  std::wstring md = web_.CachedMarkdown();
+  if (md.empty() && web_.Ready()) {
+    md = web_.PullMarkdown(250);
+  }
+  if (edit_ && !md.empty()) {
     SetWindowTextW(edit_, md.c_str());
   }
 }
 
-void NotesWindow::ToggleWysiwyg() {
-  if (!web_.Available()) {
-    const DWORD start = GetTickCount();
-    MSG msg{};
-    while (!web_.Available() && GetTickCount() - start < 4000) {
-      while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
-        TranslateMessage(&msg);
-        DispatchMessageW(&msg);
+
+void NotesWindow::EnsureMarkdownEditor(bool force_reload) {
+  if (toast_) {
+    return;
+  }
+  if (!PathLooksMarkdown()) {
+    if (wysiwyg_) {
+      SyncFromWysiwyg();
+      wysiwyg_ = false;
+      ApplyWysiwygVisibility();
+    }
+    if (preview_) {
+      preview_ = false;
+      if (preview_web_.Host()) {
+        preview_web_.Hide();
       }
-      Sleep(15);
+    }
+    if (edit_) {
+      ShowWindow(edit_, SW_SHOW);
+    }
+    UpdateModeStrip();
+    LayoutClient();
+    return;
+  }
+  if (preview_) {
+    preview_ = false;
+    if (preview_web_.Host()) {
+      preview_web_.Hide();
     }
   }
-  if (!web_.Available()) {
-    MistAlert(hwnd_, L"Toast 编辑器",
-              L"无法启动 WebView2。请安装 Microsoft Edge WebView2 Runtime，"
-              L"并确认 assets\\md_preview\\wysiwyg_native.html 存在。",
+  if (!web_.Host() && !web_.Available()) {
+    MistAlert(hwnd_, L"DeskNote",
+              L"无法启动所见即所得编辑器。请安装 Microsoft Edge WebView2 Runtime。",
               MistMsgTone::Warn);
     return;
   }
-  wysiwyg_ = !wysiwyg_;
-  if (wysiwyg_) {
-    if (preview_) {
-      preview_ = false;
-      if (menu_) {
-        CheckMenuItem(menu_, kMenuPreviewPane, MF_BYCOMMAND | MF_UNCHECKED);
-      }
-    }
-    const std::wstring text = CurrentPlainText();
-    web_.SetMarkdown(text);
-    SetWindowPos(hwnd_, nullptr, 0, 0, 720, 560,
-                 SWP_NOMOVE | SWP_NOZORDER | SWP_SHOWWINDOW);
+  const bool entering = !wysiwyg_;
+  wysiwyg_ = true;
+  // Layout host first, then push markdown (empty notes still boot Toast).
+  if (entering) {
+    ApplyWysiwygVisibility();
   } else {
-    SyncFromWysiwyg();
+    web_.Show();
+    web_.Resize();
+    LayoutClient();
   }
-  RefreshTitle();
+  std::wstring md = CurrentPlainText();
+  if (md.empty()) {
+    md = L"# \n\n";
+    if (edit_) {
+      SetWindowTextW(edit_, md.c_str());
+    }
+  }
+  if (entering || force_reload) {
+    web_.SetMarkdown(md);
+  }
   EnsureTabStates();
   if (tab_index_ >= 0 && tab_index_ < static_cast<int>(tab_states_.size())) {
-    tab_states_[static_cast<size_t>(tab_index_)].wysiwyg = wysiwyg_;
+    tab_states_[static_cast<size_t>(tab_index_)].wysiwyg = true;
   }
-  ApplyWysiwygVisibility();
+  UpdateModeStrip();
+  RefreshTitle();
+}
+
+void NotesWindow::ToggleWysiwyg() {
+  EnsureMarkdownEditor(true);
 }
 
 std::wstring NotesWindow::NoteBaseDir() const {
@@ -3839,7 +3909,7 @@ void NotesWindow::LayoutClient() {
   const int pane_h = (std::max)(40, bottom - top);
 
   // Left library rail (cool gray) — full height under tabs.
-  if (sidebar_visible_ && sidebar_ && !wysiwyg_ && !toast_) {
+  if (sidebar_visible_ && sidebar_ && !toast_) {
     const int side = 240;
     const int chrome_h = 44;
     const int pad = 12;
@@ -3954,7 +4024,7 @@ void NotesWindow::LayoutClient() {
     }
   }
 
-  const int stage_l = left + (sidebar_visible_ && !wysiwyg_ && !toast_ ? 12 : 8);
+  const int stage_l = left + (sidebar_visible_ && !toast_ ? 12 : 8);
   const int stage_r = right - 8;
   const int stage_t = top + 8;
   const int stage_b = bottom - 8;
@@ -5011,18 +5081,15 @@ void NotesWindow::Present() {
   if (!hwnd_) {
     return;
   }
-  Show();
   if (toast_) {
+    Show();
     return;
   }
-  ShowWindow(hwnd_, SW_RESTORE);
+  ShowWindow(hwnd_, SW_SHOWMAXIMIZED);
   SetForegroundWindow(hwnd_);
-  ShowWindow(hwnd_, SW_MAXIMIZE);
-  SetWindowPos(hwnd_, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
-  // Match Python show_notepad: Markdown opens in preview by default.
-  if (PathLooksMarkdown() && !preview_) {
-    ShowPreviewMode();
-  }
+  LayoutClient();
+  EnsureMarkdownEditor(true);
+  UpdateWindow(hwnd_);
 }
 
 bool NotesWindow::ConfirmSaveCurrent() {
@@ -5046,13 +5113,10 @@ bool NotesWindow::ConfirmSaveCurrent() {
 }
 
 bool NotesWindow::ConfirmCloseAll() {
-  // Notepad++ / Python closeEvent: silent autosave, no discard prompt.
-  // Flush active tab + persist session so reopen restores paths and content.
-  SyncFromWysiwyg();
+  // Notepad++ style: close always autosaves (no discard prompt).
   if (!path_.empty()) {
-    Save();
-  } else if (edit_ && dirty_) {
-    // Untitled edge: adopt a library path then save.
+    Save(true);
+  } else if (edit_) {
     path_ = MakeNewNotePath();
     if (tab_index_ >= 0 &&
         tab_index_ < static_cast<int>(tab_paths_.size())) {
@@ -5061,7 +5125,7 @@ bool NotesWindow::ConfirmCloseAll() {
       tab_paths_.push_back(path_);
       tab_index_ = static_cast<int>(tab_paths_.size()) - 1;
     }
-    Save();
+    Save(true);
   }
   PersistTabs();
   PersistViewSettings();
@@ -6197,7 +6261,7 @@ LRESULT NotesWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
           CloseTab();
           return 0;
         case kMenuSave:
-          Save();
+          Save(true);
           return 0;
         case kMenuSaveAs:
           SaveAs();
@@ -6522,7 +6586,7 @@ LRESULT NotesWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
       GetClientRect(hwnd_, &rc);
       FillRect(hdc, &rc, bg_brush_ ? bg_brush_
                                    : reinterpret_cast<HBRUSH>(GetStockObject(WHITE_BRUSH)));
-      if (sidebar_visible_ && !wysiwyg_ && !toast_ && rail_brush_) {
+      if (sidebar_visible_ && !toast_ && rail_brush_) {
         const int tab_h = (tabs_ && IsWindowVisible(tabs_)) ? 48 : 0;
         const int status_h =
             (status_ && IsWindowVisible(status_)) ? kStatusBarH : 0;
@@ -6640,14 +6704,12 @@ LRESULT NotesWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
       }
       return 0;
     case WM_CLOSE:
-      SyncFromWysiwyg();
-      if (!ConfirmCloseAll()) {
-        return 0;
+      ConfirmCloseAll();
+      if (hwnd_ && IsWindowVisible(hwnd_)) {
+        ShowWindow(hwnd_, SW_HIDE);
       }
       if (quit_on_close_) {
         DestroyWindow(hwnd_);
-      } else {
-        Hide();
       }
       return 0;
     case WM_DESTROY:

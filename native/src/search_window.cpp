@@ -215,6 +215,24 @@ bool IsDriveRootPath(const std::wstring& p) {
   return p.size() == 3 && p[1] == L':' && (p[2] == L'\\' || p[2] == L'/');
 }
 
+// CreateProcess command-line quoting: a trailing \ before " escapes the quote
+// ("C:\" "D:\" → one broken arg C:" D:"). Double a final backslash; escape ".
+std::wstring QuoteCmdArg(const std::wstring& s) {
+  std::wstring out = L"\"";
+  for (wchar_t c : s) {
+    if (c == L'"') {
+      out += L"\\\"";
+    } else {
+      out.push_back(c);
+    }
+  }
+  if (!s.empty() && s.back() == L'\\') {
+    out.push_back(L'\\');
+  }
+  out.push_back(L'"');
+  return out;
+}
+
 // Filesystem folders currently open in Explorer (Python
 // open_explorer_folder_paths). Mirrors Shell.Application.Windows() enumeration:
 // for each window, Document → Folder → Self → Path. Virtual namespaces yield
@@ -768,9 +786,16 @@ void SearchWindow::RunSearch(const std::wstring& needle) {
       cmd += L" -e ";
       cmd += e;
     }
-    cmd += L" " + needle;
+    cmd += L" ";
+    cmd += QuoteCmdArg(needle);
     for (const auto& root : roots) {
-      cmd += L" \"" + root + L"\"";
+      // Prefer forward slash for drive roots so quoting stays unambiguous.
+      std::wstring path = root;
+      if (IsDriveRootPath(path)) {
+        path[2] = L'/';
+      }
+      cmd += L" ";
+      cmd += QuoteCmdArg(path);
     }
     SECURITY_ATTRIBUTES sa{sizeof(sa), nullptr, TRUE};
     HANDLE rd = nullptr, wr = nullptr;
@@ -808,6 +833,11 @@ void SearchWindow::RunSearch(const std::wstring& needle) {
             line.pop_back();
           }
           if (!line.empty()) {
+            // stderr is merged — skip fd diagnostics, keep only hit paths.
+            if (line.rfind("[fd ", 0) == 0 || line.rfind("error:", 0) == 0) {
+              pos = eol + 1;
+              continue;
+            }
             const int wn =
                 MultiByteToWideChar(CP_UTF8, 0, line.c_str(), -1, nullptr, 0);
             std::wstring wide(wn > 0 ? wn - 1 : 0, L'\0');

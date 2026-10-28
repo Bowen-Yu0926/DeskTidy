@@ -4,12 +4,15 @@
 
 namespace {
 
-HHOOK g_hook = nullptr;
+HHOOK g_mouse_hook = nullptr;
+HHOOK g_key_hook = nullptr;
 HWND g_notify = nullptr;
 UINT g_msg = 0;
 UINT g_down_msg = 0;
+UINT g_paste_msg = 0;
 DWORD g_last_fire_ms = 0;
 DWORD g_last_down_ms = 0;
+DWORD g_last_paste_ms = 0;
 POINT g_last_rclick{-1, -1};
 
 bool IsOwnOverlay(HWND hwnd) {
@@ -32,6 +35,37 @@ bool ClassIsDesktop(const wchar_t* cls) {
          wcscmp(cls, L"DesktopWindowContentBridge") == 0 ||
          wcscmp(cls, L"Windows.UI.Composition.DesktopWindowContentBridge") ==
              0;
+}
+
+bool ForegroundIsDesktopShell() {
+  HWND fg = GetForegroundWindow();
+  if (!fg) {
+    return false;
+  }
+  // Never steal Ctrl+V from Explorer folders, editors, or DeskTidy chrome
+  // that already handles paste (fences / notes / public host).
+  if (IsOwnOverlay(fg)) {
+    return false;
+  }
+  wchar_t cls[128]{};
+  HWND cur = fg;
+  while (cur) {
+    cls[0] = 0;
+    GetClassNameW(cur, cls, 128);
+    if (ClassIsDesktop(cls)) {
+      return true;
+    }
+    cur = GetParent(cur);
+  }
+  HWND root = GetAncestor(fg, GA_ROOT);
+  if (root) {
+    cls[0] = 0;
+    GetClassNameW(root, cls, 128);
+    if (ClassIsDesktop(cls)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 LRESULT CALLBACK LowLevelMouseProc(int code, WPARAM wparam, LPARAM lparam) {
@@ -65,7 +99,27 @@ LRESULT CALLBACK LowLevelMouseProc(int code, WPARAM wparam, LPARAM lparam) {
       }
     }
   }
-  return CallNextHookEx(g_hook, code, wparam, lparam);
+  return CallNextHookEx(g_mouse_hook, code, wparam, lparam);
+}
+
+LRESULT CALLBACK LowLevelKeyboardProc(int code, WPARAM wparam, LPARAM lparam) {
+  if (code == HC_ACTION && g_paste_msg && g_notify && IsWindow(g_notify)) {
+    const auto* info = reinterpret_cast<KBDLLHOOKSTRUCT*>(lparam);
+    if (info && (wparam == WM_KEYDOWN || wparam == WM_SYSKEYDOWN) &&
+        info->vkCode == 'V' &&
+        (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0 &&
+        (GetAsyncKeyState(VK_MENU) & 0x8000) == 0 &&
+        ForegroundIsDesktopShell()) {
+      const DWORD now = GetTickCount();
+      if (now - g_last_paste_ms >= 200) {
+        g_last_paste_ms = now;
+        PostMessageW(g_notify, g_paste_msg, 0, 0);
+        // Swallow so a half-hidden DefView does not also try (and fail) paste.
+        return 1;
+      }
+    }
+  }
+  return CallNextHookEx(g_key_hook, code, wparam, lparam);
 }
 
 }  // namespace
@@ -101,25 +155,34 @@ bool IsDesktopBlankPoint(int screen_x, int screen_y) {
 }
 
 void StartDesktopDblClickMonitor(HWND notify_hwnd, UINT notify_msg,
-                                 UINT notify_down_msg) {
+                                 UINT notify_down_msg, UINT notify_paste_msg) {
   g_notify = notify_hwnd;
   g_msg = notify_msg;
   g_down_msg = notify_down_msg;
-  if (g_hook) {
-    return;
+  g_paste_msg = notify_paste_msg;
+  if (!g_mouse_hook) {
+    g_mouse_hook = SetWindowsHookExW(WH_MOUSE_LL, LowLevelMouseProc,
+                                     GetModuleHandleW(nullptr), 0);
   }
-  g_hook = SetWindowsHookExW(WH_MOUSE_LL, LowLevelMouseProc,
-                             GetModuleHandleW(nullptr), 0);
+  if (g_paste_msg && !g_key_hook) {
+    g_key_hook = SetWindowsHookExW(WH_KEYBOARD_LL, LowLevelKeyboardProc,
+                                   GetModuleHandleW(nullptr), 0);
+  }
 }
 
 void StopDesktopDblClickMonitor() {
-  if (g_hook) {
-    UnhookWindowsHookEx(g_hook);
-    g_hook = nullptr;
+  if (g_mouse_hook) {
+    UnhookWindowsHookEx(g_mouse_hook);
+    g_mouse_hook = nullptr;
+  }
+  if (g_key_hook) {
+    UnhookWindowsHookEx(g_key_hook);
+    g_key_hook = nullptr;
   }
   g_notify = nullptr;
   g_msg = 0;
   g_down_msg = 0;
+  g_paste_msg = 0;
 }
 
 bool GetLastDesktopRightClick(POINT* out) {
