@@ -35,6 +35,19 @@
       font-size: 16px;
       line-height: 1.7;
       -webkit-font-smoothing: antialiased;
+      transition: background 0.25s ease;
+    }
+    /* DeskNote：冷调纸面氛围（与 desknote.html 独立页对齐） */
+    body[data-product="desknote"] {
+      --ink: #1a2a2e;
+      --ink-soft: #3d5258;
+      --muted: #6a8086;
+      --paper: #eef3f2;
+      --line: #d2e0e0;
+      background:
+        radial-gradient(1000px 420px at 8% -8%, #d5e8e7 0%, transparent 52%),
+        radial-gradient(780px 380px at 100% 0%, #e4eceb 0%, transparent 48%),
+        var(--paper);
     }
     .app-shell {
       width: min(calc(var(--max) + var(--toc-w) + 2.5rem), calc(100% - 2rem));
@@ -85,7 +98,7 @@
       color: var(--sky); background: var(--wash); border-left-color: var(--sky);
     }
     body[data-product="desknote"] .side-toc nav a:hover {
-      color: var(--teal); background: #e4eef1; border-left-color: var(--teal);
+      color: var(--teal); background: #ddeceb; border-left-color: var(--teal);
     }
     .main-col { min-width: 0; padding-top: 0.85rem; padding-right: 7.5rem; }
     .product-tabs {

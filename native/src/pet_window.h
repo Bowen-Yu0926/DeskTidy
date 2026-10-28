@@ -38,8 +38,9 @@ class PetWindow {
   void SetOnTool(std::function<void(const std::wstring&)> fn) {
     on_tool_ = std::move(fn);
   }
-  // Python float_bar_tool_flags: record / minutes / calculator / todo.
-  void SetToolFlags(bool record, bool minutes, bool calculator, bool todo);
+  // Python float_bar_tool_flags: record / minutes / calculator / todo / vault.
+  void SetToolFlags(bool record, bool minutes, bool calculator, bool todo,
+                    bool vault = false);
   void SetPages(const std::vector<std::wstring>& names, int current);
   struct FolderChip {
     std::wstring name;
@@ -172,6 +173,7 @@ class PetWindow {
   bool tool_minutes_ = false;
   bool tool_calculator_ = false;
   bool tool_todo_ = false;
+  bool tool_vault_ = false;
   bool auto_wander_ = true;
   bool follow_cursor_ = false;
   bool show_page_bubbles_ = true;

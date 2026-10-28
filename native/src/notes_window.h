@@ -54,6 +54,8 @@ class NotesWindow {
   void PromptGotoLine();
   void Save();
   void SaveAs();
+  // Notepad++ 式：打开系统 hosts（保存时遇 ACL 走提权）。
+  void OpenHostsFile();
   // Leave preview/WYSIWYG and show the plain editor (Python Ctrl+E).
   void ShowEditMode();
   // Full-width Markdown preview (Python Ctrl+Shift+V / right strip).
@@ -69,8 +71,12 @@ class NotesWindow {
   bool OfferElevatedSave(const std::wstring& path, const std::wstring& text);
   void BuildAccelerators();
   bool PathLooksMarkdown() const;
+  // Plain-text save path（.md/.txt/代码/hosts 等；.rtf 仍走 RTF）。
+  bool PathLooksTextish() const;
   // Wrap current selection with markdown markers (**.md / .markdown).
   void WrapSelectionMarkdown(const wchar_t* left, const wchar_t* right);
+  // Leave preview so Format/insert menu actions hit the visible source editor.
+  void EnsureSourceEditForFormat();
   void ApplyBold();
   void ApplyItalic();
   void ApplyUnderline();
@@ -141,6 +147,7 @@ class NotesWindow {
   void RefreshTitle();
   void ApplyChrome();
   void ApplyEditorFont();
+  void ApplyUiFonts();
   // Returns true if a match was selected. Updates status_out when non-null.
   bool RunFindOnce(bool down, bool wrap, bool match_case, bool whole,
                    std::wstring* status_out);
@@ -158,8 +165,14 @@ class NotesWindow {
   void DuplicateCurrentLine();
   void MoveCurrentLine(int delta);
   void NewTab();
+  // Ctrl+W / 菜单「删除文件并关闭」：确认后删文件（回收站）并关页签。
   void CloseTab();
+  // 页签 × / 中键 / 双击：仅关页签，文件保留；未保存内容静默写入。
   void CloseTabAt(int index);
+  void CloseTabOnly();
+  void CloseTabOnlyAt(int index);
+  // 删文件并移除页签；ask_confirm 为 false 时跳过弹窗（调用方已确认）。
+  void DeleteAndCloseTabAt(int index, bool ask_confirm);
   void CloseOtherTabs(int keep_index);
   void CloseTabsToTheRight(int index);
   void InsertMdStrike();
@@ -178,6 +191,10 @@ class NotesWindow {
   std::wstring MakeNewNotePath();
   void SwitchToTab(int index, bool save_current);
   void RebuildTabControl();
+  void RelayoutTabChips();
+  void PaintTabBar(HDC hdc);
+  // out_zone: 0=body 1=pin 2=close 3=new(+); returns tab index or -1.
+  int HitTestTabBar(POINT client, int* out_zone) const;
   void PersistTabs();
   void LoadTabSession();
   std::wstring TabLabel(const std::wstring& path) const;
@@ -213,15 +230,22 @@ class NotesWindow {
   HWND sidebar_refresh_ = nullptr;
   HWND sidebar_results_ = nullptr;
   HWND status_ = nullptr;
-  HWND mode_strip_ = nullptr;
+  HWND mode_strip_ = nullptr;  // Top-right 预览/编辑 toggle chip.
   HMENU menu_ = nullptr;
   HFONT font_ = nullptr;
+  HFONT ui_font_ = nullptr;       // Segoe UI — chrome
+  HFONT ui_font_bold_ = nullptr;  // active tab / emphasis
   HBRUSH bg_brush_ = nullptr;
-  COLORREF content_bg_ = RGB(244, 246, 249);
+  HBRUSH card_brush_ = nullptr;
+  // Clean white stage + cool gray rail（写作产品分区，不要暖色）。
+  COLORREF content_bg_ = RGB(255, 255, 255);   // editor / window
   COLORREF card_bg_ = RGB(255, 255, 255);
-  COLORREF text_color_ = RGB(26, 35, 50);
-  COLORREF muted_color_ = RGB(100, 116, 139);
-  int font_pt_ = 11;
+  COLORREF rail_bg_ = RGB(245, 246, 248);      // left library rail
+  COLORREF text_color_ = RGB(32, 36, 42);
+  COLORREF muted_color_ = RGB(120, 128, 140);
+  COLORREF border_color_ = RGB(226, 230, 236);
+  int font_pt_ = 12;
+  HBRUSH rail_brush_ = nullptr;
   std::wstring path_;
   std::string ui_theme_ = "mist";
   // Encoding detected on Load(); Save() writes the same codec (P0-4).
@@ -251,7 +275,8 @@ class NotesWindow {
   bool sidebar_visible_ = true;  // Match Python library_sidebar default.
   bool dirty_ = false;
   bool loading_ = false;
-  bool preview_ = true;  // Match Python md_view_mode default "preview".
+  // Default edit mode — blank preview stage feels broken on new notes.
+  bool preview_ = false;
   bool sync_scroll_ = true;
   bool syncing_scroll_ = false;
   bool word_wrap_ = true;
@@ -266,4 +291,9 @@ class NotesWindow {
   int tab_drag_from_ = -1;
   bool tab_dragging_ = false;
   POINT tab_drag_origin_{};
+  // Custom paper tab strip (replaces SysTabControl native chrome).
+  std::vector<RECT> tab_chip_rects_;
+  RECT tab_new_btn_rect_{};
+  int tab_hover_index_ = -1;  // -1 none; -2 = new button
+  int tab_hover_zone_ = 0;    // 0 body, 1 pin, 2 close, 3 new
 };

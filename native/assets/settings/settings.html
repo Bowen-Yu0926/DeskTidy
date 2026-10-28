@@ -568,16 +568,23 @@
     display: flex; flex-wrap: wrap; gap: 3px; padding: 3px 4px; align-content: flex-start;
   }
   .st-thumb .st-fence .st-pin {
-    width: 6px; height: 6px; border-radius: 2px; background: rgba(255,255,255,0.45);
+    width: 10px; height: 10px; border-radius: 2px; background: rgba(255,255,255,0.45);
     border: 1px solid rgba(15,23,42,0.2); flex-shrink: 0; box-sizing: border-box;
+    object-fit: contain; image-rendering: auto; display: block;
+  }
+  .st-thumb .st-fence .st-pin.img {
+    background: transparent; border-color: rgba(15,23,42,0.15);
   }
   .st-thumb .st-icon {
-    position: absolute; width: 6px; height: 6px; border-radius: 2px; z-index: 2;
+    position: absolute; width: 10px; height: 10px; border-radius: 2px; z-index: 2;
     background: rgba(248,250,252,0.85); border: 1px solid rgba(15,23,42,0.3);
-    box-sizing: border-box; pointer-events: none;
+    box-sizing: border-box; pointer-events: none; object-fit: contain;
   }
-  .snap-preview-card .st-thumb .st-icon { width: 9px; height: 9px; border-radius: 2px; }
-  .snap-preview-card .st-thumb .st-fence .st-pin { width: 8px; height: 8px; }
+  .st-thumb .st-icon.img {
+    background: transparent; border-color: rgba(15,23,42,0.12);
+  }
+  .snap-preview-card .st-thumb .st-icon { width: 16px; height: 16px; border-radius: 3px; }
+  .snap-preview-card .st-thumb .st-fence .st-pin { width: 14px; height: 14px; }
   .st-thumb .st-empty {
     position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
     color: #8B97A8; font-size: 12px; font-weight: 600;
@@ -591,15 +598,45 @@
   .snap-preview-card {
     background: #fff; border-radius: 16px; border: 1px solid var(--border);
     box-shadow: 0 18px 48px rgba(15, 23, 42, 0.22);
-    width: min(640px, 100%); max-height: 90vh; overflow: auto; padding: 16px 18px 18px;
+    width: min(720px, 100%); max-height: 90vh; overflow: auto; padding: 16px 18px 18px;
+    position: relative;
   }
-  .snap-preview-card h3 { margin: 0 0 6px; font-size: 16px; }
+  .snap-preview-card .snap-preview-head {
+    display: flex; align-items: flex-start; justify-content: space-between;
+    gap: 12px; margin: 0 0 6px;
+  }
+  .snap-preview-card .snap-preview-head h3 { margin: 0; font-size: 16px; flex: 1; min-width: 0; }
+  .snap-preview-card .snap-preview-x {
+    flex-shrink: 0; width: 32px; height: 32px; border-radius: 8px;
+    border: 1px solid var(--border); background: #fff; color: var(--ink-soft, #3a4a60);
+    font-size: 18px; line-height: 1; cursor: pointer; padding: 0;
+  }
+  .snap-preview-card .snap-preview-x:hover { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
   .snap-preview-card .hint { margin: 0 0 12px; }
   .snap-preview-card .st-thumb {
-    height: 320px; border-radius: 12px; border: 1px solid var(--border);
+    height: min(400px, 56vh); border-radius: 12px; border: 1px solid var(--border);
     background: #E8EEF6; position: relative; overflow: hidden; margin-bottom: 14px;
   }
-  .snap-preview-card .st-thumb .st-desk { inset: 12px; border-radius: 8px; }
+  /* desk 尺寸由 JS 按内容/桌面比例 letterbox，避免扁长分区被竖向拉高 */
+  .snap-preview-card .st-thumb .st-desk {
+    inset: auto; border-radius: 8px;
+  }
+  .snap-preview-pages {
+    display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 10px;
+  }
+  .snap-preview-pages[hidden] { display: none !important; }
+  .snap-preview-pages button {
+    border: 1px solid var(--border); background: #fff; border-radius: 999px;
+    padding: 6px 12px; font: inherit; font-size: 12px; font-weight: 700;
+    color: var(--ink-soft, #3a4a60); cursor: pointer;
+    min-height: 30px;
+  }
+  .snap-preview-pages button:hover {
+    border-color: var(--accent); color: var(--accent);
+  }
+  .snap-preview-pages button.on {
+    background: var(--accent); border-color: var(--accent); color: #fff;
+  }
   .snap-preview-card .row { justify-content: flex-end; }
   .snap-tile .st-title {
     font-weight: 800; font-size: 13px; color: var(--text);
@@ -841,6 +878,13 @@
           <div class="head-right">
             <span class="fence-date" id="fence-date"></span>
             <label class="toggle"><input type="checkbox" id="ext_page_indicator" /> 显示页码指示器</label>
+            <label class="field-inline" style="margin-left:0.6rem;display:inline-flex;align-items:center;gap:0.35rem">
+              <span class="hint" style="margin:0">样式</span>
+              <select id="ext_page_chrome_style">
+                <option value="float">浮窗卡片</option>
+                <option value="tabs">分立页签</option>
+              </select>
+            </label>
           </div>
         </div>
         <div class="global-style-row">
@@ -880,8 +924,12 @@
       </div>
       <div id="snap-preview-overlay" class="snap-preview-overlay" role="dialog" aria-modal="true">
         <div class="snap-preview-card">
-          <h3 id="snap-preview-title">布局预览</h3>
+          <div class="snap-preview-head">
+            <h3 id="snap-preview-title">布局预览</h3>
+            <button type="button" class="snap-preview-x" id="snap-preview-x" title="关闭" aria-label="关闭">×</button>
+          </div>
           <p class="hint" id="snap-preview-meta"></p>
+          <div class="snap-preview-pages" id="snap-preview-pages" hidden></div>
           <div class="st-thumb" id="snap-preview-thumb"></div>
           <div class="row">
             <button type="button" class="btn" id="snap-preview-close">关闭</button>
@@ -925,10 +973,9 @@
       </div>
       <div class="card">
         <h3>会议纪要</h3>
-        <p class="hint">桌面分页栏底部「纪要」按钮双击后会在此文件夹生成文档，文件名格式为 年月日_流水号（如 20260803_001）。留空则使用安装目录下的「纪要」文件夹。关闭后分页栏不显示该按钮。</p>
+        <p class="hint">开启后，分页栏底部显示「纪要」；双击会在此文件夹生成文档（文件名如 20260803_001）。留空则使用安装目录下的「纪要」文件夹。关闭后分页栏不显示该按钮。</p>
         <div class="toggles" style="margin-top:0">
           <label class="toggle"><input type="checkbox" id="ext_minutes_enabled" /> 启用会议纪要</label>
-          <label class="toggle"><input type="checkbox" id="ext_minutes_bar" /> 在分页栏显示「纪要」</label>
         </div>
         <div class="field-row">
           <span class="label">保存文件夹</span>
@@ -990,7 +1037,7 @@
 
       <div class="card">
         <h3>桌面录屏</h3>
-        <p class="hint">使用下方快捷键开始/结束录屏。每次开始时会先选择要录制的屏幕。安装版已内置 FFmpeg；留空保存目录则使用安装目录下的「录屏」文件夹。</p>
+        <p class="hint">关闭「启用」后分页栏不显示「录屏」，快捷键也不响应。开启后可用下方快捷键开始/结束；勾选「在分页栏显示」才会出现按钮。安装版已内置 FFmpeg；留空保存目录则使用安装目录下的「录屏」文件夹。</p>
         <div class="toggles" style="margin-top:0">
           <label class="toggle"><input type="checkbox" id="ext_record_enabled" /> 启用录屏功能</label>
           <label class="toggle"><input type="checkbox" id="ext_record_bar" /> 在分页栏显示「录屏」</label>
@@ -1042,7 +1089,7 @@
 
       <div class="card">
         <h3>计算器</h3>
-        <p class="hint">分页栏可显示「计算器」按钮（双击打开系统计算器）；已在前台时再次操作会最小化。下方全局快捷键始终可用。</p>
+        <p class="hint">关闭「启用」后分页栏不显示「计算器」，快捷键也不响应。开启并勾选「在分页栏显示」后出现按钮（打开系统计算器；已在前台时再次操作会最小化）。</p>
         <div class="toggles" style="margin-top:0">
           <label class="toggle"><input type="checkbox" id="ext_calc_enabled" /> 启用计算器</label>
           <label class="toggle"><input type="checkbox" id="ext_calc_bar" /> 在分页栏显示「计算器」</label>
@@ -1056,7 +1103,7 @@
 
       <div class="card">
         <h3>桌面待办</h3>
-        <p class="hint">在桌面显示待办便签。可鼠标添加、删除、勾选完成。拖动标题栏可移动位置；分页栏「待办」可置顶面板。</p>
+        <p class="hint">关闭「启用」后不显示桌面便签与分页栏「待办」。开启后可添加/删除/勾选；拖动标题栏可移动；勾选「在分页栏显示」后可用按钮置顶面板。</p>
         <div class="toggles" style="margin-top:0">
           <label class="toggle"><input type="checkbox" id="ext_todos_enabled" /> 启用桌面待办</label>
           <label class="toggle"><input type="checkbox" id="ext_todos_bar" /> 在分页栏显示「待办」</label>
@@ -1081,9 +1128,9 @@
       </div>
       <div class="card">
         <h3>登录与入口</h3>
-        <p class="hint">先登录云端账号，再在下方维护名称、账号、密码、网址。启用后桌面会出现账号浮标，点击即可打开账号面板。</p>
+        <p class="hint">启用账号管理会先提示登录；登录成功后，「账号」入口会出现在当前分页展示位置（浮窗卡片 / 分立页签 / 宠物头顶），不再单独挂桌面浮标。未登录视为未启用。</p>
         <div class="toggles" style="margin-top:0">
-          <label class="toggle"><input type="checkbox" id="ext_vault_enabled" /> 启用桌面账号浮标</label>
+          <label class="toggle"><input type="checkbox" id="ext_vault_enabled" /> 启用账号管理</label>
         </div>
         <!-- Advanced sync interval — default 2h still applied in prefs. -->
         <div class="field-row" hidden>
@@ -1152,14 +1199,15 @@
           <p class="hint">控制开机自启与托盘驻留行为。</p>
           <div class="group">桌面行为</div>
           <div class="toggles">
-            <label class="toggle"><input type="checkbox" id="ext_show_fences" /> 显示桌面分区</label>
+            <!-- Fences always on; dbl-click hide removed (keep hidden inputs for prefs bind). -->
+            <label class="toggle" hidden><input type="checkbox" id="ext_show_fences" checked /> 显示桌面分区</label>
             <label class="toggle"><input type="checkbox" id="org_startup2" /> 启动时自动整理桌面（按规则钉选到分区）</label>
             <label class="toggle"><input type="checkbox" id="org_watch2" /> 新桌面文件按规则自动钉选到分区</label>
-            <label class="toggle"><input type="checkbox" id="ext_dblclick_hide" /> 双击桌面空白处隐藏/显示系统桌面图标</label>
+            <label class="toggle" hidden><input type="checkbox" id="ext_dblclick_hide" /> 双击桌面空白处隐藏/显示系统桌面图标</label>
             <!-- Public strip confused users; keep binding, hide control. -->
             <label class="toggle" hidden><input type="checkbox" id="ext_public_desktop" /> 启用公共区域</label>
           </div>
-          <p class="hint">分区为虚拟钉选，文件始终留在桌面。</p>
+          <p class="hint">分区始终显示（虚拟钉选，文件仍留在桌面）。</p>
           <div class="group">系统集成</div>
           <div class="toggles">
             <label class="toggle"><input type="checkbox" id="ext_desktop_menu" /> 桌面右键菜单（新建分区）</label>
@@ -1283,7 +1331,7 @@
 
   const state = {
     fences: [], pages: [], page_locked: [], selected: 0, selected_page: 0, current_page: 0,
-    dock: false, pet: true, autostart: false,
+    dock: false, pet: true, autostart: true,
     org_startup: false, org_watch: false, preview: [],
     org_pending: 0, org_organized: 0, org_total: 0, org_files: [],
     minutes_on_bar: true, notepad_enabled: true, elevate_hotkey_helper: false, record_on_bar: false,
@@ -1294,7 +1342,7 @@
     wallpaper_folder: '', record_dir: '', record_mic: '', record_quality: 1,
     page_folders: [], whitelist: [], whitelist_selected: -1,
     search_desktop: true, search_documents: true, search_downloads: true,
-    search_all_drives: false,
+    search_all_drives: true,
     search_max_results: 50, search_max_depth: 12,
     search_include_open_folders: true, search_include_hidden: false,
     search_threads: 2,
@@ -1306,7 +1354,7 @@
     dock_edge: 0, dock_opacity: 85, dock_items: [],
     check_update_on_startup: true,
     desktop_right_click_menu: true,
-    close_to_tray: true, show_fences: true, double_click_hide: true,
+    close_to_tray: true, show_fences: true, double_click_hide: false,
     enable_public_desktop: false,
     vault_enabled: false, vault_logged_in: false, vault_session_label: '',
     vault_api_base: 'https://bowen-yu0926.byethost10.com/desktidy-vault/',
@@ -1317,10 +1365,10 @@
     fence_cards: [], snapshots: [], snap_selected: -1,
     vault_items: [], vault_list_status: '',
     show_page_indicator: true,
+    page_chrome_style: 'float',
     // Defaults mirror hotkey_store.cpp — always paint a list even before host push.
     hotkeys: [
       {id:'organize', label:'一键整理', chord:'Ctrl+Shift+O'},
-      {id:'toggle_fences', label:'显示/隐藏分区', chord:'Ctrl+Shift+F'},
       {id:'toggle_icons', label:'显示/隐藏桌面图标', chord:'Ctrl+Shift+H'},
       {id:'peek_fences', label:'临时查看分区', chord:'Ctrl+Space'},
       {id:'page_next', label:'下一页', chord:'Ctrl+Shift+Right'},
@@ -1700,31 +1748,46 @@
     });
   }
 
-  function appendFencePins(el, count, large) {
-    const n = Math.min(large ? 24 : 12, Math.max(0, Number(count) || 0));
+  function appendFencePins(el, _count, large, thumbs) {
+    // Only paint real shell thumbs. Never pad with empty white .st-pin squares
+    // when icon_count > successful pin_thumbs (that looked like "missing icons").
+    const thumbsArr = Array.isArray(thumbs) ? thumbs.filter((t) => !!t) : [];
+    const n = Math.min(large ? 24 : 14, thumbsArr.length);
     if (n <= 0) return;
     const wrap = document.createElement('div');
     wrap.className = 'st-pins';
     for (let i = 0; i < n; i++) {
-      const pin = document.createElement('div');
-      pin.className = 'st-pin';
-      wrap.appendChild(pin);
+      const img = document.createElement('img');
+      img.className = 'st-pin img';
+      img.alt = '';
+      img.draggable = false;
+      img.src = thumbsArr[i];
+      wrap.appendChild(img);
     }
     el.appendChild(wrap);
   }
 
-  function paintSnapThumb(thumbEl, it, large) {
+  function paintSnapThumb(thumbEl, it, large, focusOverride) {
     if (!thumbEl) return;
     thumbEl.innerHTML = '';
     const boxes = Array.isArray(it && it.preview) ? it.preview : [];
     const icons = Array.isArray(it && it.icons) ? it.icons : [];
-    const focus = (it && typeof it.focus_page === 'number') ? it.focus_page : 0;
+    const pageNames = Array.isArray(it && it.page_names) ? it.page_names : [];
+    const multiPage = pageNames.length > 1 ||
+      (new Set(boxes.map((b) => b.page || 0))).size > 1;
+    const focus = (typeof focusOverride === 'number')
+      ? focusOverride
+      : ((it && typeof it.focus_page === 'number') ? it.focus_page : 0);
     let pageBoxes = boxes.filter((b) => (b.page || 0) === focus);
-    if (!pageBoxes.length) pageBoxes = boxes.slice();
-    if (!pageBoxes.length && !icons.length) {
+    // Small tile: if this page is empty, fall back to any fences so the card
+    // is not blank. Large preview must stay page-accurate (no cross-page mix).
+    if (!pageBoxes.length && !large) pageBoxes = boxes.slice();
+    // Free floats are not page-scoped; only paint them on page 0 / single-page.
+    const pageIcons = (large && multiPage && focus !== 0) ? [] : icons;
+    if (!pageBoxes.length && !pageIcons.length) {
       const empty = document.createElement('div');
       empty.className = 'st-empty';
-      empty.textContent = '暂无预览';
+      empty.textContent = large && multiPage ? '本页无分区' : '暂无预览';
       thumbEl.appendChild(empty);
       return;
     }
@@ -1739,8 +1802,8 @@
       minX = Math.min(minX, x); minY = Math.min(minY, y);
       maxX = Math.max(maxX, x + w); maxY = Math.max(maxY, y + h);
     });
-    // Include shell-icon positions so free desktop icons appear in the schematic.
-    icons.forEach((ic) => {
+    // Include free-float positions so unpinned icons appear in the schematic.
+    pageIcons.forEach((ic) => {
       const x = Number(ic.x) || 0, y = Number(ic.y) || 0;
       minX = Math.min(minX, x); minY = Math.min(minY, y);
       maxX = Math.max(maxX, x + 48); maxY = Math.max(maxY, y + 48);
@@ -1750,14 +1813,74 @@
     }
     let spanW = Math.max(1, maxX - minX);
     let spanH = Math.max(1, maxY - minY);
-    const pad = 0.12;
+    // 放大预览：画布按整块桌面工作区比例展开（对标 Fences 式缩略），
+    // 禁止用「分区包围盒」当画布——否则 1585×341 的扁分区会竖向撑满。
+    if (large) {
+      const ww = Number(it && it.work_w) || 0;
+      const wh = Number(it && it.work_h) || 0;
+      if (ww > 80 && wh > 80 &&
+          maxX <= ww * 1.08 && maxY <= wh * 1.08 &&
+          minX >= -ww * 0.08 && minY >= -wh * 0.08) {
+        minX = 0;
+        minY = 0;
+        spanW = ww;
+        spanH = wh;
+      } else {
+        const deskAspect = (ww > 80 && wh > 80) ? (ww / wh) : (16 / 9);
+        if (spanW / spanH > deskAspect) {
+          const targetH = spanW / deskAspect;
+          const extra = targetH - spanH;
+          // 空白多落在下方（任务栏侧），分区贴工作区顶部更接近实机。
+          minY -= extra * 0.08;
+          spanH = targetH;
+        } else {
+          const targetW = spanH * deskAspect;
+          const extra = targetW - spanW;
+          minX -= extra / 2;
+          spanW = targetW;
+        }
+      }
+    }
+    const pad = large ? 0.04 : 0.12;
     minX -= spanW * pad; minY -= spanH * pad;
     spanW *= 1 + 2 * pad; spanH *= 1 + 2 * pad;
+    // Letterbox desk into thumb so coordinate aspect matches on-screen layout.
+    const fitDesk = () => {
+      const thumbW = thumbEl.clientWidth || (large ? 560 : 230);
+      const thumbH = thumbEl.clientHeight || (large ? 320 : 118);
+      const margin = large ? 12 : 8;
+      const availW = Math.max(1, thumbW - margin * 2);
+      const availH = Math.max(1, thumbH - margin * 2);
+      const contentAspect = spanW / Math.max(1, spanH);
+      const boxAspect = availW / availH;
+      let deskW, deskH;
+      if (contentAspect > boxAspect) {
+        deskW = availW;
+        deskH = Math.max(1, availW / contentAspect);
+      } else {
+        deskH = availH;
+        deskW = Math.max(1, availH * contentAspect);
+      }
+      desk.style.left = ((thumbW - deskW) / 2) + 'px';
+      desk.style.top = ((thumbH - deskH) / 2) + 'px';
+      desk.style.width = deskW + 'px';
+      desk.style.height = deskH + 'px';
+      desk.style.right = 'auto';
+      desk.style.bottom = 'auto';
+      desk.style.inset = 'auto';
+    };
+    fitDesk();
     // Wide short desktop fences crush in a tiny thumb — stack for readability.
     // Enlarged modal always uses mapped geometry so it matches the real layout.
     const useStack = !large && pageBoxes.length >= 1 &&
       (spanH / Math.max(1, pageBoxes.length)) < 70;
     if (useStack) {
+      desk.style.left = '8px';
+      desk.style.top = '8px';
+      desk.style.right = '8px';
+      desk.style.bottom = '8px';
+      desk.style.width = 'auto';
+      desk.style.height = 'auto';
       const n = pageBoxes.length;
       pageBoxes.forEach((b, idx) => {
         const colors = STYLE_COLORS[b.style_id] || STYLE_COLORS.charcoal;
@@ -1775,35 +1898,44 @@
         bar.className = 'st-bar';
         bar.style.background = colors.accent;
         el.appendChild(bar);
-        appendFencePins(el, b.icon_count, false);
+        appendFencePins(el, b.icon_count, false, b.pin_thumbs);
         desk.appendChild(el);
       });
       // Stack mode can't map absolute icon coords — show a compact strip.
-      if (icons.length) {
+      if (pageIcons.length) {
         const strip = document.createElement('div');
-        strip.style.cssText = 'position:absolute;left:4%;right:4%;bottom:3%;height:10px;display:flex;gap:2px;flex-wrap:wrap;overflow:hidden;';
-        const maxDots = Math.min(icons.length, 28);
+        strip.style.cssText = 'position:absolute;left:4%;right:4%;bottom:3%;height:14px;display:flex;gap:2px;flex-wrap:wrap;overflow:hidden;align-items:center;';
+        const maxDots = Math.min(pageIcons.length, 28);
         for (let i = 0; i < maxDots; i++) {
-          const d = document.createElement('div');
-          d.className = 'st-icon';
-          d.style.position = 'relative';
-          strip.appendChild(d);
+          const src = pageIcons[i] && pageIcons[i].thumb;
+          if (!src) continue; // skip blank white placeholders
+          const img = document.createElement('img');
+          img.className = 'st-icon img';
+          img.alt = '';
+          img.draggable = false;
+          img.src = src;
+          img.style.position = 'relative';
+          strip.appendChild(img);
         }
         desk.appendChild(strip);
       }
       return;
     }
-    pageBoxes.forEach((b) => {
+    const fenceRects = pageBoxes.map((b) => ({
+      x: Number(b.x) || 0,
+      y: Number(b.y) || 0,
+      w: Math.max(40, Number(b.w) || 120),
+      h: Math.max(40, Number(b.h) || 80),
+    }));
+    pageBoxes.forEach((b, bi) => {
       const colors = STYLE_COLORS[b.style_id] || STYLE_COLORS.charcoal;
-      const x = Number(b.x) || 0, y = Number(b.y) || 0;
-      const w = Math.max(40, Number(b.w) || 120);
-      const h = Math.max(40, Number(b.h) || 80);
+      const r = fenceRects[bi];
       const el = document.createElement('div');
       el.className = 'st-fence';
-      el.style.left = ((x - minX) / spanW * 100) + '%';
-      el.style.top = ((y - minY) / spanH * 100) + '%';
-      el.style.width = Math.max(4, w / spanW * 100) + '%';
-      el.style.height = Math.max(4, h / spanH * 100) + '%';
+      el.style.left = ((r.x - minX) / spanW * 100) + '%';
+      el.style.top = ((r.y - minY) / spanH * 100) + '%';
+      el.style.width = Math.max(4, r.w / spanW * 100) + '%';
+      el.style.height = Math.max(4, r.h / spanH * 100) + '%';
       el.style.background = colors.bg;
       el.style.borderColor = colors.accent;
       el.title = b.title || '';
@@ -1818,17 +1950,24 @@
         lab.textContent = (b.title || '分区') + (b.collapsed ? ' · 已折叠' : '');
         el.appendChild(lab);
       }
-      appendFencePins(el, b.icon_count, large);
+      appendFencePins(el, b.icon_count, large, b.pin_thumbs);
       desk.appendChild(el);
     });
-    // Free / shell icons as absolute dots on the desk.
-    icons.forEach((ic) => {
+    // Free floats — real thumbs when available; skip in-fence dots.
+    pageIcons.forEach((ic) => {
       const x = Number(ic.x) || 0, y = Number(ic.y) || 0;
-      const d = document.createElement('div');
-      d.className = 'st-icon';
-      d.style.left = ((x - minX) / spanW * 100) + '%';
-      d.style.top = ((y - minY) / spanH * 100) + '%';
-      desk.appendChild(d);
+      const inside = fenceRects.some((r) =>
+        x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h);
+      if (inside) return;
+      if (!(ic && ic.thumb)) return; // no blank white square for unresolved icons
+      const img = document.createElement('img');
+      img.className = 'st-icon img';
+      img.alt = '';
+      img.draggable = false;
+      img.src = ic.thumb;
+      img.style.left = ((x - minX) / spanW * 100) + '%';
+      img.style.top = ((y - minY) / spanH * 100) + '%';
+      desk.appendChild(img);
     });
   }
 
@@ -1842,16 +1981,77 @@
     const items = Array.isArray(state.snapshots) ? state.snapshots : [];
     if (index < 0 || index >= items.length) return;
     const it = items[index];
+    const prevIndex = state._snap_preview_index;
     state._snap_preview_index = index;
     state.snap_selected = index;
+    if (prevIndex !== index || typeof state._snap_preview_page !== 'number') {
+      state._snap_preview_page =
+        (typeof it.focus_page === 'number') ? it.focus_page : 0;
+    }
     const title = document.getElementById('snap-preview-title');
     const meta = document.getElementById('snap-preview-meta');
     const thumb = document.getElementById('snap-preview-thumb');
+    const pagesEl = document.getElementById('snap-preview-pages');
     if (title) title.textContent = (it.name || '快照') + ' · 放大预览';
     if (meta) meta.textContent = it.meta || '';
-    paintSnapThumb(thumb, it, true);
+    const boxes = Array.isArray(it.preview) ? it.preview : [];
+    const pageNames = Array.isArray(it.page_names) ? it.page_names : [];
+    // Prefer saved page list; fall back to pages that actually have fences.
+    let pageSet = [];
+    if (pageNames.length > 1) {
+      for (let i = 0; i < pageNames.length; i++) pageSet.push(i);
+    } else {
+      boxes.forEach((b) => {
+        const p = b.page || 0;
+        if (pageSet.indexOf(p) < 0) pageSet.push(p);
+      });
+      pageSet.sort((a, b) => a - b);
+    }
+    if (pagesEl) {
+      if (pageSet.length > 1) {
+        pagesEl.hidden = false;
+        if (pageSet.indexOf(state._snap_preview_page) < 0) {
+          state._snap_preview_page = pageSet[0];
+        }
+        pagesEl.innerHTML = pageSet.map((p) => {
+          const label = (pageNames[p] && String(pageNames[p]).trim())
+            ? String(pageNames[p]).trim()
+            : ('第 ' + (p + 1) + ' 页');
+          return '<button type="button" data-page="' + p + '"' +
+            (p === state._snap_preview_page ? ' class="on"' : '') +
+            '>' + escHtml(label) + '</button>';
+        }).join('');
+        pagesEl.querySelectorAll('button').forEach((btn) => {
+          btn.addEventListener('click', () => {
+            const next = Number(btn.dataset.page) || 0;
+            if (next === state._snap_preview_page) return;
+            state._snap_preview_page = next;
+            pagesEl.querySelectorAll('button').forEach((b) => {
+              b.classList.toggle('on', Number(b.dataset.page) === next);
+            });
+            paintSnapThumb(thumb, it, true, next);
+            requestAnimationFrame(() => {
+              if (state._snap_preview_index === index) {
+                paintSnapThumb(thumb, it, true, next);
+              }
+            });
+          });
+        });
+      } else {
+        pagesEl.hidden = true;
+        pagesEl.innerHTML = '';
+        state._snap_preview_page = pageSet.length ? pageSet[0] : 0;
+      }
+    }
+    paintSnapThumb(thumb, it, true, state._snap_preview_page);
     const ov = document.getElementById('snap-preview-overlay');
     if (ov) ov.classList.add('show');
+    // 布局完成后再量一次 thumb，letterbox 才准。
+    requestAnimationFrame(() => {
+      if (state._snap_preview_index === index) {
+        paintSnapThumb(thumb, it, true, state._snap_preview_page);
+      }
+    });
   }
 
   function renderSnapshots() {
@@ -2036,8 +2236,8 @@
     set('autostart2', state.autostart);
     set('org_startup2', state.org_startup);
     set('org_watch2', state.org_watch);
-    set('ext_minutes_bar', state.minutes_on_bar);
-    set('ext_minutes_enabled', state.minutes_enabled);
+    // Single switch: enable ≡ show on page bar.
+    set('ext_minutes_enabled', state.minutes_enabled || state.minutes_on_bar);
     set('ext_notepad', state.notepad_enabled);
     set('ext_elevate_hotkey', state.elevate_hotkey_helper);
     set('ext_record_bar', state.record_on_bar);
@@ -2096,6 +2296,7 @@
     set('ext_dblclick_hide', state.double_click_hide);
     set('ext_public_desktop', state.enable_public_desktop);
     set('ext_page_indicator', state.show_page_indicator);
+    setVal('ext_page_chrome_style', state.page_chrome_style === 'tabs' ? 'tabs' : 'float');
     set('ext_vault_enabled', state.vault_enabled);
     setVal('ext_vault_api', state.vault_api_base);
     setVal('ext_vault_refresh', state.vault_refresh_hours);
@@ -2342,7 +2543,7 @@
   }
 
   const SETTINGS_HOTKEYS = [
-    'organize', 'toggle_fences', 'toggle_icons',
+    'organize', 'toggle_icons',
     'peek_fences', 'page_next', 'page_prev'
   ];
 
@@ -2589,7 +2790,7 @@
      'search_include_open_folders','search_include_hidden'].forEach(copyBool);
     ['minutes_folder','notepad_folder','wallpaper_folder','record_dir','record_mic',
      'minutes_folder_default','notepad_folder_default','record_dir_default',
-     'pet_character','theme_id','ui_theme','vault_api_base','lang','app_version',
+     'pet_character','theme_id','ui_theme','page_chrome_style','vault_api_base','lang','app_version',
      'vault_session_label'].forEach(copyStr);
     if (Array.isArray(msg.page_folders)) state.page_folders = msg.page_folders;
     if (Array.isArray(msg.whitelist)) state.whitelist = msg.whitelist;
@@ -2618,8 +2819,17 @@
         state.pages.push(i === 0 ? '工作' : (i === 1 ? '文档' : ('页' + (i + 1))));
       }
     }
-    if (Array.isArray(msg.snapshots) && msg.snapshots.length) {
+    // Empty [] is valid (deleted the last snapshot) — do not keep a stale card.
+    if (Array.isArray(msg.snapshots)) {
       state.snapshots = msg.snapshots;
+      if (!state.snapshots.length) {
+        state.snap_selected = -1;
+        state._snap_preview_index = -1;
+        const ov = document.getElementById('snap-preview-overlay');
+        if (ov) ov.classList.remove('show');
+      } else if (state.snap_selected >= state.snapshots.length) {
+        state.snap_selected = state.snapshots.length - 1;
+      }
     }
     if (Array.isArray(msg.vault_items)) state.vault_items = msg.vault_items;
     if (typeof msg.vault_list_status === 'string') state.vault_list_status = msg.vault_list_status;
@@ -2732,7 +2942,6 @@
     bindToggle(id, logical);
   });
   const extToggles = {
-    ext_minutes_bar: 'minutes_on_bar',
     ext_minutes_enabled: 'minutes_enabled',
     ext_notepad: 'notepad_enabled',
     ext_elevate_hotkey: 'elevate_hotkey_helper',
@@ -2808,6 +3017,7 @@
   }
   bindField('ext_dock_opacity', 'dock_opacity', true);
   bindField('ext_ui_theme', 'ui_theme');
+  bindField('ext_page_chrome_style', 'page_chrome_style');
   bindField('ext_vault_api', 'vault_api_base');
   bindField('ext_vault_refresh', 'vault_refresh_hours', true);
   bindField('ext_vault_clip', 'vault_clipboard_clear_seconds', true);
@@ -2907,8 +3117,10 @@
 
   const snapOv = document.getElementById('snap-preview-overlay');
   const snapClose = document.getElementById('snap-preview-close');
+  const snapX = document.getElementById('snap-preview-x');
   const snapApply = document.getElementById('snap-preview-apply');
   if (snapClose) snapClose.addEventListener('click', hideSnapPreview);
+  if (snapX) snapX.addEventListener('click', hideSnapPreview);
   if (snapApply) {
     snapApply.addEventListener('click', () => {
       const idx = state._snap_preview_index;

@@ -4,16 +4,21 @@
 
 #include <Windows.h>
 
+#include <functional>
 #include <string>
 #include <vector>
 
 // Desktop account vault panel — WebView2 UI aligned with Python AccountVaultWidget.
 class VaultWindow {
  public:
+  using VoidFn = std::function<void()>;
+
   bool Create(HINSTANCE instance);
   void Destroy();
   void Show();
   void Hide();
+  // Fired once when a visible panel becomes hidden (× / Esc / toggle / WM_CLOSE).
+  void SetOnHide(VoidFn fn) { on_hide_ = std::move(fn); }
   // Prefetch WebView2 so the first buoy click does not cold-start the runtime.
   void WarmWebView();
   HWND Hwnd() const { return hwnd_; }
@@ -28,10 +33,14 @@ class VaultWindow {
   void ApplyPulledCredentials(const std::vector<VaultHttpCredential>& remote);
   // Prompt login/password and store session token.
   void CloudLogin();
+  // Fired when CloudLogin finishes (ok) or is cancelled / fails (false).
+  void SetOnLoginResult(std::function<void(bool ok)> fn) {
+    on_login_result_ = std::move(fn);
+  }
   // Local DPAPI vault file export/import (contains passwords).
   void ExportBackup();
   void ImportBackup();
-  // Place beside an anchor HWND (vault buoy); nullptr → default corner.
+  // Place beside an anchor HWND (page bar / pet / buoy); nullptr → default.
   void PlaceBeside(HWND anchor);
 
   // Settings page list (no secrets — pass_len only).
@@ -105,4 +114,6 @@ class VaultWindow {
   bool dragging_ = false;
   POINT drag_origin_{};
   POINT drag_start_{};
+  VoidFn on_hide_;
+  std::function<void(bool)> on_login_result_;
 };

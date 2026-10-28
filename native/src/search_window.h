@@ -17,7 +17,8 @@ class SearchWindow {
     bool desktop = true;
     bool documents = true;
     bool downloads = true;
-    bool all_drives = false;
+    // Market default: Everything-style whole-disk search.
+    bool all_drives = true;
     int max_results = 50;
     int max_depth = 12;
     // U1 — whether to also search folders currently open in Explorer
@@ -60,6 +61,8 @@ class SearchWindow {
   void OpenAt(int index);
   void RevealAt(int index);
   void ContextAt(int index, int screen_x, int screen_y);
+  void ParseTypesFromJson(const std::wstring& json);
+  std::vector<std::wstring> ResolvedExtensions() const;
 
   HWND hwnd_ = nullptr;
   HWND host_ = nullptr;
@@ -72,6 +75,8 @@ class SearchWindow {
   POINT win_origin_{};
   std::wstring query_;
   std::vector<std::wstring> results_;
+  // Session type chips: word/excel/ppt/pdf/md/image/video. Empty = any type.
+  std::vector<std::wstring> type_filters_;
   Options options_;
   std::function<void(const std::wstring&, const std::wstring&)> on_path_replaced_;
   std::function<void(const std::wstring&)> on_removed_;

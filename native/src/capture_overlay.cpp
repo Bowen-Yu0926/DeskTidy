@@ -3,7 +3,6 @@
 #include "display_geom.h"
 #include "log.h"
 #include "paths_util.h"
-#include "prompt_text.h"
 
 #include <ShlObj.h>
 #include <commdlg.h>
@@ -36,8 +35,9 @@ constexpr COLORREF kColors[] = {
     RGB(255, 255, 255), // white
 };
 constexpr int kWidths[] = {2, 4, 7};
-constexpr const wchar_t* kEmojis[] = {L"😀", L"👍", L"❤️", L"🔥",
-                                      L"⭐", L"👀", L"🎉", L"❗"};
+constexpr int kHandle = 8;
+constexpr int kMinSel = 8;
+constexpr int kEdgeHit = 6;
 
 enum TbId {
   TbRect = 1,
@@ -46,14 +46,13 @@ enum TbId {
   TbBrush,
   TbMosaic,
   TbText,
-  TbEmoji,
   TbUndo,
   TbColor,
   TbWidth,
+  TbCopy,
   TbSave,
   TbCancel,
-  TbCopy,
-  TbCount = TbCopy
+  TbCount = TbCancel
 };
 
 constexpr int kTbBtn = 32;
@@ -99,6 +98,95 @@ bool IsCloaked(HWND hwnd) {
   HRESULT hr = DwmGetWindowAttribute(hwnd, DWMWA_CLOAKED, &cloaked,
                                      sizeof(cloaked));
   return SUCCEEDED(hr) && cloaked;
+}
+
+bool GetVisibleFrame(HWND hwnd, RECT* out) {
+  if (!hwnd || !out) {
+    return false;
+  }
+  // Top-level: DWM visible frame (excludes drop shadow). Children: GetWindowRect.
+  HWND root = GetAncestor(hwnd, GA_ROOT);
+  if (hwnd == root) {
+    HRESULT hr = DwmGetWindowAttribute(hwnd, DWMWA_EXTENDED_FRAME_BOUNDS, out,
+                                       sizeof(*out));
+    if (SUCCEEDED(hr) && out->right > out->left && out->bottom > out->top) {
+      return true;
+    }
+  }
+  return GetWindowRect(hwnd, out) != FALSE;
+}
+
+bool IsDesktopShell(HWND hwnd) {
+  wchar_t cls[64] = {};
+  if (!GetClassNameW(hwnd, cls, 64)) {
+    return false;
+  }
+  return _wcsicmp(cls, L"Progman") == 0 || _wcsicmp(cls, L"WorkerW") == 0 ||
+         _wcsicmp(cls, L"Shell_TrayWnd") == 0 ||
+         _wcsicmp(cls, L"Shell_SecondaryTrayWnd") == 0 ||
+         _wcsicmp(cls, L"NotifyIconOverflowWindow") == 0;
+}
+
+bool RectEqual(const RECT& a, const RECT& b) {
+  return a.left == b.left && a.top == b.top && a.right == b.right &&
+         a.bottom == b.bottom;
+}
+
+void InflatePaintRect(RECT* r) {
+  if (!r) {
+    return;
+  }
+  // Border + size badge above the hole.
+  InflateRect(r, 6, 6);
+  r->top -= 28;
+}
+
+HWND DeepestVisibleChild(HWND root, POINT screen) {
+  if (!root) {
+    return nullptr;
+  }
+  HWND cur = root;
+  POINT pt = screen;
+  ScreenToClient(cur, &pt);
+  for (int guard = 0; guard < 32; ++guard) {
+    HWND child = ChildWindowFromPointEx(
+        cur, pt, CWP_SKIPINVISIBLE | CWP_SKIPDISABLED | CWP_SKIPTRANSPARENT);
+    if (!child || child == cur) {
+      break;
+    }
+    MapWindowPoints(cur, child, &pt, 1);
+    cur = child;
+  }
+  return cur;
+}
+
+HWND PickHighlightWindow(HWND leaf) {
+  if (!leaf) {
+    return nullptr;
+  }
+  HWND root = GetAncestor(leaf, GA_ROOT);
+  HWND cur = leaf;
+  // Prefer the deepest window with a usable size (WeChat control snap). Walk
+  // up past tiny chrome fragments.
+  while (cur) {
+    RECT r{};
+    if (GetVisibleFrame(cur, &r)) {
+      const int w = r.right - r.left;
+      const int h = r.bottom - r.top;
+      if (w >= 20 && h >= 16) {
+        return cur;
+      }
+    }
+    if (cur == root) {
+      break;
+    }
+    HWND parent = GetParent(cur);
+    if (!parent) {
+      break;
+    }
+    cur = parent;
+  }
+  return root ? root : leaf;
 }
 
 void CopyBitmapToClipboardDib(HBITMAP bmp) {
@@ -249,29 +337,29 @@ void DimRegion(HDC hdc, HRGN dim, int cw, int ch) {
 }
 
 RECT TbButtonRect(int id) {
-  // Layout: tools | undo color width | save cancel copy
+  // WeChat order: tools | undo color width | ✓ save ✕
   const int order[] = {TbRect,  TbEllipse, TbArrow, TbBrush, TbMosaic,
-                       TbText,  TbEmoji,   TbUndo,  TbColor, TbWidth,
-                       TbSave,  TbCancel,  TbCopy};
+                       TbText,  TbUndo,    TbColor, TbWidth, TbCopy,
+                       TbSave,  TbCancel};
   int slot = 0;
-  for (int i = 0; i < 13; ++i) {
+  for (int i = 0; i < 12; ++i) {
     if (order[i] == id) {
       slot = i;
       break;
     }
   }
   int x = kTbPad + slot * (kTbBtn + kTbGap);
-  if (slot >= 7) {
-    x += 6;  // gap before undo group
+  if (slot >= 6) {
+    x += 6;
   }
-  if (slot >= 10) {
-    x += 6;  // gap before actions
+  if (slot >= 9) {
+    x += 6;
   }
   return {x, kTbPad, x + kTbBtn, kTbPad + kTbBtn};
 }
 
 int ToolbarWidth() {
-  RECT last = TbButtonRect(TbCopy);
+  RECT last = TbButtonRect(TbCancel);
   return last.right + kTbPad;
 }
 
@@ -282,6 +370,71 @@ Gdiplus::Color GpColor(COLORREF c, BYTE a = 255) {
 }
 
 }  // namespace
+
+bool CaptureOverlay::BuildDimmedBackground() {
+  if (dim_bmp_) {
+    DeleteObject(dim_bmp_);
+    dim_bmp_ = nullptr;
+  }
+  if (!bkg_bmp_ || bkg_w_ <= 0 || bkg_h_ <= 0) {
+    return false;
+  }
+  HDC screen = GetDC(nullptr);
+  HDC src = CreateCompatibleDC(screen);
+  HDC dst = CreateCompatibleDC(screen);
+  HBITMAP dim = CreateCompatibleBitmap(screen, bkg_w_, bkg_h_);
+  if (!src || !dst || !dim) {
+    if (dim) {
+      DeleteObject(dim);
+    }
+    if (src) {
+      DeleteDC(src);
+    }
+    if (dst) {
+      DeleteDC(dst);
+    }
+    ReleaseDC(nullptr, screen);
+    return false;
+  }
+  HGDIOBJ os = SelectObject(src, bkg_bmp_);
+  HGDIOBJ od = SelectObject(dst, dim);
+  BitBlt(dst, 0, 0, bkg_w_, bkg_h_, src, 0, 0, SRCCOPY);
+  // One-shot full dim — hover paints reuse this instead of AlphaBlend every move.
+  BITMAPINFO bi{};
+  bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+  bi.bmiHeader.biWidth = 1;
+  bi.bmiHeader.biHeight = 1;
+  bi.bmiHeader.biPlanes = 1;
+  bi.bmiHeader.biBitCount = 32;
+  bi.bmiHeader.biCompression = BI_RGB;
+  void* bits = nullptr;
+  HDC pixel_dc = CreateCompatibleDC(screen);
+  HBITMAP pixel =
+      CreateDIBSection(screen, &bi, DIB_RGB_COLORS, &bits, nullptr, 0);
+  if (pixel_dc && pixel && bits) {
+    *static_cast<DWORD*>(bits) = 0xFF000000;
+    HGDIOBJ op = SelectObject(pixel_dc, pixel);
+    BLENDFUNCTION bf{};
+    bf.BlendOp = AC_SRC_OVER;
+    bf.SourceConstantAlpha = 120;
+    bf.AlphaFormat = 0;
+    AlphaBlend(dst, 0, 0, bkg_w_, bkg_h_, pixel_dc, 0, 0, 1, 1, bf);
+    SelectObject(pixel_dc, op);
+  }
+  if (pixel) {
+    DeleteObject(pixel);
+  }
+  if (pixel_dc) {
+    DeleteDC(pixel_dc);
+  }
+  SelectObject(src, os);
+  SelectObject(dst, od);
+  DeleteDC(src);
+  DeleteDC(dst);
+  ReleaseDC(nullptr, screen);
+  dim_bmp_ = dim;
+  return true;
+}
 
 bool CaptureOverlay::FreezeVirtualDesktop() {
   ReleaseFrozenFrame();
@@ -310,6 +463,7 @@ bool CaptureOverlay::FreezeVirtualDesktop() {
   bkg_bmp_ = bmp;
   bkg_w_ = width;
   bkg_h_ = height;
+  BuildDimmedBackground();
   return true;
 }
 
@@ -318,7 +472,16 @@ void CaptureOverlay::ReleaseFrozenFrame() {
     DeleteObject(bkg_bmp_);
     bkg_bmp_ = nullptr;
   }
+  if (dim_bmp_) {
+    DeleteObject(dim_bmp_);
+    dim_bmp_ = nullptr;
+  }
+  if (back_bmp_) {
+    DeleteObject(back_bmp_);
+    back_bmp_ = nullptr;
+  }
   bkg_w_ = bkg_h_ = 0;
+  back_w_ = back_h_ = 0;
 }
 
 HBITMAP CaptureOverlay::CropSelectionBitmap(const RECT& sel) const {
@@ -385,6 +548,118 @@ COLORREF CaptureOverlay::SampleFrozen(int client_x, int client_y) const {
   return c == CLR_INVALID ? RGB(128, 128, 128) : c;
 }
 
+void CaptureOverlay::RequestRepaint() {
+  if (hwnd_) {
+    InvalidateRect(hwnd_, nullptr, FALSE);
+  }
+}
+
+void CaptureOverlay::RequestRepaintRects(const RECT* a, const RECT* b) {
+  if (!hwnd_) {
+    return;
+  }
+  RECT u{};
+  bool have = false;
+  if (a && a->right > a->left && a->bottom > a->top) {
+    u = *a;
+    InflatePaintRect(&u);
+    have = true;
+  }
+  if (b && b->right > b->left && b->bottom > b->top) {
+    RECT bb = *b;
+    InflatePaintRect(&bb);
+    if (have) {
+      UnionRect(&u, &u, &bb);
+    } else {
+      u = bb;
+      have = true;
+    }
+  }
+  if (!have) {
+    InvalidateRect(hwnd_, nullptr, FALSE);
+    return;
+  }
+  InvalidateRect(hwnd_, &u, FALSE);
+}
+
+HWND CaptureOverlay::HitCaptureTarget(POINT screen) const {
+  // Do NOT skip whole self PID — DeskTidy settings/fences must stay hittable.
+  // Only ignore the fullscreen overlay + its toolbar.
+  struct Pack {
+    HWND skip1;
+    HWND skip2;
+    POINT pt;
+    HWND best;
+  } pack{hwnd_, toolbar_, screen, nullptr};
+
+  EnumWindows(
+      [](HWND hwnd, LPARAM lp) -> BOOL {
+        auto* p = reinterpret_cast<Pack*>(lp);
+        if (hwnd == p->skip1 || hwnd == p->skip2 || !IsWindowVisible(hwnd) ||
+            IsIconic(hwnd)) {
+          return TRUE;
+        }
+        if (IsCloaked(hwnd) || IsDesktopShell(hwnd)) {
+          return TRUE;
+        }
+        LONG ex = GetWindowLongW(hwnd, GWL_EXSTYLE);
+        if ((ex & WS_EX_TOOLWINDOW) && !(ex & WS_EX_APPWINDOW)) {
+          return TRUE;
+        }
+        if (ex & WS_EX_TRANSPARENT) {
+          return TRUE;
+        }
+        // Full-screen invisible click-through shells (no caption, no frame).
+        LONG style = GetWindowLongW(hwnd, GWL_STYLE);
+        if (!(style & WS_CAPTION) && (ex & WS_EX_NOACTIVATE) &&
+            (ex & WS_EX_LAYERED)) {
+          RECT fr{};
+          if (GetVisibleFrame(hwnd, &fr)) {
+            const int vw = GetSystemMetrics(SM_CXVIRTUALSCREEN);
+            const int vh = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+            if ((fr.right - fr.left) >= vw - 2 &&
+                (fr.bottom - fr.top) >= vh - 2) {
+              return TRUE;
+            }
+          }
+        }
+        RECT r{};
+        if (!GetVisibleFrame(hwnd, &r)) {
+          return TRUE;
+        }
+        if (p->pt.x < r.left || p->pt.x >= r.right || p->pt.y < r.top ||
+            p->pt.y >= r.bottom) {
+          return TRUE;
+        }
+        p->best = hwnd;
+        return FALSE;
+      },
+      reinterpret_cast<LPARAM>(&pack));
+
+  if (!pack.best) {
+    return nullptr;
+  }
+  HWND leaf = DeepestVisibleChild(pack.best, screen);
+  return PickHighlightWindow(leaf ? leaf : pack.best);
+}
+
+bool CaptureOverlay::ClientRectOfWindow(HWND target, RECT* out_client) const {
+  if (!target || !out_client || !hwnd_) {
+    return false;
+  }
+  RECT wr{};
+  if (!GetVisibleFrame(target, &wr)) {
+    return false;
+  }
+  POINT tl{wr.left, wr.top};
+  POINT br{wr.right, wr.bottom};
+  ScreenToClient(hwnd_, &tl);
+  ScreenToClient(hwnd_, &br);
+  *out_client = {tl.x, tl.y, br.x, br.y};
+  return out_client->right > out_client->left &&
+         out_client->bottom > out_client->top;
+}
+
 bool CaptureOverlay::Begin(HINSTANCE instance, DoneFn on_done, bool auto_pin) {
   Gdi();
   instance_ = instance;
@@ -396,6 +671,11 @@ bool CaptureOverlay::Begin(HINSTANCE instance, DoneFn on_done, bool auto_pin) {
   annotations_.clear();
   has_draft_ = false;
   drawing_ = false;
+  resizing_ = false;
+  resize_edge_ = ResizeEdge::None;
+  hover_ok_ = false;
+  hover_hwnd_ = nullptr;
+  DestroyInlineText();
   FreezeVirtualDesktop();
   if (!g_reg) {
     WNDCLASSEXW wc{};
@@ -425,6 +705,7 @@ bool CaptureOverlay::Begin(HINSTANCE instance, DoneFn on_done, bool auto_pin) {
 }
 
 void CaptureOverlay::Cancel() {
+  DestroyInlineText();
   LeaveAnnotateMode();
   if (hwnd_) {
     ReleaseCapture();
@@ -498,17 +779,21 @@ void CaptureOverlay::EnterAnnotateMode() {
   ReleaseCapture();
   CreateToolbar();
   PlaceToolbar();
-  InvalidateRect(hwnd_, nullptr, FALSE);
+  RequestRepaint();
 }
 
 void CaptureOverlay::LeaveAnnotateMode() {
+  DestroyInlineText();
   DestroyToolbar();
   mode_ = Mode::Selecting;
   tool_ = Tool::None;
   has_draft_ = false;
   drawing_ = false;
+  resizing_ = false;
+  resize_edge_ = ResizeEdge::None;
   annotations_.clear();
   sel_ok_ = false;
+  hover_hwnd_ = nullptr;
 }
 
 void CaptureOverlay::CommitSelection() {
@@ -540,7 +825,7 @@ RECT CaptureOverlay::CurrentSelectionRect() const {
 void CaptureOverlay::UndoAnnotation() {
   if (!annotations_.empty()) {
     annotations_.pop_back();
-    InvalidateRect(hwnd_, nullptr, FALSE);
+    RequestRepaint();
   }
 }
 
@@ -573,18 +858,21 @@ void CaptureOverlay::BeginDraft(Tool tool, POINT pt) {
   drawing_ = true;
 }
 
-void CaptureOverlay::UpdateDraft(POINT pt) {
+bool CaptureOverlay::UpdateDraft(POINT pt) {
   if (!has_draft_) {
-    return;
+    return false;
   }
+  bool changed = (draft_.end.x != pt.x || draft_.end.y != pt.y);
   draft_.end = pt;
   if (draft_.kind == Annotation::kBrush || draft_.kind == Annotation::kMosaic) {
     if (draft_.points.empty() ||
         abs(pt.x - draft_.points.back().x) + abs(pt.y - draft_.points.back().y) >=
             (draft_.kind == Annotation::kMosaic ? 8 : 2)) {
       draft_.points.push_back(pt);
+      changed = true;
     }
   }
+  return changed;
 }
 
 void CaptureOverlay::CommitDraft() {
@@ -594,11 +882,269 @@ void CaptureOverlay::CommitDraft() {
   annotations_.push_back(std::move(draft_));
   has_draft_ = false;
   drawing_ = false;
-  InvalidateRect(hwnd_, nullptr, FALSE);
+  RequestRepaint();
+}
+
+CaptureOverlay::ResizeEdge CaptureOverlay::HitResizeEdge(POINT pt) const {
+  if (!sel_ok_) {
+    return ResizeEdge::None;
+  }
+  const RECT& r = sel_;
+  const bool near_l = abs(pt.x - r.left) <= kEdgeHit;
+  const bool near_r = abs(pt.x - r.right) <= kEdgeHit;
+  const bool near_t = abs(pt.y - r.top) <= kEdgeHit;
+  const bool near_b = abs(pt.y - r.bottom) <= kEdgeHit;
+  const bool in_x = pt.x >= r.left - kEdgeHit && pt.x <= r.right + kEdgeHit;
+  const bool in_y = pt.y >= r.top - kEdgeHit && pt.y <= r.bottom + kEdgeHit;
+  if (!in_x || !in_y) {
+    return ResizeEdge::None;
+  }
+  if (near_t && near_l) {
+    return ResizeEdge::NW;
+  }
+  if (near_t && near_r) {
+    return ResizeEdge::NE;
+  }
+  if (near_b && near_l) {
+    return ResizeEdge::SW;
+  }
+  if (near_b && near_r) {
+    return ResizeEdge::SE;
+  }
+  if (near_t) {
+    return ResizeEdge::N;
+  }
+  if (near_b) {
+    return ResizeEdge::S;
+  }
+  if (near_l) {
+    return ResizeEdge::W;
+  }
+  if (near_r) {
+    return ResizeEdge::E;
+  }
+  return ResizeEdge::None;
+}
+
+void CaptureOverlay::BeginResize(ResizeEdge edge, POINT pt) {
+  resizing_ = true;
+  resize_edge_ = edge;
+  resize_grab_ = pt;
+  resize_origin_ = sel_;
+  SetCapture(hwnd_);
+}
+
+bool CaptureOverlay::ApplyResize(POINT pt) {
+  if (!resizing_ || resize_edge_ == ResizeEdge::None) {
+    return false;
+  }
+  RECT r = resize_origin_;
+  const int dx = pt.x - resize_grab_.x;
+  const int dy = pt.y - resize_grab_.y;
+  switch (resize_edge_) {
+    case ResizeEdge::N:
+      r.top += dy;
+      break;
+    case ResizeEdge::S:
+      r.bottom += dy;
+      break;
+    case ResizeEdge::E:
+      r.right += dx;
+      break;
+    case ResizeEdge::W:
+      r.left += dx;
+      break;
+    case ResizeEdge::NE:
+      r.top += dy;
+      r.right += dx;
+      break;
+    case ResizeEdge::NW:
+      r.top += dy;
+      r.left += dx;
+      break;
+    case ResizeEdge::SE:
+      r.bottom += dy;
+      r.right += dx;
+      break;
+    case ResizeEdge::SW:
+      r.bottom += dy;
+      r.left += dx;
+      break;
+    default:
+      break;
+  }
+  if (r.left > r.right) {
+    std::swap(r.left, r.right);
+  }
+  if (r.top > r.bottom) {
+    std::swap(r.top, r.bottom);
+  }
+  if (r.right - r.left < kMinSel) {
+    if (resize_edge_ == ResizeEdge::W || resize_edge_ == ResizeEdge::NW ||
+        resize_edge_ == ResizeEdge::SW) {
+      r.left = r.right - kMinSel;
+    } else {
+      r.right = r.left + kMinSel;
+    }
+  }
+  if (r.bottom - r.top < kMinSel) {
+    if (resize_edge_ == ResizeEdge::N || resize_edge_ == ResizeEdge::NE ||
+        resize_edge_ == ResizeEdge::NW) {
+      r.top = r.bottom - kMinSel;
+    } else {
+      r.bottom = r.top + kMinSel;
+    }
+  }
+  RECT client{};
+  GetClientRect(hwnd_, &client);
+  r.left = (std::max)(client.left, (std::min)(r.left, client.right - kMinSel));
+  r.top = (std::max)(client.top, (std::min)(r.top, client.bottom - kMinSel));
+  r.right = (std::max)(r.left + kMinSel, (std::min)(r.right, client.right));
+  r.bottom = (std::max)(r.top + kMinSel, (std::min)(r.bottom, client.bottom));
+  if (RectEqual(r, sel_)) {
+    return false;
+  }
+  sel_ = r;
+  start_ = {sel_.left, sel_.top};
+  end_ = {sel_.right, sel_.bottom};
+  return true;
+}
+
+void CaptureOverlay::EndResize() {
+  resizing_ = false;
+  resize_edge_ = ResizeEdge::None;
+  ReleaseCapture();
+  PlaceToolbar();
+}
+
+void CaptureOverlay::UpdateResizeCursor(POINT pt) const {
+  if (mode_ != Mode::Annotating || !sel_ok_) {
+    return;
+  }
+  LPCWSTR idc = IDC_ARROW;
+  switch (HitResizeEdge(pt)) {
+    case ResizeEdge::N:
+    case ResizeEdge::S:
+      idc = IDC_SIZENS;
+      break;
+    case ResizeEdge::E:
+    case ResizeEdge::W:
+      idc = IDC_SIZEWE;
+      break;
+    case ResizeEdge::NE:
+    case ResizeEdge::SW:
+      idc = IDC_SIZENESW;
+      break;
+    case ResizeEdge::NW:
+    case ResizeEdge::SE:
+      idc = IDC_SIZENWSE;
+      break;
+    default:
+      idc = IDC_ARROW;
+      break;
+  }
+  SetCursor(LoadCursor(nullptr, idc));
+}
+
+void CaptureOverlay::DestroyInlineText() {
+  if (text_edit_) {
+    if (text_edit_prev_) {
+      SetWindowLongPtrW(text_edit_, GWLP_WNDPROC,
+                        reinterpret_cast<LONG_PTR>(text_edit_prev_));
+      text_edit_prev_ = nullptr;
+    }
+    DestroyWindow(text_edit_);
+    text_edit_ = nullptr;
+  }
+}
+
+void CaptureOverlay::BeginInlineText(POINT pt) {
+  DestroyInlineText();
+  text_anchor_ = pt;
+  const int w = 200;
+  const int h = 28;
+  text_edit_ = CreateWindowExW(
+      0, L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL, pt.x,
+      pt.y, w, h, hwnd_, nullptr, instance_, nullptr);
+  if (!text_edit_) {
+    return;
+  }
+  SetWindowLongPtrW(text_edit_, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(this));
+  text_edit_prev_ = reinterpret_cast<WNDPROC>(SetWindowLongPtrW(
+      text_edit_, GWLP_WNDPROC,
+      reinterpret_cast<LONG_PTR>(CaptureOverlay::TextEditProc)));
+  HFONT font = CreateFontW(
+      16, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+      OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+      DEFAULT_PITCH | FF_DONTCARE, L"Microsoft YaHei UI");
+  if (font) {
+    SendMessageW(text_edit_, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
+    // Font owned by edit for its life; delete on destroy via GWLP.
+    SetPropW(text_edit_, L"DeskTidyTextFont", font);
+  }
+  SetFocus(text_edit_);
+}
+
+void CaptureOverlay::CommitInlineText() {
+  if (!text_edit_) {
+    return;
+  }
+  const int n = GetWindowTextLengthW(text_edit_);
+  std::wstring text;
+  if (n > 0) {
+    text.resize(static_cast<size_t>(n) + 1);
+    GetWindowTextW(text_edit_, text.data(), n + 1);
+    text.resize(static_cast<size_t>(n));
+  }
+  DestroyInlineText();
+  if (text.empty()) {
+    return;
+  }
+  Annotation a;
+  a.kind = Annotation::kText;
+  a.start = a.end = text_anchor_;
+  a.color = stroke_color_;
+  a.width = stroke_width_;
+  a.text = std::move(text);
+  annotations_.push_back(std::move(a));
+  RequestRepaint();
+}
+
+void CaptureOverlay::CancelInlineText() { DestroyInlineText(); }
+
+LRESULT CALLBACK CaptureOverlay::TextEditProc(HWND hwnd, UINT msg, WPARAM wparam,
+                                              LPARAM lparam) {
+  auto* self =
+      reinterpret_cast<CaptureOverlay*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+  WNDPROC prev = self ? self->text_edit_prev_ : nullptr;
+  if (msg == WM_KEYDOWN) {
+    if (wparam == VK_RETURN) {
+      if (self) {
+        self->CommitInlineText();
+      }
+      return 0;
+    }
+    if (wparam == VK_ESCAPE) {
+      if (self) {
+        self->CancelInlineText();
+      }
+      return 0;
+    }
+  }
+  if (msg == WM_DESTROY) {
+    HFONT font = reinterpret_cast<HFONT>(RemovePropW(hwnd, L"DeskTidyTextFont"));
+    if (font) {
+      DeleteObject(font);
+    }
+  }
+  if (prev) {
+    return CallWindowProcW(prev, hwnd, msg, wparam, lparam);
+  }
+  return DefWindowProcW(hwnd, msg, wparam, lparam);
 }
 
 int CaptureOverlay::HitToolbar(int x, int y) const {
-  for (int id = TbRect; id <= TbCopy; ++id) {
+  for (int id = TbRect; id <= TbCancel; ++id) {
     RECT r = TbButtonRect(id);
     if (x >= r.left && x < r.right && y >= r.top && y < r.bottom) {
       return id;
@@ -608,6 +1154,9 @@ int CaptureOverlay::HitToolbar(int x, int y) const {
 }
 
 void CaptureOverlay::OnToolbarCommand(int id) {
+  if (text_edit_) {
+    CommitInlineText();
+  }
   switch (id) {
     case TbRect:
       tool_ = Tool::Rect;
@@ -627,9 +1176,6 @@ void CaptureOverlay::OnToolbarCommand(int id) {
     case TbText:
       tool_ = Tool::Text;
       break;
-    case TbEmoji:
-      tool_ = Tool::Emoji;
-      break;
     case TbUndo:
       UndoAnnotation();
       break;
@@ -642,15 +1188,15 @@ void CaptureOverlay::OnToolbarCommand(int id) {
       width_index_ = (width_index_ + 1) % 3;
       stroke_width_ = kWidths[width_index_];
       break;
+    case TbCopy:
+      FinishSelection(FinishAction::Copy);
+      Cancel();
+      return;
     case TbSave:
       FinishSelection(FinishAction::Save);
       Cancel();
       return;
     case TbCancel:
-      Cancel();
-      return;
-    case TbCopy:
-      FinishSelection(FinishAction::Copy);
       Cancel();
       return;
     default:
@@ -683,7 +1229,8 @@ void CaptureOverlay::DrawOneAnnotation(HDC hdc, const Annotation& a,
     const int h = abs(a.end.y - a.start.y);
     g.DrawEllipse(&pen, l, t, w, h);
   } else if (a.kind == Annotation::kArrow) {
-    g.DrawLine(&pen, static_cast<INT>(a.start.x), static_cast<INT>(a.start.y), static_cast<INT>(a.end.x), static_cast<INT>(a.end.y));
+    g.DrawLine(&pen, static_cast<INT>(a.start.x), static_cast<INT>(a.start.y),
+               static_cast<INT>(a.end.x), static_cast<INT>(a.end.y));
     const double angle =
         atan2(static_cast<double>(a.end.y - a.start.y),
               static_cast<double>(a.end.x - a.start.x));
@@ -715,10 +1262,9 @@ void CaptureOverlay::DrawOneAnnotation(HDC hdc, const Annotation& a,
       Gdiplus::SolidBrush br(GpColor(c));
       g.FillRectangle(&br, gx, gy, block, block);
     }
-  } else if (a.kind == Annotation::kText || a.kind == Annotation::kEmoji) {
-    const int px = 12 + a.width + (a.kind == Annotation::kEmoji ? 6 : 0);
-    Gdiplus::FontFamily fam(a.kind == Annotation::kEmoji ? L"Segoe UI Emoji"
-                                                         : L"Microsoft YaHei UI");
+  } else if (a.kind == Annotation::kText) {
+    const int px = 12 + a.width;
+    Gdiplus::FontFamily fam(L"Microsoft YaHei UI");
     Gdiplus::Font font(&fam, static_cast<Gdiplus::REAL>(px),
                        Gdiplus::FontStyleBold, Gdiplus::UnitPixel);
     Gdiplus::SolidBrush br(GpColor(a.color));
@@ -756,8 +1302,6 @@ HBITMAP CaptureOverlay::CompositeAnnotatedCrop(const RECT& sel) const {
   HDC screen = GetDC(nullptr);
   HDC mem = CreateCompatibleDC(screen);
   HGDIOBJ old = SelectObject(mem, base);
-  // Temporarily map annotation coords: draw relative to selection origin,
-  // scaled into crop pixels via SetWorldTransform.
   Gdiplus::Graphics g(mem);
   g.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
   g.ScaleTransform(static_cast<Gdiplus::REAL>(cw) / sw,
@@ -765,11 +1309,7 @@ HBITMAP CaptureOverlay::CompositeAnnotatedCrop(const RECT& sel) const {
   g.TranslateTransform(static_cast<Gdiplus::REAL>(-sel.left),
                        static_cast<Gdiplus::REAL>(-sel.top));
 
-  // Re-draw annotations into the crop DC via a helper that uses Graphics.
-  // We can't call DrawOneAnnotation (uses full-overlay coords) without offset —
-  // already applied via transform, so call drawing with overlay coords.
   for (const auto& a : annotations_) {
-    // Local copy of draw logic with `g` already transformed.
     Gdiplus::Pen pen(GpColor(a.color), static_cast<Gdiplus::REAL>(a.width));
     pen.SetLineCap(Gdiplus::LineCapRound, Gdiplus::LineCapRound,
                    Gdiplus::DashCapRound);
@@ -784,7 +1324,8 @@ HBITMAP CaptureOverlay::CompositeAnnotatedCrop(const RECT& sel) const {
       g.DrawEllipse(&pen, l, t, abs(a.end.x - a.start.x),
                     abs(a.end.y - a.start.y));
     } else if (a.kind == Annotation::kArrow) {
-      g.DrawLine(&pen, static_cast<INT>(a.start.x), static_cast<INT>(a.start.y), static_cast<INT>(a.end.x), static_cast<INT>(a.end.y));
+      g.DrawLine(&pen, static_cast<INT>(a.start.x), static_cast<INT>(a.start.y),
+                 static_cast<INT>(a.end.x), static_cast<INT>(a.end.y));
       const double angle =
           atan2(static_cast<double>(a.end.y - a.start.y),
                 static_cast<double>(a.end.x - a.start.x));
@@ -813,10 +1354,9 @@ HBITMAP CaptureOverlay::CompositeAnnotatedCrop(const RECT& sel) const {
         Gdiplus::SolidBrush br(GpColor(c));
         g.FillRectangle(&br, gx, gy, block, block);
       }
-    } else if (a.kind == Annotation::kText || a.kind == Annotation::kEmoji) {
-      const int px = 12 + a.width + (a.kind == Annotation::kEmoji ? 6 : 0);
-      Gdiplus::FontFamily fam(a.kind == Annotation::kEmoji ? L"Segoe UI Emoji"
-                                                           : L"Microsoft YaHei UI");
+    } else if (a.kind == Annotation::kText) {
+      const int px = 12 + a.width;
+      Gdiplus::FontFamily fam(L"Microsoft YaHei UI");
       Gdiplus::Font font(&fam, static_cast<Gdiplus::REAL>(px),
                          Gdiplus::FontStyleBold, Gdiplus::UnitPixel);
       Gdiplus::SolidBrush br(GpColor(a.color));
@@ -834,6 +1374,7 @@ HBITMAP CaptureOverlay::CompositeAnnotatedCrop(const RECT& sel) const {
 }
 
 bool CaptureOverlay::FinishSelection(FinishAction action) {
+  CommitInlineText();
   const RECT sel = CurrentSelectionRect();
   if (sel.right - sel.left < 4 || sel.bottom - sel.top < 4) {
     return false;
@@ -857,14 +1398,15 @@ bool CaptureOverlay::FinishSelection(FinishAction action) {
     SYSTEMTIME st{};
     GetLocalTime(&st);
     wchar_t name[64];
-    swprintf_s(name, L"region_%04d%02d%02d_%02d%02d%02d.png", st.wYear,
-               st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
+    swprintf_s(name, L"shot_%04d%02d%02d_%02d%02d%02d.png", st.wYear, st.wMonth,
+               st.wDay, st.wHour, st.wMinute, st.wSecond);
     return JoinPath(dir, name);
   };
 
   std::wstring path;
   bool pin = false;
   if (action == FinishAction::Copy) {
+    // Clipboard already filled; only persist when auto-pin is on.
     if (auto_pin_) {
       path = default_shot_path();
       if (SaveBitmapToFile(bmp, path)) {
@@ -901,58 +1443,42 @@ bool CaptureOverlay::FinishSelection(FinishAction action) {
   return true;
 }
 
-void CaptureOverlay::UpdateHover(POINT client) {
+bool CaptureOverlay::UpdateHover(POINT client) {
   POINT screen = client;
   ClientToScreen(hwnd_, &screen);
-  const DWORD self_pid = GetCurrentProcessId();
-  struct Pack {
-    HWND skip;
-    POINT pt;
-    DWORD self_pid;
-    HWND best;
-  } pack{hwnd_, screen, self_pid, nullptr};
-  EnumWindows(
-      [](HWND hwnd, LPARAM lp) -> BOOL {
-        auto* p = reinterpret_cast<Pack*>(lp);
-        if (hwnd == p->skip || !IsWindowVisible(hwnd) || IsIconic(hwnd)) {
-          return TRUE;
-        }
-        DWORD pid = 0;
-        GetWindowThreadProcessId(hwnd, &pid);
-        if (pid == p->self_pid) {
-          return TRUE;
-        }
-        if (IsCloaked(hwnd)) {
-          return TRUE;
-        }
-        RECT r{};
-        if (!GetWindowRect(hwnd, &r)) {
-          return TRUE;
-        }
-        if (p->pt.x < r.left || p->pt.x >= r.right || p->pt.y < r.top ||
-            p->pt.y >= r.bottom) {
-          return TRUE;
-        }
-        LONG ex = GetWindowLongW(hwnd, GWL_EXSTYLE);
-        if (ex & WS_EX_TOOLWINDOW) {
-          return TRUE;
-        }
-        p->best = hwnd;
-        return FALSE;
-      },
-      reinterpret_cast<LPARAM>(&pack));
-  if (!pack.best) {
+  HWND target = HitCaptureTarget(screen);
+
+  if (!target) {
+    if (!hover_ok_) {
+      return false;
+    }
     hover_ok_ = false;
-    return;
+    hover_hwnd_ = nullptr;
+    hover_ = {};
+    return true;
   }
-  RECT wr{};
-  GetWindowRect(pack.best, &wr);
-  POINT tl{wr.left, wr.top};
-  POINT br{wr.right, wr.bottom};
-  ScreenToClient(hwnd_, &tl);
-  ScreenToClient(hwnd_, &br);
-  hover_ = {tl.x, tl.y, br.x, br.y};
+  // Same HWND → keep rect (avoids DWM bounds jitter flicker while moving).
+  if (hover_ok_ && target == hover_hwnd_) {
+    return false;
+  }
+  RECT next{};
+  if (!ClientRectOfWindow(target, &next)) {
+    if (!hover_ok_) {
+      return false;
+    }
+    hover_ok_ = false;
+    hover_hwnd_ = nullptr;
+    hover_ = {};
+    return true;
+  }
+  if (hover_ok_ && RectEqual(hover_, next)) {
+    hover_hwnd_ = target;
+    return false;
+  }
+  hover_ = next;
   hover_ok_ = true;
+  hover_hwnd_ = target;
+  return true;
 }
 
 void CaptureOverlay::PaintToolbar(HDC hdc) {
@@ -969,7 +1495,9 @@ void CaptureOverlay::PaintToolbar(HDC hdc) {
     RECT r = TbButtonRect(id);
     if (active) {
       Gdiplus::SolidBrush hi(Gdiplus::Color(60, 7, 193, 96));
-      g.FillRectangle(&hi, static_cast<INT>(r.left), static_cast<INT>(r.top), static_cast<INT>(r.right - r.left), static_cast<INT>(r.bottom - r.top));
+      g.FillRectangle(&hi, static_cast<INT>(r.left), static_cast<INT>(r.top),
+                      static_cast<INT>(r.right - r.left),
+                      static_cast<INT>(r.bottom - r.top));
     }
     Gdiplus::FontFamily fam(L"Segoe UI");
     Gdiplus::Font font(&fam, 11, Gdiplus::FontStyleRegular, Gdiplus::UnitPixel);
@@ -991,7 +1519,6 @@ void CaptureOverlay::PaintToolbar(HDC hdc) {
   label(TbBrush, L"✎", tool_ == Tool::Brush);
   label(TbMosaic, L"▦", tool_ == Tool::Mosaic);
   label(TbText, L"A", tool_ == Tool::Text);
-  label(TbEmoji, L"☺", tool_ == Tool::Emoji);
   label(TbUndo, L"↶", false);
   {
     RECT r = TbButtonRect(TbColor);
@@ -1003,9 +1530,9 @@ void CaptureOverlay::PaintToolbar(HDC hdc) {
     swprintf_s(buf, L"%d", stroke_width_);
     label(TbWidth, buf, false);
   }
+  label(TbCopy, L"✓", false);
   label(TbSave, L"💾", false);
   label(TbCancel, L"✕", false);
-  label(TbCopy, L"✓", false);
 }
 
 LRESULT CALLBACK CaptureOverlay::ToolbarProc(HWND hwnd, UINT msg, WPARAM wparam,
@@ -1015,9 +1542,6 @@ LRESULT CALLBACK CaptureOverlay::ToolbarProc(HWND hwnd, UINT msg, WPARAM wparam,
     auto* cs = reinterpret_cast<CREATESTRUCTW*>(lparam);
     self = static_cast<CaptureOverlay*>(cs->lpCreateParams);
     SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(self));
-    // toolbar_ must be valid before HandleToolbar's default branch forwards to
-    // DefWindowProcW(toolbar_, …); otherwise WM_NCCREATE → DefWindowProcW(NULL)
-    // → ERROR_INVALID_WINDOW_HANDLE (1400) and the window is never created.
     self->toolbar_ = hwnd;
   } else {
     self =
@@ -1076,6 +1600,15 @@ LRESULT CaptureOverlay::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
   switch (msg) {
     case WM_ERASEBKGND:
       return 1;
+    case WM_SETCURSOR:
+      if (LOWORD(lparam) == HTCLIENT && mode_ == Mode::Annotating) {
+        POINT pt{};
+        GetCursorPos(&pt);
+        ScreenToClient(hwnd_, &pt);
+        UpdateResizeCursor(pt);
+        return TRUE;
+      }
+      break;
     case WM_PAINT: {
       PAINTSTRUCT ps{};
       HDC hdc = BeginPaint(hwnd_, &ps);
@@ -1085,34 +1618,28 @@ LRESULT CaptureOverlay::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
     }
     case WM_LBUTTONDOWN: {
       POINT pt{GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
+      if (text_edit_) {
+        RECT er{};
+        GetWindowRect(text_edit_, &er);
+        POINT sp = pt;
+        ClientToScreen(hwnd_, &sp);
+        if (sp.x < er.left || sp.x >= er.right || sp.y < er.top ||
+            sp.y >= er.bottom) {
+          CommitInlineText();
+        } else {
+          return 0;
+        }
+      }
       if (mode_ == Mode::Annotating && sel_ok_) {
+        const ResizeEdge edge = HitResizeEdge(pt);
+        if (edge != ResizeEdge::None) {
+          BeginResize(edge, pt);
+          return 0;
+        }
         if (pt.x >= sel_.left && pt.x < sel_.right && pt.y >= sel_.top &&
             pt.y < sel_.bottom) {
           if (tool_ == Tool::Text) {
-            const std::wstring text =
-                PromptText(hwnd_, L"文字标注", L"输入文字：", L"");
-            if (!text.empty()) {
-              Annotation a;
-              a.kind = Annotation::kText;
-              a.start = a.end = pt;
-              a.color = stroke_color_;
-              a.width = stroke_width_;
-              a.text = text;
-              annotations_.push_back(std::move(a));
-              InvalidateRect(hwnd_, nullptr, FALSE);
-            }
-            return 0;
-          }
-          if (tool_ == Tool::Emoji) {
-            Annotation a;
-            a.kind = Annotation::kEmoji;
-            a.start = a.end = pt;
-            a.color = stroke_color_;
-            a.width = stroke_width_;
-            a.text = kEmojis[emoji_index_ % 8];
-            ++emoji_index_;
-            annotations_.push_back(std::move(a));
-            InvalidateRect(hwnd_, nullptr, FALSE);
+            BeginInlineText(pt);
             return 0;
           }
           if (tool_ == Tool::Rect || tool_ == Tool::Ellipse ||
@@ -1123,8 +1650,8 @@ LRESULT CaptureOverlay::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
             return 0;
           }
         }
-        // Click outside selection → restart select.
         LeaveAnnotateMode();
+        RequestRepaint();
       }
       dragging_ = true;
       start_ = end_ = pt;
@@ -1133,46 +1660,80 @@ LRESULT CaptureOverlay::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
     }
     case WM_MOUSEMOVE: {
       POINT pt{GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
+      if (resizing_) {
+        if (ApplyResize(pt)) {
+          PlaceToolbar();
+          RequestRepaint();
+        }
+        return 0;
+      }
       if (drawing_ && has_draft_) {
-        UpdateDraft(pt);
-        InvalidateRect(hwnd_, nullptr, FALSE);
+        if (UpdateDraft(pt)) {
+          RequestRepaint();
+        }
         return 0;
       }
       if (dragging_) {
-        end_ = pt;
-      } else if (mode_ == Mode::Selecting) {
-        UpdateHover(pt);
+        if (end_.x != pt.x || end_.y != pt.y) {
+          end_ = pt;
+          RequestRepaint();
+        }
+        return 0;
       }
-      InvalidateRect(hwnd_, nullptr, FALSE);
+      if (mode_ == Mode::Selecting) {
+        const RECT old_hover = hover_;
+        const bool old_ok = hover_ok_;
+        if (UpdateHover(pt)) {
+          // Dirty union only — full-screen invalidate every move caused flicker.
+          RequestRepaintRects(old_ok ? &old_hover : nullptr,
+                              hover_ok_ ? &hover_ : nullptr);
+        }
+        return 0;
+      }
+      if (mode_ == Mode::Annotating) {
+        UpdateResizeCursor(pt);
+      }
       return 0;
     }
     case WM_LBUTTONUP: {
       POINT pt{GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
+      if (resizing_) {
+        ApplyResize(pt);
+        EndResize();
+        RequestRepaint();
+        return 0;
+      }
       if (drawing_ && has_draft_) {
         UpdateDraft(pt);
         CommitDraft();
         ReleaseCapture();
         return 0;
       }
-      if (dragging_ && mode_ == Mode::Selecting) {
-        dragging_ = false;
+      if (dragging_) {
         end_ = pt;
+        dragging_ = false;
         ReleaseCapture();
         CommitSelection();
+        return 0;
       }
       return 0;
     }
-    case WM_LBUTTONDBLCLK:
-      if (mode_ == Mode::Annotating) {
+    case WM_LBUTTONDBLCLK: {
+      if (mode_ == Mode::Annotating && sel_ok_) {
         FinishSelection(FinishAction::Copy);
         Cancel();
       }
       return 0;
+    }
     case WM_RBUTTONUP:
       Cancel();
       return 0;
     case WM_KEYDOWN:
       if (wparam == VK_ESCAPE) {
+        if (text_edit_) {
+          CancelInlineText();
+          return 0;
+        }
         Cancel();
         return 0;
       }
@@ -1191,12 +1752,17 @@ LRESULT CaptureOverlay::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
         return 0;
       }
       if (wparam == VK_RETURN) {
+        if (text_edit_) {
+          CommitInlineText();
+          return 0;
+        }
         FinishSelection(auto_pin_ ? FinishAction::Pin : FinishAction::Copy);
         Cancel();
         return 0;
       }
       return 0;
     case WM_DESTROY:
+      DestroyInlineText();
       DestroyToolbar();
       hwnd_ = nullptr;
       return 0;
@@ -1209,25 +1775,41 @@ LRESULT CaptureOverlay::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
 void CaptureOverlay::Paint(HDC hdc) {
   RECT rc{};
   GetClientRect(hwnd_, &rc);
+  const int cw = (std::max)(1, static_cast<int>(rc.right - rc.left));
+  const int ch = (std::max)(1, static_cast<int>(rc.bottom - rc.top));
+
+  // Reuse backbuffer — recreating a virtual-screen DIB every mouse-move paints
+  // was a primary flicker source.
+  if (!back_bmp_ || back_w_ != cw || back_h_ != ch) {
+    if (back_bmp_) {
+      DeleteObject(back_bmp_);
+      back_bmp_ = nullptr;
+    }
+    HDC screen = GetDC(nullptr);
+    back_bmp_ = CreateCompatibleBitmap(screen ? screen : hdc, cw, ch);
+    if (screen) {
+      ReleaseDC(nullptr, screen);
+    }
+    back_w_ = cw;
+    back_h_ = ch;
+  }
+  if (!back_bmp_) {
+    PaintContent(hdc);
+    return;
+  }
+  HDC mem = CreateCompatibleDC(hdc);
+  HGDIOBJ old = SelectObject(mem, back_bmp_);
+  PaintContent(mem);
+  BitBlt(hdc, 0, 0, cw, ch, mem, 0, 0, SRCCOPY);
+  SelectObject(mem, old);
+  DeleteDC(mem);
+}
+
+void CaptureOverlay::PaintContent(HDC hdc) {
+  RECT rc{};
+  GetClientRect(hwnd_, &rc);
   const int cw = rc.right - rc.left;
   const int ch = rc.bottom - rc.top;
-
-  if (bkg_bmp_ && bkg_w_ > 0 && bkg_h_ > 0) {
-    HDC mem = CreateCompatibleDC(hdc);
-    HGDIOBJ old = SelectObject(mem, bkg_bmp_);
-    if (cw == bkg_w_ && ch == bkg_h_) {
-      BitBlt(hdc, 0, 0, cw, ch, mem, 0, 0, SRCCOPY);
-    } else {
-      SetStretchBltMode(hdc, HALFTONE);
-      StretchBlt(hdc, 0, 0, cw, ch, mem, 0, 0, bkg_w_, bkg_h_, SRCCOPY);
-    }
-    SelectObject(mem, old);
-    DeleteDC(mem);
-  } else {
-    HBRUSH black = CreateSolidBrush(RGB(0, 0, 0));
-    FillRect(hdc, &rc, black);
-    DeleteObject(black);
-  }
 
   RECT hole{};
   bool have_hole = false;
@@ -1243,18 +1825,59 @@ void CaptureOverlay::Paint(HDC hdc) {
     have_hole = true;
   }
 
-  HRGN dim = CreateRectRgn(0, 0, cw, ch);
-  if (have_hole) {
-    HRGN hole_rgn =
-        CreateRectRgn(hole.left, hole.top, hole.right, hole.bottom);
-    CombineRgn(dim, dim, hole_rgn, RGN_DIFF);
-    DeleteObject(hole_rgn);
+  HDC mem = CreateCompatibleDC(hdc);
+  // Prefer pre-dimmed freeze: one BitBlt, no per-frame AlphaBlend.
+  HBITMAP base = dim_bmp_ ? dim_bmp_ : bkg_bmp_;
+  if (base && bkg_w_ > 0 && bkg_h_ > 0) {
+    HGDIOBJ old = SelectObject(mem, base);
+    if (cw == bkg_w_ && ch == bkg_h_) {
+      BitBlt(hdc, 0, 0, cw, ch, mem, 0, 0, SRCCOPY);
+    } else {
+      SetStretchBltMode(hdc, COLORONCOLOR);
+      StretchBlt(hdc, 0, 0, cw, ch, mem, 0, 0, bkg_w_, bkg_h_, SRCCOPY);
+    }
+    SelectObject(mem, old);
+    if (have_hole && bkg_bmp_) {
+      // Punch bright hole from pristine freeze (1:1 when sizes match).
+      SelectObject(mem, bkg_bmp_);
+      const int hl = (std::max)(0, static_cast<int>(hole.left));
+      const int ht = (std::max)(0, static_cast<int>(hole.top));
+      const int hole_r = (std::min)(cw, static_cast<int>(hole.right));
+      const int hb = (std::min)(ch, static_cast<int>(hole.bottom));
+      const int hw = hole_r - hl;
+      const int hh = hb - ht;
+      if (hw > 0 && hh > 0) {
+        if (cw == bkg_w_ && ch == bkg_h_) {
+          BitBlt(hdc, hl, ht, hw, hh, mem, hl, ht, SRCCOPY);
+        } else {
+          const int sx = hl * bkg_w_ / cw;
+          const int sy = ht * bkg_h_ / ch;
+          const int sw = hw * bkg_w_ / cw;
+          const int sh = hh * bkg_h_ / ch;
+          StretchBlt(hdc, hl, ht, hw, hh, mem, sx, sy, sw, sh, SRCCOPY);
+        }
+      }
+      SelectObject(mem, old);
+    } else if (!dim_bmp_ && bkg_bmp_) {
+      // Fallback: live dim if prebuild failed.
+      HRGN dim = CreateRectRgn(0, 0, cw, ch);
+      if (have_hole) {
+        HRGN hole_rgn =
+            CreateRectRgn(hole.left, hole.top, hole.right, hole.bottom);
+        CombineRgn(dim, dim, hole_rgn, RGN_DIFF);
+        DeleteObject(hole_rgn);
+      }
+      DimRegion(hdc, dim, cw, ch);
+      DeleteObject(dim);
+    }
+  } else {
+    HBRUSH black = CreateSolidBrush(RGB(0, 0, 0));
+    FillRect(hdc, &rc, black);
+    DeleteObject(black);
   }
-  DimRegion(hdc, dim, cw, ch);
-  DeleteObject(dim);
+  DeleteDC(mem);
 
   if (have_hole) {
-    // Outer + inner border (Python _draw_selection_chrome).
     HPEN outer = CreatePen(PS_SOLID, 1, RGB(0, 120, 60));
     HGDIOBJ old_pen = SelectObject(hdc, outer);
     SelectObject(hdc, GetStockObject(NULL_BRUSH));
@@ -1267,9 +1890,7 @@ void CaptureOverlay::Paint(HDC hdc) {
     DeleteObject(pen);
     DeleteObject(outer);
 
-    // Corner handles (skip hover-only chrome — handles only after commit or drag).
     if (sel_ok_ || dragging_) {
-      constexpr int kHandle = 8;
       const POINT corners[4] = {
           {hole.left, hole.top},
           {hole.right - 1, hole.top},
@@ -1284,13 +1905,23 @@ void CaptureOverlay::Paint(HDC hdc) {
         Rectangle(hdc, c.x - kHandle / 2, c.y - kHandle / 2,
                   c.x + kHandle / 2 + 1, c.y + kHandle / 2 + 1);
       }
+      // Mid-edge handles (WeChat 8-way resize).
+      const POINT mids[4] = {
+          {(hole.left + hole.right) / 2, hole.top},
+          {(hole.left + hole.right) / 2, hole.bottom - 1},
+          {hole.left, (hole.top + hole.bottom) / 2},
+          {hole.right - 1, (hole.top + hole.bottom) / 2},
+      };
+      for (const POINT& c : mids) {
+        Rectangle(hdc, c.x - kHandle / 2, c.y - kHandle / 2,
+                  c.x + kHandle / 2 + 1, c.y + kHandle / 2 + 1);
+      }
       SelectObject(hdc, old_hpen);
       SelectObject(hdc, old_hbr);
       DeleteObject(handle_pen);
       DeleteObject(handle_br);
     }
 
-    // Size badge: "W × H" above (or inside) the selection.
     {
       const int w = hole.right - hole.left;
       const int h = hole.bottom - hole.top;
@@ -1328,7 +1959,7 @@ void CaptureOverlay::Paint(HDC hdc) {
     hint.top += 24;
     hint.bottom = hint.top + 28;
     DrawTextW(hdc,
-              L"拖拽选区 · 松手后标注 · Ctrl+C 复制 · Ctrl+S 保存 · Esc 取消",
+              L"拖拽选区 · 悬停窗口单击 · 松手后标注 · Ctrl+C 复制 · Esc 取消",
               -1, &hint, DT_CENTER | DT_SINGLELINE);
   }
 }

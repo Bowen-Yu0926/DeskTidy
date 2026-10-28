@@ -278,7 +278,7 @@ bool SaveWhitelist(const std::vector<std::wstring>& names) {
   std::ostringstream out;
   out << "{\n  \"names\": [\n";
   for (size_t i = 0; i < dedup.size(); ++i) {
-    out << "    \"" << NarrowUtf8(dedup[i]) << "\"";
+    out << "    \"" << EscapeJsonUtf8(NarrowUtf8(dedup[i])) << "\"";
     if (i + 1 < dedup.size()) {
       out << ",";
     }

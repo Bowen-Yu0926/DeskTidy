@@ -1,5 +1,7 @@
 #include "first_run.h"
 
+#include "autostart.h"
+
 #include "app_prefs.h"
 #include "display_geom.h"
 #include "log.h"
@@ -226,7 +228,7 @@ void MaybeShowFirstRun(HWND owner) {
 
       L"· Ctrl+Shift+← / →：切换分区页\n"
       L"· Ctrl+Space：Peek 置顶查看分区（盖在其它窗口上）\n"
-      L"· Ctrl+Shift+F：显示/隐藏分区　O：一键整理　H：桌面图标\n"
+      L"· O：一键整理　H：桌面图标　Ctrl+Space：Peek 查看分区\n"
       L"· Ctrl+Alt+1：区域截图　2：贴图　3：录屏　4：搜索\n\n"
       L"托盘或设置 → 快捷键 可改绑。",
 
@@ -254,6 +256,12 @@ void MaybeShowFirstRun(HWND owner) {
   prefs.first_run_guide_done = true;
   prefs.last_seen_version = cur_ver;
   SaveAppPrefs(prefs);
+
+  // Default-on: finish the first-run guide with Start with Windows enabled
+  // (installer task is also checked by default).
+  if (!IsNativeAutostartEnabled()) {
+    SetNativeAutostart(true);
+  }
 
   std::ofstream out(marker);
   out << "1\n";

@@ -895,12 +895,19 @@ void VaultWindow::Show() {
 }
 
 void VaultWindow::Hide() {
+  const bool was_open =
+      hwnd_ && IsWindowVisible(hwnd_) && !IsIconic(hwnd_);
   if (dirty_) {
     Save();
     dirty_ = false;
   }
   if (hwnd_) {
     ShowWindow(hwnd_, SW_HIDE);
+  }
+  // Notify after hide so App can sink fences before desktop-FG band restore
+  // Raise climbs partitions over apps (open path already SeatAllFencesUnderApps).
+  if (was_open && on_hide_) {
+    on_hide_();
   }
 }
 
@@ -914,17 +921,19 @@ void VaultWindow::PlaceBeside(HWND anchor) {
   if (anchor && IsWindow(anchor)) {
     RECT ar{};
     GetWindowRect(anchor, &ar);
+    const int ah = ar.bottom - ar.top;
+    // Float-panel convention: sit beside the launcher; align mid-lines.
     x = ar.left - kPanelW - 12;
-    y = ar.top;
+    y = ar.top + ah / 2 - kPanelH / 2;
     if (x < work.left) {
       x = ar.right + 12;
     }
-    if (y + kPanelH > work.bottom) {
-      y = work.bottom - kPanelH;
-    }
-    if (y < work.top) {
-      y = work.top;
-    }
+  }
+  if (y + kPanelH > work.bottom) {
+    y = work.bottom - kPanelH;
+  }
+  if (y < work.top) {
+    y = work.top;
   }
   SetWindowPos(hwnd_, HWND_TOP, x, y, kPanelW, kPanelH,
                SWP_SHOWWINDOW | SWP_NOACTIVATE);
@@ -1511,10 +1520,20 @@ void VaultWindow::CloudLogin() {
   const std::wstring user =
       PromptText(hwnd_, L"云保险库", L"登录名：", L"");
   if (user.empty()) {
+    if (on_login_result_) {
+      auto cb = std::move(on_login_result_);
+      on_login_result_ = nullptr;
+      cb(false);
+    }
     return;
   }
   const std::wstring pass = PromptPassword(hwnd_, L"云保险库", L"登录密码：");
   if (pass.empty()) {
+    if (on_login_result_) {
+      auto cb = std::move(on_login_result_);
+      on_login_result_ = nullptr;
+      cb(false);
+    }
     return;
   }
   const HWND h = hwnd_;
@@ -1797,7 +1816,8 @@ LRESULT VaultWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
       return 0;
     }
     case kMsgLoginDone: {
-      if (wparam) {
+      const bool ok = wparam != 0;
+      if (ok) {
         ShowToast(L"云登录成功");
         StartCloudRefresh();
       } else {
@@ -1805,6 +1825,11 @@ LRESULT VaultWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
                     Tr("vault").c_str(), MB_OK | MB_ICONWARNING);
       }
       PushState();
+      if (on_login_result_) {
+        auto cb = std::move(on_login_result_);
+        on_login_result_ = nullptr;
+        cb(ok);
+      }
       return 0;
     }
     case kMsgSyncDone: {

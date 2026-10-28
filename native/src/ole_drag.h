@@ -11,19 +11,28 @@
 // Returns true if a drop completed (DRAGDROP_S_DROP).
 bool ShellDoDragFiles(const std::vector<std::wstring>& paths);
 
-// Start a pin-transfer drag: CF_HDROP (Explorer folders / Recycle Bin) plus
-// private "DeskTidyPinTransfer" (src_fence_id + paths). Releasing over the
-// real desktop / public float host cancels OLE so Explorer never gets a
-// same-folder CF_HDROP (「源相同」); the caller then unpins. Returns true when
-// a DeskTidy fence consumed the pin transfer.
-bool ShellDoDragPins(const std::vector<std::wstring>& paths,
-                     const std::wstring& src_fence_id);
+// Outcome of a pin drag (Fences-class: share to apps keeps the pin).
+enum class PinDragResult {
+  KeptInFence,       // Esc / drop COPY|LINK to WeChat·Explorer·etc.
+  TransferredFence,  // another DeskTidy fence consumed DeskTidyPinTransfer
+  Unpinned,          // released on desktop/public, or MOVE away (Recycle/folder)
+};
+
+// Start a pin-transfer drag: CF_HDROP (Explorer / apps / Recycle) plus private
+// "DeskTidyPinTransfer". Releasing over the real desktop / public float host
+// cancels OLE so Explorer never gets same-folder CF_HDROP (「源相同」) — that
+// path returns Unpinned. Dropping on WeChat (COPY) returns KeptInFence.
+PinDragResult ShellDoDragPins(const std::vector<std::wstring>& paths,
+                              const std::wstring& src_fence_id);
 
 // Drop-hint state reported on each drag-loop move (drives the floating hint).
 struct PinDragHint {
-  bool over_target = false;  // cursor over a pin-capable fence
-  bool invalid = false;      // over a target that rejected the transfer
+  bool over_target = false;   // cursor over a pin-capable fence
+  bool invalid = false;       // over a target that rejected the transfer
+  bool over_desktop = false;  // real desktop / public float → unpin on release
 };
+// True when cursor is over Progman/WorkerW/public float (pin drag unpin zone).
+bool PinDragOverDesktopUnpinZone(POINT pt);
 using PinDragMoveFn = std::function<void(POINT cursor, const PinDragHint&)>;
 // Install a per-move callback invoked from IDropSource::QueryContinueDrag.
 void SetPinDragMoveFn(PinDragMoveFn fn);

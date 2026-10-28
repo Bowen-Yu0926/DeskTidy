@@ -49,9 +49,14 @@
   .btn.primary { background: var(--primary); border-color: var(--primary); color: #fff; }
   .btn.primary:hover { background: var(--primary-hover); color: #fff; }
   .opts {
-    padding: 0 12px 8px; display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12px;
+    padding: 0 12px 4px; display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12px;
   }
   .opts label { display: flex; align-items: center; gap: 6px; cursor: pointer; }
+  .types {
+    padding: 0 12px 8px; display: flex; flex-wrap: wrap; gap: 6px 12px;
+    color: var(--muted); font-size: 12px;
+  }
+  .types label { display: flex; align-items: center; gap: 5px; cursor: pointer; }
   #list { flex: 1; overflow: auto; padding: 4px 12px 8px; }
   .item {
     padding: 9px 12px; border: 1px solid var(--border); border-radius: 10px;
@@ -80,7 +85,16 @@
     <button class="btn primary" id="go">搜索</button>
   </div>
   <div class="opts">
-    <label><input type="checkbox" id="all" /> 所有固定磁盘</label>
+    <label><input type="checkbox" id="all" checked /> 所有固定磁盘</label>
+  </div>
+  <div class="types" id="types">
+    <label><input type="checkbox" data-type="word" /> Word</label>
+    <label><input type="checkbox" data-type="excel" /> Excel</label>
+    <label><input type="checkbox" data-type="ppt" /> PPT</label>
+    <label><input type="checkbox" data-type="pdf" /> PDF</label>
+    <label><input type="checkbox" data-type="md" /> Markdown</label>
+    <label><input type="checkbox" data-type="image" /> 图片</label>
+    <label><input type="checkbox" data-type="video" /> 视频</label>
   </div>
   <div id="list"></div>
   <div class="foot">
@@ -104,6 +118,25 @@
     const s = String(p || '');
     const i = Math.max(s.lastIndexOf('\\'), s.lastIndexOf('/'));
     return i >= 0 ? s.slice(i + 1) : s;
+  }
+  function selectedTypes() {
+    return Array.from(document.querySelectorAll('#types input[data-type]:checked'))
+      .map(el => el.dataset.type);
+  }
+  function setTypes(list) {
+    const want = new Set(Array.isArray(list) ? list : []);
+    document.querySelectorAll('#types input[data-type]').forEach(el => {
+      el.checked = want.has(el.dataset.type);
+    });
+  }
+  function doSearch() {
+    post({
+      type: 'action',
+      id: 'search',
+      query: document.getElementById('q').value,
+      all_drives: document.getElementById('all').checked,
+      types: selectedTypes()
+    });
   }
   function render() {
     const list = document.getElementById('list');
@@ -132,26 +165,32 @@
     if (typeof m.sel === 'number') sel = m.sel;
     if (sel >= items.length) sel = items.length ? 0 : -1;
     document.getElementById('all').checked = !!m.all_drives;
+    if (Array.isArray(m.types)) setTypes(m.types);
     if (typeof m.query === 'string' && document.activeElement !== document.getElementById('q')) {
       document.getElementById('q').value = m.query;
     }
     document.getElementById('status').textContent = m.status || (items.length ? (items.length + ' 项') : '输入文件名');
     render();
   };
-  document.getElementById('go').onclick = () => {
-    post({ type: 'action', id: 'search', query: document.getElementById('q').value, all_drives: document.getElementById('all').checked });
-  };
+  document.getElementById('go').onclick = () => doSearch();
   document.getElementById('q').oninput = () => {
     clearTimeout(debounce);
-    debounce = setTimeout(() => document.getElementById('go').click(), 420);
+    debounce = setTimeout(() => doSearch(), 420);
   };
   document.getElementById('q').onkeydown = e => {
-    if (e.key === 'Enter') { clearTimeout(debounce); document.getElementById('go').click(); }
+    if (e.key === 'Enter') { clearTimeout(debounce); doSearch(); }
     if (e.key === 'Escape') post({ type: 'action', id: 'hide' });
   };
   document.getElementById('all').onchange = () => {
     post({ type: 'action', id: 'all_drives', value: document.getElementById('all').checked });
+    if (document.getElementById('q').value.trim()) doSearch();
   };
+  document.querySelectorAll('#types input[data-type]').forEach(el => {
+    el.onchange = () => {
+      post({ type: 'action', id: 'types', types: selectedTypes() });
+      if (document.getElementById('q').value.trim()) doSearch();
+    };
+  });
   document.getElementById('open').onclick = () => { if (sel >= 0) post({ type: 'action', id: 'open', index: sel }); };
   document.getElementById('reveal').onclick = () => { if (sel >= 0) post({ type: 'action', id: 'reveal', index: sel }); };
   document.getElementById('hide').onclick = () => post({ type: 'action', id: 'hide' });

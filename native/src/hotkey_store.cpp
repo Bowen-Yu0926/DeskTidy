@@ -157,11 +157,14 @@ std::vector<HotkeyDef> DefaultHotkeys() {
   };
   return {
       H("organize", "hk_organize", MOD_CONTROL | MOD_SHIFT, 'O'),
-      H("toggle_fences", "hk_toggle_fences", MOD_CONTROL | MOD_SHIFT, 'F'),
+      // Show/hide fences removed — keep id for prefs compat, unbound.
+      H("toggle_fences", "hk_toggle_fences", 0, 0),
       H("toggle_icons", "hk_toggle_icons", MOD_CONTROL | MOD_SHIFT, 'H'),
       H("peek_fences", "hk_peek_fences", MOD_CONTROL, VK_SPACE),
       H("page_next", "hk_page_next", MOD_CONTROL | MOD_SHIFT, VK_RIGHT),
       H("page_prev", "hk_page_prev", MOD_CONTROL | MOD_SHIFT, VK_LEFT),
+      // PRD P0-2 / market: bare F1–F4 collide with Help/Rename/Find — use
+      // Ctrl+Alt+N (Fences-class tools also avoid naked F-keys as defaults).
       H("screenshot", "hk_screenshot", MOD_CONTROL | MOD_ALT, '1'),
       H("show_screenshot", "hk_show_screenshot", MOD_CONTROL | MOD_ALT, '2'),
       H("screen_record", "hk_screen_record", MOD_CONTROL | MOD_ALT, '3'),

@@ -7,6 +7,11 @@
 #include <Shellapi.h>
 
 #include <cstring>
+#include <string>
+#include <utility>
+#include <vector>
+#include <string>
+#include <vector>
 
 namespace {
 
@@ -318,4 +323,196 @@ bool AtomicWriteUtf8File(const std::wstring& path, const std::string& utf8,
     return false;
   }
   return true;
+}
+
+std::string EscapeJsonUtf8(const std::string& s) {
+  std::string out;
+  out.reserve(s.size() + 8);
+  for (unsigned char c : s) {
+    switch (c) {
+      case '\\':
+        out += "\\\\";
+        break;
+      case '"':
+        out += "\\\"";
+        break;
+      case '\n':
+        out += "\\n";
+        break;
+      case '\r':
+        out += "\\r";
+        break;
+      case '\t':
+        out += "\\t";
+        break;
+      default:
+        out.push_back(static_cast<char>(c));
+        break;
+    }
+  }
+  return out;
+}
+
+bool FileMissingOrTiny(const std::wstring& path, std::uint32_t min_bytes) {
+  WIN32_FILE_ATTRIBUTE_DATA fad{};
+  if (!GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &fad) ||
+      (fad.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
+    return true;
+  }
+  if (fad.nFileSizeHigh != 0) {
+    return false;
+  }
+  return fad.nFileSizeLow < min_bytes;
+}
+
+bool ReadUtf8FileWithBak(const std::wstring& path, std::string* out) {
+  if (!out) {
+    return false;
+  }
+  out->clear();
+  for (const std::wstring& candidate : {path, path + L".bak"}) {
+    HANDLE h = CreateFileW(candidate.c_str(), GENERIC_READ,
+                           FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+                           OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE) {
+      continue;
+    }
+    LARGE_INTEGER sz{};
+    if (!GetFileSizeEx(h, &sz) || sz.QuadPart <= 0 || sz.QuadPart > 8 * 1024 * 1024) {
+      CloseHandle(h);
+      continue;
+    }
+    std::string buf(static_cast<size_t>(sz.QuadPart), '\0');
+    DWORD read = 0;
+    const BOOL ok =
+        ReadFile(h, buf.data(), static_cast<DWORD>(buf.size()), &read, nullptr);
+    CloseHandle(h);
+    if (!ok || read == 0) {
+      continue;
+    }
+    buf.resize(read);
+    *out = std::move(buf);
+    if (candidate != path) {
+      LogLine(L"[paths] restored %s from .bak", path.c_str());
+    }
+    return true;
+  }
+  return false;
+}
+
+namespace {
+
+bool DirExistsW(const std::wstring& path) {
+  const DWORD a = GetFileAttributesW(path.c_str());
+  return a != INVALID_FILE_ATTRIBUTES && (a & FILE_ATTRIBUTE_DIRECTORY);
+}
+
+std::wstring MirrorDesktidyTree(const std::wstring& exe_dir) {
+  // E:\Desktidy\native\build\Release ↔ E:\Desktidy-cpp\native\build\Release
+  const std::wstring a = L"\\Desktidy\\";
+  const std::wstring b = L"\\Desktidy-cpp\\";
+  size_t p = exe_dir.find(a);
+  if (p != std::wstring::npos) {
+    std::wstring out = exe_dir;
+    out.replace(p, a.size(), b);
+    return out;
+  }
+  p = exe_dir.find(b);
+  if (p != std::wstring::npos) {
+    std::wstring out = exe_dir;
+    out.replace(p, b.size(), a);
+    return out;
+  }
+  // Case-insensitive fallback for mixed casing on Windows paths.
+  std::wstring lower = exe_dir;
+  for (auto& ch : lower) {
+    if (ch >= L'A' && ch <= L'Z') {
+      ch = static_cast<wchar_t>(ch - L'A' + L'a');
+    }
+  }
+  const std::wstring la = L"\\desktidy\\";
+  const std::wstring lb = L"\\desktidy-cpp\\";
+  p = lower.find(la);
+  if (p != std::wstring::npos && lower.find(lb) == std::wstring::npos) {
+    std::wstring out = exe_dir;
+    out.replace(p, la.size(), L"\\Desktidy-cpp\\");
+    return out;
+  }
+  p = lower.find(lb);
+  if (p != std::wstring::npos) {
+    std::wstring out = exe_dir;
+    out.replace(p, lb.size(), L"\\Desktidy\\");
+    return out;
+  }
+  return {};
+}
+
+bool CopyIfDestSparse(const std::wstring& src_file, const std::wstring& dst_file,
+                      std::uint32_t min_bytes) {
+  if (FileMissingOrTiny(src_file, min_bytes)) {
+    return false;
+  }
+  if (!FileMissingOrTiny(dst_file, min_bytes)) {
+    return false;
+  }
+  if (!CopyFileW(src_file.c_str(), dst_file.c_str(), FALSE)) {
+    return false;
+  }
+  LogLine(L"[paths] adopted orphan %s -> %s", src_file.c_str(),
+          dst_file.c_str());
+  return true;
+}
+
+}  // namespace
+
+bool AdoptOrphanPortableSidecarOnce() {
+  if (IsPortableMode()) {
+    return false;
+  }
+  const std::wstring dest_root = NativeDataDir();
+  const std::wstring marker =
+      JoinPath(dest_root, L"adopted_portable_sidecar.done");
+  if (!FileMissingOrTiny(marker, 1)) {
+    return false;
+  }
+
+  std::vector<std::wstring> sources;
+  const std::wstring exe_data = JoinPath(NativeExeDir(), L"data");
+  if (DirExistsW(exe_data)) {
+    sources.push_back(exe_data);
+  }
+  const std::wstring mirror = MirrorDesktidyTree(NativeExeDir());
+  if (!mirror.empty()) {
+    const std::wstring mirror_data = JoinPath(mirror, L"data");
+    if (DirExistsW(mirror_data) && mirror_data != exe_data &&
+        mirror_data != dest_root) {
+      sources.push_back(mirror_data);
+    }
+  }
+
+  // Sparse-only adopt: never clobber a non-empty LocalAppData file.
+  static const wchar_t* kSparseFiles[] = {
+      L"page_folders.json",
+      L"whitelist.json",
+      L"dock_items.json",
+  };
+  bool any = false;
+  for (const auto& src_root : sources) {
+    for (const wchar_t* name : kSparseFiles) {
+      if (CopyIfDestSparse(JoinPath(src_root, name), JoinPath(dest_root, name),
+                           24)) {
+        any = true;
+      }
+    }
+  }
+
+  HANDLE h = CreateFileW(marker.c_str(), GENERIC_WRITE, 0, nullptr,
+                         CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (h != INVALID_HANDLE_VALUE) {
+    const char ok[] = "1\n";
+    DWORD w = 0;
+    WriteFile(h, ok, 2, &w, nullptr);
+    CloseHandle(h);
+  }
+  return any;
 }

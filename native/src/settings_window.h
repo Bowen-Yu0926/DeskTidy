@@ -80,7 +80,7 @@ class SettingsWindow {
     bool search_desktop = true;
     bool search_documents = true;
     bool search_downloads = true;
-    bool search_all_drives = false;
+    bool search_all_drives = true;
     int search_max_results = 50;
     int search_max_depth = 12;
     // U1 file_search.include_open_folders / include_hidden / threads.
@@ -111,10 +111,11 @@ class SettingsWindow {
     int vault_refresh_hours = 2;
     int vault_clipboard_clear_seconds = 30;
     bool close_to_tray = true;
-    bool show_fences = true;
-    bool double_click_hide = true;
+  bool show_fences = true;
+  bool double_click_hide = false;
     bool enable_public_desktop = false;
     bool show_page_indicator = true;
+    std::string page_chrome_style = "float";  // float | tabs
     std::string lang = "zh";
     std::wstring app_version = L"0.0.0";
     // Fence style preset (legacy field name theme_id in JSON).
@@ -152,15 +153,20 @@ class SettingsWindow {
       std::string style_id = "charcoal";
       bool collapsed = false;
       int icon_count = 0;
+      std::vector<std::string> pin_thumbs;
     };
     struct SnapPreviewIcon {
       int x = 0;
       int y = 0;
+      std::string thumb;
     };
     struct SnapCard {
       std::wstring name;
       std::wstring meta;
       int focus_page = 0;
+      int work_w = 0;
+      int work_h = 0;
+      std::vector<std::wstring> page_names;
       std::vector<SnapPreviewBox> preview;
       std::vector<SnapPreviewIcon> icons;
     };
@@ -312,7 +318,7 @@ class SettingsWindow {
   ExtState ext_;
   bool dock_on_ = false;
   bool pet_on_ = true;
-  bool autostart_on_ = false;
+  bool autostart_on_ = true;
   bool org_startup_on_ = false;
   bool org_watch_on_ = false;
   int selected_ = 0;

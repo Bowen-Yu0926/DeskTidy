@@ -73,15 +73,10 @@ std::wstring PinFilePath() {
   return JoinPath(NativeDataDir(), L"pins.json");
 }
 
-PinMap LoadPins() {
+namespace {
+
+PinMap ParsePinsJson(const std::string& json) {
   PinMap pins;
-  std::ifstream in(PinFilePath());
-  if (!in) {
-    return pins;
-  }
-  std::ostringstream ss;
-  ss << in.rdbuf();
-  const std::string json = ss.str();
   // Very small parser: "path":"fence_id" pairs inside "pins"
   size_t pos = json.find("\"pins\"");
   if (pos == std::string::npos) {
@@ -144,6 +139,57 @@ PinMap LoadPins() {
     }
   }
   return pins;
+}
+
+PinMap LoadPinsFromPath(const std::wstring& path) {
+  std::string json;
+  if (!ReadUtf8FileWithBak(path, &json)) {
+    return {};
+  }
+  return ParsePinsJson(json);
+}
+
+}  // namespace
+
+PinMap LoadPins() { return LoadPinsFromPath(PinFilePath()); }
+
+int HealPinsFromBakOnce(PinMap* pins) {
+  if (!pins) {
+    return 0;
+  }
+  const std::wstring marker =
+      JoinPath(NativeDataDir(), L"pins_bak_heal.done");
+  if (!FileMissingOrTiny(marker, 1)) {
+    return 0;
+  }
+  const std::wstring root = NativeDataDir();
+  int added = 0;
+  for (const wchar_t* name :
+       {L"pins.json.bak", L"pins.json.bak-python-import"}) {
+    const auto donor = LoadPinsFromPath(JoinPath(root, name));
+    for (const auto& kv : donor) {
+      if (pins->count(kv.first) != 0) {
+        continue;
+      }
+      const bool keep =
+          kv.first.find(L"::") != std::wstring::npos ||
+          GetFileAttributesW(kv.first.c_str()) != INVALID_FILE_ATTRIBUTES;
+      if (!keep) {
+        continue;
+      }
+      (*pins)[kv.first] = kv.second;
+      ++added;
+    }
+  }
+  HANDLE h = CreateFileW(marker.c_str(), GENERIC_WRITE, 0, nullptr,
+                         CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (h != INVALID_HANDLE_VALUE) {
+    const char ok[] = "1\n";
+    DWORD w = 0;
+    WriteFile(h, ok, 2, &w, nullptr);
+    CloseHandle(h);
+  }
+  return added;
 }
 
 bool SavePins(const PinMap& pins) {

@@ -24,7 +24,7 @@ std::vector<std::wstring> OrganizePreviewVirtualPins(
     const RuleMap& rules,
     const std::unordered_map<std::string, std::wstring>& fence_titles,
     const std::string& software_id = "system_software",
-    const std::string& common_id = "system_common",
+    const std::string& common_id = "system_docs",
     const std::vector<FenceLayout>* fences = nullptr,
     int current_page = -1);
 

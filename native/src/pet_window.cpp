@@ -1945,11 +1945,12 @@ void PetWindow::CreateBuoy(HINSTANCE instance) {
 }
 
 void PetWindow::SetToolFlags(bool record, bool minutes, bool calculator,
-                             bool todo) {
+                             bool todo, bool vault) {
   tool_record_ = record;
   tool_minutes_ = minutes;
   tool_calculator_ = calculator;
   tool_todo_ = todo;
+  tool_vault_ = vault;
   RebuildChromeItems();
   if (pages_) {
     PlacePages();
@@ -2057,6 +2058,7 @@ void PetWindow::RebuildChromeItems() {
   add_tool(tool_minutes_, L"minutes", L"纪要");
   add_tool(tool_calculator_, L"calculator", L"计算");
   add_tool(tool_todo_, L"todo", L"待办");
+  add_tool(tool_vault_, L"vault", L"账号");
 }
 
 void PetWindow::CreatePages(HINSTANCE instance) {

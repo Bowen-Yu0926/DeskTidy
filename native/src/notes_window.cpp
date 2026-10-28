@@ -119,6 +119,7 @@ constexpr int kMenuMoveLineDown = 2166;
 constexpr int kMenuToggleBookmark = 2167;
 constexpr int kMenuNextBookmark = 2168;
 constexpr int kMenuPrevBookmark = 2169;
+constexpr int kMenuOpenHosts = 2170;
 constexpr int kEditCtxUndo = 3201;
 constexpr int kEditCtxCut = 3202;
 constexpr int kEditCtxCopy = 3203;
@@ -129,6 +130,10 @@ constexpr int kEditCtxGoto = 3207;
 constexpr int kOutlineId = 2002;
 constexpr int kSidebarRefreshId = 2009;
 constexpr int kModeStripId = 2010;
+// Compact top-right preview/edit chip (not a full-height strip).
+constexpr int kModeBtnW = 64;
+constexpr int kModeBtnH = 28;
+constexpr int kModeBtnPad = 10;
 constexpr int kOutlineStripId = 2011;
 constexpr int kGutterId = 2012;
 constexpr int kOutlineStripW = 28;
@@ -150,7 +155,7 @@ constexpr UINT_PTR kScrollTimer = 2;
 constexpr UINT_PTR kSidebarSearchTimer = 3;
 constexpr UINT_PTR kOutlineTimer = 4;
 constexpr UINT_PTR kStatusTimer = 5;
-constexpr int kStatusBarH = 22;
+constexpr int kStatusBarH = 26;
 
 // P2-30: follow Windows app light/dark preference for MD preview chrome.
 bool SystemAppsUseLightTheme() {
@@ -230,7 +235,7 @@ bool IsOpenableSuffix(const std::wstring& lower) {
       L".makefile", L".cmake", L".gradle", L".r",        L".lua",   L".pl",
       L".swift",  L".kt",    L".kts",    L".dart",     L".jsonc", L".json5",
       L".svg",    L".tex",   L".rst",    L".adoc",     L".nfo",   L".diz",
-      L".reg",    L".inf",   L".url",    L".eml",      L".ics",
+      L".reg",    L".inf",   L".url",    L".eml",      L".ics",   L".rtf",
   };
   for (const wchar_t* sfx : kSfx) {
     if (lower == sfx) {
@@ -241,8 +246,10 @@ bool IsOpenableSuffix(const std::wstring& lower) {
 }
 
 std::wstring LowerSuffix(const std::wstring& path) {
+  const size_t slash = path.find_last_of(L"\\/");
+  const size_t base = (slash == std::wstring::npos) ? 0 : slash + 1;
   const size_t dot = path.find_last_of(L'.');
-  if (dot == std::wstring::npos) {
+  if (dot == std::wstring::npos || dot < base) {
     return {};
   }
   std::wstring sfx = path.substr(dot);
@@ -253,6 +260,31 @@ std::wstring LowerSuffix(const std::wstring& path) {
   }
   return sfx;
 }
+
+std::wstring FileBaseName(const std::wstring& path) {
+  const size_t slash = path.find_last_of(L"\\/");
+  return (slash == std::wstring::npos) ? path : path.substr(slash + 1);
+}
+
+bool IsHostsPath(const std::wstring& path) {
+  return _wcsicmp(FileBaseName(path).c_str(), L"hosts") == 0;
+}
+
+bool IsOpenablePath(const std::wstring& path) {
+  if (IsHostsPath(path)) {
+    return true;
+  }
+  return IsOpenableSuffix(LowerSuffix(path));
+}
+
+std::wstring SystemHostsPath() {
+  wchar_t windir[MAX_PATH] = {};
+  if (!GetWindowsDirectoryW(windir, MAX_PATH) || !windir[0]) {
+    return L"C:\\Windows\\System32\\drivers\\etc\\hosts";
+  }
+  return JoinPath(JoinPath(windir, L"System32\\drivers\\etc"), L"hosts");
+}
+
 
 struct StreamCookie {
   std::string data;
@@ -461,15 +493,26 @@ HBITMAP ClipboardBitmap(HWND owner) {
 bool NotesWindow::Create(HINSTANCE instance) {
   path_ = JoinPath(NotesLibraryDir(true), L"notes.rtf");
   LoadLibraryW(L"Msftedit.dll");
-  INITCOMMONCONTROLSEX icc{sizeof(icc), ICC_TAB_CLASSES | ICC_TREEVIEW_CLASSES};
+  {
+    static ULONG_PTR gdi_token = 0;
+    if (!gdi_token) {
+      Gdiplus::GdiplusStartupInput in;
+      Gdiplus::GdiplusStartup(&gdi_token, &in, nullptr);
+    }
+  }
+  INITCOMMONCONTROLSEX icc{sizeof(icc), ICC_TREEVIEW_CLASSES};
   InitCommonControlsEx(&icc);
 
-  // Notepad / DeskNote app window (default). Sticky toast is opt-in via menu.
-  content_bg_ = RGB(244, 246, 249);
+  // Clean white stage + cool gray library rail.
+  content_bg_ = RGB(255, 255, 255);
   card_bg_ = RGB(255, 255, 255);
-  text_color_ = RGB(26, 35, 50);
-  muted_color_ = RGB(100, 116, 139);
+  rail_bg_ = RGB(245, 246, 248);
+  text_color_ = RGB(32, 36, 42);
+  muted_color_ = RGB(120, 128, 140);
+  border_color_ = RGB(226, 230, 236);
   bg_brush_ = CreateSolidBrush(content_bg_);
+  card_brush_ = CreateSolidBrush(card_bg_);
+  rail_brush_ = CreateSolidBrush(rail_bg_);
   toast_ = false;
 
   WNDCLASSEXW wc{};
@@ -498,7 +541,8 @@ bool NotesWindow::Create(HINSTANCE instance) {
   HMENU file = CreatePopupMenu();
   AppendMenuW(file, MF_STRING, kMenuNewTab, L"新建\tCtrl+N");
   AppendMenuW(file, MF_STRING, kMenuOpen, L"打开…\tCtrl+O");
-  AppendMenuW(file, MF_STRING, kMenuCloseTab, L"关闭页签\tCtrl+W");
+  AppendMenuW(file, MF_STRING, kMenuOpenHosts, L"打开 hosts 文件");
+  AppendMenuW(file, MF_STRING, kMenuCloseTab, L"删除文件并关闭\tCtrl+W");
   AppendMenuW(file, MF_SEPARATOR, 0, nullptr);
   AppendMenuW(file, MF_STRING, kMenuSave, L"保存\tCtrl+S");
   AppendMenuW(file, MF_STRING, kMenuSaveAs, L"另存为…\tCtrl+Shift+S");
@@ -596,15 +640,26 @@ bool NotesWindow::Create(HINSTANCE instance) {
   SetMenu(hwnd_, menu);
   BuildAccelerators();
 
-  tabs_ = CreateWindowExW(
-      0, WC_TABCONTROLW, L"", WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS, 0, 0, 300,
-      28, hwnd_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kTabsId)),
-      instance, nullptr);
-  if (tabs_) {
-    SetWindowTheme(tabs_, L"Explorer", nullptr);
-    tabs_proc_ = reinterpret_cast<WNDPROC>(SetWindowLongPtrW(
-        tabs_, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(NotesWindow::TabsProc)));
+  {
+    static bool tab_class_once = false;
+    if (!tab_class_once) {
+      WNDCLASSEXW tc{};
+      tc.cbSize = sizeof(tc);
+      tc.style = CS_DBLCLKS | CS_HREDRAW | CS_VREDRAW;
+      tc.lpfnWndProc = NotesWindow::TabsProc;
+      tc.hInstance = instance;
+      tc.hCursor = LoadCursor(nullptr, IDC_ARROW);
+      tc.hbrBackground = nullptr;
+      tc.lpszClassName = L"DeskNoteTabBar";
+      RegisterClassExW(&tc);
+      tab_class_once = true;
+    }
   }
+  tabs_ = CreateWindowExW(
+      0, L"DeskNoteTabBar", L"", WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS, 0, 0,
+      300, 40, hwnd_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kTabsId)),
+      instance, nullptr);
+  tabs_proc_ = nullptr;
 
   edit_ = CreateWindowExW(
       0, MSFTEDIT_CLASS, L"",
@@ -635,68 +690,108 @@ bool NotesWindow::Create(HINSTANCE instance) {
   EnsureGutter();
   outline_list_ = CreateWindowExW(
       0, L"LISTBOX", L"",
-      WS_CHILD | WS_VSCROLL | WS_BORDER | LBS_NOTIFY | LBS_NOINTEGRALHEIGHT, 6, 6,
-      140, 220, hwnd_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kOutlineId)),
-      instance, nullptr);
+      WS_CHILD | WS_VSCROLL | LBS_NOTIFY | LBS_NOINTEGRALHEIGHT, 6, 6, 140, 220,
+      hwnd_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kOutlineId)), instance,
+      nullptr);
   if (outline_list_) {
+    SetWindowTheme(outline_list_, L"", L"");
     ShowWindow(outline_list_, SW_HIDE);
   }
   outline_strip_ = CreateWindowExW(
-      0, L"BUTTON", L"›\n大\n纲",
-      WS_CHILD | BS_PUSHBUTTON | BS_MULTILINE | BS_CENTER | BS_VCENTER, 0, 0,
-      kOutlineStripW, 120, hwnd_,
+      0, L"BUTTON", L"大\n纲", WS_CHILD | BS_OWNERDRAW, 0, 0, kOutlineStripW,
+      120, hwnd_,
       reinterpret_cast<HMENU>(static_cast<INT_PTR>(kOutlineStripId)), instance,
       nullptr);
   if (outline_strip_) {
+    SetWindowTheme(outline_strip_, L"", L"");
     ShowWindow(outline_strip_, SW_HIDE);
   }
   sidebar_search_ = CreateWindowExW(
-      WS_EX_CLIENTEDGE, L"EDIT", L"",
-      WS_CHILD | ES_AUTOHSCROLL,
-      6, 6, 120, 22, hwnd_,
+      0, L"EDIT", L"", WS_CHILD | ES_AUTOHSCROLL, 6, 6, 120, 22, hwnd_,
       reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSidebarSearchId)), instance,
       nullptr);
+  // Owner-draw quiet chrome (no native 3D / system blue).
   sidebar_new_ = CreateWindowExW(
-      0, L"BUTTON", L"+", WS_CHILD | BS_PUSHBUTTON, 130, 6, 26, 22, hwnd_,
+      0, L"BUTTON", L"", WS_CHILD | BS_OWNERDRAW, 130, 6, 28, 28, hwnd_,
       reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSidebarNewId)), instance,
       nullptr);
   sidebar_refresh_ = CreateWindowExW(
-      0, L"BUTTON", L"↻", WS_CHILD | BS_PUSHBUTTON, 158, 6, 26, 22, hwnd_,
+      0, L"BUTTON", L"", WS_CHILD | BS_OWNERDRAW, 158, 6, 28, 28, hwnd_,
       reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSidebarRefreshId)), instance,
       nullptr);
   sidebar_ = CreateWindowExW(
       0, WC_TREEVIEWW, L"",
-      WS_CHILD | WS_BORDER | TVS_HASLINES | TVS_LINESATROOT |
-          TVS_HASBUTTONS | TVS_SHOWSELALWAYS | TVS_EDITLABELS,
+      WS_CHILD | TVS_HASBUTTONS | TVS_SHOWSELALWAYS | TVS_EDITLABELS |
+          TVS_FULLROWSELECT | TVS_NOHSCROLL | TVS_TRACKSELECT,
       6, 30, 150, 200, hwnd_,
       reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSidebarId)), instance,
       nullptr);
   if (sidebar_) {
+    SetWindowTheme(sidebar_, L"", L"");
+    TreeView_SetItemHeight(sidebar_, 24);
+    TreeView_SetIndent(sidebar_, 16);
     sidebar_proc_ = reinterpret_cast<WNDPROC>(SetWindowLongPtrW(
         sidebar_, GWLP_WNDPROC,
         reinterpret_cast<LONG_PTR>(NotesWindow::SidebarProc)));
   }
+  if (sidebar_new_) {
+    SetWindowTheme(sidebar_new_, L"", L"");
+  }
+  if (sidebar_refresh_) {
+    SetWindowTheme(sidebar_refresh_, L"", L"");
+  }
   mode_strip_ = CreateWindowExW(
-      0, L"BUTTON", L"预\n览",
-      WS_CHILD | BS_PUSHBUTTON | BS_MULTILINE | BS_CENTER | BS_VCENTER, 0, 0,
-      28, 120, hwnd_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kModeStripId)),
-      instance, nullptr);
+      0, L"BUTTON", L"预览", WS_CHILD | BS_OWNERDRAW, 0, 0, kModeBtnW,
+      kModeBtnH, hwnd_,
+      reinterpret_cast<HMENU>(static_cast<INT_PTR>(kModeStripId)), instance,
+      nullptr);
   if (mode_strip_) {
+    SetWindowTheme(mode_strip_, L"", L"");
     ShowWindow(mode_strip_, SW_HIDE);
   }
+  // Hover invalidate for owner-draw quiet buttons.
+  auto hook_btn = [](HWND btn) {
+    if (!btn) {
+      return;
+    }
+    SetWindowSubclass(
+        btn,
+        [](HWND hwnd, UINT msg, WPARAM wp, LPARAM lp, UINT_PTR, DWORD_PTR)
+            -> LRESULT {
+          if (msg == WM_MOUSEMOVE) {
+            TRACKMOUSEEVENT tme{sizeof(tme), TME_LEAVE, hwnd, 0};
+            TrackMouseEvent(&tme);
+            InvalidateRect(hwnd, nullptr, FALSE);
+          } else if (msg == WM_MOUSELEAVE || msg == WM_LBUTTONDOWN ||
+                     msg == WM_LBUTTONUP) {
+            InvalidateRect(hwnd, nullptr, FALSE);
+          }
+          return DefSubclassProc(hwnd, msg, wp, lp);
+        },
+        1, 0);
+  };
+  hook_btn(sidebar_new_);
+  hook_btn(sidebar_refresh_);
+  hook_btn(mode_strip_);
+  hook_btn(outline_strip_);
   sidebar_results_ = CreateWindowExW(
       0, L"LISTBOX", L"",
-      WS_CHILD | WS_BORDER | WS_VSCROLL | LBS_NOTIFY | LBS_NOINTEGRALHEIGHT,
-      6, 30, 150, 200, hwnd_,
-      reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSidebarResultsId)), instance,
-      nullptr);
+      WS_CHILD | WS_VSCROLL | LBS_NOTIFY | LBS_NOINTEGRALHEIGHT, 6, 30, 150, 200,
+      hwnd_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSidebarResultsId)),
+      instance, nullptr);
+  if (sidebar_results_) {
+    SetWindowTheme(sidebar_results_, L"", L"");
+  }
   if (sidebar_) {
     ShowWindow(sidebar_, SW_HIDE);
   }
   if (sidebar_search_) {
     ShowWindow(sidebar_search_, SW_HIDE);
+    SetWindowTheme(sidebar_search_, L"", L"");
     SendMessageW(sidebar_search_, EM_SETCUEBANNER, TRUE,
-                 reinterpret_cast<LPARAM>(L"搜索笔记库…"));
+                 reinterpret_cast<LPARAM>(L"搜索笔记…"));
+    SendMessageW(sidebar_search_, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN,
+                 MAKELPARAM(8, 8));
   }
   if (sidebar_new_) {
     ShowWindow(sidebar_new_, SW_HIDE);
@@ -731,6 +826,7 @@ bool NotesWindow::Create(HINSTANCE instance) {
   LoadTabSession();
   LoadViewSettings();
   ApplyEditorFont();
+  ApplyUiFonts();
   if (tab_paths_.empty()) {
     tab_paths_.push_back(path_);
     tab_index_ = 0;
@@ -746,9 +842,12 @@ bool NotesWindow::Create(HINSTANCE instance) {
   if (outline_) {
     RebuildOutline();
   }
-  if (preview_ && PathLooksMarkdown()) {
-    preview_ = false;  // ShowPreviewMode turns it back on + creates WebView.
+  // Start in edit mode (preview is opt-in via right strip) — blank preview
+  // stage made new notes look broken.
+  if (preview_ && PathLooksMarkdown() && preview_web_.Host()) {
     ShowPreviewMode();
+  } else {
+    preview_ = false;
   }
   if (always_on_top_ && !toast_) {
     CheckMenuItem(menu_, kMenuAlwaysOnTop, MF_BYCOMMAND | MF_CHECKED);
@@ -797,7 +896,7 @@ void NotesWindow::ApplyEditorFont() {
       },
       reinterpret_cast<LPARAM>(&has_consolas), 0);
   ReleaseDC(nullptr, hdc);
-  // Match Python DeskNote: Consolas 11pt, fallback Cascadia Mono.
+  // Writing surface: Consolas 12pt (Cascadia Mono fallback).
   const wchar_t* face = has_consolas ? L"Consolas" : L"Cascadia Mono";
   font_ = CreateFontW(height, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
                       DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
@@ -805,8 +904,80 @@ void NotesWindow::ApplyEditorFont() {
   if (edit_) {
     SendMessageW(edit_, WM_SETFONT, reinterpret_cast<WPARAM>(font_), TRUE);
   }
-  if (status_ && font_) {
-    SendMessageW(status_, WM_SETFONT, reinterpret_cast<WPARAM>(font_), TRUE);
+}
+
+void NotesWindow::ApplyUiFonts() {
+  if (ui_font_) {
+    DeleteObject(ui_font_);
+    ui_font_ = nullptr;
+  }
+  if (ui_font_bold_) {
+    DeleteObject(ui_font_bold_);
+    ui_font_bold_ = nullptr;
+  }
+  // Match the menubar (工具栏) — NONCLIENTMETRICS lfMenuFont, not a larger
+  // display size. Sidebar / tabs previously used 13pt and looked oversized.
+  NONCLIENTMETRICS ncm{};
+  ncm.cbSize = sizeof(ncm);
+  HFONT menu_font = nullptr;
+  if (SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, sizeof(ncm), &ncm, 0)) {
+    menu_font = CreateFontIndirectW(&ncm.lfMenuFont);
+    LOGFONTW bold = ncm.lfMenuFont;
+    bold.lfWeight = FW_SEMIBOLD;
+    ui_font_bold_ = CreateFontIndirectW(&bold);
+  }
+  if (!menu_font) {
+    HDC hdc = GetDC(nullptr);
+    const int height = -MulDiv(9, GetDeviceCaps(hdc, LOGPIXELSY), 72);
+    ReleaseDC(nullptr, hdc);
+    menu_font = CreateFontW(height, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+                            DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
+                            CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+                            VARIABLE_PITCH | FF_SWISS, L"Segoe UI");
+    ui_font_bold_ = CreateFontW(height, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE,
+                                FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
+                                CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+                                VARIABLE_PITCH | FF_SWISS, L"Segoe UI");
+  }
+  ui_font_ = menu_font;
+  if (!ui_font_) {
+    return;
+  }
+  // Row height tracks menu font (≈9pt → ~22px @96dpi); floor for touch.
+  HDC hdc_m = GetDC(nullptr);
+  HFONT old_m = static_cast<HFONT>(SelectObject(hdc_m, ui_font_));
+  TEXTMETRICW tm{};
+  GetTextMetricsW(hdc_m, &tm);
+  SelectObject(hdc_m, old_m);
+  ReleaseDC(nullptr, hdc_m);
+  const int row_h =
+      (std::max)(22, static_cast<int>(tm.tmHeight) + 8);
+  const WPARAM font = reinterpret_cast<WPARAM>(ui_font_);
+  if (tabs_) {
+    SendMessageW(tabs_, WM_SETFONT, font, TRUE);
+  }
+  if (status_) {
+    SendMessageW(status_, WM_SETFONT, font, TRUE);
+  }
+  if (sidebar_) {
+    SendMessageW(sidebar_, WM_SETFONT, font, TRUE);
+    TreeView_SetItemHeight(sidebar_, row_h);
+    TreeView_SetIndent(sidebar_, 16);
+  }
+  if (sidebar_search_) {
+    SendMessageW(sidebar_search_, WM_SETFONT, font, TRUE);
+  }
+  if (sidebar_results_) {
+    SendMessageW(sidebar_results_, WM_SETFONT, font, TRUE);
+  }
+  if (outline_list_) {
+    SendMessageW(outline_list_, WM_SETFONT, font, TRUE);
+  }
+  if (outline_strip_) {
+    SendMessageW(outline_strip_, WM_SETFONT, font, TRUE);
+  }
+  if (mode_strip_) {
+    SendMessageW(mode_strip_, WM_SETFONT, font, TRUE);
   }
 }
 
@@ -823,8 +994,39 @@ void NotesWindow::ApplyChrome() {
   if (old && old != bg_brush_) {
     DeleteObject(old);
   }
+  HBRUSH old_card = card_brush_;
+  card_brush_ = CreateSolidBrush(edit_bg);
+  if (old_card && old_card != card_brush_) {
+    DeleteObject(old_card);
+  }
+  HBRUSH old_rail = rail_brush_;
+  rail_brush_ = CreateSolidBrush(rail_bg_);
+  if (old_rail && old_rail != rail_brush_) {
+    DeleteObject(old_rail);
+  }
   if (edit_) {
     SendMessageW(edit_, EM_SETBKGNDCOLOR, 0, edit_bg);
+    // Default ink for new text only — do not rewrite existing RTF runs.
+    CHARFORMAT2W cf{};
+    cf.cbSize = sizeof(cf);
+    cf.dwMask = CFM_COLOR;
+    cf.crTextColor = text_color_;
+    SendMessageW(edit_, EM_SETCHARFORMAT, SCF_DEFAULT,
+                 reinterpret_cast<LPARAM>(&cf));
+  }
+  if (sidebar_) {
+    TreeView_SetBkColor(sidebar_, rail_bg_);
+    TreeView_SetTextColor(sidebar_, text_color_);
+    TreeView_SetLineColor(sidebar_, border_color_);
+  }
+  if (outline_list_) {
+    InvalidateRect(outline_list_, nullptr, TRUE);
+  }
+  if (sidebar_results_) {
+    InvalidateRect(sidebar_results_, nullptr, TRUE);
+  }
+  if (tabs_) {
+    InvalidateRect(tabs_, nullptr, TRUE);
   }
   InvalidateRect(hwnd_, nullptr, TRUE);
   if (edit_) {
@@ -833,6 +1035,10 @@ void NotesWindow::ApplyChrome() {
   if (status_) {
     InvalidateRect(status_, nullptr, TRUE);
   }
+  if (gutter_) {
+    InvalidateRect(gutter_, nullptr, TRUE);
+  }
+  ApplyUiFonts();
 }
 
 void NotesWindow::ApplyUiTheme(const std::string& ui_theme) {
@@ -845,10 +1051,13 @@ void NotesWindow::ApplyUiTheme(const std::string& ui_theme) {
     }
     return ColorFromCssHex(it->second);
   };
-  content_bg_ = pick("content", RGB(244, 246, 249));
-  card_bg_ = pick("card", RGB(255, 255, 255));
-  text_color_ = pick("text", RGB(26, 35, 50));
-  muted_color_ = pick("muted", RGB(100, 116, 139));
+  // DeskNote: white writing stage + cool gray file rail.
+  content_bg_ = RGB(255, 255, 255);
+  card_bg_ = RGB(255, 255, 255);
+  rail_bg_ = RGB(245, 246, 248);
+  border_color_ = RGB(226, 230, 236);
+  text_color_ = pick("text", RGB(32, 36, 42));
+  muted_color_ = pick("muted", RGB(120, 128, 140));
   ApplyChrome();
   // P2: preview/WYSIWYG follow the product theme (not only OS light/dark).
   // All shipped UI themes use light content panes → "light" chrome.
@@ -895,6 +1104,14 @@ void NotesWindow::Destroy() {
     DeleteObject(font_);
     font_ = nullptr;
   }
+  if (ui_font_) {
+    DeleteObject(ui_font_);
+    ui_font_ = nullptr;
+  }
+  if (ui_font_bold_) {
+    DeleteObject(ui_font_bold_);
+    ui_font_bold_ = nullptr;
+  }
   if (accel_) {
     DestroyAcceleratorTable(accel_);
     accel_ = nullptr;
@@ -908,6 +1125,14 @@ void NotesWindow::Destroy() {
   if (bg_brush_) {
     DeleteObject(bg_brush_);
     bg_brush_ = nullptr;
+  }
+  if (card_brush_) {
+    DeleteObject(card_brush_);
+    card_brush_ = nullptr;
+  }
+  if (rail_brush_) {
+    DeleteObject(rail_brush_);
+    rail_brush_ = nullptr;
   }
 }
 
@@ -978,6 +1203,24 @@ bool NotesWindow::PathLooksMarkdown() const {
   return false;
 }
 
+bool NotesWindow::PathLooksTextish() const {
+  if (path_.empty()) {
+    return false;
+  }
+  if (IsHostsPath(path_)) {
+    return true;
+  }
+  const std::wstring sfx = LowerSuffix(path_);
+  if (sfx.empty() || sfx == L".rtf") {
+    return false;
+  }
+  return IsOpenableSuffix(sfx);
+}
+
+void NotesWindow::OpenHostsFile() {
+  OpenOrActivatePath(SystemHostsPath());
+}
+
 void NotesWindow::WrapSelectionMarkdown(const wchar_t* left,
                                         const wchar_t* right) {
   if (!edit_ || !left || !right) {
@@ -1013,7 +1256,16 @@ void NotesWindow::WrapSelectionMarkdown(const wchar_t* left,
   MarkDirty();
 }
 
+void NotesWindow::EnsureSourceEditForFormat() {
+  // Format / insert acts on the source editor — leave preview first so the
+  // change is visible (and menu actions are not no-ops on a hidden pane).
+  if (preview_) {
+    ShowEditMode();
+  }
+}
+
 void NotesWindow::ApplyBold() {
+  EnsureSourceEditForFormat();
   if (PathLooksMarkdown()) {
     WrapSelectionMarkdown(L"**", L"**");
   } else {
@@ -1022,6 +1274,7 @@ void NotesWindow::ApplyBold() {
 }
 
 void NotesWindow::ApplyItalic() {
+  EnsureSourceEditForFormat();
   if (PathLooksMarkdown()) {
     WrapSelectionMarkdown(L"*", L"*");
   } else {
@@ -1030,6 +1283,7 @@ void NotesWindow::ApplyItalic() {
 }
 
 void NotesWindow::ApplyUnderline() {
+  EnsureSourceEditForFormat();
   if (PathLooksMarkdown()) {
     WrapSelectionMarkdown(L"<u>", L"</u>");
   } else {
@@ -1038,6 +1292,7 @@ void NotesWindow::ApplyUnderline() {
 }
 
 void NotesWindow::InsertMdLink() {
+  EnsureSourceEditForFormat();
   if (!edit_) {
     return;
   }
@@ -1071,6 +1326,7 @@ void NotesWindow::InsertMdLink() {
 }
 
 void NotesWindow::InsertMdCodeFence() {
+  EnsureSourceEditForFormat();
   if (!edit_) {
     return;
   }
@@ -1078,6 +1334,7 @@ void NotesWindow::InsertMdCodeFence() {
 }
 
 void NotesWindow::InsertMdHeading(int level) {
+  EnsureSourceEditForFormat();
   if (!edit_ || level < 1 || level > 6) {
     return;
   }
@@ -1098,18 +1355,13 @@ void NotesWindow::InsertMdHeading(int level) {
 }
 
 void NotesWindow::RefreshCurrentTabLabel() {
-  if (!tabs_ || tab_index_ < 0 ||
-      tab_index_ >= static_cast<int>(tab_paths_.size())) {
-    return;
+  if (tabs_) {
+    InvalidateRect(tabs_, nullptr, FALSE);
   }
-  TCITEMW ti{};
-  ti.mask = TCIF_TEXT;
-  std::wstring label = TabLabel(tab_paths_[static_cast<size_t>(tab_index_)]);
-  ti.pszText = label.data();
-  TabCtrl_SetItem(tabs_, tab_index_, &ti);
 }
 
 bool NotesWindow::InsertImageFile(const std::wstring& src_path) {
+  EnsureSourceEditForFormat();
   if (!edit_ || src_path.empty() || !PathLooksMarkdown()) {
     return false;
   }
@@ -1154,6 +1406,7 @@ bool NotesWindow::InsertImageFile(const std::wstring& src_path) {
 }
 
 void NotesWindow::InsertImageFromFile() {
+  EnsureSourceEditForFormat();
   if (!edit_) {
     return;
   }
@@ -1505,41 +1758,234 @@ std::wstring NotesWindow::TabLabel(const std::wstring& path) const {
   if (name.empty()) {
     name = L"未命名";
   }
-  if (name.size() > 16) {
-    name = name.substr(0, 14) + L"…";
+  // Prefer stem for cleaner tabs (notes.md → notes).
+  const size_t dot = name.find_last_of(L'.');
+  if (dot != std::wstring::npos && dot > 0) {
+    name = name.substr(0, dot);
   }
-  // Dirty star on the active tab (Python _refresh_tab_title).
+  if (name.size() > 22) {
+    name = name.substr(0, 20) + L"…";
+  }
   if (dirty_ && !path_.empty() &&
       _wcsicmp(NormalizePathKey(path).c_str(),
                NormalizePathKey(path_).c_str()) == 0) {
-    name = L"*" + name;
+    name += L" ·";
   }
-  // Leading ☆/★ is a pin affordance; TabsProc hit-tests the left edge.
-  name = (PathIsPinned(path) ? L"★ " : L"☆ ") + name;
-  // Trailing × is a close affordance; TabsProc hit-tests the right edge.
-  name += L"  ×";
   return name;
 }
 
-void NotesWindow::RebuildTabControl() {
+namespace {
+void GpAddRoundRect(Gdiplus::GraphicsPath* path, float x, float y, float w,
+                    float h, float radius) {
+  if (!path || w <= 0.f || h <= 0.f) {
+    return;
+  }
+  const float r = (std::min)(radius, (std::min)(w, h) * 0.5f);
+  const float d = r * 2.f;
+  path->AddArc(x, y, d, d, 180.f, 90.f);
+  path->AddArc(x + w - d, y, d, d, 270.f, 90.f);
+  path->AddArc(x + w - d, y + h - d, d, d, 0.f, 90.f);
+  path->AddArc(x, y + h - d, d, d, 90.f, 90.f);
+  path->CloseFigure();
+}
+}  // namespace
+
+void NotesWindow::RelayoutTabChips() {
+  tab_chip_rects_.clear();
+  tab_new_btn_rect_ = {};
   if (!tabs_) {
     return;
   }
-  while (TabCtrl_GetItemCount(tabs_) > 0) {
-    TabCtrl_DeleteItem(tabs_, 0);
+  HDC hdc = GetDC(tabs_);
+  HFONT old = nullptr;
+  if (ui_font_) {
+    old = static_cast<HFONT>(SelectObject(hdc, ui_font_));
   }
+  // Compact chips — same size as menubar chrome.
+  RECT rc{};
+  GetClientRect(tabs_, &rc);
+  int x = 12;
+  const int h = 26;
+  const int y = (std::max)(6, static_cast<int>((rc.bottom - h) / 2));
   for (size_t i = 0; i < tab_paths_.size(); ++i) {
-    TCITEMW ti{};
-    ti.mask = TCIF_TEXT;
-    std::wstring label = TabLabel(tab_paths_[i]);
-    ti.pszText = label.data();
-    TabCtrl_InsertItem(tabs_, static_cast<int>(i), &ti);
+    const std::wstring label = TabLabel(tab_paths_[i]);
+    const bool pinned = PathIsPinned(tab_paths_[i]);
+    SIZE sz{};
+    GetTextExtentPoint32W(hdc, label.c_str(), static_cast<int>(label.size()),
+                          &sz);
+    const int lead = pinned ? 18 : 12;
+    int w = sz.cx + lead + 24;  // label + close
+    if (w < 72) {
+      w = 72;
+    }
+    if (w > 200) {
+      w = 200;
+    }
+    tab_chip_rects_.push_back(RECT{x, y, x + w, y + h});
+    x += w + 4;
   }
-  if (tab_index_ < 0 ||
-      tab_index_ >= static_cast<int>(tab_paths_.size())) {
+  tab_new_btn_rect_ = RECT{x + 4, y + 2, x + 30, y + h - 2};
+  if (old) {
+    SelectObject(hdc, old);
+  }
+  ReleaseDC(tabs_, hdc);
+}
+
+void NotesWindow::PaintTabBar(HDC hdc) {
+  if (!tabs_ || !hdc) {
+    return;
+  }
+  RelayoutTabChips();
+  RECT rc{};
+  GetClientRect(tabs_, &rc);
+  const COLORREF desk = toast_ ? RGB(255, 248, 220) : content_bg_;
+  HBRUSH desk_br = CreateSolidBrush(desk);
+  FillRect(hdc, &rc, desk_br);
+  DeleteObject(desk_br);
+
+  // Soft separator — rail gray, not heavy black.
+  HPEN pen = CreatePen(PS_SOLID, 1, border_color_);
+  HPEN old_pen = static_cast<HPEN>(SelectObject(hdc, pen));
+  MoveToEx(hdc, 0, rc.bottom - 1, nullptr);
+  LineTo(hdc, rc.right, rc.bottom - 1);
+  SelectObject(hdc, old_pen);
+  DeleteObject(pen);
+
+  SetBkMode(hdc, TRANSPARENT);
+  Gdiplus::Graphics g(hdc);
+  g.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+  g.SetTextRenderingHint(Gdiplus::TextRenderingHintClearTypeGridFit);
+  g.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHalf);
+
+  for (size_t i = 0; i < tab_chip_rects_.size(); ++i) {
+    const RECT& chip = tab_chip_rects_[i];
+    const bool on = static_cast<int>(i) == tab_index_;
+    const bool hover = tab_hover_index_ == static_cast<int>(i);
+    const std::wstring& path_s = tab_paths_[i];
+    const bool pinned = PathIsPinned(path_s);
+    const float x = static_cast<float>(chip.left);
+    const float y = static_cast<float>(chip.top);
+    const float w = static_cast<float>(chip.right - chip.left);
+    const float h = static_cast<float>(chip.bottom - chip.top);
+
+    {
+      Gdiplus::GraphicsPath path;
+      GpAddRoundRect(&path, x + 1.f, y + 1.f, w - 2.f, h - 2.f, 9.f);
+      if (on) {
+        Gdiplus::SolidBrush fill(Gdiplus::Color(255, 236, 238, 242));
+        g.FillPath(&fill, &path);
+        Gdiplus::Pen ring(Gdiplus::Color(255, 214, 219, 226), 1.f);
+        g.DrawPath(&ring, &path);
+      } else if (hover) {
+        Gdiplus::SolidBrush fill(Gdiplus::Color(255, 245, 246, 248));
+        g.FillPath(&fill, &path);
+      }
+    }
+
+    HFONT use = on && ui_font_bold_ ? ui_font_bold_ : ui_font_;
+    HFONT old_f =
+        use ? static_cast<HFONT>(SelectObject(hdc, use)) : nullptr;
+    SetTextColor(hdc, on ? text_color_ : muted_color_);
+
+    int text_left = chip.left + 14;
+    if (pinned) {
+      Gdiplus::SolidBrush pin(Gdiplus::Color(255, 100, 116, 139));
+      g.FillEllipse(&pin, x + 10.f, y + h * 0.5f - 3.f, 6.f, 6.f);
+      text_left = chip.left + 22;
+    }
+
+    std::wstring label = TabLabel(path_s);
+    RECT text_rc{text_left, chip.top, chip.right - 26, chip.bottom};
+    DrawTextW(hdc, label.c_str(), -1, &text_rc,
+              DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+
+    // Close always visible (faint); hot plate on hover.
+    const bool close_hot = hover && tab_hover_zone_ == 2;
+    RECT close_rc{chip.right - 24, chip.top + 6, chip.right - 6,
+                  chip.bottom - 6};
+    if (close_hot) {
+      Gdiplus::GraphicsPath cp;
+      GpAddRoundRect(&cp, static_cast<float>(close_rc.left),
+                     static_cast<float>(close_rc.top),
+                     static_cast<float>(close_rc.right - close_rc.left),
+                     static_cast<float>(close_rc.bottom - close_rc.top), 6.f);
+      Gdiplus::SolidBrush cbg(Gdiplus::Color(255, 220, 225, 232));
+      g.FillPath(&cbg, &cp);
+    }
+    SetTextColor(hdc, close_hot ? text_color_
+                                : (on ? RGB(120, 128, 140) : RGB(168, 174, 184)));
+    DrawTextW(hdc, L"×", -1, &close_rc,
+              DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    if (old_f) {
+      SelectObject(hdc, old_f);
+    }
+  }
+
+  if (tab_new_btn_rect_.right > tab_new_btn_rect_.left) {
+    const RECT& nb = tab_new_btn_rect_;
+    const bool hot = tab_hover_index_ == -2;
+    Gdiplus::GraphicsPath np;
+    GpAddRoundRect(&np, static_cast<float>(nb.left),
+                   static_cast<float>(nb.top),
+                   static_cast<float>(nb.right - nb.left),
+                   static_cast<float>(nb.bottom - nb.top), 6.f);
+    Gdiplus::SolidBrush nfill(Gdiplus::Color(
+        255, hot ? 236 : 245, hot ? 238 : 246, hot ? 242 : 248));
+    g.FillPath(&nfill, &np);
+    Gdiplus::Pen nring(Gdiplus::Color(255, 220, 225, 232), 1.f);
+    g.DrawPath(&nring, &np);
+    if (ui_font_) {
+      SelectObject(hdc, ui_font_);
+    }
+    SetTextColor(hdc, hot ? text_color_ : muted_color_);
+    RECT tr = nb;
+    DrawTextW(hdc, L"+", -1, &tr, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+  }
+}
+
+int NotesWindow::HitTestTabBar(POINT client, int* out_zone) const {
+  if (out_zone) {
+    *out_zone = 0;
+  }
+  if (tab_new_btn_rect_.right > tab_new_btn_rect_.left &&
+      PtInRect(&tab_new_btn_rect_, client)) {
+    if (out_zone) {
+      *out_zone = 3;
+    }
+    return -1;
+  }
+  for (size_t i = 0; i < tab_chip_rects_.size(); ++i) {
+    const RECT& chip = tab_chip_rects_[i];
+    if (!PtInRect(&chip, client)) {
+      continue;
+    }
+    if (out_zone) {
+      const bool pinned =
+          i < tab_paths_.size() && PathIsPinned(tab_paths_[i]);
+      if (pinned && client.x <= chip.left + 18) {
+        *out_zone = 1;  // pin
+      } else if (client.x >= chip.right - 26) {
+        *out_zone = 2;  // close
+      } else {
+        *out_zone = 0;
+      }
+    }
+    return static_cast<int>(i);
+  }
+  return -1;
+}
+
+void NotesWindow::RebuildTabControl() {
+  if (tab_paths_.empty()) {
     tab_index_ = 0;
+  } else if (tab_index_ < 0 ||
+             tab_index_ >= static_cast<int>(tab_paths_.size())) {
+    tab_index_ = static_cast<int>(tab_paths_.size()) - 1;
   }
-  TabCtrl_SetCurSel(tabs_, tab_index_);
+  if (tabs_) {
+    RelayoutTabChips();
+    InvalidateRect(tabs_, nullptr, FALSE);
+  }
 }
 
 void NotesWindow::PersistTabs() {
@@ -1660,7 +2106,7 @@ void NotesWindow::LoadTabSession() {
               name.rfind(L"_sess_", 0) == 0) {
             continue;
           }
-          if (!IsOpenableSuffix(LowerSuffix(name))) {
+          if (!IsOpenablePath(name)) {
             continue;
           }
           Recent r;
@@ -1727,7 +2173,7 @@ void NotesWindow::SwitchToTab(int index, bool save_current) {
   tab_index_ = index;
   path_ = tab_paths_[static_cast<size_t>(index)];
   if (tabs_) {
-    TabCtrl_SetCurSel(tabs_, tab_index_);
+    InvalidateRect(tabs_, nullptr, FALSE);
   }
   Load();
   EnsureTabStates();
@@ -1756,16 +2202,20 @@ void NotesWindow::SwitchToTab(int index, bool save_current) {
       SendMessageW(edit_, EM_SCROLLCARET, 0, 0);
     }
   }
-  if (preview_ && PathLooksMarkdown()) {
-    ShowPreviewMode();
-  } else if (preview_ && !PathLooksMarkdown()) {
-    // Non-md: keep editor visible even if global preview flag is on.
+  // Tab switch / new note: always land in edit (Typora/Obsidian write-first).
+  // Preview is opt-in per document via the right strip — do not inherit it.
+  if (preview_) {
+    preview_ = false;
+    if (menu_) {
+      CheckMenuItem(menu_, kMenuPreviewPane, MF_BYCOMMAND | MF_UNCHECKED);
+    }
     if (preview_web_.Host()) {
       preview_web_.Hide();
     }
-    if (edit_) {
-      ShowWindow(edit_, SW_SHOW);
-    }
+    PersistViewSettings();
+  }
+  if (!wysiwyg_ && edit_) {
+    ShowWindow(edit_, SW_SHOW);
   }
   RefreshTitle();
   if (outline_) {
@@ -1780,6 +2230,9 @@ void NotesWindow::SwitchToTab(int index, bool save_current) {
   SyncMdMenuState();
   ApplyViewMenuChecks();
   LayoutClient();
+  if (!wysiwyg_ && edit_ && IsWindowVisible(edit_)) {
+    SetFocus(edit_);
+  }
 }
 
 std::wstring NotesWindow::MakeNewNotePath() {
@@ -1818,36 +2271,138 @@ void NotesWindow::NewTab() {
     out << u8"# \n\n";
   }
   tab_paths_.push_back(path);
+  EnsureTabStates();
+  // New md drafts always start in source edit (not preview / not WYSIWYG).
+  tab_states_.back() = TabState{};
+  tab_states_.back().wrap = word_wrap_;
   RebuildTabControl();
   SwitchToTab(static_cast<int>(tab_paths_.size()) - 1, false);
+  ShowEditMode();
   if (sidebar_visible_) {
     RebuildSidebar();
   }
 }
 
-void NotesWindow::CloseTab() {
-  if (!ConfirmSaveCurrent()) {
-    return;
+void NotesWindow::CloseTabOnly() {
+  // Silent autosave (Notepad++ / Fences-class: closing a tab does not discard).
+  SyncFromWysiwyg();
+  if (!path_.empty()) {
+    Save();
   }
+  EnsureTabStates();
   if (tab_paths_.size() <= 1) {
-    // Closing the last tab starts a fresh note instead of closing to zero.
+    // 关掉最后一个页签时开一份新草稿，避免零页签；原文件已保存仍在库里。
     const std::wstring path = MakeNewNotePath();
     {
       std::ofstream out(path, std::ios::binary);
       out << u8"# \n\n";
     }
     tab_paths_[0] = path;
+    if (!tab_states_.empty()) {
+      tab_states_[0] = TabState{};
+    } else {
+      tab_states_.assign(1, TabState{});
+    }
     path_ = path;
+    dirty_ = false;
     RebuildTabControl();
     SwitchToTab(0, false);
+    PersistTabs();
     return;
   }
   tab_paths_.erase(tab_paths_.begin() + tab_index_);
+  if (tab_index_ < static_cast<int>(tab_states_.size())) {
+    tab_states_.erase(tab_states_.begin() + tab_index_);
+  }
   if (tab_index_ >= static_cast<int>(tab_paths_.size())) {
     tab_index_ = static_cast<int>(tab_paths_.size()) - 1;
   }
   RebuildTabControl();
   SwitchToTab(tab_index_, false);
+  PersistTabs();
+}
+
+void NotesWindow::CloseTabOnlyAt(int index) {
+  if (index < 0 || index >= static_cast<int>(tab_paths_.size())) {
+    return;
+  }
+  if (index != tab_index_) {
+    SwitchToTab(index, true);
+  }
+  CloseTabOnly();
+}
+
+void NotesWindow::DeleteAndCloseTabAt(int index, bool ask_confirm) {
+  if (index < 0 || index >= static_cast<int>(tab_paths_.size())) {
+    return;
+  }
+  EnsureTabStates();
+  const std::wstring path = tab_paths_[static_cast<size_t>(index)];
+  const size_t slash = path.find_last_of(L"\\/");
+  const std::wstring name =
+      slash == std::wstring::npos ? path : path.substr(slash + 1);
+  if (ask_confirm) {
+    const std::wstring msg =
+        L"确定删除「" + name + L"」？\n将移入回收站。";
+    if (!MistConfirm(hwnd_, L"删除", msg.c_str(), MistMsgTone::Danger)) {
+      return;
+    }
+  }
+  if (!path.empty() &&
+      GetFileAttributesW(path.c_str()) != INVALID_FILE_ATTRIBUTES) {
+    if (!RecyclePathQuiet(hwnd_, path)) {
+      MistAlert(hwnd_, L"删除", L"无法删除。", MistMsgTone::Warn);
+      return;
+    }
+  }
+  for (size_t i = 0; i < pinned_paths_.size(); ++i) {
+    if (_wcsicmp(NormalizePathKey(pinned_paths_[i]).c_str(),
+                 NormalizePathKey(path).c_str()) == 0) {
+      pinned_paths_.erase(pinned_paths_.begin() +
+                          static_cast<ptrdiff_t>(i));
+      break;
+    }
+  }
+  // 删文件即丢弃未保存改动，不再走保存确认。
+  if (index == tab_index_) {
+    dirty_ = false;
+  }
+  tab_paths_.erase(tab_paths_.begin() + index);
+  if (index < static_cast<int>(tab_states_.size())) {
+    tab_states_.erase(tab_states_.begin() + index);
+  }
+  if (tab_index_ > index) {
+    --tab_index_;
+  } else if (tab_index_ == index &&
+             tab_index_ >= static_cast<int>(tab_paths_.size())) {
+    tab_index_ = static_cast<int>(tab_paths_.size()) - 1;
+  }
+  if (tab_paths_.empty()) {
+    const std::wstring fresh = MakeNewNotePath();
+    {
+      std::ofstream out(fresh, std::ios::binary);
+      out << u8"# \n\n";
+    }
+    tab_paths_.push_back(fresh);
+    tab_states_.assign(1, TabState{});
+    tab_index_ = 0;
+    path_ = fresh;
+    dirty_ = false;
+    RebuildTabControl();
+    SwitchToTab(0, false);
+  } else {
+    if (tab_index_ < 0) {
+      tab_index_ = 0;
+    }
+    RebuildTabControl();
+    SwitchToTab(tab_index_, false);
+  }
+  RebuildSidebar();
+  PersistTabs();
+}
+
+void NotesWindow::CloseTab() {
+  DeleteAndCloseTabAt(tab_index_, true);
 }
 
 void NotesWindow::AdoptPath(const std::wstring& path) {
@@ -2049,8 +2604,9 @@ void NotesWindow::UpdateModeStrip() {
   if (!show) {
     return;
   }
-  // Vertical label: while previewing offer "编辑", else "预览".
-  SetWindowTextW(mode_strip_, preview_ ? L"编\n辑" : L"预\n览");
+  // Toggle chip: editing → "预览"; previewing → "编辑".
+  SetWindowTextW(mode_strip_, preview_ ? L"编辑" : L"预览");
+  InvalidateRect(mode_strip_, nullptr, FALSE);
 }
 
 void NotesWindow::ShowPreviewMode() {
@@ -2128,14 +2684,8 @@ void NotesWindow::Save() {
     return;
   }
   const std::wstring plain = CurrentPlainText();
-  const bool textish =
-      path_.size() >= 3 &&
-      (_wcsicmp(path_.c_str() + path_.size() - 3, L".md") == 0 ||
-       (path_.size() >= 4 &&
-        _wcsicmp(path_.c_str() + path_.size() - 4, L".txt") == 0) ||
-       (path_.size() >= 9 &&
-        _wcsicmp(path_.c_str() + path_.size() - 9, L".markdown") == 0));
-  if (textish) {
+  // Plain text for md/txt/code/hosts；.rtf 仍走 RTF（对标 Notepad++ 文本保存）。
+  if (PathLooksTextish()) {
     std::string bytes;
     if (!EncodeTextFileBytes(plain, text_enc_, &bytes)) {
       MistAlert(hwnd_, L"保存失败",
@@ -2288,23 +2838,11 @@ void NotesWindow::UpdateStatusBar() {
 }
 
 int NotesWindow::TabIndexFromPoint(POINT client) const {
-  if (!tabs_) {
-    return -1;
-  }
-  TCHITTESTINFO ht{};
-  ht.pt = client;
-  ht.flags = 0;
-  return TabCtrl_HitTest(tabs_, &ht);
+  return HitTestTabBar(client, nullptr);
 }
 
 void NotesWindow::CloseTabAt(int index) {
-  if (index < 0 || index >= static_cast<int>(tab_paths_.size())) {
-    return;
-  }
-  if (index != tab_index_) {
-    SwitchToTab(index, true);
-  }
-  CloseTab();
+  CloseTabOnlyAt(index);
 }
 
 void NotesWindow::CloseOtherTabs(int keep_index) {
@@ -2350,12 +2888,14 @@ void NotesWindow::CloseTabsToTheRight(int index) {
 }
 
 void NotesWindow::InsertMdStrike() {
+  EnsureSourceEditForFormat();
   if (PathLooksMarkdown()) {
     WrapSelectionMarkdown(L"~~", L"~~");
   }
 }
 
 void NotesWindow::InsertMdBullet() {
+  EnsureSourceEditForFormat();
   if (!edit_ || !PathLooksMarkdown()) {
     return;
   }
@@ -2373,6 +2913,7 @@ void NotesWindow::InsertMdBullet() {
 }
 
 void NotesWindow::InsertMdQuote() {
+  EnsureSourceEditForFormat();
   if (!edit_ || !PathLooksMarkdown()) {
     return;
   }
@@ -2390,6 +2931,7 @@ void NotesWindow::InsertMdQuote() {
 }
 
 void NotesWindow::InsertMdHorizontalRule() {
+  EnsureSourceEditForFormat();
   if (!edit_ || !PathLooksMarkdown()) {
     return;
   }
@@ -2399,6 +2941,7 @@ void NotesWindow::InsertMdHorizontalRule() {
 }
 
 void NotesWindow::InsertDateTime() {
+  EnsureSourceEditForFormat();
   if (!edit_) {
     return;
   }
@@ -2590,9 +3133,6 @@ void NotesWindow::ReorderTab(int from, int to) {
     ++tab_index_;
   }
   RebuildTabControl();
-  if (tabs_) {
-    TabCtrl_SetCurSel(tabs_, tab_index_);
-  }
   // Keep pinned tabs left after drag (Python _normalize_pin_order).
   ApplyPinnedTabOrder();
   PersistTabs();
@@ -2620,7 +3160,7 @@ void NotesWindow::HandleTabContextMenu(int index, POINT screen_pt) {
                      0, hwnd_, nullptr);
   DestroyMenu(m);
   if (cmd == kTabClose) {
-    CloseTabAt(index);
+    CloseTabOnlyAt(index);
   } else if (cmd == kTabCloseOthers) {
     CloseOtherTabs(index);
   } else if (cmd == kTabCloseRight) {
@@ -2649,46 +3189,7 @@ void NotesWindow::HandleTabContextMenu(int index, POINT screen_pt) {
       ApplySidebarRename(path, new_stem);
     }
   } else if (cmd == kTabDelete) {
-    const size_t slash = path.find_last_of(L"\\/");
-    const std::wstring name =
-        slash == std::wstring::npos ? path : path.substr(slash + 1);
-    const std::wstring msg =
-        L"确定删除「" + name + L"」？\n此操作不可撤销。";
-    if (!MistConfirm(hwnd_, L"删除", msg.c_str(), MistMsgTone::Danger)) {
-      return;
-    }
-    if (!RecyclePathQuiet(hwnd_, path)) {
-      MistAlert(hwnd_, L"删除", L"无法删除。", MistMsgTone::Warn);
-      return;
-    }
-    for (size_t i = 0; i < pinned_paths_.size(); ++i) {
-      if (_wcsicmp(pinned_paths_[i].c_str(), path.c_str()) == 0) {
-        pinned_paths_.erase(pinned_paths_.begin() +
-                            static_cast<ptrdiff_t>(i));
-        break;
-      }
-    }
-    if (index != tab_index_) {
-      // Close without switching first if not current: remove directly.
-      tab_paths_.erase(tab_paths_.begin() + index);
-      if (tab_index_ > index) {
-        --tab_index_;
-      }
-      if (tab_paths_.empty()) {
-        tab_paths_.push_back(MakeNewNotePath());
-        tab_index_ = 0;
-        path_ = tab_paths_[0];
-        RebuildTabControl();
-        SwitchToTab(0, false);
-      } else {
-        RebuildTabControl();
-        SwitchToTab(tab_index_, false);
-      }
-      PersistTabs();
-      return;
-    }
-    CloseTab();
-    PersistTabs();
+    DeleteAndCloseTabAt(index, true);
   }
 }
 
@@ -3306,62 +3807,77 @@ void NotesWindow::LayoutClient() {
   }
   RECT rc{};
   GetClientRect(hwnd_, &rc);
-  int top = 6;
+  // Tab strip (+ top-right preview/edit chip for Markdown).
+  int top = 0;
+  const bool show_mode_chip =
+      mode_strip_ && PathLooksMarkdown() && !focus_ && !toast_ && !wysiwyg_;
   if (tabs_ && !toast_) {
-    MoveWindow(tabs_, 0, 0, rc.right, 28, TRUE);
+    const int tabs_w =
+        show_mode_chip
+            ? (std::max)(120, static_cast<int>(rc.right) -
+                                  (kModeBtnW + kModeBtnPad * 2))
+            : static_cast<int>(rc.right);
+    MoveWindow(tabs_, 0, 0, tabs_w, 48, TRUE);
     ShowWindow(tabs_, SW_SHOW);
-    top = 32;
+    SetWindowPos(tabs_, HWND_TOP, 0, 0, 0, 0,
+                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    top = 48;
   } else if (tabs_) {
     ShowWindow(tabs_, SW_HIDE);
   }
-  int left = 6;
-  int right = rc.right - 6;
-  int bottom = rc.bottom - 6;
+  // Status
+  int bottom = rc.bottom;
   if (status_ && !toast_) {
-    bottom = rc.bottom - kStatusBarH - 2;
-    MoveWindow(status_, 0, rc.bottom - kStatusBarH, rc.right, kStatusBarH,
-               TRUE);
+    bottom = rc.bottom - kStatusBarH;
+    MoveWindow(status_, 0, bottom, rc.right, kStatusBarH, TRUE);
     ShowWindow(status_, SW_SHOW);
   } else if (status_) {
     ShowWindow(status_, SW_HIDE);
   }
-  if (sidebar_visible_ && sidebar_ && !wysiwyg_) {
-    const int side = 170;
-    const int chrome_h = 26;
-    const int btn_w = 26;
+  int left = 0;
+  int right = rc.right;
+  const int pane_h = (std::max)(40, bottom - top);
+
+  // Left library rail (cool gray) — full height under tabs.
+  if (sidebar_visible_ && sidebar_ && !wysiwyg_ && !toast_) {
+    const int side = 240;
+    const int chrome_h = 44;
+    const int pad = 12;
+    const int btn_w = 30;
     if (sidebar_search_) {
-      MoveWindow(sidebar_search_, 6, top, side - (btn_w * 2 + 6), chrome_h,
-                 TRUE);
+      MoveWindow(sidebar_search_, pad + 4, top + 10,
+                 side - (btn_w * 2 + pad * 2 + 12), chrome_h - 18, TRUE);
       ShowWindow(sidebar_search_, SW_SHOW);
     }
     if (sidebar_new_) {
-      MoveWindow(sidebar_new_, 6 + side - (btn_w * 2 + 2), top, btn_w, chrome_h,
-                 TRUE);
+      MoveWindow(sidebar_new_, side - (btn_w * 2 + pad + 2), top + 8, btn_w,
+                 btn_w, TRUE);
       ShowWindow(sidebar_new_, SW_SHOW);
     }
     if (sidebar_refresh_) {
-      MoveWindow(sidebar_refresh_, 6 + side - btn_w, top, btn_w, chrome_h,
+      MoveWindow(sidebar_refresh_, side - (btn_w + pad), top + 8, btn_w, btn_w,
                  TRUE);
       ShowWindow(sidebar_refresh_, SW_SHOW);
     }
     const int body_top = top + chrome_h + 4;
+    const int body_h = (std::max)(40, bottom - body_top);
     wchar_t search_buf[256] = {};
     if (sidebar_search_) {
       GetWindowTextW(sidebar_search_, search_buf, 256);
     }
     const bool searching = search_buf[0] != 0;
     if (searching && sidebar_results_) {
-      MoveWindow(sidebar_results_, 6, body_top, side, bottom - body_top, TRUE);
+      MoveWindow(sidebar_results_, 0, body_top, side, body_h, TRUE);
       ShowWindow(sidebar_results_, SW_SHOW);
       ShowWindow(sidebar_, SW_HIDE);
     } else {
-      MoveWindow(sidebar_, 6, body_top, side, bottom - body_top, TRUE);
+      MoveWindow(sidebar_, 0, body_top, side, body_h, TRUE);
       ShowWindow(sidebar_, SW_SHOW);
       if (sidebar_results_) {
         ShowWindow(sidebar_results_, SW_HIDE);
       }
     }
-    left = 6 + side + 6;
+    left = side + 1;  // +1 for divider line painted in WM_PAINT
   } else {
     if (sidebar_) {
       ShowWindow(sidebar_, SW_HIDE);
@@ -3379,28 +3895,55 @@ void NotesWindow::LayoutClient() {
       ShowWindow(sidebar_results_, SW_HIDE);
     }
   }
-  // Outline: expanded = list + ‹ strip; collapsed = ›大纲 strip only (Python).
-  // Only in edit/source mode — full preview hides the outline chrome.
-  const bool show_outline_chrome = outline_strip_ && !wysiwyg_ && !focus_ &&
-                                   !toast_ && !preview_;
-  if (show_outline_chrome) {
-    const int pane_h = (std::max)(80, bottom - top);
+
+  if (focus_ && !wysiwyg_) {
+    const int pad_x =
+        (std::max)(48, (static_cast<int>(rc.right) - 720) / 2);
+    left = (std::max)(left, pad_x);
+    right = static_cast<int>(rc.right) - pad_x;
+  }
+
+  // Top-right preview/edit chip (Typora-class); outline stays a right rail.
+  if (show_mode_chip) {
+    const int bx = static_cast<int>(rc.right) - kModeBtnW - kModeBtnPad;
+    const int by = (std::max)(0, (48 - kModeBtnH) / 2);
+    MoveWindow(mode_strip_, bx, by, kModeBtnW, kModeBtnH, TRUE);
+    SetWindowTextW(mode_strip_, preview_ ? L"编辑" : L"预览");
+    SetWindowPos(mode_strip_, HWND_TOP, 0, 0, 0, 0,
+                 SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW | SWP_NOACTIVATE);
+    InvalidateRect(mode_strip_, nullptr, FALSE);
+  } else if (mode_strip_) {
+    ShowWindow(mode_strip_, SW_HIDE);
+  }
+
+  const bool show_outline = outline_strip_ && !wysiwyg_ && !focus_ && !toast_ &&
+                            !preview_;
+  int trail = 0;
+  if (show_outline) {
+    trail += outline_ ? (kOutlineExpandedW + kOutlineStripW) : kOutlineStripW;
+  }
+  right = (std::max)(left + 80, right - trail);
+
+  int x = rc.right;
+  if (show_outline) {
     if (outline_ && outline_list_) {
-      MoveWindow(outline_list_, left, top, kOutlineExpandedW, pane_h, TRUE);
-      ShowWindow(outline_list_, SW_SHOW);
-      left += kOutlineExpandedW;
-      MoveWindow(outline_strip_, left, top, kOutlineStripW, pane_h, TRUE);
+      x -= kOutlineStripW;
+      MoveWindow(outline_strip_, x, top, kOutlineStripW, pane_h, TRUE);
       SetWindowTextW(outline_strip_, L"‹");
+      InvalidateRect(outline_strip_, nullptr, FALSE);
       ShowWindow(outline_strip_, SW_SHOW);
-      left += kOutlineStripW + 6;
+      x -= kOutlineExpandedW;
+      MoveWindow(outline_list_, x, top, kOutlineExpandedW, pane_h, TRUE);
+      ShowWindow(outline_list_, SW_SHOW);
     } else {
       if (outline_list_) {
         ShowWindow(outline_list_, SW_HIDE);
       }
-      MoveWindow(outline_strip_, left, top, kOutlineStripW, pane_h, TRUE);
-      SetWindowTextW(outline_strip_, L"›\n大\n纲");
+      x -= kOutlineStripW;
+      MoveWindow(outline_strip_, x, top, kOutlineStripW, pane_h, TRUE);
+      SetWindowTextW(outline_strip_, L"大\n纲");
+      InvalidateRect(outline_strip_, nullptr, FALSE);
       ShowWindow(outline_strip_, SW_SHOW);
-      left += kOutlineStripW + 6;
     }
   } else {
     if (outline_list_) {
@@ -3410,26 +3953,14 @@ void NotesWindow::LayoutClient() {
       ShowWindow(outline_strip_, SW_HIDE);
     }
   }
-  if (focus_ && !wysiwyg_) {
-    const int pad_x =
-        (std::max)(24, (static_cast<int>(rc.right) - 520) / 2);
-    left = (std::max)(left, pad_x);
-    right = static_cast<int>(rc.right) - pad_x;
-    top = (std::max)(top, top + 12);
-    bottom = static_cast<int>(rc.bottom) - 28;
-  }
-  // Right-edge 编辑↔预览 strip (Python notepadMdModeStrip).
-  const bool show_strip =
-      mode_strip_ && PathLooksMarkdown() && !focus_ && !toast_ && !wysiwyg_;
-  if (show_strip) {
-    const int strip_w = 28;
-    MoveWindow(mode_strip_, rc.right - strip_w, top, strip_w,
-               (std::max)(80, bottom - top), TRUE);
-    ShowWindow(mode_strip_, SW_SHOW);
-    right = rc.right - strip_w - 4;
-  } else if (mode_strip_) {
-    ShowWindow(mode_strip_, SW_HIDE);
-  }
+
+  const int stage_l = left + (sidebar_visible_ && !wysiwyg_ && !toast_ ? 12 : 8);
+  const int stage_r = right - 8;
+  const int stage_t = top + 8;
+  const int stage_b = bottom - 8;
+  const int stage_w = (std::max)(40, stage_r - stage_l);
+  const int stage_h = (std::max)(40, stage_b - stage_t);
+
   const bool md_preview =
       preview_ && PathLooksMarkdown() && !wysiwyg_ && !focus_;
   if (wysiwyg_) {
@@ -3439,45 +3970,42 @@ void NotesWindow::LayoutClient() {
     if (preview_web_.Host()) {
       preview_web_.Hide();
     }
+    if (gutter_) {
+      ShowWindow(gutter_, SW_HIDE);
+    }
     if (web_.Host()) {
-      MoveWindow(web_.Host(), left, top, (std::max)(40, right - left),
-                 (std::max)(40, bottom - top), TRUE);
-    } else {
+      MoveWindow(web_.Host(), stage_l, stage_t, stage_w, stage_h, TRUE);
       web_.Resize();
     }
   } else if (md_preview) {
-    // Full-width preview (Python preview mode), not side-by-side.
     if (edit_) {
       ShowWindow(edit_, SW_HIDE);
     }
+    if (gutter_) {
+      ShowWindow(gutter_, SW_HIDE);
+    }
     if (preview_web_.Host()) {
-      MoveWindow(preview_web_.Host(), left, top, (std::max)(40, right - left),
-                 (std::max)(40, bottom - top), TRUE);
+      MoveWindow(preview_web_.Host(), stage_l, stage_t, stage_w, stage_h, TRUE);
       preview_web_.Show();
       preview_web_.Resize();
     }
   } else {
-    if (preview_web_.Host() && !md_preview) {
+    if (preview_web_.Host()) {
       preview_web_.Hide();
     }
     if (edit_) {
       EnsureGutter();
-      const int pane_h = (std::max)(40, bottom - top);
-      LayoutGutter(left, top, pane_h);
-      const int edit_left = left + (gutter_ ? gutter_width_ : 0);
+      LayoutGutter(stage_l, stage_t, stage_h);
+      const int edit_left = stage_l + (gutter_ ? gutter_width_ : 0);
       ShowWindow(edit_, SW_SHOW);
-      MoveWindow(edit_, edit_left, top, (std::max)(40, right - edit_left),
-                 pane_h, TRUE);
+      MoveWindow(edit_, edit_left, stage_t,
+                 (std::max)(40, stage_l + stage_w - edit_left), stage_h, TRUE);
       RefreshGutter();
     } else if (gutter_) {
       ShowWindow(gutter_, SW_HIDE);
     }
   }
-  if (wysiwyg_ || md_preview) {
-    if (gutter_) {
-      ShowWindow(gutter_, SW_HIDE);
-    }
-  }
+  InvalidateRect(hwnd_, nullptr, FALSE);
 }
 
 void NotesWindow::EnsureGutter() {
@@ -3544,11 +4072,19 @@ LRESULT CALLBACK NotesWindow::GutterProc(HWND hwnd, UINT msg, WPARAM wparam,
       HDC hdc = BeginPaint(hwnd, &ps);
       RECT rc{};
       GetClientRect(hwnd, &rc);
-      const COLORREF bg = self ? self->content_bg_ : RGB(238, 241, 246);
-      const COLORREF fg = self ? self->muted_color_ : RGB(100, 116, 139);
+      const COLORREF bg = self ? self->content_bg_ : RGB(255, 255, 255);
+      const COLORREF fg = self ? self->muted_color_ : RGB(148, 157, 170);
+      const COLORREF edge =
+          self ? self->border_color_ : RGB(226, 230, 236);
       HBRUSH brush = CreateSolidBrush(bg);
       FillRect(hdc, &rc, brush);
       DeleteObject(brush);
+      HPEN pen = CreatePen(PS_SOLID, 1, edge);
+      HPEN old_pen = static_cast<HPEN>(SelectObject(hdc, pen));
+      MoveToEx(hdc, rc.right - 1, 0, nullptr);
+      LineTo(hdc, rc.right - 1, rc.bottom);
+      SelectObject(hdc, old_pen);
+      DeleteObject(pen);
       if (self && self->edit_) {
         const int first = static_cast<int>(
             SendMessageW(self->edit_, EM_GETFIRSTVISIBLELINE, 0, 0));
@@ -3596,10 +4132,11 @@ LRESULT CALLBACK NotesWindow::GutterProc(HWND hwnd, UINT msg, WPARAM wparam,
           const bool marked =
               self->bookmarks_.find(line) != self->bookmarks_.end();
           if (marked) {
-            HBRUSH mark = CreateSolidBrush(RGB(29, 78, 216));
-            RECT dot{4, y + 4, 12, y + 12};
-            FillRect(hdc, &dot, mark);
-            DeleteObject(mark);
+            Gdiplus::Graphics gg(hdc);
+            gg.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+            Gdiplus::SolidBrush mark(Gdiplus::Color(255, 71, 85, 105));
+            gg.FillEllipse(&mark, 5.f, static_cast<Gdiplus::REAL>(y) + 5.f, 6.f,
+                           6.f);
           }
           wchar_t buf[16];
           swprintf_s(buf, L"%d", line + 1);
@@ -4509,10 +5046,21 @@ bool NotesWindow::ConfirmSaveCurrent() {
 }
 
 bool NotesWindow::ConfirmCloseAll() {
-  // Match Python closeEvent: silent autosave, no discard prompt.
-  // Tab switches already Save(); only the active tab can be dirty.
+  // Notepad++ / Python closeEvent: silent autosave, no discard prompt.
+  // Flush active tab + persist session so reopen restores paths and content.
   SyncFromWysiwyg();
-  if (dirty_) {
+  if (!path_.empty()) {
+    Save();
+  } else if (edit_ && dirty_) {
+    // Untitled edge: adopt a library path then save.
+    path_ = MakeNewNotePath();
+    if (tab_index_ >= 0 &&
+        tab_index_ < static_cast<int>(tab_paths_.size())) {
+      tab_paths_[static_cast<size_t>(tab_index_)] = path_;
+    } else {
+      tab_paths_.push_back(path_);
+      tab_index_ = static_cast<int>(tab_paths_.size()) - 1;
+    }
     Save();
   }
   PersistTabs();
@@ -4752,7 +5300,7 @@ void NotesWindow::RebuildSidebar() {
             u.HighPart = fd.ftCreationTime.dwHighDateTime;
             e.ctime = u.QuadPart;
             entries.push_back(std::move(e));
-          } else if (IsOpenableSuffix(LowerSuffix(fd.cFileName))) {
+          } else if (IsOpenablePath(fd.cFileName)) {
             Entry e{fd.cFileName, dir + L"\\" + fd.cFileName, false, false, 0};
             e.pinned = PathIsPinned(e.full);
             ULARGE_INTEGER u{};
@@ -4799,8 +5347,22 @@ void NotesWindow::RebuildSidebar() {
       };
 
   HTREEITEM root_item = insert(TVI_ROOT, root, true);
+  if (root_item) {
+    // Product label — avoid raw folder name 「笔记」looking like OS Explorer.
+    TVITEMW item{};
+    item.mask = TVIF_HANDLE | TVIF_TEXT;
+    item.hItem = root_item;
+    wchar_t label[] = L"全部笔记";
+    item.pszText = label;
+    TreeView_SetItem(sidebar_, &item);
+  }
   walk(root, root_item, 0);
   TreeView_Expand(sidebar_, root_item, TVE_EXPAND);
+  // Keep root visible — EnsureVisible on a deep child used to scroll「全部笔记」
+  // half off the top of the rail.
+  if (root_item) {
+    TreeView_EnsureVisible(sidebar_, root_item);
+  }
   if (!path_.empty()) {
     HighlightSidebarPath(path_);
   }
@@ -5046,6 +5608,54 @@ LRESULT CALLBACK NotesWindow::StatusProc(HWND hwnd, UINT msg, WPARAM wparam,
                                          LPARAM lparam) {
   auto* self = reinterpret_cast<NotesWindow*>(
       GetWindowLongPtrW(GetParent(hwnd), GWLP_USERDATA));
+  if (msg == WM_ERASEBKGND) {
+    return 1;
+  }
+  if (msg == WM_PAINT) {
+    PAINTSTRUCT ps{};
+    HDC hdc = BeginPaint(hwnd, &ps);
+    RECT rc{};
+    GetClientRect(hwnd, &rc);
+    const COLORREF bg =
+        self ? (self->toast_ ? RGB(255, 248, 220) : self->content_bg_)
+             : RGB(255, 255, 255);
+    const COLORREF fg = self ? self->muted_color_ : RGB(120, 128, 140);
+    const COLORREF edge = self ? self->border_color_ : RGB(226, 230, 236);
+    HBRUSH brush = CreateSolidBrush(bg);
+    FillRect(hdc, &rc, brush);
+    DeleteObject(brush);
+    HPEN pen = CreatePen(PS_SOLID, 1, edge);
+    HPEN old_pen = static_cast<HPEN>(SelectObject(hdc, pen));
+    MoveToEx(hdc, 0, 0, nullptr);
+    LineTo(hdc, rc.right, 0);
+    SelectObject(hdc, old_pen);
+    DeleteObject(pen);
+    wchar_t text[512] = {};
+    GetWindowTextW(hwnd, text, 512);
+    SetBkMode(hdc, TRANSPARENT);
+    SetTextColor(hdc, fg);
+    HFONT old = nullptr;
+    if (self && self->ui_font_) {
+      old = static_cast<HFONT>(SelectObject(hdc, self->ui_font_));
+    }
+    RECT tr = rc;
+    InflateRect(&tr, -12, 0);
+    DrawTextW(hdc, text, -1, &tr, DT_LEFT | DT_VCENTER | DT_SINGLELINE |
+                                       DT_END_ELLIPSIS | DT_NOPREFIX);
+    if (old) {
+      SelectObject(hdc, old);
+    }
+    EndPaint(hwnd, &ps);
+    return 0;
+  }
+  if (msg == WM_SETTEXT) {
+    LRESULT r = self && self->status_proc_
+                    ? CallWindowProcW(self->status_proc_, hwnd, msg, wparam,
+                                      lparam)
+                    : DefWindowProcW(hwnd, msg, wparam, lparam);
+    InvalidateRect(hwnd, nullptr, FALSE);
+    return r;
+  }
   if (self && msg == WM_LBUTTONDBLCLK) {
     self->PromptGotoLine();
     return 0;
@@ -5066,59 +5676,101 @@ LRESULT CALLBACK NotesWindow::TabsProc(HWND hwnd, UINT msg, WPARAM wparam,
                                        LPARAM lparam) {
   auto* self = reinterpret_cast<NotesWindow*>(
       GetWindowLongPtrW(GetParent(hwnd), GWLP_USERDATA));
-  if (self) {
-    if (msg == WM_LBUTTONDOWN) {
+  if (!self) {
+    return DefWindowProcW(hwnd, msg, wparam, lparam);
+  }
+  switch (msg) {
+    case WM_ERASEBKGND:
+      return 1;
+    case WM_PAINT: {
+      PAINTSTRUCT ps{};
+      HDC hdc = BeginPaint(hwnd, &ps);
+      self->PaintTabBar(hdc);
+      EndPaint(hwnd, &ps);
+      return 0;
+    }
+    case WM_SIZE:
+      self->RelayoutTabChips();
+      InvalidateRect(hwnd, nullptr, FALSE);
+      return 0;
+    case WM_LBUTTONDOWN: {
+      self->RelayoutTabChips();
       POINT pt{GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
-      const int hit = self->TabIndexFromPoint(pt);
+      int zone = 0;
+      const int hit = self->HitTestTabBar(pt, &zone);
+      if (zone == 3) {
+        self->NewTab();
+        return 0;
+      }
       if (hit >= 0) {
-        RECT item{};
-        if (TabCtrl_GetItemRect(hwnd, hit, &item)) {
-          if (pt.x >= item.right - 18) {
-            // Click on trailing × — close without starting a drag.
-            self->CloseTabAt(hit);
-            self->tab_drag_from_ = -1;
-            self->tab_dragging_ = false;
-            return 0;
-          }
-          if (pt.x <= item.left + 20 &&
-              hit < static_cast<int>(self->tab_paths_.size())) {
-            // Click on leading ☆/★ — toggle pin (Python _TabPinButton).
-            self->TogglePinPath(self->tab_paths_[static_cast<size_t>(hit)]);
-            self->tab_drag_from_ = -1;
-            self->tab_dragging_ = false;
-            return 0;
-          }
+        if (zone == 2) {
+          self->CloseTabAt(hit);
+          self->tab_drag_from_ = -1;
+          self->tab_dragging_ = false;
+          return 0;
+        }
+        if (zone == 1) {
+          self->TogglePinPath(self->tab_paths_[static_cast<size_t>(hit)]);
+          self->tab_drag_from_ = -1;
+          self->tab_dragging_ = false;
+          return 0;
+        }
+        if (hit != self->tab_index_) {
+          self->SwitchToTab(hit, true);
         }
       }
       self->tab_drag_from_ = hit;
       self->tab_dragging_ = false;
       self->tab_drag_origin_ = pt;
-      // Fall through so SysTabControl still selects the tab.
+      return 0;
     }
-    if (msg == WM_MOUSEMOVE && (wparam & MK_LBUTTON) &&
-        self->tab_drag_from_ >= 0) {
+    case WM_MOUSEMOVE: {
       POINT pt{GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
-      const int dx = pt.x - self->tab_drag_origin_.x;
-      const int dy = pt.y - self->tab_drag_origin_.y;
-      if (!self->tab_dragging_ && dx * dx + dy * dy >= 36) {
-        self->tab_dragging_ = true;
-        SetCursor(LoadCursor(nullptr, IDC_SIZEWE));
-      }
-      if (self->tab_dragging_) {
-        const int to = self->TabIndexFromPoint(pt);
-        if (to >= 0 && to != self->tab_drag_from_) {
-          self->ReorderTab(self->tab_drag_from_, to);
-          self->tab_drag_from_ = to;
-          self->tab_drag_origin_ = pt;
+      if ((wparam & MK_LBUTTON) && self->tab_drag_from_ >= 0) {
+        const int dx = pt.x - self->tab_drag_origin_.x;
+        const int dy = pt.y - self->tab_drag_origin_.y;
+        if (!self->tab_dragging_ && dx * dx + dy * dy >= 36) {
+          self->tab_dragging_ = true;
+          SetCursor(LoadCursor(nullptr, IDC_SIZEWE));
+        }
+        if (self->tab_dragging_) {
+          self->RelayoutTabChips();
+          const int to = self->TabIndexFromPoint(pt);
+          if (to >= 0 && to != self->tab_drag_from_) {
+            self->ReorderTab(self->tab_drag_from_, to);
+            self->tab_drag_from_ = to;
+            self->tab_drag_origin_ = pt;
+          }
         }
         return 0;
       }
+      TRACKMOUSEEVENT tme{sizeof(tme), TME_LEAVE, hwnd, 0};
+      TrackMouseEvent(&tme);
+      self->RelayoutTabChips();
+      int zone = 0;
+      const int hit = self->HitTestTabBar(pt, &zone);
+      const int hover_idx = (zone == 3) ? -2 : hit;
+      if (hover_idx != self->tab_hover_index_ ||
+          zone != self->tab_hover_zone_) {
+        self->tab_hover_index_ = hover_idx;
+        self->tab_hover_zone_ = zone;
+        InvalidateRect(hwnd, nullptr, FALSE);
+      }
+      return 0;
     }
-    if (msg == WM_LBUTTONUP) {
+    case WM_MOUSELEAVE:
+      if (self->tab_hover_index_ != -1 || self->tab_hover_zone_ != 0) {
+        self->tab_hover_index_ = -1;
+        self->tab_hover_zone_ = 0;
+        InvalidateRect(hwnd, nullptr, FALSE);
+      }
+      return 0;
+    case WM_LBUTTONUP:
       self->tab_drag_from_ = -1;
       self->tab_dragging_ = false;
-    }
-    if (msg == WM_MBUTTONUP) {
+      return 0;
+    case WM_MBUTTONUP: {
+      self->RelayoutTabChips();
       POINT pt{GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
       const int idx = self->TabIndexFromPoint(pt);
       if (idx >= 0) {
@@ -5126,14 +5778,25 @@ LRESULT CALLBACK NotesWindow::TabsProc(HWND hwnd, UINT msg, WPARAM wparam,
       }
       return 0;
     }
-    if (msg == WM_LBUTTONDBLCLK) {
+    case WM_LBUTTONDBLCLK: {
+      self->RelayoutTabChips();
       POINT pt{GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
-      if (self->TabIndexFromPoint(pt) < 0) {
+      int zone = 0;
+      int hit = self->HitTestTabBar(pt, &zone);
+      if (zone == 3) {
         self->NewTab();
         return 0;
       }
+      // 空白双击新建；页签双击关闭（不删文件，内容已静默保存）。
+      if (hit < 0) {
+        self->NewTab();
+      } else {
+        self->CloseTabAt(hit);
+      }
+      return 0;
     }
-    if (msg == WM_RBUTTONUP || msg == WM_CONTEXTMENU) {
+    case WM_RBUTTONUP:
+    case WM_CONTEXTMENU: {
       POINT pt{};
       if (msg == WM_CONTEXTMENU) {
         pt.x = GET_X_LPARAM(lparam);
@@ -5148,15 +5811,15 @@ LRESULT CALLBACK NotesWindow::TabsProc(HWND hwnd, UINT msg, WPARAM wparam,
       }
       POINT client = pt;
       ScreenToClient(hwnd, &client);
+      self->RelayoutTabChips();
       const int idx = self->TabIndexFromPoint(client);
       if (idx >= 0) {
         self->HandleTabContextMenu(idx, pt);
-        return 0;
       }
+      return 0;
     }
-  }
-  if (self && self->tabs_proc_) {
-    return CallWindowProcW(self->tabs_proc_, hwnd, msg, wparam, lparam);
+    default:
+      break;
   }
   return DefWindowProcW(hwnd, msg, wparam, lparam);
 }
@@ -5353,14 +6016,110 @@ LRESULT CALLBACK NotesWindow::WndProc(HWND hwnd, UINT msg, WPARAM wparam,
 
 LRESULT NotesWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
   switch (msg) {
+    case WM_DRAWITEM: {
+      const auto* dis = reinterpret_cast<DRAWITEMSTRUCT*>(lparam);
+      if (!dis || dis->CtlType != ODT_BUTTON) {
+        break;
+      }
+      const UINT id = dis->CtlID;
+      const bool is_new = id == static_cast<UINT>(kSidebarNewId);
+      const bool is_ref = id == static_cast<UINT>(kSidebarRefreshId);
+      const bool is_mode = id == static_cast<UINT>(kModeStripId);
+      const bool is_outline = id == static_cast<UINT>(kOutlineStripId);
+      if (!is_new && !is_ref && !is_mode && !is_outline) {
+        break;
+      }
+      HDC hdc = dis->hDC;
+      RECT rc = dis->rcItem;
+      const bool press = (dis->itemState & ODS_SELECTED) != 0;
+      POINT cur{};
+      GetCursorPos(&cur);
+      RECT wr{};
+      GetWindowRect(dis->hwndItem, &wr);
+      const bool hot = !press && PtInRect(&wr, cur);
+      const bool strip = is_outline;
+      const bool chip = is_mode || is_new || is_ref;
+      // Outline rail on white stage; mode chip on tab chrome; sidebar on rail.
+      const COLORREF plate =
+          strip ? content_bg_ : (is_mode ? content_bg_ : rail_bg_);
+      HBRUSH back = CreateSolidBrush(plate);
+      FillRect(hdc, &rc, back);
+      DeleteObject(back);
+      Gdiplus::Graphics g(hdc);
+      g.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+      g.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHalf);
+      const float pad = strip ? 3.f : 1.f;
+      const float x = static_cast<float>(rc.left) + pad;
+      const float y = static_cast<float>(rc.top) + pad;
+      const float w = static_cast<float>(rc.right - rc.left) - pad * 2.f;
+      const float h = static_cast<float>(rc.bottom - rc.top) - pad * 2.f;
+      Gdiplus::GraphicsPath path;
+      GpAddRoundRect(&path, x, y, w, h, strip ? 8.f : 6.f);
+      BYTE br = 255, bg_g = 255, bb = 255;
+      if (press) {
+        br = 228;
+        bg_g = 232;
+        bb = 238;
+      } else if (hot) {
+        br = 241;
+        bg_g = 243;
+        bb = 246;
+      } else if (strip || is_mode) {
+        br = 248;
+        bg_g = 249;
+        bb = 251;
+      }
+      Gdiplus::SolidBrush bg(Gdiplus::Color(255, br, bg_g, bb));
+      g.FillPath(&bg, &path);
+      Gdiplus::Pen ring(Gdiplus::Color(255, 220, 225, 232), 1.f);
+      g.DrawPath(&ring, &path);
+      SetBkMode(hdc, TRANSPARENT);
+      SetTextColor(hdc, press || hot ? text_color_ : muted_color_);
+      if (ui_font_) {
+        SelectObject(hdc, ui_font_);
+      }
+      wchar_t label[32] = {};
+      if (is_new) {
+        wcscpy_s(label, L"+");
+      } else if (is_ref) {
+        wcscpy_s(label, L"↻");
+      } else {
+        GetWindowTextW(dis->hwndItem, label, 32);
+      }
+      const UINT dt = chip ? (DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX)
+                           : (DT_CENTER | DT_VCENTER | DT_WORDBREAK | DT_NOPREFIX);
+      DrawTextW(hdc, label, -1, &rc, dt);
+      return TRUE;
+    }
     case WM_NOTIFY: {
       const auto* hdr = reinterpret_cast<LPNMHDR>(lparam);
-      if (hdr && hdr->idFrom == kTabsId && hdr->code == TCN_SELCHANGE) {
-        const int sel = TabCtrl_GetCurSel(tabs_);
-        if (sel != tab_index_) {
-          SwitchToTab(sel, true);
+      if (hdr && hdr->idFrom == kSidebarId && hdr->code == NM_CUSTOMDRAW) {
+        // Soft gray selection — avoid system blue highlight.
+        auto* cd = reinterpret_cast<NMTVCUSTOMDRAW*>(lparam);
+        if (cd->nmcd.dwDrawStage == CDDS_PREPAINT) {
+          return CDRF_NOTIFYITEMDRAW;
         }
-        return 0;
+        if (cd->nmcd.dwDrawStage == CDDS_ITEMPREPAINT) {
+          const UINT state = TreeView_GetItemState(
+              sidebar_, reinterpret_cast<HTREEITEM>(cd->nmcd.dwItemSpec),
+              TVIS_SELECTED);
+          if (state & TVIS_SELECTED) {
+            cd->clrText = text_color_;
+            cd->clrTextBk = RGB(226, 230, 236);
+          } else if (cd->nmcd.uItemState & CDIS_HOT) {
+            cd->clrText = text_color_;
+            cd->clrTextBk = RGB(236, 238, 242);
+          } else {
+            cd->clrText = text_color_;
+            cd->clrTextBk = rail_bg_;
+          }
+          // Prefer UI chrome font over Tiny TreeView default.
+          if (ui_font_) {
+            SelectObject(cd->nmcd.hdc, ui_font_);
+          }
+          return CDRF_NEWFONT;
+        }
+        return CDRF_DODEFAULT;
       }
       if (hdr && hdr->idFrom == kSidebarId && hdr->code == NM_DBLCLK) {
         OpenSelectedSidebarItem();
@@ -5430,6 +6189,9 @@ LRESULT NotesWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
           return 0;
         case kMenuOpen:
           OpenFileDialog();
+          return 0;
+        case kMenuOpenHosts:
+          OpenHostsFile();
           return 0;
         case kMenuCloseTab:
           CloseTab();
@@ -5754,11 +6516,79 @@ LRESULT NotesWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
       }
       break;
     }
+    case WM_ERASEBKGND: {
+      HDC hdc = reinterpret_cast<HDC>(wparam);
+      RECT rc{};
+      GetClientRect(hwnd_, &rc);
+      FillRect(hdc, &rc, bg_brush_ ? bg_brush_
+                                   : reinterpret_cast<HBRUSH>(GetStockObject(WHITE_BRUSH)));
+      if (sidebar_visible_ && !wysiwyg_ && !toast_ && rail_brush_) {
+        const int tab_h = (tabs_ && IsWindowVisible(tabs_)) ? 48 : 0;
+        const int status_h =
+            (status_ && IsWindowVisible(status_)) ? kStatusBarH : 0;
+        RECT rail{0, tab_h, 240, rc.bottom - status_h};
+        FillRect(hdc, &rail, rail_brush_);
+        HPEN pen = CreatePen(PS_SOLID, 1, border_color_);
+        HPEN old = static_cast<HPEN>(SelectObject(hdc, pen));
+        MoveToEx(hdc, 240, rail.top, nullptr);
+        LineTo(hdc, 240, rail.bottom);
+        SelectObject(hdc, old);
+        DeleteObject(pen);
+        // Soft search field plate behind the edit control (keep inside chrome).
+        if (sidebar_search_ && IsWindowVisible(sidebar_search_)) {
+          RECT sr{};
+          GetWindowRect(sidebar_search_, &sr);
+          MapWindowPoints(nullptr, hwnd_, reinterpret_cast<POINT*>(&sr), 2);
+          InflateRect(&sr, 10, 4);
+          if (sr.bottom > tab_h + 44) {
+            sr.bottom = tab_h + 44;
+          }
+          Gdiplus::Graphics gg(hdc);
+          gg.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+          gg.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHalf);
+          Gdiplus::GraphicsPath path;
+          GpAddRoundRect(&path, static_cast<float>(sr.left),
+                         static_cast<float>(sr.top),
+                         static_cast<float>(sr.right - sr.left),
+                         static_cast<float>(sr.bottom - sr.top), 8.f);
+          Gdiplus::SolidBrush plate(Gdiplus::Color(255, 255, 255, 255));
+          gg.FillPath(&plate, &path);
+          Gdiplus::Pen edge(Gdiplus::Color(255, 220, 225, 232), 1.f);
+          gg.DrawPath(&edge, &path);
+        }
+      }
+      return 1;
+    }
     case WM_CTLCOLORSTATIC: {
       HDC hdc = reinterpret_cast<HDC>(wparam);
       SetTextColor(hdc, muted_color_);
       SetBkColor(hdc, toast_ ? RGB(255, 248, 220) : content_bg_);
       return reinterpret_cast<LRESULT>(bg_brush_);
+    }
+    case WM_CTLCOLORLISTBOX: {
+      HDC hdc = reinterpret_cast<HDC>(wparam);
+      SetTextColor(hdc, text_color_);
+      SetBkColor(hdc, rail_bg_);
+      return reinterpret_cast<LRESULT>(rail_brush_ ? rail_brush_ : bg_brush_);
+    }
+    case WM_CTLCOLOREDIT: {
+      HDC hdc = reinterpret_cast<HDC>(wparam);
+      // Sidebar search sits on the rail; editor uses white card.
+      HWND ctl = reinterpret_cast<HWND>(lparam);
+      if (ctl == sidebar_search_) {
+        SetTextColor(hdc, text_color_);
+        SetBkColor(hdc, RGB(255, 255, 255));
+        return reinterpret_cast<LRESULT>(card_brush_ ? card_brush_ : bg_brush_);
+      }
+      SetTextColor(hdc, text_color_);
+      SetBkColor(hdc, card_bg_);
+      return reinterpret_cast<LRESULT>(card_brush_ ? card_brush_ : bg_brush_);
+    }
+    case WM_CTLCOLORBTN: {
+      HDC hdc = reinterpret_cast<HDC>(wparam);
+      SetTextColor(hdc, text_color_);
+      SetBkColor(hdc, rail_bg_);
+      return reinterpret_cast<LRESULT>(rail_brush_ ? rail_brush_ : bg_brush_);
     }
     case WM_SIZE:
       LayoutClient();

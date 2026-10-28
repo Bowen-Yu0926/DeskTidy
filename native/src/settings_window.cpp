@@ -657,7 +657,10 @@ std::wstring SettingsWindow::BuildStateJson() const {
   json += flag(ext_.enable_public_desktop);
   json += L",\"show_page_indicator\":";
   json += flag(ext_.show_page_indicator);
-  json += L",\"vault_enabled\":";
+  json += L",\"page_chrome_style\":\"";
+  json += JsonEscape(WidenUtf8(
+      ext_.page_chrome_style == "tabs" ? "tabs" : "float"));
+  json += L"\",\"vault_enabled\":";
   json += flag(ext_.vault_enabled);
   json += L",\"vault_api_base\":\"";
   json += JsonEscape(ext_.vault_api_base);
@@ -742,7 +745,20 @@ std::wstring SettingsWindow::BuildStateJson() const {
     json += JsonEscape(s.meta);
     json += L"\",\"focus_page\":";
     json += std::to_wstring(s.focus_page);
-    json += L",\"preview\":[";
+    json += L",\"work_w\":";
+    json += std::to_wstring(s.work_w);
+    json += L",\"work_h\":";
+    json += std::to_wstring(s.work_h);
+    json += L",\"page_names\":[";
+    for (size_t p = 0; p < s.page_names.size(); ++p) {
+      if (p) {
+        json += L',';
+      }
+      json += L'"';
+      json += JsonEscape(s.page_names[p]);
+      json += L'"';
+    }
+    json += L"],\"preview\":[";
     for (size_t j = 0; j < s.preview.size(); ++j) {
       if (j) {
         json += L',';
@@ -766,7 +782,16 @@ std::wstring SettingsWindow::BuildStateJson() const {
       json += b.collapsed ? L"true" : L"false";
       json += L",\"icon_count\":";
       json += std::to_wstring(b.icon_count);
-      json += L'}';
+      json += L",\"pin_thumbs\":[";
+      for (size_t t = 0; t < b.pin_thumbs.size(); ++t) {
+        if (t) {
+          json += L',';
+        }
+        json += L'"';
+        json += JsonEscape(WidenUtf8(b.pin_thumbs[t]));
+        json += L'"';
+      }
+      json += L"]}";
     }
     json += L"],\"icons\":[";
     for (size_t k = 0; k < s.icons.size(); ++k) {
@@ -777,6 +802,11 @@ std::wstring SettingsWindow::BuildStateJson() const {
       json += std::to_wstring(s.icons[k].x);
       json += L",\"y\":";
       json += std::to_wstring(s.icons[k].y);
+      if (!s.icons[k].thumb.empty()) {
+        json += L",\"thumb\":\"";
+        json += JsonEscape(WidenUtf8(s.icons[k].thumb));
+        json += L'"';
+      }
       json += L'}';
     }
     json += L"]}";
@@ -1200,9 +1230,20 @@ void SettingsWindow::Show() {
     return;
   }
   ApplyBrandWindowIcons(hwnd_);
-  ShowWindow(hwnd_, SW_SHOW);
+  // Tray re-open: restore if minimized; SW_SHOW alone leaves iconic windows
+  // stuck and looks like "no reaction".
+  if (IsIconic(hwnd_)) {
+    ShowWindow(hwnd_, SW_RESTORE);
+  } else {
+    ShowWindow(hwnd_, SW_SHOW);
+  }
+  // Tray callbacks often lack foreground rights — brief TOPMOST bounce is the
+  // usual way to surface an already-open settings window (market tray apps).
+  SetWindowPos(hwnd_, HWND_TOPMOST, 0, 0, 0, 0,
+               SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
   SetForegroundWindow(hwnd_);
-  SetWindowPos(hwnd_, HWND_TOP, 0, 0, 0, 0,
+  BringWindowToTop(hwnd_);
+  SetWindowPos(hwnd_, HWND_NOTOPMOST, 0, 0, 0, 0,
                SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
   if (!web_available_) {
     CreateWebView();
@@ -1256,10 +1297,10 @@ void SettingsWindow::SetCurrentPage(int page, bool push) {
 }
 
 bool SettingsWindow::ApplyExtToggleLocal(const std::wstring& id, bool value) {
-  if (id == L"minutes_on_bar") {
-    ext_.minutes_on_bar = value;
-  } else if (id == L"minutes_enabled") {
+  if (id == L"minutes_on_bar" || id == L"minutes_enabled") {
+    // Single UI switch drives both prefs (enable ≡ show on page bar).
     ext_.minutes_enabled = value;
+    ext_.minutes_on_bar = value;
   } else if (id == L"calculator_enabled") {
     ext_.calculator_enabled = value;
   } else if (id == L"todos_enabled") {

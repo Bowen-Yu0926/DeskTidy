@@ -20,11 +20,15 @@ struct SnapshotPreviewBox {
   std::string style_id = "charcoal";
   bool collapsed = false;
   int icon_count = 0;  // pinned paths (virtual_items) in this fence
+  // Small PNG data-URLs for in-fence pins (so thumbs show real icons).
+  std::vector<std::string> pin_thumbs;
 };
 
 struct SnapshotPreviewIcon {
   int x = 0;
   int y = 0;
+  // Optional PNG data-URL for free / shell icons on the schematic.
+  std::string thumb;
 };
 
 struct SnapshotCardData {
@@ -32,6 +36,11 @@ struct SnapshotCardData {
   std::wstring path;
   std::wstring meta;
   int focus_page = 0;
+  // 快照保存时的工作区逻辑尺寸（用于放大预览 letterbox，避免扁分区竖向撑满）。
+  int work_w = 0;
+  int work_h = 0;
+  // Page labels for preview pager (工作 / 文档 / …). Empty → derive from boxes.
+  std::vector<std::wstring> page_names;
   std::vector<SnapshotPreviewBox> boxes;
   // Shell desktop icon positions from *.icons.json (schematic dots).
   std::vector<SnapshotPreviewIcon> icons;

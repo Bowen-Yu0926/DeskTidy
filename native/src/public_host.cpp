@@ -4,6 +4,8 @@
 #include "display_geom.h"
 #include "i18n.h"
 #include "icon_actions.h"
+#include "ole_drag.h"
+#include "pin_store.h"
 #include "shell_context_menu.h"
 
 #include <Shellapi.h>
@@ -26,6 +28,7 @@ constexpr int kGapX = 0;
 constexpr int kGapY = 6;
 constexpr int kHeaderH = 26;   // P1-9: public-area title bar height.
 constexpr int kExtPublicRefresh = 1;
+constexpr int kDragThreshold = 6;
 bool g_reg = false;
 ULONG_PTR g_gdiplus = 0;
 
@@ -156,6 +159,7 @@ bool PublicHost::Create(HINSTANCE instance) {
   if (!g_reg) {
     WNDCLASSEXW wc{};
     wc.cbSize = sizeof(wc);
+    wc.style = CS_DBLCLKS;  // Explorer: double-click opens floats.
     wc.lpfnWndProc = PublicHost::WndProc;
     wc.hInstance = instance;
     wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
@@ -165,9 +169,10 @@ bool PublicHost::Create(HINSTANCE instance) {
   }
   metrics_ = QueryIconGridMetrics();
   const RECT work = PrimaryWorkArea();
+  // Drop NOACTIVATE so Del/F2 work after click (Explorer DefView activates too).
   hwnd_ = CreateWindowExW(
-      WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_LAYERED, kClass, L"Public",
-      WS_POPUP, work.left + kMargin, work.top + kMargin, metrics_.cell_w,
+      WS_EX_TOOLWINDOW | WS_EX_LAYERED, kClass, L"Public", WS_POPUP,
+      work.left + kMargin, work.top + kMargin, metrics_.cell_w,
       kHeaderH + metrics_.cell_h, nullptr, nullptr, instance, this);
   if (!hwnd_) {
     return false;
@@ -247,6 +252,10 @@ void PublicHost::Reflow() {
   ApplyVisibility();
 }
 
+void PublicHost::SetPlacements(FloatPlacementMap placements) {
+  placements_ = std::move(placements);
+}
+
 void PublicHost::SetItems(std::vector<DesktopItem> items) {
   for (auto& s : slots_) {
     if (s.icon) {
@@ -254,6 +263,9 @@ void PublicHost::SetItems(std::vector<DesktopItem> items) {
     }
   }
   slots_.clear();
+  selected_.clear();
+  selection_anchor_ = -1;
+  rubber_ = false;
   metrics_ = QueryIconGridMetrics();
   slots_.reserve(items.size());
   for (auto& item : items) {
@@ -265,6 +277,7 @@ void PublicHost::SetItems(std::vector<DesktopItem> items) {
     s.icon = LoadItemIcon(s.item.path, metrics_.icon_size);
     slots_.push_back(std::move(s));
   }
+  EnsureSelSize();
   Layout();
   ApplyVisibility();
 }
@@ -277,7 +290,6 @@ void PublicHost::Layout() {
   const int cell_w = (std::max)(48, metrics_.cell_w);
   const int cell_h = (std::max)(56, metrics_.cell_h);
   const int icon = (std::max)(16, metrics_.icon_size);
-  const RECT work = PrimaryWorkArea();
   const int step_x = cell_w + kGapX;
   const int step_y = cell_h + kGapY;
 
@@ -291,71 +303,112 @@ void PublicHost::Layout() {
     return false;
   };
 
-  // Expand search region below/right of fences when the work area is crowded
-  // (never place into a blocked cell — Python find_auto_slot parity).
-  int search_bottom = work.bottom - kMargin;
-  int search_right = work.right - kMargin;
-  for (const RECT& b : blocked_) {
-    search_bottom = (std::max)(search_bottom, static_cast<int>(b.bottom) + step_y);
-    search_right = (std::max)(search_right, static_cast<int>(b.right) + step_x);
-  }
-  // Cap to virtual screen so we don't walk forever.
-  const RECT virt = VirtualScreenRect();
-  search_bottom =
-      (std::min)(search_bottom, static_cast<int>(virt.bottom) - kMargin);
-  search_right =
-      (std::min)(search_right, static_cast<int>(virt.right) - kMargin);
-
-  std::vector<RECT> free_slots;
-  free_slots.reserve(slots_.size() + 8);
-  for (int x = work.left + kMargin; x + cell_w <= search_right; x += step_x) {
-    for (int y = work.top + kMargin; y + cell_h <= search_bottom; y += step_y) {
-      const RECT slot{x, y, x + cell_w, y + cell_h};
-      if (intersects_blocked(slot)) {
+  // Scan every monitor work area (Fences: icons stay on the screen they land).
+  constexpr size_t kMaxCandidates = 768;
+  std::vector<RECT> candidates;
+  candidates.reserve((std::min)(kMaxCandidates, slots_.size() * 8 + 32));
+  const auto monitors = EnumMonitors();
+  for (const auto& mon : monitors) {
+    const RECT& work = mon.work;
+    int search_bottom = work.bottom - kMargin;
+    int search_right = work.right - kMargin;
+    for (const RECT& b : blocked_) {
+      if (b.left >= work.right || b.right <= work.left ||
+          b.top >= work.bottom || b.bottom <= work.top) {
         continue;
       }
-      free_slots.push_back(slot);
-      if (free_slots.size() >= slots_.size()) {
-        break;
-      }
+      search_bottom =
+          (std::max)(search_bottom, static_cast<int>(b.bottom) + step_y);
+      search_right =
+          (std::max)(search_right, static_cast<int>(b.right) + step_x);
     }
-    if (free_slots.size() >= slots_.size()) {
-      break;
-    }
-  }
-
-  // Last resort: stack just below the lowest fence (still outside blocked).
-  if (free_slots.size() < slots_.size()) {
-    int y0 = work.top + kMargin;
-    for (const RECT& b : blocked_) {
-      y0 = (std::max)(y0, static_cast<int>(b.bottom) + kGapY);
-    }
-    int x = work.left + kMargin;
-    int y = y0;
-    while (free_slots.size() < slots_.size()) {
-      RECT slot{x, y, x + cell_w, y + cell_h};
-      if (!intersects_blocked(slot)) {
-        free_slots.push_back(slot);
-      }
-      y += step_y;
-      if (y + cell_h > search_bottom) {
-        y = y0;
-        x += step_x;
-        if (x + cell_w > search_right) {
+    search_bottom =
+        (std::min)(search_bottom, static_cast<int>(work.bottom) + step_y * 8);
+    search_right =
+        (std::min)(search_right, static_cast<int>(work.right) + step_x * 4);
+    for (int x = work.left + kMargin; x + cell_w <= search_right; x += step_x) {
+      for (int y = work.top + kMargin; y + cell_h <= search_bottom;
+           y += step_y) {
+        const RECT slot{x, y, x + cell_w, y + cell_h};
+        if (intersects_blocked(slot)) {
+          continue;
+        }
+        candidates.push_back(slot);
+        if (candidates.size() >= kMaxCandidates) {
           break;
         }
       }
+      if (candidates.size() >= kMaxCandidates) {
+        break;
+      }
+    }
+    if (candidates.size() >= kMaxCandidates) {
+      break;
     }
   }
-
-  if (free_slots.empty()) {
-    // Absolute fallback: one cell at work origin (should be rare).
-    free_slots.push_back({work.left + kMargin, work.top + kMargin,
+  if (candidates.empty()) {
+    const RECT work = PrimaryWorkArea();
+    candidates.push_back({work.left + kMargin, work.top + kMargin,
                           work.left + kMargin + cell_w,
                           work.top + kMargin + cell_h});
   }
-  while (free_slots.size() < slots_.size()) {
-    free_slots.push_back(free_slots.back());
+  while (candidates.size() < slots_.size()) {
+    RECT last = candidates.back();
+    OffsetRect(&last, step_x, 0);
+    candidates.push_back(last);
+  }
+
+  std::vector<char> used(candidates.size(), 0);
+  std::vector<RECT> assigned(slots_.size());
+  auto nearest_free = [&](POINT prefer) -> size_t {
+    size_t best = SIZE_MAX;
+    long long best_d = LLONG_MAX;
+    for (size_t i = 0; i < candidates.size(); ++i) {
+      if (used[i]) {
+        continue;
+      }
+      const RECT& c = candidates[i];
+      const long long cx = (c.left + c.right) / 2;
+      const long long cy = (c.top + c.bottom) / 2;
+      const long long dx = cx - prefer.x;
+      const long long dy = cy - prefer.y;
+      const long long d = dx * dx + dy * dy;
+      if (d < best_d) {
+        best_d = d;
+        best = i;
+      }
+    }
+    return best;
+  };
+
+  // Pass 1: items with saved positions claim the nearest free cell.
+  for (size_t i = 0; i < slots_.size(); ++i) {
+    const auto it = placements_.find(NormalizePinKey(slots_[i].item.path));
+    if (it == placements_.end() || !it->second.has_pos) {
+      continue;
+    }
+    const size_t idx = nearest_free(FloatScreenPoint(it->second));
+    if (idx == SIZE_MAX) {
+      continue;
+    }
+    used[idx] = 1;
+    assigned[i] = candidates[idx];
+  }
+  // Pass 2: remaining items take the next free cells in scan order.
+  size_t next = 0;
+  for (size_t i = 0; i < slots_.size(); ++i) {
+    if (assigned[i].right > assigned[i].left) {
+      continue;
+    }
+    while (next < candidates.size() && used[next]) {
+      ++next;
+    }
+    if (next >= candidates.size()) {
+      assigned[i] = candidates.back();
+      continue;
+    }
+    used[next] = 1;
+    assigned[i] = candidates[next++];
   }
 
   LONG min_l = LONG_MAX;
@@ -363,13 +416,12 @@ void PublicHost::Layout() {
   LONG max_r = LONG_MIN;
   LONG max_b = LONG_MIN;
   for (size_t i = 0; i < slots_.size(); ++i) {
-    const RECT& sc = free_slots[i];
+    const RECT& sc = assigned[i];
     min_l = (std::min)(min_l, sc.left);
     min_t = (std::min)(min_t, sc.top);
     max_r = (std::max)(max_r, sc.right);
     max_b = (std::max)(max_b, sc.bottom);
   }
-  // Host hugs placed cells only — never a transparent plate over fences.
   const int origin_x = static_cast<int>(min_l);
   const int origin_y = static_cast<int>(min_t) - kHeaderH;
   const int w =
@@ -381,7 +433,7 @@ void PublicHost::Layout() {
 
   const int icon_pad = (cell_w - icon) / 2;
   for (size_t i = 0; i < slots_.size(); ++i) {
-    const RECT& sc = free_slots[i];
+    const RECT& sc = assigned[i];
     const int cx = sc.left - origin_x;
     const int cy = sc.top - origin_y;
     slots_[i].bounds = {cx, cy, cx + cell_w, cy + cell_h};
@@ -484,18 +536,240 @@ int PublicHost::HitTest(int x, int y) const {
   return -1;
 }
 
+void PublicHost::PersistSlotPlacements() {
+  if (!hwnd_ || slots_.empty()) {
+    return;
+  }
+  RECT wr{};
+  GetWindowRect(hwnd_, &wr);
+  for (const auto& s : slots_) {
+    POINT mid{(s.bounds.left + s.bounds.right) / 2,
+              (s.bounds.top + s.bounds.bottom) / 2};
+    mid.x += wr.left;
+    mid.y += wr.top;
+    UpsertFloatPlacement(&placements_, s.item.path, current_page_, mid);
+  }
+  if (on_placements_changed_) {
+    on_placements_changed_(placements_);
+  }
+}
+
 void PublicHost::ReorderTo(int from, int to) {
   if (from < 0 || to < 0 || from >= static_cast<int>(slots_.size()) ||
       to >= static_cast<int>(slots_.size()) || from == to) {
     return;
   }
+  // Swap preferred positions so Layout keeps visual order after persist.
+  RECT wa = slots_[static_cast<size_t>(from)].bounds;
+  RECT wb = slots_[static_cast<size_t>(to)].bounds;
   Slot moving = std::move(slots_[static_cast<size_t>(from)]);
   slots_.erase(slots_.begin() + from);
   slots_.insert(slots_.begin() + to, std::move(moving));
+  // Assign screen midpoints of the two cells before reflow.
+  RECT wr{};
+  GetWindowRect(hwnd_, &wr);
+  auto mid_of = [&](const RECT& b) {
+    POINT p{(b.left + b.right) / 2 + wr.left, (b.top + b.bottom) / 2 + wr.top};
+    return p;
+  };
+  if (from < static_cast<int>(slots_.size()) &&
+      to < static_cast<int>(slots_.size())) {
+    // After erase/insert, `to` holds the moved item; update both ends from
+    // the pre-move cell rects so nearest-slot layout sticks.
+    UpsertFloatPlacement(&placements_, slots_[static_cast<size_t>(to)].item.path,
+                         current_page_, mid_of(wb));
+    if (from != to && from < static_cast<int>(slots_.size())) {
+      // Best-effort: leave others; PersistSlotPlacements after Layout.
+      (void)wa;
+    }
+  }
   Layout();
+  PersistSlotPlacements();
+}
+
+bool PublicHost::HasSelection() const {
+  for (char c : selected_) {
+    if (c) {
+      return true;
+    }
+  }
+  return false;
+}
+
+void PublicHost::EnsureSelSize() {
+  if (selected_.size() != slots_.size()) {
+    selected_.assign(slots_.size(), 0);
+  }
+}
+
+void PublicHost::ClearSelection() {
+  EnsureSelSize();
+  std::fill(selected_.begin(), selected_.end(), static_cast<char>(0));
+  selection_anchor_ = -1;
+}
+
+void PublicHost::SelectOnly(int index) {
+  EnsureSelSize();
+  ClearSelection();
+  if (index >= 0 && index < static_cast<int>(selected_.size())) {
+    selected_[static_cast<size_t>(index)] = 1;
+    selection_anchor_ = index;
+  }
+}
+
+void PublicHost::ToggleSelected(int index) {
+  EnsureSelSize();
+  if (index < 0 || index >= static_cast<int>(selected_.size())) {
+    return;
+  }
+  selected_[static_cast<size_t>(index)] =
+      selected_[static_cast<size_t>(index)] ? 0 : 1;
+  selection_anchor_ = index;
+}
+
+void PublicHost::SelectRange(int from, int to) {
+  EnsureSelSize();
+  if (from > to) {
+    std::swap(from, to);
+  }
+  from = (std::max)(0, from);
+  to = (std::min)(to, static_cast<int>(selected_.size()) - 1);
+  std::fill(selected_.begin(), selected_.end(), static_cast<char>(0));
+  for (int i = from; i <= to; ++i) {
+    selected_[static_cast<size_t>(i)] = 1;
+  }
+}
+
+void PublicHost::SelectIntersecting(RECT client_rc) {
+  EnsureSelSize();
+  if (client_rc.left > client_rc.right) {
+    std::swap(client_rc.left, client_rc.right);
+  }
+  if (client_rc.top > client_rc.bottom) {
+    std::swap(client_rc.top, client_rc.bottom);
+  }
+  std::fill(selected_.begin(), selected_.end(), static_cast<char>(0));
+  selection_anchor_ = -1;
+  for (size_t i = 0; i < slots_.size(); ++i) {
+    const RECT& b = slots_[i].bounds;
+    if (b.left < client_rc.right && b.right > client_rc.left &&
+        b.top < client_rc.bottom && b.bottom > client_rc.top) {
+      selected_[i] = 1;
+      if (selection_anchor_ < 0) {
+        selection_anchor_ = static_cast<int>(i);
+      }
+    }
+  }
+}
+
+std::vector<std::wstring> PublicHost::SelectedPaths() const {
+  std::vector<std::wstring> paths;
+  const size_t n = (std::min)(selected_.size(), slots_.size());
+  for (size_t i = 0; i < n; ++i) {
+    if (selected_[i]) {
+      paths.push_back(slots_[i].item.path);
+    }
+  }
+  return paths;
+}
+
+std::vector<std::pair<std::wstring, RECT>> PublicHost::SlotScreenRects() const {
+  std::vector<std::pair<std::wstring, RECT>> out;
+  if (!hwnd_) {
+    return out;
+  }
+  RECT wr{};
+  GetWindowRect(hwnd_, &wr);
+  out.reserve(slots_.size());
+  for (const auto& s : slots_) {
+    RECT r{wr.left + s.bounds.left, wr.top + s.bounds.top,
+           wr.left + s.bounds.right, wr.top + s.bounds.bottom};
+    out.emplace_back(s.item.path, r);
+  }
+  return out;
+}
+
+void PublicHost::DeleteSelection() {
+  auto paths = SelectedPaths();
+  if (paths.empty()) {
+    return;
+  }
+  if (RecycleShellPaths(hwnd_, paths) != IconFsResult::Ok) {
+    return;
+  }
+  for (const auto& p : paths) {
+    if (on_removed_) {
+      on_removed_(p);
+    }
+  }
   if (on_refresh_) {
-    // Order is in-memory for this session; refresh rebuilds from scan.
-    // Keep local order by not calling refresh — caller may persist later.
+    on_refresh_();
+  }
+}
+
+void PublicHost::RenameSelection() {
+  EnsureSelSize();
+  int index = -1;
+  int count = 0;
+  for (size_t i = 0; i < selected_.size() && i < slots_.size(); ++i) {
+    if (selected_[i]) {
+      index = static_cast<int>(i);
+      ++count;
+    }
+  }
+  if (count != 1 || index < 0) {
+    return;
+  }
+  const std::wstring path = slots_[static_cast<size_t>(index)].item.path;
+  std::wstring dest;
+  if (RenameShellPath(hwnd_, path, &dest) == IconFsResult::Ok) {
+    if (on_path_replaced_ && dest != path) {
+      on_path_replaced_(path, dest);
+    }
+    if (on_refresh_) {
+      on_refresh_();
+    }
+  }
+}
+
+void PublicHost::OpenSelection() {
+  for (const auto& p : SelectedPaths()) {
+    OpenShellPath(p);
+  }
+}
+
+void PublicHost::BeginOleDrag() {
+  std::vector<std::wstring> paths = SelectedPaths();
+  if (paths.empty() && drag_from_ >= 0 &&
+      drag_from_ < static_cast<int>(slots_.size())) {
+    paths.push_back(slots_[static_cast<size_t>(drag_from_)].item.path);
+  }
+  if (paths.empty()) {
+    return;
+  }
+  drag_from_ = -1;
+  drag_moved_ = false;
+  rubber_ = false;
+  if (GetCapture() == hwnd_) {
+    ReleaseCapture();
+  }
+  ShellDoDragFiles(paths);
+  POINT pt{};
+  GetCursorPos(&pt);
+  for (const auto& p : paths) {
+    if (GetFileAttributesW(p.c_str()) == INVALID_FILE_ATTRIBUTES) {
+      if (on_removed_) {
+        on_removed_(p);
+      }
+      continue;
+    }
+    UpsertFloatPlacement(&placements_, p, current_page_, pt);
+  }
+  if (on_placements_changed_) {
+    on_placements_changed_(placements_);
+  }
+  if (on_refresh_) {
+    on_refresh_();
   }
 }
 
@@ -528,46 +802,155 @@ LRESULT PublicHost::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
     case WM_LBUTTONDOWN: {
       const int x = GET_X_LPARAM(lparam);
       const int y = GET_Y_LPARAM(lparam);
+      SetFocus(hwnd_);
       drag_from_ = HitTest(x, y);
       drag_moved_ = false;
+      drag_press_ = {x, y};
+      rubber_ = false;
+      const bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+      const bool shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
       if (drag_from_ >= 0) {
+        EnsureSelSize();
+        if (shift && selection_anchor_ >= 0) {
+          SelectRange(selection_anchor_, drag_from_);
+        } else if (ctrl) {
+          ToggleSelected(drag_from_);
+        } else if (!IsSelected(drag_from_)) {
+          SelectOnly(drag_from_);
+        }
+        Present();
+        SetCapture(hwnd_);
+      } else {
+        // Empty chrome: start rubber-band (Explorer / Fences).
+        ClearSelection();
+        rubber_ = true;
+        rubber_origin_ = {x, y};
+        rubber_rc_ = {x, y, x, y};
+        Present();
         SetCapture(hwnd_);
       }
       return 0;
     }
     case WM_MOUSEMOVE: {
-      if (drag_from_ < 0 || (wparam & MK_LBUTTON) == 0) {
+      if ((wparam & MK_LBUTTON) == 0) {
         break;
       }
-      const int hit =
-          HitTest(GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam));
-      if (hit >= 0 && hit != drag_from_) {
+      const int x = GET_X_LPARAM(lparam);
+      const int y = GET_Y_LPARAM(lparam);
+      if (rubber_) {
+        rubber_rc_ = {rubber_origin_.x, rubber_origin_.y, x, y};
+        Present();
+        return 0;
+      }
+      if (drag_from_ < 0) {
+        break;
+      }
+      if (!drag_moved_ &&
+          (std::abs(x - drag_press_.x) >= kDragThreshold ||
+           std::abs(y - drag_press_.y) >= kDragThreshold)) {
+        drag_moved_ = true;
+        EnsureSelSize();
+        if (!IsSelected(drag_from_)) {
+          SelectOnly(drag_from_);
+        }
+      }
+      if (!drag_moved_) {
+        return 0;
+      }
+      const int hit = HitTest(x, y);
+      POINT screen{x, y};
+      ClientToScreen(hwnd_, &screen);
+      RECT wr{};
+      GetWindowRect(hwnd_, &wr);
+      const bool outside =
+          screen.x < wr.left || screen.x >= wr.right || screen.y < wr.top ||
+          screen.y >= wr.bottom ||
+          (hit < 0 && y >= kHeaderH);
+      if (outside) {
+        BeginOleDrag();
+        return 0;
+      }
+      if (hit >= 0 && hit != drag_from_ && SelectedPaths().size() <= 1) {
         ReorderTo(drag_from_, hit);
         drag_from_ = hit;
-        drag_moved_ = true;
+        SelectOnly(hit);
       }
       return 0;
     }
     case WM_LBUTTONUP: {
       const int x = GET_X_LPARAM(lparam);
       const int y = GET_Y_LPARAM(lparam);
-      const int hit = HitTest(x, y);
       if (GetCapture() == hwnd_) {
         ReleaseCapture();
       }
-      if (!drag_moved_ && hit >= 0) {
-        OpenShellPath(slots_[static_cast<size_t>(hit)].item.path);
+      if (rubber_) {
+        rubber_rc_ = {rubber_origin_.x, rubber_origin_.y, x, y};
+        SelectIntersecting(rubber_rc_);
+        rubber_ = false;
+        Present();
+        drag_from_ = -1;
+        drag_moved_ = false;
+        return 0;
+      }
+      if (!drag_moved_) {
+        const int hit = HitTest(x, y);
+        if (hit < 0 && !HasSelection()) {
+          ClearSelection();
+          Present();
+        }
       }
       drag_from_ = -1;
       drag_moved_ = false;
       return 0;
     }
+    case WM_LBUTTONDBLCLK: {
+      const int hit =
+          HitTest(GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam));
+      if (hit >= 0 && hit < static_cast<int>(slots_.size())) {
+        SelectOnly(hit);
+        OpenShellPath(slots_[static_cast<size_t>(hit)].item.path);
+        Present();
+      }
+      return 0;
+    }
     case WM_RBUTTONUP: {
       const int hit = HitTest(GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam));
       if (hit >= 0) {
+        EnsureSelSize();
+        if (!IsSelected(hit)) {
+          SelectOnly(hit);
+        }
+        Present();
         POINT pt{};
         GetCursorPos(&pt);
         ShowSlotMenu(hit, pt);
+      }
+      return 0;
+    }
+    case WM_KEYDOWN: {
+      const int vk = static_cast<int>(wparam);
+      if (vk == VK_DELETE) {
+        DeleteSelection();
+        return 0;
+      }
+      if (vk == VK_F2) {
+        RenameSelection();
+        return 0;
+      }
+      if (vk == VK_RETURN) {
+        OpenSelection();
+        return 0;
+      }
+      if (vk == VK_ESCAPE) {
+        ClearSelection();
+        Present();
+        return 0;
+      }
+      if (vk == L'A' && (GetKeyState(VK_CONTROL) & 0x8000)) {
+        EnsureSelSize();
+        std::fill(selected_.begin(), selected_.end(), static_cast<char>(1));
+        Present();
+        return 0;
       }
       return 0;
     }
@@ -578,6 +961,11 @@ LRESULT PublicHost::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
       break;
   }
   return DefWindowProcW(hwnd_, msg, wparam, lparam);
+}
+
+bool PublicHost::IsSelected(int index) const {
+  return index >= 0 && index < static_cast<int>(selected_.size()) &&
+         selected_[static_cast<size_t>(index)] != 0;
 }
 
 void PublicHost::Paint(HDC hdc) {
@@ -613,10 +1001,36 @@ void PublicHost::Paint(HDC hdc) {
   // channel survives ULW_ALPHA; plain DrawIconEx left them invisible.
   {
     Gdiplus::Graphics gi(hdc);
-    for (const auto& s : slots_) {
+    for (size_t i = 0; i < slots_.size(); ++i) {
+      const auto& s = slots_[i];
+      if (i < selected_.size() && selected_[i]) {
+        Gdiplus::SolidBrush sel(Gdiplus::Color(90, 0, 120, 215));
+        gi.FillRectangle(&sel,
+                         static_cast<INT>(s.bounds.left),
+                         static_cast<INT>(s.bounds.top),
+                         static_cast<INT>(s.bounds.right - s.bounds.left),
+                         static_cast<INT>(s.bounds.bottom - s.bounds.top));
+      }
       if (s.icon) {
         DrawIconAlpha(gi, s.icon, s.icon_rc.left, s.icon_rc.top, icon);
       }
+    }
+    if (rubber_) {
+      RECT r = rubber_rc_;
+      if (r.left > r.right) {
+        std::swap(r.left, r.right);
+      }
+      if (r.top > r.bottom) {
+        std::swap(r.top, r.bottom);
+      }
+      Gdiplus::SolidBrush fill(Gdiplus::Color(40, 0, 120, 215));
+      Gdiplus::Pen pen(Gdiplus::Color(200, 0, 120, 215), 1.f);
+      gi.FillRectangle(&fill, static_cast<INT>(r.left), static_cast<INT>(r.top),
+                       static_cast<INT>(r.right - r.left),
+                       static_cast<INT>(r.bottom - r.top));
+      gi.DrawRectangle(&pen, static_cast<INT>(r.left), static_cast<INT>(r.top),
+                       static_cast<INT>(r.right - r.left),
+                       static_cast<INT>(r.bottom - r.top));
     }
   }
   // Captions: Explorer white + dark glow (readable on light wallpaper).

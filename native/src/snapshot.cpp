@@ -1,16 +1,29 @@
 #include "snapshot.h"
 
+#include "desktop_items.h"
+#include "display_geom.h"
 #include "paths_util.h"
 #include "pin_store.h"
 #include "shell_icons.h"
 
 #include <Windows.h>
+#include <Wincrypt.h>
+#include <objidl.h>
+#include <gdiplus.h>
 
 #include <algorithm>
+#include <cctype>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <fstream>
 #include <sstream>
+#include <unordered_set>
+#include <vector>
+
+#pragma comment(lib, "gdiplus.lib")
+#pragma comment(lib, "crypt32.lib")
+#pragma comment(lib, "ole32.lib")
 
 namespace {
 
@@ -38,6 +51,161 @@ std::wstring Widen(const std::string& s) {
     MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, out.data(), n);
   }
   return out;
+}
+
+void EnsureSnapGdiplus() {
+  static ULONG_PTR token = 0;
+  if (!token) {
+    Gdiplus::GdiplusStartupInput input;
+    Gdiplus::GdiplusStartup(&token, &input, nullptr);
+  }
+}
+
+int SnapPngEncoderClsid(CLSID* clsid) {
+  UINT num = 0, size = 0;
+  Gdiplus::GetImageEncodersSize(&num, &size);
+  if (!size || !clsid) {
+    return -1;
+  }
+  auto* info = static_cast<Gdiplus::ImageCodecInfo*>(malloc(size));
+  if (!info) {
+    return -1;
+  }
+  Gdiplus::GetImageEncoders(num, size, info);
+  int found = -1;
+  for (UINT i = 0; i < num; ++i) {
+    if (wcscmp(info[i].MimeType, L"image/png") == 0) {
+      *clsid = info[i].Clsid;
+      found = static_cast<int>(i);
+      break;
+    }
+  }
+  free(info);
+  return found;
+}
+
+std::string B64EncodeBytes(const BYTE* data, DWORD len) {
+  if (!data || !len) {
+    return {};
+  }
+  DWORD out_len = 0;
+  CryptBinaryToStringA(data, len, CRYPT_STRING_BASE64 | CRYPT_STRING_NOCRLF,
+                       nullptr, &out_len);
+  std::string out(out_len, '\0');
+  CryptBinaryToStringA(data, len, CRYPT_STRING_BASE64 | CRYPT_STRING_NOCRLF,
+                       out.data(), &out_len);
+  while (!out.empty() &&
+         (out.back() == '\0' || out.back() == '\n' || out.back() == '\r')) {
+    out.pop_back();
+  }
+  return out;
+}
+
+// 20×20 PNG data-URL for snapshot thumbs (real shell glyphs, not grey dots).
+// Prefer DrawIconEx into a DIB — Gdiplus::Bitmap::FromHICON fails on some shells.
+std::string IconToPngDataUrl(HICON icon, int size = 20) {
+  if (!icon || size < 8) {
+    return {};
+  }
+  EnsureSnapGdiplus();
+  CLSID png{};
+  if (SnapPngEncoderClsid(&png) < 0) {
+    return {};
+  }
+
+  BITMAPINFO bmi{};
+  bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+  bmi.bmiHeader.biWidth = size;
+  bmi.bmiHeader.biHeight = -size;
+  bmi.bmiHeader.biPlanes = 1;
+  bmi.bmiHeader.biBitCount = 32;
+  bmi.bmiHeader.biCompression = BI_RGB;
+  void* bits = nullptr;
+  HDC screen = GetDC(nullptr);
+  HDC mem = CreateCompatibleDC(screen);
+  HBITMAP dib = CreateDIBSection(screen, &bmi, DIB_RGB_COLORS, &bits, nullptr, 0);
+  if (!dib || !bits) {
+    if (dib) {
+      DeleteObject(dib);
+    }
+    DeleteDC(mem);
+    ReleaseDC(nullptr, screen);
+    return {};
+  }
+  HGDIOBJ old = SelectObject(mem, dib);
+  std::memset(bits, 0, static_cast<size_t>(size) * size * 4);
+  DrawIconEx(mem, 0, 0, icon, size, size, 0, nullptr, DI_NORMAL);
+  auto* px = static_cast<BYTE*>(bits);
+  const int n = size * size;
+  int opaque = 0;
+  for (int i = 0; i < n; ++i) {
+    BYTE* p = px + i * 4;
+    BYTE a = p[3];
+    if (a == 0 && (p[0] | p[1] | p[2])) {
+      a = 255;
+    }
+    if (a > 16) {
+      ++opaque;
+    }
+    p[3] = a;
+  }
+
+  // Keep DIB alive until after PNG encode (Bitmap wraps px without copy).
+  Gdiplus::Bitmap canvas(size, size, size * 4, PixelFormat32bppARGB, px);
+  if (opaque < 4) {
+    Gdiplus::Bitmap* src = Gdiplus::Bitmap::FromHICON(icon);
+    if (src) {
+      Gdiplus::Graphics g(&canvas);
+      g.Clear(Gdiplus::Color(0, 0, 0, 0));
+      g.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
+      g.DrawImage(src, 0, 0, size, size);
+      delete src;
+    }
+  }
+
+  IStream* stream = nullptr;
+  std::string result;
+  if (CreateStreamOnHGlobal(nullptr, TRUE, &stream) == S_OK && stream) {
+    if (canvas.Save(stream, &png, nullptr) == Gdiplus::Ok) {
+      STATSTG stat{};
+      if (SUCCEEDED(stream->Stat(&stat, STATFLAG_NONAME))) {
+        const ULONG nbytes = static_cast<ULONG>(stat.cbSize.QuadPart);
+        if (nbytes > 0 && nbytes <= 64 * 1024) {
+          LARGE_INTEGER zero{};
+          stream->Seek(zero, STREAM_SEEK_SET, nullptr);
+          std::vector<BYTE> bytes(nbytes);
+          ULONG read = 0;
+          if (SUCCEEDED(stream->Read(bytes.data(), nbytes, &read)) &&
+              read == nbytes) {
+            const std::string b64 = B64EncodeBytes(bytes.data(), read);
+            if (!b64.empty()) {
+              result = "data:image/png;base64," + b64;
+            }
+          }
+        }
+      }
+    }
+    stream->Release();
+  }
+
+  SelectObject(mem, old);
+  DeleteObject(dib);
+  DeleteDC(mem);
+  ReleaseDC(nullptr, screen);
+  return result;
+}
+
+std::string PathToPngDataUrl(const std::wstring& path) {
+  if (path.empty()) {
+    return {};
+  }
+  HICON icon = LoadItemIcon(path, 32);
+  if (!icon) {
+    return {};
+  }
+  std::string url = IconToPngDataUrl(icon, 20);
+  DestroyIcon(icon);
+  return url;
 }
 
 std::string EscapeJson(const std::string& s) {
@@ -325,6 +493,45 @@ std::wstring SnapshotBrief(const std::wstring& path) {
   return out;
 }
 
+// 从 fingerprint（如 0,0,1920x1080@…）解析最大的显示器逻辑分辨率，
+// 供快照放大预览按整块桌面比例 letterbox（对标 Fences 缩略）。
+static void InferWorkSizeFromFingerprint(const std::string& fp, int* ww,
+                                         int* wh) {
+  if (!ww || !wh) {
+    return;
+  }
+  *ww = 0;
+  *wh = 0;
+  for (size_t i = 0; i + 3 < fp.size(); ++i) {
+    if (!isdigit(static_cast<unsigned char>(fp[i]))) {
+      continue;
+    }
+    size_t j = i;
+    while (j < fp.size() && isdigit(static_cast<unsigned char>(fp[j]))) {
+      ++j;
+    }
+    if (j >= fp.size() || fp[j] != 'x') {
+      i = j;
+      continue;
+    }
+    size_t k = j + 1;
+    if (k >= fp.size() || !isdigit(static_cast<unsigned char>(fp[k]))) {
+      i = j;
+      continue;
+    }
+    while (k < fp.size() && isdigit(static_cast<unsigned char>(fp[k]))) {
+      ++k;
+    }
+    const int w = atoi(fp.c_str() + i);
+    const int h = atoi(fp.c_str() + j + 1);
+    if (w >= 800 && h >= 600 && w * h > (*ww) * (*wh)) {
+      *ww = w;
+      *wh = h;
+    }
+    i = k;
+  }
+}
+
 SnapshotCardData BuildSnapshotCard(const SnapshotInfo& info) {
   SnapshotCardData card;
   card.name = info.name;
@@ -334,19 +541,105 @@ SnapshotCardData BuildSnapshotCard(const SnapshotInfo& info) {
   LoadPinsFromPath(PinsSidecarPath(info.path), &pins);
   card.meta = SnapshotBrief(info.path);
   card.focus_page = st.current_page;
-  card.boxes.reserve(st.fences.size());
+  InferWorkSizeFromFingerprint(st.last_display_fingerprint, &card.work_w,
+                               &card.work_h);
+  if (card.work_w < 800 || card.work_h < 600) {
+    const RECT wa = PrimaryWorkArea();
+    card.work_w = (std::max)(1, static_cast<int>(wa.right - wa.left));
+    card.work_h = (std::max)(1, static_cast<int>(wa.bottom - wa.top));
+  }
+  // Resolve desktop paths once so free-icon thumbs can match by display name.
+  const auto desktop_items = ScanDesktopItems();
+  auto path_for_shell_name = [&](const std::wstring& name) -> std::wstring {
+    if (name.empty()) {
+      return {};
+    }
+    for (const auto& it : desktop_items) {
+      if (_wcsicmp(it.name.c_str(), name.c_str()) == 0) {
+        return it.path;
+      }
+      // .lnk display name may strip extension; also compare file stem.
+      const size_t slash = it.path.find_last_of(L"\\/");
+      std::wstring file = (slash == std::wstring::npos)
+                              ? it.path
+                              : it.path.substr(slash + 1);
+      const size_t dot = file.rfind(L'.');
+      if (dot != std::wstring::npos) {
+        file.resize(dot);
+      }
+      if (_wcsicmp(file.c_str(), name.c_str()) == 0) {
+        return it.path;
+      }
+    }
+    return {};
+  };
+
+  card.page_names = st.page_names;
+  NormalizePageNames(&card.page_names);
+
+  card.boxes.reserve(st.fences.size() * 2);
+  constexpr size_t kMaxPinThumbs = 24;
   for (const auto& f : st.fences) {
-    SnapshotPreviewBox box;
-    box.title = f.title;
-    box.x = f.x;
-    box.y = f.y;
-    box.w = f.w;
-    box.h = f.h;
-    box.page = f.page;
-    box.style_id = f.style_id.empty() ? "charcoal" : f.style_id;
-    box.collapsed = f.collapsed;
-    box.icon_count = CountPinnedInFence(pins, f.id);
-    card.boxes.push_back(std::move(box));
+    // Prefer saved manual order, then remaining pins for this fence.
+    std::vector<std::wstring> ordered = f.pin_order;
+    for (auto& p : ordered) {
+      p = NormalizeStoredPath(p);
+    }
+    auto already = [&](const std::wstring& p) {
+      for (const auto& q : ordered) {
+        if (_wcsicmp(q.c_str(), p.c_str()) == 0) {
+          return true;
+        }
+      }
+      return false;
+    };
+    for (const auto& kv : pins) {
+      if (kv.second != f.id) {
+        continue;
+      }
+      const std::wstring path = NormalizeStoredPath(kv.first);
+      if (!already(path)) {
+        ordered.push_back(path);
+      }
+    }
+    std::vector<std::string> thumbs;
+    thumbs.reserve((std::min)(ordered.size(), kMaxPinThumbs));
+    for (size_t i = 0; i < ordered.size() && thumbs.size() < kMaxPinThumbs;
+         ++i) {
+      std::string url = PathToPngDataUrl(ordered[i]);
+      if (!url.empty()) {
+        thumbs.push_back(std::move(url));
+      }
+    }
+    const int icon_count = CountPinnedInFence(pins, f.id);
+    // One preview box per page membership (geometry may differ per page).
+    std::vector<int> pgs =
+        f.pages.empty() ? std::vector<int>{f.page} : f.pages;
+    for (int pg : pgs) {
+      SnapshotPreviewBox box;
+      box.title = f.title;
+      box.x = f.x;
+      box.y = f.y;
+      box.w = f.w;
+      box.h = f.h;
+      box.page = pg;
+      box.style_id = f.style_id.empty() ? "charcoal" : f.style_id;
+      box.collapsed = f.collapsed;
+      box.icon_count = icon_count;
+      box.pin_thumbs = thumbs;
+      const auto git = f.page_geometries.find(pg);
+      if (git != f.page_geometries.end()) {
+        if (!git->second.visible) {
+          continue;
+        }
+        box.x = git->second.x;
+        box.y = git->second.y;
+        box.w = git->second.w;
+        box.h = git->second.h;
+        box.collapsed = git->second.collapsed;
+      }
+      card.boxes.push_back(std::move(box));
+    }
   }
   // Prefer a page that actually has fences for the thumb (saved current_page
   // may point at an empty page).
@@ -360,15 +653,76 @@ SnapshotCardData BuildSnapshotCard(const SnapshotInfo& info) {
   if (!focus_has && !card.boxes.empty()) {
     card.focus_page = card.boxes.front().page;
   }
-  // Shell icon dots for the schematic (cap payload; order preserved).
+  // Free floats only for the schematic. Explorer DefView still lists every
+  // desktop file (virtual pins stay on disk), so painting the full shell
+  // sidecar duplicated fence contents as a ghost column. Market (Fences):
+  // preview = fences + unpinned floats, not the raw shell grid.
+  std::unordered_set<std::wstring> pinned_keys;
+  pinned_keys.reserve(pins.size() * 2);
+  auto stem_of = [](const std::wstring& path) {
+    const size_t slash = path.find_last_of(L"\\/");
+    std::wstring file =
+        (slash == std::wstring::npos) ? path : path.substr(slash + 1);
+    const size_t dot = file.rfind(L'.');
+    if (dot != std::wstring::npos && dot > 0) {
+      file.resize(dot);
+    }
+    return file;
+  };
+  for (const auto& kv : pins) {
+    pinned_keys.insert(NormalizePinKey(kv.first));
+    const std::wstring stem = stem_of(kv.first);
+    if (!stem.empty()) {
+      pinned_keys.insert(stem);
+    }
+  }
+  auto is_pinned_shell = [&](const std::wstring& name,
+                             const std::wstring& path) {
+    if (!path.empty() &&
+        pinned_keys.count(NormalizePinKey(path)) != 0) {
+      return true;
+    }
+    if (!name.empty() && pinned_keys.count(name) != 0) {
+      return true;
+    }
+    return false;
+  };
+
   const auto shell = LoadShellIconsSidecar(info.path);
-  constexpr size_t kMaxPreviewIcons = 120;
+  constexpr size_t kMaxPreviewIcons = 80;
+  constexpr size_t kMaxFreeThumbs = 40;
   card.icons.reserve((std::min)(shell.size(), kMaxPreviewIcons));
-  for (size_t i = 0; i < shell.size() && i < kMaxPreviewIcons; ++i) {
+  for (size_t i = 0; i < shell.size() && card.icons.size() < kMaxPreviewIcons;
+       ++i) {
+    const std::wstring path = path_for_shell_name(shell[i].name);
+    if (is_pinned_shell(shell[i].name, path)) {
+      continue;
+    }
     SnapshotPreviewIcon ic;
     ic.x = shell[i].x;
     ic.y = shell[i].y;
-    card.icons.push_back(ic);
+    if (card.icons.size() < kMaxFreeThumbs && !path.empty()) {
+      ic.thumb = PathToPngDataUrl(path);
+    }
+    // Skip blank placeholders — only keep free icons we can thumb.
+    if (ic.thumb.empty()) {
+      continue;
+    }
+    card.icons.push_back(std::move(ic));
+  }
+  // Refresh meta: 「壳图标」→ only unpinned floats actually drawn.
+  {
+    std::wstring meta = std::to_wstring(static_cast<int>(card.boxes.size())) +
+                        L" 分区 / " + std::to_wstring(static_cast<int>(pins.size())) +
+                        L" 钉选";
+    if (!card.icons.empty()) {
+      meta += L" / " + std::to_wstring(static_cast<int>(card.icons.size())) +
+              L" 浮标";
+    }
+    if (!st.page_names.empty()) {
+      meta += L" · " + std::to_wstring(st.page_names.size()) + L" 页";
+    }
+    card.meta = std::move(meta);
   }
   // When pins sidecar is missing, count shell icons that sit inside each fence
   // so the thumb still shows in-fence dots (older snapshots).

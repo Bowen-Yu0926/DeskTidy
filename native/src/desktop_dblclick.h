@@ -2,9 +2,13 @@
 
 #include <Windows.h>
 
-// Low-level mouse hook: notify when the user double-clicks blank desktop
-// (Progman / DefView / SysListView32), excluding DeskTidy native overlays.
-void StartDesktopDblClickMonitor(HWND notify_hwnd, UINT notify_msg);
+// Low-level mouse hook: blank-desktop clicks (Progman / DefView / …), excluding
+// DeskTidy native overlays.
+// notify_msg      — WM_LBUTTONDBLCLK on blank desktop
+// notify_down_msg — WM_LBUTTONDOWN on blank desktop (0 = ignore); used to clear
+//                   fence icon selection like Explorer / Fences.
+void StartDesktopDblClickMonitor(HWND notify_hwnd, UINT notify_msg,
+                                 UINT notify_down_msg = 0);
 void StopDesktopDblClickMonitor();
 bool IsDesktopBlankPoint(int screen_x, int screen_y);
 

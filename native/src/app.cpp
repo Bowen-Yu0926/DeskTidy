@@ -35,6 +35,7 @@
 #include "shell_verbs.h"
 #include "desknote_launch.h"
 #include "file_assoc.h"
+#include "float_placements.h"
 #include "snapshot.h"
 #include "tool_paths.h"
 #include "tools_misc.h"
@@ -88,6 +89,7 @@ constexpr UINT kTimerPersistLayouts = 52;
 constexpr UINT kTimerReflowPublic = 53;
 constexpr UINT kMsgVaultPullDone = WM_APP + 48;
 constexpr UINT kMsgOrganizeDone = WM_APP + 49;
+constexpr UINT kMsgDesktopBlankDown = WM_APP + 50;
 constexpr DWORD kTrayOpenDebounceMs = 450;
 constexpr wchar_t kMsgClass[] = L"DeskTidyNativeMsg";
 bool g_organize_busy = false;
@@ -263,10 +265,13 @@ void HidePinHintWindow() {
 
 struct OrganizeJobResult {
   PinMap pins;
+  PinMap pins_at_start;
   int n = 0;
   int hosted = 0;
   bool quiet = false;
   bool reassign = false;
+  // Reassign replaces the whole map — abort if the user edited pins mid-job.
+  unsigned long long pins_epoch = 0;
 };
 
 namespace {
@@ -376,7 +381,7 @@ void PushOrganizePage(SettingsWindow* settings, const PinMap& pins,
   // organize_kinds (current page first), then legacy extension rules.
   const auto preview = OrganizePreviewVirtualPins(
       pins, items, rules, FenceTitlesOf(fences), "system_software",
-      "system_common", &layouts, current_page);
+      "system_docs", &layouts, current_page);
   std::vector<SettingsWindow::OrgFileRow> files;
   files.reserve(preview.size());
   for (const auto& line : preview) {
@@ -546,9 +551,10 @@ void App::WireFence(FenceWindow* fence) {
     return OnPinDropped(f, src, paths, commit);
   });
   fence->SetOnPinDragEnd([this](FenceWindow*) { HidePinDragHint(); });
-  fence->SetOnUnpin([this](FenceWindow*, const std::wstring& path) {
-    UnpinPath(path);
-  });
+  fence->SetOnUnpin(
+      [this](FenceWindow*, const std::wstring& path, POINT drop) {
+        UnpinPath(path, &drop);
+      });
   fence->SetOnPathReplaced(
       [this](const std::wstring& from, const std::wstring& to) {
         RetargetPin(from, to);
@@ -657,16 +663,31 @@ bool App::Init(HINSTANCE instance) {
   AddClipboardFormatListener(message_hwnd_);
   // P1-12: drive the floating drop hint from the OLE drag loop.
   SetPinDragMoveFn([this](POINT cursor, const PinDragHint& hint) {
-    UpdatePinDragHint(cursor, hint.over_target, hint.invalid);
+    UpdatePinDragHint(cursor, hint);
   });
 
   // P1-29/P1-30: migrate Python settings/hotkeys/prefs/first_run BEFORE loading
   // native values, otherwise the first launch loads stale defaults and the
   // migrated values are overwritten by the in-memory copies.
   MigratePythonLayoutOnce();
+  // Portable debug builds write to <exe>\data; installed builds use
+  // %LocalAppData%\DeskTidyNative. Adopt sparse leftovers (page_folders, …)
+  // before the first prefs/hotkey load so switching trees does not look like
+  // a factory reset.
+  AdoptOrphanPortableSidecarOnce();
 
   hotkeys_ = LoadHotkeys();
-  SaveHotkeys(hotkeys_);
+  // Do not SaveHotkeys on every boot — rewriting the file from in-memory
+  // defaults/fallbacks was a silent wipe vector for user chords.
+  // Retire show/hide-fences chord (feature removed; fences always visible).
+  for (auto& h : hotkeys_) {
+    if (h.id == "toggle_fences" && (h.vk != 0 || h.modifiers != 0)) {
+      h.modifiers = 0;
+      h.vk = 0;
+      SaveHotkeys(hotkeys_);
+      break;
+    }
+  }
 
   if (!settings_.Create(instance)) {
     return false;
@@ -728,7 +749,9 @@ bool App::Init(HINSTANCE instance) {
   settings_.SetOnFencePage(
       [this](int index, int page) { SetFencePageAt(index, page); });
   settings_.SetOnExtToggle([this](const std::wstring& id, bool value) {
-    if (id == L"minutes_on_bar") {
+    if (id == L"minutes_enabled" || id == L"minutes_on_bar") {
+      // One switch: enable feature ≡ show「纪要」on the page bar.
+      prefs_.minutes_enabled = value;
       prefs_.minutes_on_bar = value;
     } else if (id == L"notepad_enabled") {
       prefs_.notepad_enabled = value;
@@ -736,14 +759,38 @@ bool App::Init(HINSTANCE instance) {
     } else if (id == L"elevate_hotkey_helper") {
       prefs_.elevate_hotkey_helper = value;
       SyncHotkeyRelay();
-    } else if (id == L"record_on_bar") {
-      prefs_.record_on_bar = value;
     } else if (id == L"record_enabled") {
       prefs_.record_enabled = value;
+      // Feature off ⇒ never keep a page-bar chip (stale on_bar was the bug).
+      if (!value) {
+        prefs_.record_on_bar = false;
+      }
+    } else if (id == L"record_on_bar") {
+      prefs_.record_on_bar = value;
+      // Showing on the bar implies the feature is on.
+      if (value) {
+        prefs_.record_enabled = true;
+      }
+    } else if (id == L"calculator_enabled") {
+      prefs_.calculator_enabled = value;
+      if (!value) {
+        prefs_.calculator_on_bar = false;
+      }
     } else if (id == L"calculator_on_bar") {
       prefs_.calculator_on_bar = value;
+      if (value) {
+        prefs_.calculator_enabled = true;
+      }
+    } else if (id == L"todos_enabled") {
+      prefs_.todos_enabled = value;
+      if (!value) {
+        prefs_.todos_on_bar = false;
+      }
     } else if (id == L"todos_on_bar") {
       prefs_.todos_on_bar = value;
+      if (value) {
+        prefs_.todos_enabled = true;
+      }
     } else if (id == L"screenshot_auto_pin") {
       prefs_.screenshot_auto_pin = value;
     } else if (id == L"search_desktop") {
@@ -776,37 +823,58 @@ bool App::Init(HINSTANCE instance) {
       SyncNativeShellVerbs(prefs_.desktop_right_click_menu);
     } else if (id == L"close_to_tray") {
       prefs_.close_to_tray = value;
-    } else if (id == L"show_fences") {
-      prefs_.show_fences = value;
-      fences_hidden_ = !value;
-      if (fences_hidden_) {
-        for (auto& f : fences_) {
-          if (f) {
-            f->HideTransient();
-          }
-        }
-      } else {
-        ApplyPageVisibility();
-      }
-    } else if (id == L"double_click_hide") {
-      prefs_.double_click_hide = value;
+    } else if (id == L"show_fences" || id == L"double_click_hide") {
+      // Feature removed: fences always visible; desktop dbl-click hide gone.
+      prefs_.show_fences = true;
+      prefs_.double_click_hide = false;
+      fences_hidden_ = false;
+      ApplyPageVisibility();
     } else if (id == L"enable_public_desktop") {
       SetPublicVisible(value);
     } else if (id == L"show_page_indicator") {
       prefs_.show_page_indicator = value;
     } else if (id == L"vault_enabled") {
-      if (value) {
+      if (!value) {
+        prefs_.vault_enabled = false;
+        SyncVaultLauncher();
+      } else if (VaultHttpLoggedIn()) {
+        prefs_.vault_enabled = true;
+        SyncVaultLauncher();
+      } else {
+        // Enable requires cloud login first — keep off until login succeeds.
         if (!VaultHttpHealth()) {
           ShowToast(L"账号库服务器不可达，未启用");
           prefs_.vault_enabled = false;
           SaveAppPrefs(prefs_);
           SyncVaultLauncher();
           PushExtensionSettings();
+          SyncPageChrome();
           return;
         }
+        prefs_.vault_enabled = false;
+        SaveAppPrefs(prefs_);
+        PushExtensionSettings();
+        ShowToast(L"请先登录云端账号以启用账号管理");
+        vault_.SetOnLoginResult([this](bool ok) {
+          if (ok) {
+            prefs_.vault_enabled = true;
+            SaveAppPrefs(prefs_);
+            RestartVaultRefreshTimer();
+            SyncVaultLauncher();
+            SyncPageChrome();
+            PushExtensionSettings();
+            ShowToast(L"账号管理已启用");
+          } else {
+            prefs_.vault_enabled = false;
+            SaveAppPrefs(prefs_);
+            SyncVaultLauncher();
+            SyncPageChrome();
+            PushExtensionSettings();
+          }
+        });
+        vault_.CloudLogin();
+        return;
       }
-      prefs_.vault_enabled = value;
-      SyncVaultLauncher();
     } else {
       return;
     }
@@ -972,6 +1040,13 @@ bool App::Init(HINSTANCE instance) {
       prefs_.vault_clipboard_clear_seconds = secs;
       vault_.SetClipboardClearSeconds(prefs_.vault_clipboard_clear_seconds);
       SaveAppPrefs(prefs_);
+    } else if (id == L"page_chrome_style") {
+      const std::string style = NarrowUtf8(value);
+      prefs_.page_chrome_style =
+          (style == "tabs" || style == "tab" || style == "chips") ? "tabs"
+                                                                 : "float";
+      SaveAppPrefs(prefs_);
+      SyncPageChrome();
     } else {
       return;
     }
@@ -983,6 +1058,7 @@ bool App::Init(HINSTANCE instance) {
   vault_.Create(instance);
   // Prefetch WebView2 off the buoy-click path (cold start was hitching the UI).
   vault_.WarmWebView();
+  vault_.SetOnHide([this]() { OnVaultHidden(); });
   vault_launcher_.Create(instance);
   vault_launcher_.SetOnActivate([this]() { OpenVault(); });
   vault_launcher_.SetOnMoved([this](int x, int y) {
@@ -1004,13 +1080,31 @@ bool App::Init(HINSTANCE instance) {
   pet_.SetOnHide([this]() { SetPetVisible(false); });
   auto activate_float_tool = [this](const std::wstring& id) {
     if (id == L"record") {
+      if (!prefs_.record_enabled && !IsScreenRecording()) {
+        ShowToast(L"录屏未启用 — 请在设置 → 扩展功能中打开");
+        return;
+      }
       StartScreenRecord(settings_.Hwnd());
     } else if (id == L"minutes") {
+      if (!prefs_.minutes_enabled) {
+        ShowToast(L"会议纪要未启用 — 请在设置 → 扩展功能中打开");
+        return;
+      }
       OpenMinutes();
     } else if (id == L"calculator") {
+      if (!prefs_.calculator_enabled) {
+        ShowToast(L"计算器未启用 — 请在设置 → 扩展功能中打开");
+        return;
+      }
       OpenCalculator();
     } else if (id == L"todo") {
+      if (!prefs_.todos_enabled) {
+        ShowToast(L"桌面待办未启用 — 请在设置 → 扩展功能中打开");
+        return;
+      }
       OpenTodos();
+    } else if (id == L"vault") {
+      OpenVault();
     }
   };
   pet_.SetOnTool(activate_float_tool);
@@ -1032,22 +1126,7 @@ bool App::Init(HINSTANCE instance) {
   page_bar_.SetOnTogglePageLock([this](int page) { TogglePageLock(page); });
   page_bar_.SetOnMoveFenceToPage(
       [this](int page, int fence) { SetFencePageAt(fence, page); });
-  page_bar_.SetOnTool(
-      [this](const std::wstring& id) {
-        if (id == L"record") {
-          StartScreenRecord(settings_.Hwnd());
-        } else if (id == L"minutes") {
-          OpenMinutes();
-        } else if (id == L"calculator") {
-          OpenCalculator();
-        } else if (id == L"todo") {
-          OpenTodos();
-        } else if (id == L"vault") {
-          OpenVault();
-        } else if (id == L"note") {
-          OpenNotes();
-        }
-      });
+  page_bar_.SetOnTool(activate_float_tool);
   page_bar_.SetOnFolder(open_folder);
   page_bar_.SetOnMoved([this]() {
     prefs_.page_bar_anchor_y = page_bar_.AnchorY();
@@ -1064,10 +1143,18 @@ bool App::Init(HINSTANCE instance) {
         RetargetPin(from, to);
       });
   public_host_.SetOnRemoved([this](const std::wstring& path) {
-    UnpinPath(path);
+    EraseFloatPlacement(&float_placements_, path);
+    SaveFloatPlacements(float_placements_);
+    ClearPin(&pins_, path);
+    BumpPinsEpoch();
+    SavePins(pins_);
     RebuildPublicItems();
   });
   public_host_.SetOnRefresh([this]() { RebuildPublicItems(); });
+  public_host_.SetOnPlacementsChanged([this](const FloatPlacementMap& m) {
+    float_placements_ = m;
+    SaveFloatPlacements(float_placements_);
+  });
   search_.SetOnPathReplaced(
       [this](const std::wstring& from, const std::wstring& to) {
         RetargetPin(from, to);
@@ -1080,8 +1167,27 @@ bool App::Init(HINSTANCE instance) {
   });
 
   prefs_ = LoadAppPrefs();
+  // Former dual toggles → one: enable ≡ show「纪要」on the page bar.
+  if (prefs_.minutes_on_bar != prefs_.minutes_enabled) {
+    prefs_.minutes_on_bar = prefs_.minutes_enabled;
+  }
+  // Heal stale pairs: chip without enable (e.g. record_on_bar=true while
+  // record_enabled=false) left ghost buttons on the page bar.
+  if (!prefs_.record_enabled) {
+    prefs_.record_on_bar = false;
+  }
+  if (!prefs_.calculator_enabled) {
+    prefs_.calculator_on_bar = false;
+  }
+  if (!prefs_.todos_enabled) {
+    prefs_.todos_on_bar = false;
+  }
   prefs_.ui_theme = NormalizeUiTheme(prefs_.ui_theme);
   prefs_.session_active = true;
+  // Product: fences always on; desktop dbl-click hide removed.
+  prefs_.show_fences = true;
+  prefs_.double_click_hide = false;
+  fences_hidden_ = false;
   SaveAppPrefs(prefs_);
   todos_.ApplyUiTheme(prefs_.ui_theme);
   page_bar_.SetAnchorY(prefs_.page_bar_anchor_y);
@@ -1090,7 +1196,6 @@ bool App::Init(HINSTANCE instance) {
   display_fp_ = DisplayFingerprint();
   display_work_ = PrimaryWorkArea();
   app_dpi_ = SystemDpi();
-  fences_hidden_ = !prefs_.show_fences;
   // public_visible_ is set inside RefreshDesktopIcons (public toggle | loose).
 
   // (Migration already ran above, before LoadHotkeys/LoadAppPrefs.)
@@ -1103,20 +1208,97 @@ bool App::Init(HINSTANCE instance) {
   dock_visible_ = prefs_.dock_visible;
   pet_visible_ = state.pet_visible;
   pins_ = LoadPins();
+  float_placements_ = LoadFloatPlacements();
+  if (HealPinsFromBakOnce(&pins_) > 0) {
+    SavePins(pins_);
+  }
   // Remap pins that still point at pre-migration fence ids.
+  // 文档类文件曾被扩展名规则钉到 system_common（常用），迁回文档分区。
+  bool pins_migrated = false;
   for (auto& kv : pins_) {
     if (kv.second == "system_software") {
       kv.second = "system_software_side";
+      pins_migrated = true;
     } else if (kv.second == "system_page2") {
       kv.second = "system_docs";
+      pins_migrated = true;
+    } else if (kv.second == "system_common") {
+      // 此电脑 / 回收站等命名空间项留在常用，不迁到文档。
+      if (kv.first.find(L"::") != std::wstring::npos) {
+        continue;
+      }
+      DesktopItem probe;
+      probe.path = kv.first;
+      const size_t slash = kv.first.find_last_of(L"\\/");
+      probe.name = (slash == std::wstring::npos) ? kv.first
+                                                 : kv.first.substr(slash + 1);
+      const std::wstring ext = ExtOf(kv.first);
+      probe.is_link =
+          ext == L".lnk" || ext == L".url" ||
+          (probe.name.size() >= 4 &&
+           _wcsicmp(probe.name.c_str() + probe.name.size() - 4, L".lnk") == 0);
+      if (OrganizeKindOfItem(probe) == "file") {
+        kv.second = "system_docs";
+        pins_migrated = true;
+      }
     }
   }
+  if (pins_migrated) {
+    SavePins(pins_);
+  }
   rules_ = LoadRules();
-  SaveRules(rules_);
+  // Load only — rewriting rules.json every boot is unnecessary churn.
 
   for (const auto& layout : state.fences) {
     if (!SpawnFence(layout)) {
       return false;
+    }
+  }
+  // Reconcile pin_order with pins.json: collapse corrupt "\\\\" paths and append
+  // missing membership so manual sort / grid matches the real pin set.
+  for (auto& fence : fences_) {
+    if (!fence) {
+      continue;
+    }
+    const std::string& fid = fence->Id();
+    std::vector<std::wstring> order = fence->PinOrder();
+    for (auto& p : order) {
+      p = NormalizeStoredPath(p);
+    }
+    std::unordered_set<std::wstring> seen;
+    std::vector<std::wstring> cleaned;
+    cleaned.reserve(order.size() + 8);
+    auto norm_key = [](std::wstring s) {
+      for (auto& c : s) {
+        if (c >= L'A' && c <= L'Z') {
+          c = static_cast<wchar_t>(c - L'A' + L'a');
+        }
+      }
+      return s;
+    };
+    for (size_t i = 0; i < order.size(); ++i) {
+      const auto* pin = FindPin(pins_, order[i]);
+      if (!pin || *pin != fid) {
+        continue;
+      }
+      const std::wstring key = norm_key(order[i]);
+      if (!seen.insert(key).second) {
+        continue;
+      }
+      cleaned.push_back(order[i]);
+    }
+    for (const auto& kv : pins_) {
+      if (kv.second != fid) {
+        continue;
+      }
+      const std::wstring path = NormalizeStoredPath(kv.first);
+      if (!seen.insert(norm_key(path)).second) {
+        continue;
+      }
+      cleaned.push_back(path);
+    }
+    if (cleaned != fence->PinOrder()) {
+      fence->SetPinOrder(std::move(cleaned));
     }
   }
   PersistLayouts();
@@ -1143,6 +1325,12 @@ bool App::Init(HINSTANCE instance) {
     VaultHttpSetApiBase(prefs_.vault_api_base);
   }
   vault_.SetClipboardClearSeconds(prefs_.vault_clipboard_clear_seconds);
+  VaultHttpImportPythonSessionIfNeeded();
+  // Not logged in ⇒ treat account management as off (no chrome entry).
+  if (prefs_.vault_enabled && !VaultHttpLoggedIn()) {
+    prefs_.vault_enabled = false;
+    SaveAppPrefs(prefs_);
+  }
   RestartVaultRefreshTimer();
   vault_launcher_.SetPosition(prefs_.vault_launcher_x, prefs_.vault_launcher_y);
   SyncVaultLauncher();
@@ -1173,7 +1361,8 @@ bool App::Init(HINSTANCE instance) {
     ShowTrayBalloon(L"录屏", L"已恢复上次中断的录制，文件已保存到录屏目录。");
   }
   StartForegroundHook();
-  StartDesktopDblClickMonitor(message_hwnd_, kMsgDesktopDblClick);
+  StartDesktopDblClickMonitor(message_hwnd_, kMsgDesktopDblClick,
+                              kMsgDesktopBlankDown);
   settings_.SetOnExit([this]() { HandleSettingsClose(); });
   settings_.SetOnHideToTray([this]() {
     // P2-1: tray balloon (Shell_NotifyIcon NIF_INFO), not the custom toast.
@@ -1203,6 +1392,28 @@ bool App::Init(HINSTANCE instance) {
   PushHotkeyState();
   ScheduleDesktopBandRestore();
   MigratePythonAutostartOnce();
+  // Product default: start with Windows (Fences-class / installer task checked).
+  // One-shot so existing profiles pick up the new default without re-forcing
+  // after the user later turns it off.
+  {
+    const std::wstring marker =
+        JoinPath(NativeDataDir(), L"autostart_default_on.done");
+    if (FileMissingOrTiny(marker, 1)) {
+      if (!IsNativeAutostartEnabled()) {
+        SetNativeAutostart(true);
+      }
+      HANDLE h = CreateFileW(marker.c_str(), GENERIC_WRITE, 0, nullptr,
+                             CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+      if (h != INVALID_HANDLE_VALUE) {
+        const char ok[] = "1\n";
+        DWORD w = 0;
+        WriteFile(h, ok, 2, &w, nullptr);
+        CloseHandle(h);
+      }
+      settings_.SetToggles(dock_visible_, pet_visible_,
+                          IsNativeAutostartEnabled());
+    }
+  }
   MaybeShowFirstRun(settings_.Hwnd());
   // U6: one-time first-run organize (independent of auto_organize_on_startup).
   // Startup auto-organize also requires auto_organize_watch (P1-29 / Python
@@ -1248,8 +1459,10 @@ void App::ReregisterHotkeys() {
               FormatHotkey(k.modifiers, k.vk).c_str(), hid);
       continue;
     }
-    // Primary occupied: try fallback chords (Python HOTKEY_FALLBACKS).
+    // Primary occupied: try fallback chords at runtime only. Never rewrite
+    // hotkeys.json — persisting fallbacks was wiping user chords (e.g. F1→Ctrl+Alt+1).
     bool fell_back = false;
+    std::wstring live_chord;
     for (const auto& alt : HotkeyFallbacks(k.id)) {
       UINT m = 0, v = 0;
       if (!ParseHotkey(alt, &m, &v) || v == 0) {
@@ -1260,12 +1473,12 @@ void App::ReregisterHotkeys() {
       }
       if (RegisterHotKey(message_hwnd_, hid, m | MOD_NOREPEAT, v) ||
           RegisterHotKey(message_hwnd_, hid, m, v)) {
-        // P2-4: persist fallback so settings UI matches the live binding.
-        hotkeys_[i].modifiers = m;
-        hotkeys_[i].vk = v;
         fell_back = true;
-        LogLine(L"[hotkey] %s primary occupied -> fallback %s (saved)",
-                WidenUtf8(k.id).c_str(), alt.c_str());
+        live_chord = alt;
+        LogLine(L"[hotkey] %s primary occupied -> runtime fallback %s "
+                L"(prefs kept %s)",
+                WidenUtf8(k.id).c_str(), alt.c_str(),
+                FormatHotkey(k.modifiers, k.vk).c_str());
         break;
       }
     }
@@ -1274,9 +1487,13 @@ void App::ReregisterHotkeys() {
                           L"）");
       LogLine(L"[hotkey] register FAILED %s (%s)", WidenUtf8(k.id).c_str(),
               FormatHotkey(k.modifiers, k.vk).c_str());
+    } else if (!live_chord.empty()) {
+      conflicts.push_back(k.label + L"（偏好 " +
+                          FormatHotkey(k.modifiers, k.vk) + L" 被占用，本机暂用 " +
+                          live_chord + L"）");
     }
   }
-  SaveHotkeys(hotkeys_);
+  // Do not SaveHotkeys here — registration must not mutate user prefs.
   PushHotkeyState();
   SyncHotkeyRelay();
   if (!conflicts.empty()) {
@@ -1414,10 +1631,18 @@ void App::DispatchHotkey(const std::string& id) {
       CaptureRegionToPng(settings_.Hwnd());
     }
   } else if (id == "screen_record" || id == "record") {
+    if (!prefs_.record_enabled && !IsScreenRecording()) {
+      ShowToast(L"录屏未启用 — 请在设置 → 扩展功能中打开");
+      return;
+    }
     StartScreenRecord(settings_.Hwnd());
   } else if (id == "file_search" || id == "search") {
     OpenSearch();
   } else if (id == "calculator") {
+    if (!prefs_.calculator_enabled) {
+      ShowToast(L"计算器未启用 — 请在设置 → 扩展功能中打开");
+      return;
+    }
     OpenCalculator();
   } else if (id == "settings") {
     OpenSettings();
@@ -1426,6 +1651,10 @@ void App::DispatchHotkey(const std::string& id) {
   } else if (id == "vault") {
     OpenVault();
   } else if (id == "todos") {
+    if (!prefs_.todos_enabled) {
+      ShowToast(L"桌面待办未启用 — 请在设置 → 扩展功能中打开");
+      return;
+    }
     OpenTodos();
   } else if (id == "page1") {
     SetPage(0);
@@ -1832,18 +2061,8 @@ void App::DispatchSettingsCommand(const std::wstring& id) {
           std::wstring(L"确定删除快照「") + item.name + L"」？";
       if (MessageBoxW(owner, ask.c_str(), L"删除快照",
                       MB_YESNO | MB_ICONWARNING) == IDYES) {
-        if (DeleteFileW(item.path.c_str())) {
-          {
-            std::wstring icons = item.path;
-            const std::wstring suf = L".json";
-            if (icons.size() >= suf.size() &&
-                _wcsicmp(icons.c_str() + (icons.size() - suf.size()),
-                         suf.c_str()) == 0) {
-              icons.resize(icons.size() - suf.size());
-            }
-            icons += L".icons.json";
-            DeleteFileW(icons.c_str());
-          }
+        if (DeleteSnapshot(item.path) ||
+            GetFileAttributesW(item.path.c_str()) == INVALID_FILE_ATTRIBUTES) {
           ShowToast(L"已删除快照");
           PushExtensionSettings();
         } else {
@@ -2048,12 +2267,19 @@ void App::DispatchSettingsCommand(const std::wstring& id) {
   } else if (id == L"import_prefs") {
     ImportPrefs();
   } else if (id == L"vault_login") {
+    vault_.SetOnLoginResult([this](bool /*ok*/) {
+      SyncVaultSessionState();
+      RefreshVaultListForSettings();
+      PushExtensionSettings();
+      SyncPageChrome();
+    });
     vault_.CloudLogin();
-    SyncVaultSessionState();
-    RefreshVaultListForSettings();
-    PushExtensionSettings();
   } else if (id == L"vault_logout") {
     VaultHttpLogout();
+    prefs_.vault_enabled = false;
+    SaveAppPrefs(prefs_);
+    SyncVaultLauncher();
+    SyncPageChrome();
     ShowToast(L"已退出账号库登录");
     SyncVaultSessionState();
     RefreshVaultListForSettings();
@@ -2180,13 +2406,38 @@ void App::OpenSearch() {
   search_.Show();
 }
 void App::OpenVault() {
-  if (!prefs_.vault_enabled) {
+  if (!prefs_.vault_enabled || !VaultHttpLoggedIn()) {
     const int r = MessageBoxW(
         settings_.Hwnd(),
-        L"账号库未启用。\n\n是否现在启用并打开？\n"
-        L"（也可在设置 → 账号管理中打开开关）",
+        L"账号管理未启用或未登录。\n\n是否现在登录并启用？\n"
+        L"（也可在设置 → 账号管理中操作）",
         L"账号库", MB_YESNO | MB_ICONQUESTION);
     if (r != IDYES) {
+      return;
+    }
+    if (!VaultHttpHealth()) {
+      ShowToast(L"账号库服务器不可达");
+      return;
+    }
+    if (!VaultHttpLoggedIn()) {
+      vault_.SetOnLoginResult([this](bool ok) {
+        if (!ok) {
+          prefs_.vault_enabled = false;
+          SaveAppPrefs(prefs_);
+          SyncVaultLauncher();
+          SyncPageChrome();
+          PushExtensionSettings();
+          return;
+        }
+        prefs_.vault_enabled = true;
+        SaveAppPrefs(prefs_);
+        RestartVaultRefreshTimer();
+        SyncVaultLauncher();
+        SyncPageChrome();
+        PushExtensionSettings();
+        OpenVault();
+      });
+      vault_.CloudLogin();
       return;
     }
     prefs_.vault_enabled = true;
@@ -2194,16 +2445,46 @@ void App::OpenVault() {
     RestartVaultRefreshTimer();
     SyncVaultLauncher();
     PushExtensionSettings();
+    SyncPageChrome();
   }
-  // Doubao-style toggle: second click closes (Python _on_vault_launcher_activated).
+  // Second click on the same entry closes (common float-panel toggle).
+  // Hide() → OnVaultHidden sinks fences (do not Raise on desktop FG).
   if (vault_.Hwnd() && IsWindowVisible(vault_.Hwnd()) && !IsIconic(vault_.Hwnd())) {
     vault_.Hide();
     return;
   }
-  // Open panel only — no session import, no cloud pull on this path.
-  // (Python: 打开面板时不再强制联网; sync is the periodic vault timer.)
-  vault_.PlaceBeside(vault_launcher_.Hwnd());
+  if (message_hwnd_ && band_restore_left_ > 0) {
+    KillTimer(message_hwnd_, kTimerBandSettle);
+    band_restore_left_ = 0;
+  }
+  HWND anchor = nullptr;
+  const bool pet_hosts = pet_visible_ && pet_.ShowPageBubbles();
+  if (pet_hosts && pet_.Hwnd()) {
+    anchor = pet_.Hwnd();
+  } else if (page_bar_.Hwnd() && IsWindowVisible(page_bar_.Hwnd())) {
+    anchor = page_bar_.Hwnd();
+  }
+  vault_.PlaceBeside(anchor);
   vault_.Show();
+  vault_.PlaceBeside(anchor);
+  SeatAllFencesUnderApps();
+  if (vault_.Hwnd()) {
+    SetWindowPos(vault_.Hwnd(), HWND_TOP, 0, 0, 0, 0,
+                 SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
+  }
+}
+
+void App::OnVaultHidden() {
+  // Hide returns FG to Progman/DefView → ForegroundWinEvent schedules band
+  // restore. RaiseOverlay there seats fences above open apps — sink instead
+  // (same contract as OpenVault / settings: modal chrome must not restack).
+  if (message_hwnd_ && band_restore_left_ > 0) {
+    KillTimer(message_hwnd_, kTimerBandSettle);
+    band_restore_left_ = 0;
+  }
+  // Cover the async kMsgBandRestore posted from the FG hook after Hide.
+  suppress_band_restore_until_ = GetTickCount64() + 900;
+  SeatAllFencesUnderApps();
 }
 
 void App::TogglePeek() {
@@ -2237,22 +2518,22 @@ void App::TogglePeek() {
   }
 }
 
-void App::ToggleFencesVisible() {
-  fences_hidden_ = !fences_hidden_;
-  prefs_.show_fences = !fences_hidden_;
-  SaveAppPrefs(prefs_);
-  if (fences_hidden_) {
-    for (auto& f : fences_) {
-      if (f) {
-        f->HideTransient();
-      }
-    }
-    TrimMemory();
-  } else {
+void App::EnsureFencesVisible() {
+  prefs_.show_fences = true;
+  prefs_.double_click_hide = false;
+  const bool was_hidden = fences_hidden_;
+  fences_hidden_ = false;
+  if (was_hidden) {
+    SaveAppPrefs(prefs_);
     RefreshDesktopIcons();
     ApplyPageVisibility();
+    PushExtensionSettings();
   }
-  PushExtensionSettings();
+}
+
+void App::ToggleFencesVisible() {
+  // Kept for call sites / tray legacy ids; product no longer hides fences.
+  EnsureFencesVisible();
 }
 
 void App::SaveLayoutSnapshot() {
@@ -2323,7 +2604,9 @@ void App::HealLayoutsNow(bool toast) {
       layouts.push_back(f->CurrentLayout());
     }
   }
-  const int n = HealFenceLayouts(&layouts);
+  // Explicit repair only: proportion restore + off-screen clamp.
+  int n = RestoreSystemFenceProportions(&layouts);
+  n += HealFenceLayouts(&layouts);
   if (n <= 0) {
     if (toast) {
       ShowToast(L"布局正常，无需修复");
@@ -2337,6 +2620,8 @@ void App::HealLayoutsNow(bool toast) {
     SetWindowPos(fences_[i]->Hwnd(), nullptr, layouts[i].x, layouts[i].y,
                  layouts[i].w, layouts[i].h,
                  SWP_NOZORDER | SWP_NOACTIVATE);
+    fences_[i]->SetPageGeometry(
+        fences_[i]->Page(), FenceGeometryForPage(layouts[i], layouts[i].page));
   }
   PersistLayouts();
   if (toast) {
@@ -2413,23 +2698,57 @@ void App::OpenMinutes() {
 
 void App::RebuildPublicItems() {
   // Python public_desktop: floats = desktop items NOT pinned to any fence.
-  // (Not C:\Users\Public\Desktop — that was a semantic miss, P0-2/P0-3.)
+  // Page filter: placement.page == current_page_ (missing → claim current page).
   std::vector<DesktopItem> pub;
   const auto items = ScanDesktopItems();
   pub.reserve(items.size());
+  bool placements_dirty = false;
   for (const auto& it : items) {
     if (FindPin(pins_, it.path)) {
       continue;
     }
+    const std::wstring key = NormalizePinKey(it.path);
+    auto fit = float_placements_.find(key);
+    if (fit == float_placements_.end()) {
+      FloatPlacement fp;
+      fp.path = it.path;
+      fp.page = current_page_;
+      fp.has_pos = false;
+      float_placements_[key] = fp;
+      placements_dirty = true;
+      pub.push_back(it);
+      continue;
+    }
+    if (fit->second.page != current_page_) {
+      continue;
+    }
     pub.push_back(it);
   }
+  if (placements_dirty) {
+    SaveFloatPlacements(float_placements_);
+  }
+  // Prefer saved positions (top-left first) then name for unplaced items.
   std::sort(pub.begin(), pub.end(),
-            [](const DesktopItem& a, const DesktopItem& b) {
+            [this](const DesktopItem& a, const DesktopItem& b) {
+              const auto ia = float_placements_.find(NormalizePinKey(a.path));
+              const auto ib = float_placements_.find(NormalizePinKey(b.path));
+              const bool ha =
+                  ia != float_placements_.end() && ia->second.has_pos;
+              const bool hb =
+                  ib != float_placements_.end() && ib->second.has_pos;
+              if (ha != hb) {
+                return ha && !hb;
+              }
+              if (ha && hb) {
+                if (ia->second.ry != ib->second.ry) {
+                  return ia->second.ry < ib->second.ry;
+                }
+                if (ia->second.rx != ib->second.rx) {
+                  return ia->second.rx < ib->second.rx;
+                }
+              }
               return _wcsicmp(a.name.c_str(), b.name.c_str()) < 0;
             });
-  // Skip slots under current-page fence frames (Python _slot_blocked).
-  // Prefer live HWND rects; fall back to stored page geometry when hidden/
-  // not yet shown — unpin must still avoid the fence footprint.
   std::vector<RECT> blocked;
   blocked.reserve(fences_.size());
   constexpr int kFencePad = 12;
@@ -2458,12 +2777,11 @@ void App::RebuildPublicItems() {
       blocked.push_back(r);
     }
   }
+  public_host_.SetCurrentPage(current_page_);
+  public_host_.SetPlacements(float_placements_);
   public_host_.SetBlockedRects(std::move(blocked));
   const bool no_floats = pub.empty();
   public_host_.SetItems(std::move(pub));
-  // An empty float host used to stay on screen as a bare header plate; it
-  // looked like a stray grey strip over the wallpaper and swallowed clicks
-  // (wallpaper icons under it were unselectable). Hide it with no floats.
   if (no_floats) {
     public_host_.Hide();
   } else if (public_visible_) {
@@ -2513,12 +2831,18 @@ void App::RestartVaultRefreshTimer() {
 
 void App::PushExtensionSettings() {
   SettingsWindow::ExtState ext;
-  ext.minutes_on_bar = prefs_.minutes_on_bar;
+  // Keep the pair aligned — settings UI exposes a single「启用会议纪要」toggle.
+  ext.minutes_enabled = prefs_.minutes_enabled;
+  ext.minutes_on_bar = prefs_.minutes_enabled;
   ext.notepad_enabled = prefs_.notepad_enabled;
   ext.elevate_hotkey_helper = prefs_.elevate_hotkey_helper;
-  ext.record_on_bar = prefs_.record_on_bar;
-  ext.calculator_on_bar = prefs_.calculator_on_bar;
-  ext.todos_on_bar = prefs_.todos_on_bar;
+  ext.record_enabled = prefs_.record_enabled;
+  ext.record_on_bar = prefs_.record_enabled && prefs_.record_on_bar;
+  ext.calculator_enabled = prefs_.calculator_enabled;
+  ext.calculator_on_bar =
+      prefs_.calculator_enabled && prefs_.calculator_on_bar;
+  ext.todos_enabled = prefs_.todos_enabled;
+  ext.todos_on_bar = prefs_.todos_enabled && prefs_.todos_on_bar;
   ext.screenshot_auto_pin = prefs_.screenshot_auto_pin;
   ext.screenshot_max_pins = prefs_.screenshot_max_pins;
   ext.record_quality = prefs_.record_quality;
@@ -2527,7 +2851,6 @@ void App::PushExtensionSettings() {
   ext.wallpaper_folder = WallpaperLibraryFolder();
   ext.record_dir = prefs_.record_output_dir;
   ext.record_mic = prefs_.record_mic;
-  ext.record_enabled = prefs_.record_enabled;
   // Always show install-dir defaults in placeholders (not a corrupt override).
   ext.minutes_folder_default = JoinPath(ExeDir(), L"纪要");
   ext.notepad_folder_default = JoinPath(ExeDir(), L"笔记");
@@ -2568,6 +2891,7 @@ void App::PushExtensionSettings() {
   ext.double_click_hide = prefs_.double_click_hide;
   ext.enable_public_desktop = prefs_.enable_public_desktop;
   ext.show_page_indicator = prefs_.show_page_indicator;
+  ext.page_chrome_style = prefs_.page_chrome_style == "tabs" ? "tabs" : "float";
   ext.vault_enabled = prefs_.vault_enabled;
   ext.vault_api_base = prefs_.vault_api_base.empty() ? VaultHttpGetApiBase()
                                                      : prefs_.vault_api_base;
@@ -2650,6 +2974,9 @@ void App::PushExtensionSettings() {
     card.name = data.name;
     card.meta = data.meta;
     card.focus_page = data.focus_page;
+    card.work_w = data.work_w;
+    card.work_h = data.work_h;
+    card.page_names = data.page_names;
     card.preview.reserve(data.boxes.size());
     for (const auto& b : data.boxes) {
       SettingsWindow::ExtState::SnapPreviewBox box;
@@ -2662,6 +2989,7 @@ void App::PushExtensionSettings() {
       box.style_id = b.style_id;
       box.collapsed = b.collapsed;
       box.icon_count = b.icon_count;
+      box.pin_thumbs = b.pin_thumbs;
       card.preview.push_back(std::move(box));
     }
     card.icons.reserve(data.icons.size());
@@ -2669,7 +2997,8 @@ void App::PushExtensionSettings() {
       SettingsWindow::ExtState::SnapPreviewIcon out;
       out.x = ic.x;
       out.y = ic.y;
-      card.icons.push_back(out);
+      out.thumb = ic.thumb;
+      card.icons.push_back(std::move(out));
     }
     ext.snapshots.push_back(std::move(card));
   }
@@ -2685,18 +3014,8 @@ void App::PushExtensionSettings() {
 }
 
 void App::SyncVaultLauncher() {
-  // When the right-edge page bar is hosting the 账号 peek, hide the free-floating
-  // circular buoy so it no longer sits off-axis from the peek column.
-  const bool pet_hosts = pet_visible_ && pet_.ShowPageBubbles();
-  const bool edge_bar =
-      prefs_.show_page_indicator && !pet_hosts && page_bar_.Hwnd() &&
-      IsWindowVisible(page_bar_.Hwnd());
-  if (prefs_.vault_enabled && !edge_bar) {
-    vault_launcher_.SetPosition(prefs_.vault_launcher_x, prefs_.vault_launcher_y);
-    vault_launcher_.SetVisible(true);
-  } else {
-    vault_launcher_.SetVisible(false);
-  }
+  // Account entry lives on page chrome / pet — no standalone desktop buoy.
+  vault_launcher_.SetVisible(false);
 }
 
 void App::RefreshVaultListForSettings() {
@@ -2839,14 +3158,15 @@ void App::OpenSettings() {
 }
 
 void App::OnDesktopBlankDoubleClick() {
-  if (!prefs_.double_click_hide) {
-    return;
-  }
-  // Python: icons visible → organized; icons hidden → stock.
-  if (icons_visible_intent_) {
-    ShowOrganizedDesktopView();
-  } else {
-    ShowStockDesktopView();
+  // Double-click hide/show desktop icons removed — keep organized chrome.
+}
+
+void App::OnDesktopBlankLeftDown() {
+  // Same as Explorer / Fences: click outside a fence drops icon selection.
+  for (auto& fence : fences_) {
+    if (fence) {
+      fence->ClearSelection();
+    }
   }
 }
 
@@ -2883,19 +3203,13 @@ void App::ShowOrganizedDesktopView() {
 }
 
 void App::ApplyLoadedGeneralPrefs() {
-  fences_hidden_ = !prefs_.show_fences;
+  prefs_.show_fences = true;
+  prefs_.double_click_hide = false;
+  fences_hidden_ = false;
   SyncNativeShellVerbs(prefs_.desktop_right_click_menu);
   // Public/loose visibility is derived in RefreshDesktopIcons (pin-only + floats).
   RefreshDesktopIcons();
-  if (fences_hidden_) {
-    for (auto& f : fences_) {
-      if (f) {
-        f->HideTransient();
-      }
-    }
-  } else {
-    ApplyPageVisibility();
-  }
+  ApplyPageVisibility();
   vault_.SetClipboardClearSeconds(prefs_.vault_clipboard_clear_seconds);
   if (!prefs_.vault_api_base.empty()) {
     VaultHttpSetApiBase(prefs_.vault_api_base);
@@ -3000,21 +3314,21 @@ void App::HandleSettingsClose() {
 }
 
 void App::SeatAllFencesUnderApps() {
-  // HWND_BOTTOM alone buries layered fences under SHELLDLL_DefView / ListView,
-  // so Explorer desktop icons paint on top of pins (ghosted labels). Seat under
-  // APPWINDOWs but keep overlays DefView-adjacent — same as fence Show().
+  // Market/Python `_keep_overlays_under_apps`: HWND_BOTTOM sink under APPWINDOWs.
+  // Do NOT RaiseOverlay here — Raise after Place was lifting Progman-owned
+  // fences over WeChat/VS Code when opening settings / 账号浮窗.
   //
-  // Critical: AttachOverlay/RaiseOverlay call ShowWindow when the HWND is
-  // hidden. Only seat chrome that should be visible — otherwise opening
-  // Settings (or band-settle while Settings is open) resurrects a pet/dock
-  // the user just turned off.
+  // Critical: AttachOverlay may ShowWindow when hidden. Only seat chrome that
+  // should be visible — otherwise opening Settings resurrects a pet/dock the
+  // user just turned off.
   auto seat = [](HWND hwnd) {
     if (!hwnd || !IsWindow(hwnd)) {
       return;
     }
-    AttachOverlayToDesktop(hwnd, true);
+    if (!IsAttachedToDesktop(hwnd)) {
+      AttachOverlayToDesktop(hwnd, true);
+    }
     PlaceOverlayInDesktopBand(hwnd, true);
-    RaiseOverlayInDesktopBand(hwnd);
   };
   for (auto& fence : fences_) {
     if (!fence || !fence->Hwnd()) {
@@ -3026,7 +3340,6 @@ void App::SeatAllFencesUnderApps() {
       continue;
     }
     seat(fence->Hwnd());
-    fence->RefreshLayer();
   }
   if (dock_visible_ && dock_.Hwnd()) {
     seat(dock_.Hwnd());
@@ -3038,12 +3351,18 @@ void App::SeatAllFencesUnderApps() {
   if (!pet_hosts && prefs_.show_page_indicator && page_bar_.Hwnd()) {
     seat(page_bar_.Hwnd());
   }
-  // Organized mode: keep Explorer icons off so they cannot bleed through.
-  SetDesktopIconsVisible(false);
-  icons_visible_intent_ = false;
+  // Honor the user's show/hide-icons intent (Ctrl+Shift+H). Do not force
+  // Explorer icons off on every seat — that undid the hotkey (Fences: seat
+  // restacks chrome; it does not thrash the user's icon visibility).
+  SetDesktopIconsVisible(icons_visible_intent_);
   // Do not sink notes into the desktop band — it is a normal app window.
   if (settings_.Hwnd() && settings_.IsOpen()) {
     SetWindowPos(settings_.Hwnd(), HWND_TOP, 0, 0, 0, 0,
+                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+  }
+  // Keep 账号浮窗 above the sunk desktop band while it is open.
+  if (vault_.Hwnd() && IsWindowVisible(vault_.Hwnd()) && !IsIconic(vault_.Hwnd())) {
+    SetWindowPos(vault_.Hwnd(), HWND_TOP, 0, 0, 0, 0,
                  SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
   }
 }
@@ -3055,11 +3374,22 @@ void App::PersistLayouts() {
   state.page_locked = page_locked_;
   state.dock_visible = dock_visible_;
   state.pet_visible = pet_visible_;
+  state.last_display_fingerprint = display_fp_;
   state.fences.reserve(fences_.size());
   for (const auto& fence : fences_) {
-    if (fence) {
-      state.fences.push_back(fence->CurrentLayout());
+    if (!fence) {
+      continue;
     }
+    FenceLayout fl = fence->CurrentLayout();
+    // Keep G3 page overrides aligned with the live HWND so reboot cannot
+    // resurrect a stale page_geometries row after fences[] was updated.
+    if (fl.page_geometries.count(current_page_)) {
+      SyncPageGeometryFromTopLevel(&fl, current_page_);
+    }
+    if (fl.page_geometries.count(fl.page)) {
+      SyncPageGeometryFromTopLevel(&fl, fl.page);
+    }
+    state.fences.push_back(std::move(fl));
   }
   SaveAppState(state);
 }
@@ -3225,15 +3555,21 @@ void App::ApplyChromeTheme() {
 
 void App::SyncPageChrome() {
   NormalizePageNames(&page_names_);
-  // Python float_bar_tool_flags; vault peek lives on the edge page bar.
-  const bool tool_record = prefs_.record_on_bar;
-  const bool tool_minutes = prefs_.minutes_on_bar;
-  const bool tool_calculator = prefs_.calculator_on_bar;
-  const bool tool_todo = prefs_.todos_on_bar;
-  const bool tool_vault = prefs_.vault_enabled;
-  pet_.SetToolFlags(tool_record, tool_minutes, tool_calculator, tool_todo);
+  // Account chip follows the active chrome host (float / tabs / pet).
+  // Enabled ⇒ logged-in (toggle forces login; logout clears enabled).
+  const bool tool_record = prefs_.record_enabled && prefs_.record_on_bar;
+  const bool tool_minutes = prefs_.minutes_enabled;
+  const bool tool_calculator =
+      prefs_.calculator_enabled && prefs_.calculator_on_bar;
+  const bool tool_todo = prefs_.todos_enabled && prefs_.todos_on_bar;
+  const bool tool_vault = prefs_.vault_enabled && VaultHttpLoggedIn();
+  pet_.SetToolFlags(tool_record, tool_minutes, tool_calculator, tool_todo,
+                    tool_vault);
   page_bar_.SetToolFlags(tool_record, tool_minutes, tool_calculator, tool_todo,
                          tool_vault);
+  page_bar_.SetChromeStyle(prefs_.page_chrome_style == "tabs"
+                               ? PageBar::ChromeStyle::Tabs
+                               : PageBar::ChromeStyle::Float);
 
   std::vector<PageBar::FolderChip> folders;
   std::vector<PetWindow::FolderChip> pet_folders;
@@ -3627,19 +3963,11 @@ void App::ApplyTrayThemeIcon() {
 void App::TrimMemory() {
   LogLine(L"[mem] trim fences_hidden=%d settings_open=%d",
           fences_hidden_ ? 1 : 0, settings_.IsOpen() ? 1 : 0);
+  // Market/Python memory trim: keep parked-page icon caches warm (page switch
+  // must not flash empty fences). Only drop HICONs when fences are hidden.
   if (fences_hidden_) {
     for (auto& f : fences_) {
       if (f) {
-        f->ClearIcons();
-      }
-    }
-  } else {
-    // P2-1: non-current pages are invisible — lazily release their icon caches
-    // (rebuilt on page switch). The current page keeps its shell HICONs; the
-    // C++ path loads shell icons on demand (no persistent zoomed-pixmap cache),
-    // so this page-scoped release is the effective "display cache halving".
-    for (auto& f : fences_) {
-      if (f && f->Page() != current_page_) {
         f->ClearIcons();
       }
     }
@@ -3726,9 +4054,13 @@ void App::HandleIncomingPaths(FenceWindow* fence,
   if (portal.empty()) {
     // Plain fence: pin, never move the file (matches Python).
     for (const auto& p : paths) {
+      SuppressOrganizePath(p);
       SetPin(&pins_, p, fence->Id());
+      EraseFloatPlacement(&float_placements_, p);
     }
+    BumpPinsEpoch();
     SavePins(pins_);
+    SaveFloatPlacements(float_placements_);
     RefreshDesktopIcons();
     return;
   }
@@ -3774,13 +4106,22 @@ void App::HandleIncomingPaths(FenceWindow* fence,
   MessageBoxW(settings_.Hwnd(), msg.c_str(), L"导入失败", MB_OK | MB_ICONWARNING);
 }
 
-void App::UnpinPath(const std::wstring& path) {
-  SuppressOrganizePath(path);
+void App::UnpinPath(const std::wstring& path, const POINT* drop) {
+  // Keep the float out of auto-organize for a long window — 12s was too short
+  // and watch ticks re-pinned icons the user just dragged back to the desktop.
+  SuppressOrganizePath(path, 24.0 * 3600.0);
   ClearPin(&pins_, path);
+  BumpPinsEpoch();
   SavePins(pins_);
+  POINT pt{};
+  if (drop) {
+    pt = *drop;
+  } else {
+    GetCursorPos(&pt);
+  }
+  UpsertFloatPlacement(&float_placements_, path, current_page_, pt);
+  SaveFloatPlacements(float_placements_);
   RefreshDesktopIcons();
-  // RefreshDesktopIcons rebuilds floats with fence-avoid slots; ensure the
-  // public host is raised after fence SetItems so z-order is settled.
   if (public_visible_ && public_host_.Hwnd()) {
     public_host_.AttachToDesktopLayer();
   }
@@ -3793,6 +4134,9 @@ void App::RetargetPin(const std::wstring& from, const std::wstring& to) {
   if (!fence_id.empty()) {
     SetPin(&pins_, to, fence_id);
   }
+  RetargetFloatPlacement(&float_placements_, from, to);
+  SaveFloatPlacements(float_placements_);
+  BumpPinsEpoch();
   SavePins(pins_);
   RefreshDesktopIcons();
 }
@@ -3850,6 +4194,7 @@ bool App::TransferPins(const std::wstring& src, const std::wstring& dst,
   src_fence->RemovePinOrder(move_list);
   dst_fence->InsertPinOrder(move_list, -1);
 
+  BumpPinsEpoch();
   SavePins(pins_);
   PersistLayouts();
   RefreshDesktopIcons();
@@ -3899,14 +4244,17 @@ DWORD App::OnPinDropped(FenceWindow* fence, const std::wstring& src_fence_id,
   return DROPEFFECT_MOVE;
 }
 
-void App::UpdatePinDragHint(POINT cursor, bool over_target, bool invalid) {
+void App::UpdatePinDragHint(POINT cursor, const PinDragHint& hint) {
   std::wstring text;
-  if (invalid) {
+  if (hint.invalid) {
     text = L"无法放置";
-  } else if (over_target) {
+  } else if (hint.over_target) {
     text = L"松开移到目标分区";
-  } else {
+  } else if (hint.over_desktop) {
     text = L"松开移回桌面";
+  } else {
+    // WeChat / Explorer copy / other app — Fences keeps the pin.
+    text = L"松开分享（保留在分区）";
   }
   ShowPinHintWindow(instance_, text, cursor);
 }
@@ -3936,29 +4284,34 @@ void App::MoveDesktopItemsToFence(const std::vector<std::wstring>& paths,
       continue;
     }
     SetPin(&pins_, p, fence_id);
+    EraseFloatPlacement(&float_placements_, p);
     changed = true;
   }
   if (changed) {
+    BumpPinsEpoch();
     SavePins(pins_);
+    SaveFloatPlacements(float_placements_);
     RefreshDesktopIcons();
   }
 }
 
 void App::MoveDesktopItemsToPage(const std::vector<std::wstring>& paths,
                                  int page_index) {
-  // The C++ desktop is shared across fence pages (no per-page float host yet),
-  // so "move to page" unpins the items — they fall back to the real desktop.
-  (void)page_index;
-  bool changed = false;
+  // Fences-class: unpin and attach the float to the target page.
+  bool pins_changed = false;
   for (const auto& p : paths) {
     if (FindPin(pins_, p)) {
       ClearPin(&pins_, p);
-      changed = true;
+      pins_changed = true;
     }
+    SuppressOrganizePath(p, 24.0 * 3600.0);
+    SetFloatPage(&float_placements_, p, page_index);
   }
-  if (changed) {
+  if (pins_changed) {
+    BumpPinsEpoch();
     SavePins(pins_);
   }
+  SaveFloatPlacements(float_placements_);
   RefreshDesktopIcons();
 }
 
@@ -4028,6 +4381,7 @@ void App::PruneStickyMissingPins() {
     ++dropped;
   }
   if (dropped > 0) {
+    BumpPinsEpoch();
     SavePins(pins_);
     RefreshDesktopIcons();
     LogLine(L"[pin] sticky prune dropped=%d", dropped);
@@ -4129,9 +4483,9 @@ void App::RefreshDesktopIcons() {
     }
   }
   RebuildDockItems();
-  // Loose floats when Explorer icons are hidden; shared public when toggled.
-  const bool want_floats =
-      prefs_.enable_public_desktop || !icons_visible_intent_;
+  // One icon truth: floats only when Explorer icons are hidden (Fences).
+  // enable_public_desktop remains in prefs but no longer stacks a second set.
+  const bool want_floats = !icons_visible_intent_;
   public_visible_ = want_floats;
   if (want_floats) {
     RebuildPublicItems();
@@ -4196,7 +4550,7 @@ void App::RebuildDockItems() {
       }
       const std::string target =
           ResolveFenceId(it.path, it.is_link, pins_, rules_, "system_software",
-                         "system_common");
+                         "system_docs");
       if (target != "system_software" && target != "system_software_side") {
         continue;
       }
@@ -4270,6 +4624,7 @@ void App::SetPage(int page) {
   // Market: one DeferWindowPos for leavers+arrivers (Python OverlayWindowBatch).
   // Paint arrivals while still hidden, then SHOW with content ready.
   OverlayWindowBatch batch;
+  std::vector<HWND> raise_after;
   for (auto& fence : fences_) {
     if (!fence || !fence->Hwnd()) {
       continue;
@@ -4289,6 +4644,10 @@ void App::SetPage(int page) {
         // Soft-park restore: paint off-map, then batch SWP_SHOWWINDOW.
         fence->RefreshLayer();
         batch.Show(hwnd);
+        // Batch Show keeps SWP_NOZORDER — parked fences stay under DefView /
+        // wallpaper unless raised (looks like a blank page: window "visible"
+        // but not on the desktop band). Match FenceWindow::Show seating.
+        raise_after.push_back(hwnd);
       }
       // Already mapped (multi-page): geometry-only; skip RefreshLayer flash.
     } else if (mapped) {
@@ -4297,6 +4656,9 @@ void App::SetPage(int page) {
     }
   }
   batch.Commit();
+  for (HWND hwnd : raise_after) {
+    RaiseOverlayInDesktopBand(hwnd);
+  }
 
   // Chrome: paint/selection only — never restack on page click.
   if (pet_visible_) {
@@ -4318,6 +4680,11 @@ void App::ScheduleDesktopBandRestore() {
     return;
   }
   if (!DesktopChromeMayRestack()) {
+    return;
+  }
+  // After 账号浮窗 close, ignore desktop-FG restore briefly (avoids Raise).
+  if (suppress_band_restore_until_ != 0 &&
+      GetTickCount64() < suppress_band_restore_until_) {
     return;
   }
   // Coalesce like Python: bump settle budget; first tick after WorkerW settles.
@@ -4384,6 +4751,42 @@ bool App::DesktopChromeMayRestack() const {
   return true;
 }
 
+bool App::DesktopChromeHealthy() const {
+  // Peek / user-hide: "healthy" means leave alone (do not resurrect here).
+  if (peek_active_ || fences_hidden_) {
+    return true;
+  }
+  auto mapped_attached = [](HWND hwnd) -> bool {
+    return hwnd && IsWindow(hwnd) && IsWindowVisible(hwnd) && !IsIconic(hwnd) &&
+           IsAttachedToDesktop(hwnd);
+  };
+  for (const auto& fence : fences_) {
+    if (!fence || !fence->Hwnd() || !fence->VisibleOnPage(current_page_)) {
+      continue;
+    }
+    if (!mapped_attached(fence->Hwnd())) {
+      return false;
+    }
+  }
+  if (dock_visible_ && dock_.Hwnd() && !mapped_attached(dock_.Hwnd())) {
+    return false;
+  }
+  if (pet_visible_ && pet_.Hwnd() && !mapped_attached(pet_.Hwnd())) {
+    return false;
+  }
+  if (!pet_visible_ && page_bar_.Hwnd() &&
+      !mapped_attached(page_bar_.Hwnd())) {
+    return false;
+  }
+  if (public_visible_ && public_host_.Hwnd() && public_host_.HasItems() &&
+      !mapped_attached(public_host_.Hwnd())) {
+    return false;
+  }
+  // Intentionally ignore vault_launcher_: buoy Show/Place must not mark the
+  // whole desktop chrome "unhealthy" and trigger a fence Raise over apps.
+  return true;
+}
+
 void App::RestoreDesktopChrome() {
   // While settings/vault/todos is open, do NOT re-seat fences.
   if (!DesktopChromeMayRestack()) {
@@ -4394,15 +4797,25 @@ void App::RestoreDesktopChrome() {
     return;
   }
 
+  // Market/Python keepalive raise_band=False: already seated → no Invalidate /
+  // Show / Raise (system-dialog dismiss used to schedule 12 settle ticks and
+  // flash the desktop on every no-op pass).
+  if (DesktopChromeHealthy()) {
+    return;
+  }
+
   InvalidateDefViewCache();
   ApplyPageVisibility();
-  // Python keepalive raise_band=False: already seated + visible → no-op.
+  // Raise only when recovering iconic/unmapped (Win+D). Attached+visible must
+  // stay put — HWND_TOP raise after 账号 buoy / DefView FG climbs over apps.
   auto reattach = [](HWND hwnd) {
     if (!hwnd || !IsWindow(hwnd)) {
       return;
     }
     if (!IsAttachedToDesktop(hwnd)) {
-      ForceAttachOverlayToDesktop(hwnd, true);
+      if (!AttachOverlayToDesktop(hwnd, true)) {
+        ForceAttachOverlayToDesktop(hwnd, true);
+      }
       RaiseOverlayInDesktopBand(hwnd);
       return;
     }
@@ -4410,7 +4823,7 @@ void App::RestoreDesktopChrome() {
       ShowWindow(hwnd, IsIconic(hwnd) ? SW_RESTORE : SW_SHOWNOACTIVATE);
       RaiseOverlayInDesktopBand(hwnd);
     }
-    // Healthy attached+visible: do not Raise (Z-thrash / flash).
+    // Attached + mapped: no-op (Python raise_band=False keepalive).
   };
   for (auto& fence : fences_) {
     if (!fence || !fence->Hwnd() || fence->Page() != current_page_) {
@@ -4437,9 +4850,6 @@ void App::RestoreDesktopChrome() {
   if (public_visible_ && public_host_.Hwnd()) {
     reattach(public_host_.Hwnd());
   }
-  if (prefs_.vault_enabled && vault_launcher_.Hwnd()) {
-    reattach(vault_launcher_.Hwnd());
-  }
 }
 
 void App::OrganizeVirtual(bool quiet, bool reassign) {
@@ -4461,9 +4871,11 @@ void App::OrganizeVirtual(bool quiet, bool reassign) {
   const int hosted = EnsureHostedSystemNamespaceIcons(&pins_);
   auto* job = new OrganizeJobResult{};
   job->pins = pins_;
+  job->pins_at_start = pins_;
   job->hosted = hosted;
   job->quiet = quiet;
   job->reassign = reassign;
+  job->pins_epoch = pins_epoch_;
   const RuleMap rules = rules_;
   std::vector<FenceLayout> layouts;
   layouts.reserve(fences_.size());
@@ -4479,7 +4891,7 @@ void App::OrganizeVirtual(bool quiet, bool reassign) {
                          reassign]() {
     const auto items = ScanDesktopItems();
     job->n = OrganizeApplyDefaultPins(&job->pins, items, rules,
-                                      "system_software", "system_common",
+                                      "system_software", "system_docs",
                                       &layouts, current_page, reassign) +
              job->hosted;
     if (!PostMessageW(msg_hwnd, kMsgOrganizeDone, 0,
@@ -4511,28 +4923,55 @@ void App::OnOrganizeDone(OrganizeJobResult* job) {
   if (!job) {
     return;
   }
-  pins_ = std::move(job->pins);
-  const int n = job->n;
   const bool quiet = job->quiet;
   const bool reassign = job->reassign;
+  int applied = 0;
+  if (reassign) {
+    // Full remap: only apply if pins_ was not edited while the worker ran.
+    if (job->pins_epoch != pins_epoch_) {
+      LogLine(L"[organize] reassign aborted (pins edited mid-job)");
+      delete job;
+      RefreshDesktopIcons();
+      ShowToast(L"整理期间钉选有变动，请重试");
+      return;
+    }
+    applied = job->n;
+    pins_ = std::move(job->pins);
+  } else {
+    // Virtual organize only pins leftovers (Fences-class). Merge deltas onto
+    // the live map — never replace pins_ wholesale (that stomped manual drops).
+    for (const auto& kv : job->pins) {
+      const auto it = job->pins_at_start.find(kv.first);
+      if (it != job->pins_at_start.end() && it->second == kv.second) {
+        continue;  // unchanged from job start
+      }
+      if (FindPin(pins_, kv.first)) {
+        continue;  // already pinned live (manual drop / other)
+      }
+      SetPin(&pins_, kv.first, kv.second);
+      ++applied;
+    }
+  }
   delete job;
-  LogLine(L"[organize] virtual quiet=%d reassign=%d pins_added=%d",
-          quiet ? 1 : 0, reassign ? 1 : 0, n);
-  SavePins(pins_);
+  LogLine(L"[organize] virtual quiet=%d reassign=%d pins_applied=%d",
+          quiet ? 1 : 0, reassign ? 1 : 0, applied);
+  if (applied > 0 || reassign) {
+    SavePins(pins_);
+  }
   EnsureOrganizeFencesForEmptyPages();
   RefreshDesktopIcons();
   PushOrganizePage(&settings_, pins_, rules_, fences_, current_page_);
   if (quiet) {
-    if (n > 0) {
-      ShowToast(L"已自动钉选 " + std::to_wstring(n) + L" 项");
+    if (applied > 0) {
+      ShowToast(L"已自动钉选 " + std::to_wstring(applied) + L" 项");
     }
     return;
   }
   wchar_t buf[160];
   if (reassign) {
-    swprintf_s(buf, L"重新整理完成：%d 项按规则换了分区。", n);
+    swprintf_s(buf, L"重新整理完成：%d 项按规则换了分区。", applied);
   } else {
-    swprintf_s(buf, L"虚拟整理完成：写入 %d 条钉选。", n);
+    swprintf_s(buf, L"虚拟整理完成：写入 %d 条钉选。", applied);
   }
   MessageBoxW(settings_.Hwnd() ? settings_.Hwnd() : message_hwnd_, buf,
               L"DeskTidy Native", MB_OK | MB_ICONINFORMATION);
@@ -4629,6 +5068,93 @@ void App::AddFenceAtRect(const RECT& screen) {
       prefs_.theme_id.empty() ? "charcoal" : prefs_.theme_id;
   if (!SpawnFence(layout)) {
     return;
+  }
+  // Fences: icons whose centers fall in the drawn rect join the new fence.
+  auto point_in = [&](POINT pt) {
+    return pt.x >= screen.left && pt.x < screen.right && pt.y >= screen.top &&
+           pt.y < screen.bottom;
+  };
+  auto rect_hits = [&](const RECT& r) {
+    const POINT c{(r.left + r.right) / 2, (r.top + r.bottom) / 2};
+    return point_in(c);
+  };
+  std::unordered_set<std::wstring> scooped;
+  auto try_add = [&](const std::wstring& path) {
+    if (path.empty() || FindPin(pins_, path)) {
+      return;
+    }
+    const std::wstring key = NormalizePinKey(path);
+    if (!scooped.insert(key).second) {
+      return;
+    }
+    SetPin(&pins_, path, layout.id);
+    EraseFloatPlacement(&float_placements_, path);
+  };
+  for (const auto& kv : float_placements_) {
+    if (!kv.second.has_pos || kv.second.page != current_page_) {
+      continue;
+    }
+    if (point_in(FloatScreenPoint(kv.second))) {
+      try_add(kv.second.path);
+    }
+  }
+  for (const auto& pr : public_host_.SlotScreenRects()) {
+    if (rect_hits(pr.second)) {
+      try_add(pr.first);
+    }
+  }
+  // When Explorer icons are visible, scoop by DefView positions (name match).
+  if (icons_visible_intent_) {
+    const auto icons = CaptureShellIconPositions();
+    HWND lv = nullptr;
+    const DefViewHost host = FindDefViewHost();
+    if (host.defview) {
+      lv = FindWindowExW(host.defview, nullptr, L"SysListView32", nullptr);
+    }
+    std::unordered_map<std::wstring, std::wstring> by_name;
+    for (const auto& it : ScanDesktopItems()) {
+      if (FindPin(pins_, it.path)) {
+        continue;
+      }
+      by_name[it.name] = it.path;
+    }
+    for (const auto& icon : icons) {
+      POINT pt{icon.x, icon.y};
+      if (lv) {
+        ClientToScreen(lv, &pt);
+      }
+      pt.x += 24;
+      pt.y += 24;
+      if (!point_in(pt)) {
+        continue;
+      }
+      auto it = by_name.find(icon.name);
+      if (it != by_name.end()) {
+        try_add(it->second);
+      }
+    }
+  }
+  if (!scooped.empty()) {
+    BumpPinsEpoch();
+    SavePins(pins_);
+    SaveFloatPlacements(float_placements_);
+    // Keep pin_order of the new fence in scoop encounter order.
+    if (!fences_.empty() && fences_.back() &&
+        fences_.back()->Id() == layout.id) {
+      std::vector<std::wstring> order;
+      order.reserve(scooped.size());
+      for (const auto& key : scooped) {
+        // scooped holds normalized keys; recover display path from pins scan.
+        for (const auto& it : ScanDesktopItems()) {
+          if (NormalizePinKey(it.path) == key) {
+            order.push_back(it.path);
+            break;
+          }
+        }
+      }
+      fences_.back()->InsertPinOrder(order, -1);
+    }
+    RefreshDesktopIcons();
   }
   SeatAllFencesUnderApps();
   PersistLayouts();
@@ -4765,6 +5291,9 @@ LRESULT CALLBACK App::TrayWndProc(HWND hwnd, UINT msg, WPARAM wparam,
     case kMsgDesktopDblClick:
       self->OnDesktopBlankDoubleClick();
       return 0;
+    case kMsgDesktopBlankDown:
+      self->OnDesktopBlankLeftDown();
+      return 0;
     case WM_CLIPBOARDUPDATE:
       // Refresh cut-ghost opacity when CF_HDROP / Preferred DropEffect changes
       // (DeskTidy Ctrl+X or Explorer cut).
@@ -4788,7 +5317,10 @@ LRESULT CALLBACK App::TrayWndProc(HWND hwnd, UINT msg, WPARAM wparam,
           return 0;
         }
         self->RestoreDesktopChrome();
-        if (--self->band_restore_left_ <= 0) {
+        // Stop once chrome is seated — do not burn the remaining settle budget
+        // (that was flashing after MessageBox / system dialog dismiss).
+        if (self->DesktopChromeHealthy() ||
+            --self->band_restore_left_ <= 0) {
           KillTimer(hwnd, kTimerBandSettle);
           self->band_restore_left_ = 0;
         }
@@ -4906,7 +5438,9 @@ LRESULT CALLBACK App::TrayWndProc(HWND hwnd, UINT msg, WPARAM wparam,
           self->pet_.NudgeClearOfFenceBottoms(fence_rects);
         }
         if (self->public_visible_) {
-          self->ReflowPublicFloats();
+          // Page membership lives in float_placements — rebuild, don't just
+          // reflow the previous page's slots.
+          self->RebuildPublicItems();
         }
         return 0;
       }
@@ -4959,8 +5493,13 @@ LRESULT CALLBACK App::TrayWndProc(HWND hwnd, UINT msg, WPARAM wparam,
       const UINT tray_ev = LOWORD(lparam);
       if (tray_ev == WM_LBUTTONDBLCLK || tray_ev == WM_LBUTTONUP ||
           tray_ev == NIN_SELECT || tray_ev == NIN_KEYSELECT) {
-        // VERSION_4 can fire NIN_SELECT and WM_LBUTTONUP for one click.
-        if (self->TryConsumeTrayOpen()) {
+        // Market/tray apps: if settings is already up (or minimized), always
+        // raise it — debounce only coalesces closed→open click storms
+        // (VERSION_4 NIN_SELECT + WM_LBUTTONUP).
+        if (self->settings_.IsOpen() ||
+            (self->settings_.Hwnd() && IsIconic(self->settings_.Hwnd()))) {
+          self->OpenSettings();
+        } else if (self->TryConsumeTrayOpen()) {
           self->OpenSettings();
         }
         return 0;
@@ -4973,7 +5512,6 @@ LRESULT CALLBACK App::TrayWndProc(HWND hwnd, UINT msg, WPARAM wparam,
         HMENU menu = CreatePopupMenu();
         AppendMenuW(menu, MF_STRING, 1, L"打开设置");
         AppendMenuW(menu, MF_STRING, 17, Tr("hk_organize").c_str());
-        AppendMenuW(menu, MF_STRING, 14, Tr("toggle_fences").c_str());
         AppendMenuW(menu, MF_STRING, 13, Tr("peek").c_str());
         AppendMenuW(menu, MF_STRING, 7, Tr("screenshot").c_str());
         if (IsScreenRecording() || self->prefs_.record_enabled) {
@@ -4985,11 +5523,20 @@ LRESULT CALLBACK App::TrayWndProc(HWND hwnd, UINT msg, WPARAM wparam,
         }
 
         HMENU ext = CreatePopupMenu();
-        AppendMenuW(ext, MF_STRING, 3, Tr("todos").c_str());
+        if (self->prefs_.todos_enabled) {
+          AppendMenuW(ext, MF_STRING, 3, Tr("todos").c_str());
+        }
+        // DeskNote is a separate exe; tray entry stays (shortcuts gated by prefs).
         AppendMenuW(ext, MF_STRING, 2, Tr("notes").c_str());
-        AppendMenuW(ext, MF_STRING, 6, Tr("minutes").c_str());
-        AppendMenuW(ext, MF_STRING, 32, Tr("calculator").c_str());
-        AppendMenuW(ext, MF_STRING, 5, Tr("vault").c_str());
+        if (self->prefs_.minutes_enabled) {
+          AppendMenuW(ext, MF_STRING, 6, Tr("minutes").c_str());
+        }
+        if (self->prefs_.calculator_enabled) {
+          AppendMenuW(ext, MF_STRING, 32, Tr("calculator").c_str());
+        }
+        if (self->prefs_.vault_enabled) {
+          AppendMenuW(ext, MF_STRING, 5, Tr("vault").c_str());
+        }
         AppendMenuW(ext, MF_STRING, 4, Tr("search").c_str());
         AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(ext),
                     L"扩展功能");

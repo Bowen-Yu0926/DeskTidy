@@ -19,7 +19,9 @@
 #include <WebView2.h>
 #include <wrl.h>
 
+#include <algorithm>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 using Microsoft::WRL::Callback;
@@ -28,7 +30,106 @@ namespace {
 constexpr wchar_t kClass[] = L"DeskTidyNativeSearch";
 constexpr wchar_t kHostClass[] = L"DeskTidyNativeSearchWeb";
 constexpr int kPanelW = 640;
-constexpr int kPanelH = 480;
+constexpr int kPanelH = 540;
+
+struct TypeGroup {
+  const wchar_t* id;
+  const wchar_t* const* exts;
+  size_t count;
+};
+
+constexpr const wchar_t* kWordExts[] = {L"doc", L"docx"};
+constexpr const wchar_t* kExcelExts[] = {L"xls", L"xlsx", L"csv"};
+constexpr const wchar_t* kPptExts[] = {L"ppt", L"pptx"};
+constexpr const wchar_t* kPdfExts[] = {L"pdf"};
+constexpr const wchar_t* kMdExts[] = {L"md", L"markdown"};
+constexpr const wchar_t* kImageExts[] = {L"png", L"jpg", L"jpeg", L"gif",
+                                         L"webp", L"bmp", L"ico"};
+constexpr const wchar_t* kVideoExts[] = {L"mp4", L"mkv", L"avi", L"mov",
+                                         L"wmv", L"webm", L"flv", L"m4v"};
+
+constexpr TypeGroup kTypeGroups[] = {
+    {L"word", kWordExts, sizeof(kWordExts) / sizeof(kWordExts[0])},
+    {L"excel", kExcelExts, sizeof(kExcelExts) / sizeof(kExcelExts[0])},
+    {L"ppt", kPptExts, sizeof(kPptExts) / sizeof(kPptExts[0])},
+    {L"pdf", kPdfExts, sizeof(kPdfExts) / sizeof(kPdfExts[0])},
+    {L"md", kMdExts, sizeof(kMdExts) / sizeof(kMdExts[0])},
+    {L"image", kImageExts, sizeof(kImageExts) / sizeof(kImageExts[0])},
+    {L"video", kVideoExts, sizeof(kVideoExts) / sizeof(kVideoExts[0])},
+};
+
+bool IsKnownTypeId(const std::wstring& id) {
+  for (const auto& g : kTypeGroups) {
+    if (_wcsicmp(g.id, id.c_str()) == 0) {
+      return true;
+    }
+  }
+  return false;
+}
+
+std::wstring ExtOfName(const std::wstring& name) {
+  const size_t dot = name.find_last_of(L'.');
+  if (dot == std::wstring::npos || dot + 1 >= name.size()) {
+    return {};
+  }
+  std::wstring ext = name.substr(dot + 1);
+  for (auto& c : ext) {
+    if (c >= L'A' && c <= L'Z') {
+      c = static_cast<wchar_t>(c - L'A' + L'a');
+    }
+  }
+  return ext;
+}
+
+bool ExtAllowed(const std::wstring& name,
+                const std::unordered_set<std::wstring>* allowed) {
+  if (!allowed || allowed->empty()) {
+    return true;
+  }
+  return allowed->count(ExtOfName(name)) > 0;
+}
+
+// Parse JSON string-array field: "types":["word","pdf"]
+std::vector<std::wstring> ParseJsonStringArray(const std::wstring& json,
+                                               const wchar_t* key) {
+  std::vector<std::wstring> out;
+  if (!key) {
+    return out;
+  }
+  const std::wstring needle = std::wstring(L"\"") + key + L"\"";
+  size_t pos = json.find(needle);
+  if (pos == std::wstring::npos) {
+    return out;
+  }
+  pos = json.find(L'[', pos);
+  if (pos == std::wstring::npos) {
+    return out;
+  }
+  const size_t end = json.find(L']', pos);
+  if (end == std::wstring::npos) {
+    return out;
+  }
+  size_t i = pos + 1;
+  while (i < end) {
+    const size_t q1 = json.find(L'"', i);
+    if (q1 == std::wstring::npos || q1 >= end) {
+      break;
+    }
+    size_t q2 = q1 + 1;
+    std::wstring val;
+    while (q2 < end && json[q2] != L'"') {
+      if (json[q2] == L'\\' && q2 + 1 < end) {
+        ++q2;
+      }
+      val.push_back(json[q2++]);
+    }
+    if (!val.empty() && IsKnownTypeId(val)) {
+      out.push_back(val);
+    }
+    i = q2 + 1;
+  }
+  return out;
+}
 
 bool NameContains(const std::wstring& name, const std::wstring& needle) {
   if (needle.empty()) {
@@ -59,7 +160,8 @@ bool NameContains(const std::wstring& name, const std::wstring& needle) {
 
 void SearchRecursive(const std::wstring& dir, const std::wstring& needle,
                      std::vector<std::wstring>* out, int* budget, int depth,
-                     int max_depth, bool include_hidden) {
+                     int max_depth, bool include_hidden,
+                     const std::unordered_set<std::wstring>* allowed_exts) {
   if (!out || !budget || *budget <= 0 || needle.empty() || depth > max_depth) {
     return;
   }
@@ -87,8 +189,8 @@ void SearchRecursive(const std::wstring& dir, const std::wstring& needle,
         continue;
       }
       SearchRecursive(full, needle, out, budget, depth + 1, max_depth,
-                      include_hidden);
-    } else if (NameContains(name, needle)) {
+                      include_hidden, allowed_exts);
+    } else if (NameContains(name, needle) && ExtAllowed(name, allowed_exts)) {
       out->push_back(full);
       --(*budget);
       if (*budget <= 0) {
@@ -361,13 +463,49 @@ void SearchWindow::NavigateHome() {
   static_cast<ICoreWebView2*>(webview_)->Navigate((L"file:///" + url).c_str());
 }
 
+void SearchWindow::ParseTypesFromJson(const std::wstring& json) {
+  type_filters_ = ParseJsonStringArray(json, L"types");
+}
+
+std::vector<std::wstring> SearchWindow::ResolvedExtensions() const {
+  std::vector<std::wstring> out;
+  if (type_filters_.empty()) {
+    return out;
+  }
+  std::unordered_set<std::wstring> seen;
+  for (const auto& id : type_filters_) {
+    for (const auto& g : kTypeGroups) {
+      if (_wcsicmp(g.id, id.c_str()) != 0) {
+        continue;
+      }
+      for (size_t i = 0; i < g.count; ++i) {
+        const std::wstring e = g.exts[i];
+        if (seen.insert(e).second) {
+          out.push_back(e);
+        }
+      }
+      break;
+    }
+  }
+  return out;
+}
+
 void SearchWindow::PushState(const std::wstring& status) {
   if (!webview_ || !web_ready_) {
     return;
   }
   std::wstring json = L"{\"type\":\"state\",\"all_drives\":";
   json += options_.all_drives ? L"true" : L"false";
-  json += L",\"query\":\"";
+  json += L",\"types\":[";
+  for (size_t i = 0; i < type_filters_.size(); ++i) {
+    if (i) {
+      json += L',';
+    }
+    json += L'"';
+    json += MistJsonEscape(type_filters_[i]);
+    json += L'"';
+  }
+  json += L"],\"query\":\"";
   json += MistJsonEscape(query_);
   json += L"\",\"status\":\"";
   json += MistJsonEscape(status.empty()
@@ -409,12 +547,14 @@ void SearchWindow::OnWebMessage(const std::wstring& json) {
     if (query_.empty()) {
       query_ = MistJsonStringField(json, L"query");
     }
-    const std::wstring all = MistJsonStringField(json, L"all_drives");
     // JSON bool may not parse as string — use presence of true in raw
     if (json.find(L"\"all_drives\":true") != std::wstring::npos) {
       options_.all_drives = true;
     } else if (json.find(L"\"all_drives\":false") != std::wstring::npos) {
       options_.all_drives = false;
+    }
+    if (json.find(L"\"types\"") != std::wstring::npos) {
+      ParseTypesFromJson(json);
     }
     if (on_all_drives_) {
       on_all_drives_(options_.all_drives);
@@ -426,6 +566,8 @@ void SearchWindow::OnWebMessage(const std::wstring& json) {
     if (on_all_drives_) {
       on_all_drives_(options_.all_drives);
     }
+  } else if (id == L"types") {
+    ParseTypesFromJson(json);
   } else if (id == L"open") {
     OpenAt(MistJsonIntField(json, L"index", -1));
   } else if (id == L"reveal") {
@@ -604,6 +746,14 @@ void SearchWindow::RunSearch(const std::wstring& needle) {
   const int threads = options_.threads < 1 ? 1
                       : (options_.threads > 64 ? 64 : options_.threads);
 
+  const std::vector<std::wstring> exts = ResolvedExtensions();
+  std::unordered_set<std::wstring> allowed;
+  for (const auto& e : exts) {
+    allowed.insert(e);
+  }
+  const std::unordered_set<std::wstring>* allowed_ptr =
+      allowed.empty() ? nullptr : &allowed;
+
   const std::wstring fd = FindFdExe();
   if (!fd.empty() && !roots.empty()) {
     std::wstring cmd = L"\"" + fd + L"\" -i -a --max-results " +
@@ -612,6 +762,11 @@ void SearchWindow::RunSearch(const std::wstring& needle) {
                        std::to_wstring(threads);
     if (options_.include_hidden) {
       cmd += L" --hidden --no-ignore-vcs";
+    }
+    // fd -e: restrict by extension (Everything-style type filters).
+    for (const auto& e : exts) {
+      cmd += L" -e ";
+      cmd += e;
     }
     cmd += L" " + needle;
     for (const auto& root : roots) {
@@ -680,7 +835,7 @@ void SearchWindow::RunSearch(const std::wstring& needle) {
       break;
     }
     SearchRecursive(root, needle, &results_, &budget, 0, max_depth,
-                    options_.include_hidden);
+                    options_.include_hidden, allowed_ptr);
   }
   PushState();
 }

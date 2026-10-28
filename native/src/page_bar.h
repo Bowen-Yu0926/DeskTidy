@@ -6,11 +6,14 @@
 #include <string>
 #include <vector>
 
-// Right-edge page peeks (Python PageIndicatorWidget): vertical dock, draggable
-// on Y, always snapped to the right. Tools follow float_bar_tool_flags —
-// record / minutes / calculator / todo only when enabled; never note/search/±.
+// Right-edge page chrome (Python PageIndicatorWidget): either a mist float
+// card (peek/expand) or discrete bookmark tabs. Tools follow
+// float_bar_tool_flags; vault chip shows when account management is enabled.
+// When the pet hosts page chips, App hides this float entirely.
 class PageBar {
  public:
+  enum class ChromeStyle { Float, Tabs };
+
   using PageFn = std::function<void(int)>;
   using VoidFn = std::function<void()>;
   using ToolFn = std::function<void(const std::wstring& id)>;
@@ -32,15 +35,19 @@ class PageBar {
   // U7 page.locked — mirror the layout lock flags so locked pages show a lock
   // marker and disable fence create/move/delete (Python is_locked_page_id).
   void SetPageLocks(const std::vector<bool>& locks);
-  // When false (pet hosts page chips), hide pages; tools also hidden (Python).
+  // When false, omit page/folder rows (tools-only card). App hides the whole
+  // float when the pet hosts page chips — do not run dual page chrome.
   void SetPagesVisible(bool on);
-  // Python float_bar_tool_flags + vault peek (edge bar hosts 账号 when enabled).
+  // float = mist card peek; tabs = discrete bookmark chips (always expanded).
+  void SetChromeStyle(ChromeStyle style);
+  ChromeStyle GetChromeStyle() const { return chrome_style_; }
+  // Python float_bar_tool_flags + optional vault chip when account is enabled.
   void SetToolFlags(bool record, bool minutes, bool calculator, bool todo,
                     bool vault = false, bool note = false);
   void SetFolders(const std::vector<FolderChip>& folders);
   void SetAnchorY(int y);  // work-area relative preferred; -1 = center
   int AnchorY() const { return anchor_y_; }
-  // X2: rescale chip height / slot pitch / font size for a runtime DPI change.
+  // X2: absolute dpi/96 rescale of chip / slot / font (design sheet @ 96 DPI).
   void ScaleForDpi(int old_dpi, int new_dpi);
   void ApplyStyle(COLORREF background, COLORREF accent, COLORREF title);
   void SetOnPage(PageFn fn) { on_page_ = std::move(fn); }
@@ -81,7 +88,12 @@ class PageBar {
   void Paint(HDC hdc);
   void Relayout();
   void RebuildSlots();
+  void ApplyDesignMetrics(int dpi);
   int HitTest(int x, int y) const;
+  int CardMargin() const;
+  int PadX() const;
+  int PadY() const;
+  bool IsFloatStyle() const { return chrome_style_ == ChromeStyle::Float; }
   std::wstring PageLabel(int index) const;
   bool PageLockedAt(int index) const;
   void DockToRightEdge(int preferred_y);
@@ -89,6 +101,17 @@ class PageBar {
   void ShowPageContextMenu(int page_index);
   void EnsureTooltip();
   void UpdateHoverTip(int index);
+  // 0 = tucked peek, 1 = fully expanded. Ease-driven slide on hover.
+  void SetExpandTarget(float target);
+  void TickExpandAnim();
+  void ApplyEdgeX();
+  int VisibleWidth() const;
+  int PeekWidth() const;
+  // Index of first non-page slot (−1 if none); drives the page/tool divider.
+  int FirstUtilityIndex() const;
+  int SeparatorGap() const;
+  int SlotTop(int index) const;
+  int ContentHeight() const;
 
   HWND hwnd_ = nullptr;
   HWND tip_ = nullptr;
@@ -106,11 +129,14 @@ class PageBar {
   bool tool_note_ = false;
   std::vector<FolderChip> folders_;
   int anchor_y_ = -1;  // -1 = vertical center
+  ChromeStyle chrome_style_ = ChromeStyle::Float;
   // X2: DPI-scaled chip metrics (start at the 96-DPI design values).
-  int chip_w_ = 86;
-  int chip_h_ = 34;
-  int slot_h_ = 38;
+  int chip_w_ = 112;
+  int chip_h_ = 32;
+  int slot_h_ = 36;
   float font_scale_ = 1.f;
+  float expand_t_ = 0.f;       // current ease 0..1
+  float expand_target_ = 0.f;  // hover wants 1, leave wants 0
   bool dragging_ = false;
   bool drag_moved_ = false;
   int hover_index_ = -1;

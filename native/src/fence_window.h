@@ -23,7 +23,9 @@ class FenceWindow {
   using PathsFn =
       std::function<void(FenceWindow*, const std::vector<std::wstring>&)>;
   using DragDoneFn = std::function<void(FenceWindow*)>;
-  using UnpinFn = std::function<void(FenceWindow*, const std::wstring& path)>;
+  // `drop` is cursor screen pos when unpinning from a drag; otherwise cursor.
+  using UnpinFn =
+      std::function<void(FenceWindow*, const std::wstring& path, POINT drop)>;
   using PathReplaceFn =
       std::function<void(const std::wstring& from, const std::wstring& to)>;
   using PageFn = std::function<void(FenceWindow*, int page)>;
@@ -63,7 +65,7 @@ class FenceWindow {
   const std::string& Id() const { return id_; }
   const std::wstring& Title() const { return title_; }
   int Page() const { return page_; }
-  void SetPage(int page) { page_ = page; }
+  void SetPage(int page);
   // P2-11: multi-page membership (at least one page).
   const std::vector<int>& Pages() const { return pages_; }
   void SetPages(std::vector<int> pages);
@@ -174,6 +176,7 @@ class FenceWindow {
   void CutSelection();
   void DeleteSelection();
   void SelectAll();
+  void ClearSelection();
   void BeginInlineRename();
   void FinishInlineRename(bool commit);
 
@@ -206,6 +209,11 @@ class FenceWindow {
   void PresentLayered();
   void LayoutCells();
   int HitTestIcon(int x, int y) const;
+  // Glyph + caption ink (not full grid cell). Used by hit-test and rubber-band
+  // so cell padding / empty chrome clear selection like Explorer / Fences.
+  bool IconContentRect(size_t index, RECT* out) const;
+  // Caption shelf only (Explorer: second click on name starts rename).
+  bool IconLabelRect(size_t index, RECT* out) const;
   Edge HitTestEdge(int x, int y) const;
   bool IsSystemFence() const;
   void HeaderBtnRects(RECT* collapse, RECT* lock, RECT* dissolve) const;
@@ -225,7 +233,6 @@ class FenceWindow {
   void SelectOnly(int index);
   void ToggleSelected(int index);
   void SelectRange(int index);
-  void ClearSelection();
   bool IsSelected(int index) const;
   std::vector<std::wstring> SelectedPaths() const;
   void ApplySelectionCommand(int cmd, int clicked);
@@ -244,7 +251,7 @@ class FenceWindow {
   void StartManualIconDrag(int index);
   void UpdateManualIconDrag(int x, int y);
   void FinishManualIconDrag(int x, int y);
-  // P1-13: OLE pin-transfer drag out of the fence; unpins unless transferred.
+  // P1-13: OLE pin-transfer drag out; unpin only on desktop release / real MOVE.
   void CommitDragOutPins(std::vector<std::wstring> paths);
   int InsertIndexAt(int x, int y) const;
   void CommitReorder(int insert_index);

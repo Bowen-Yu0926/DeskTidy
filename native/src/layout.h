@@ -119,8 +119,21 @@ bool SaveAppState(const AppState& state);
 std::vector<FenceLayout> LoadLayouts();
 bool SaveLayouts(const std::vector<FenceLayout>& layouts);
 std::string MakeFenceId();
-// Clamp / rescue fences that are off-screen or tiny. Returns how many changed.
+// Clamp / rescue fences that are off-screen or tiny. Does NOT rewrite user
+// proportions (market: Fences keeps resized sizes across reboot). Returns how
+// many changed.
 int HealFenceLayouts(std::vector<FenceLayout>* fences);
+// Collapse runaway "\\\\" sequences from corrupt pin_order JSON (keep UNC \\).
+std::wstring NormalizeStoredPath(const std::wstring& path);
+// Page-0 常用/其他 row back to ~2/3 + ~1/3 when badly stretched; docs height
+// floor. Keeps fence ids / titles / pins. Returns how many fences moved/resized.
+// Explicit "修复布局" only — never call from automatic load/heal.
+int RestoreSystemFenceProportions(std::vector<FenceLayout>* fences);
+// When G3 page_geometries has an entry for fence.page, lift it to top-level
+// x/y/w/h so SpawnFence / profiles cannot hide the user's last resize.
+void PromoteHomePageGeometries(std::vector<FenceLayout>* fences);
+// Keep page_geometries[page] aligned with top-level x/y/w/h (after heal/move).
+void SyncPageGeometryFromTopLevel(FenceLayout* fence, int page);
 
 // ---------------------------------------------------------------------------
 // G1 — snap a moving fence to screen work-area edges (Python snap_geometry,

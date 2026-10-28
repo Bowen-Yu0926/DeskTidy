@@ -24,9 +24,18 @@ bool g_pin_transferred = false;
 // True while ShellDoDragPins runs — desktop release must NOT CF_HDROP into
 // Explorer (files already live on the desktop → 「源相同」 + icon stack).
 bool g_pin_drag_active = false;
+// Set when QueryContinueDrag cancels because the cursor is over the desktop /
+// public unpin zone (not Esc). Caller should unpin in that case only.
+bool g_desktop_unpin_requested = false;
 
 // Python start_virtual_item_drag: releasing over the real desktop / public
 // float host unpins without OLE. Folder windows + Recycle Bin still get DROP.
+bool IsPointOverDesktopUnpinZone(POINT pt);  // defined below
+
+bool PinDragOverDesktopUnpinZone(POINT pt) {
+  return IsPointOverDesktopUnpinZone(pt);
+}
+
 bool IsPointOverDesktopUnpinZone(POINT pt) {
   HWND hwnd = WindowFromPoint(pt);
   if (!hwnd) {
@@ -91,6 +100,7 @@ class SimpleDropSource : public IDropSource {
   HRESULT STDMETHODCALLTYPE QueryContinueDrag(BOOL escape,
                                               DWORD key_state) override {
     if (escape) {
+      g_desktop_unpin_requested = false;
       return DRAGDROP_S_CANCEL;
     }
     if ((key_state & MK_LBUTTON) == 0) {
@@ -100,9 +110,11 @@ class SimpleDropSource : public IDropSource {
         POINT pt{};
         GetCursorPos(&pt);
         if (IsPointOverDesktopUnpinZone(pt)) {
+          g_desktop_unpin_requested = true;
           return DRAGDROP_S_CANCEL;
         }
       }
+      g_desktop_unpin_requested = false;
       return DRAGDROP_S_DROP;
     }
     if (g_pin_move_fn) {
@@ -111,6 +123,8 @@ class SimpleDropSource : public IDropSource {
       PinDragHint hint;
       hint.over_target = g_over_pin_target;
       hint.invalid = g_over_pin_invalid;
+      hint.over_desktop =
+          !g_over_pin_target && IsPointOverDesktopUnpinZone(pt);
       g_pin_move_fn(pt, hint);
     }
     return S_OK;
@@ -503,40 +517,68 @@ bool ShellDoDragFiles(const std::vector<std::wstring>& paths) {
 
 void SetPinDragMoveFn(PinDragMoveFn fn) { g_pin_move_fn = std::move(fn); }
 
-bool ShellDoDragPins(const std::vector<std::wstring>& paths,
-                     const std::wstring& src_fence_id) {
+PinDragResult ShellDoDragPins(const std::vector<std::wstring>& paths,
+                              const std::wstring& src_fence_id) {
   if (paths.empty()) {
-    return false;
+    return PinDragResult::KeptInFence;
   }
   HGLOBAL hdrop = BuildHdrop(paths);
   if (!hdrop) {
-    return false;
+    return PinDragResult::KeptInFence;
   }
   HGLOBAL pin = BuildPinPayload(src_fence_id, paths);
   if (!pin) {
     GlobalFree(hdrop);
-    return false;
+    return PinDragResult::KeptInFence;
   }
   auto* data = new (std::nothrow) PinTransferDataObject(hdrop, pin);
   if (!data) {
     GlobalFree(hdrop);
     GlobalFree(pin);
-    return false;
+    return PinDragResult::KeptInFence;
   }
   auto* source = new (std::nothrow) SimpleDropSource();
   if (!source) {
     data->Release();
-    return false;
+    return PinDragResult::KeptInFence;
   }
   g_pin_transferred = false;
+  g_desktop_unpin_requested = false;
   g_pin_drag_active = true;
   DWORD effect = DROPEFFECT_COPY | DROPEFFECT_MOVE | DROPEFFECT_LINK;
   const HRESULT hr = DoDragDrop(data, source, effect, &effect);
   g_pin_drag_active = false;
+  const bool desktop_unpin = g_desktop_unpin_requested;
+  g_desktop_unpin_requested = false;
+  const bool transferred = g_pin_transferred;
   source->Release();
   data->Release();
-  (void)hr;
-  return g_pin_transferred;
+  if (transferred) {
+    return PinDragResult::TransferredFence;
+  }
+  // Desktop/public release cancels OLE → unpin (float back on desktop).
+  if (hr == DRAGDROP_S_CANCEL && desktop_unpin) {
+    return PinDragResult::Unpinned;
+  }
+  // Successful DROP with MOVE: only unpin when the desktop path is actually
+  // gone (Recycle / move-to-folder). Some apps advertise MOVE but leave the
+  // file in place (WeChat-class) — keep the fence pin then.
+  if (hr == DRAGDROP_S_DROP && (effect & DROPEFFECT_MOVE) != 0) {
+    bool any_gone = false;
+    for (const auto& p : paths) {
+      if (p.empty()) {
+        continue;
+      }
+      if (GetFileAttributesW(p.c_str()) == INVALID_FILE_ATTRIBUTES) {
+        any_gone = true;
+        break;
+      }
+    }
+    if (any_gone) {
+      return PinDragResult::Unpinned;
+    }
+  }
+  return PinDragResult::KeptInFence;
 }
 
 PathDropTarget::PathDropTarget(DropFn on_drop, PinDropFn on_pin_drop)

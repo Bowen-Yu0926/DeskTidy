@@ -7,7 +7,9 @@ namespace {
 HHOOK g_hook = nullptr;
 HWND g_notify = nullptr;
 UINT g_msg = 0;
+UINT g_down_msg = 0;
 DWORD g_last_fire_ms = 0;
+DWORD g_last_down_ms = 0;
 POINT g_last_rclick{-1, -1};
 
 bool IsOwnOverlay(HWND hwnd) {
@@ -40,8 +42,21 @@ LRESULT CALLBACK LowLevelMouseProc(int code, WPARAM wparam, LPARAM lparam) {
       if (wparam == WM_RBUTTONUP && IsDesktopBlankPoint(info->pt.x, info->pt.y)) {
         g_last_rclick = info->pt;
       }
-      if (wparam == WM_LBUTTONDBLCLK && g_notify && IsWindow(g_notify) &&
-          IsDesktopBlankPoint(info->pt.x, info->pt.y)) {
+      // Blank desktop (DefView / Progman). Also used when the transparent
+      // listview sits above a fence: click never reaches the fence HWND, so
+      // deselection must be driven from this hook (Explorer / Fences parity).
+      if (wparam == WM_LBUTTONDOWN && g_down_msg && g_notify &&
+          IsWindow(g_notify) && IsDesktopBlankPoint(info->pt.x, info->pt.y)) {
+        const DWORD now = GetTickCount();
+        if (now - g_last_down_ms >= 80) {
+          g_last_down_ms = now;
+          PostMessageW(g_notify, g_down_msg, 0,
+                       MAKELPARAM(static_cast<WORD>(info->pt.x),
+                                  static_cast<WORD>(info->pt.y)));
+        }
+      }
+      if (wparam == WM_LBUTTONDBLCLK && g_msg && g_notify &&
+          IsWindow(g_notify) && IsDesktopBlankPoint(info->pt.x, info->pt.y)) {
         const DWORD now = GetTickCount();
         if (now - g_last_fire_ms >= 400) {
           g_last_fire_ms = now;
@@ -85,14 +100,14 @@ bool IsDesktopBlankPoint(int screen_x, int screen_y) {
   return false;
 }
 
-void StartDesktopDblClickMonitor(HWND notify_hwnd, UINT notify_msg) {
-  if (g_hook) {
-    g_notify = notify_hwnd;
-    g_msg = notify_msg;
-    return;
-  }
+void StartDesktopDblClickMonitor(HWND notify_hwnd, UINT notify_msg,
+                                 UINT notify_down_msg) {
   g_notify = notify_hwnd;
   g_msg = notify_msg;
+  g_down_msg = notify_down_msg;
+  if (g_hook) {
+    return;
+  }
   g_hook = SetWindowsHookExW(WH_MOUSE_LL, LowLevelMouseProc,
                              GetModuleHandleW(nullptr), 0);
 }
@@ -104,6 +119,7 @@ void StopDesktopDblClickMonitor() {
   }
   g_notify = nullptr;
   g_msg = 0;
+  g_down_msg = 0;
 }
 
 bool GetLastDesktopRightClick(POINT* out) {

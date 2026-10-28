@@ -47,6 +47,8 @@ constexpr int kExtFenceRefresh = 1;
 constexpr int kExtFenceHide = 2;
 constexpr int kExtFenceDissolve = 3;
 constexpr int kExtFenceLock = 4;
+constexpr int kExtFenceRename = 5;
+constexpr int kExtFenceCollapse = 6;
 constexpr int kExtUnpin = 1;
 constexpr int kExtWhitelist = 2;
 constexpr int kExtMoveFence = 3;
@@ -219,6 +221,20 @@ void FenceWindow::ApplyStyle() {
   }
 }
 
+void FenceWindow::SetPage(int page) {
+  if (page < 0) {
+    page = 0;
+  }
+  page_ = page;
+  // Move-to-page (settings / page-bar): keep VisibleOnPage in sync. Leaving
+  // pages_ on the old singleton made OnPage(new) false → blank destination.
+  if (pages_.empty() || (pages_.size() == 1 && pages_[0] != page_)) {
+    pages_ = {page_};
+  } else if (!OnPage(page_)) {
+    pages_.push_back(page_);
+  }
+}
+
 void FenceWindow::SetPages(std::vector<int> pages) {
   pages_.clear();
   std::vector<char> seen(64, 0);
@@ -329,7 +345,7 @@ void FenceWindow::PresentLayered() {
     } else {
       g.FillRectangle(&fill, 0, 0, rw, rh);
     }
-    // Soft header wash + left accent chip (360-like glass panel identity).
+    // Soft header wash only (Fences-style: no left accent stripe).
     {
       const bool rounded = rr > 2 && rr < rw && rr < rh;
       const int header_h = S(hwnd_, kHeaderH0);
@@ -341,16 +357,6 @@ void FenceWindow::PresentLayered() {
         g.ResetClip();
       } else {
         g.FillRectangle(&wash, 0, 0, rw, header_h);
-      }
-      const int accent_w = (std::max)(3, S(hwnd_, 4));
-      Gdiplus::SolidBrush accent_br(Gdiplus::Color(
-          230, GetRValue(accent_), GetGValue(accent_), GetBValue(accent_)));
-      if (rounded) {
-        g.SetClip(&path);
-        g.FillRectangle(&accent_br, 0, 0, accent_w, h);
-        g.ResetClip();
-      } else {
-        g.FillRectangle(&accent_br, 0, 0, accent_w, h);
       }
     }
     COLORREF border = light_panel_ ? RGB(15, 23, 42) : RGB(255, 255, 255);
@@ -811,35 +817,18 @@ void FenceWindow::EnsureTooltip() {
 }
 
 void FenceWindow::UpdateHoverTip(int index) {
-  const int prev = tip_index_;
-  const int next =
-      (index >= 0 && index < static_cast<int>(cells_.size())) ? index : -1;
-  EnsureTooltip();
+  // No floating tooltip on icon hover (label is already under the icon).
+  // tip_index_ still drives in-fence hover chrome.
   if (tip_) {
     TOOLINFOW ti{};
     ti.cbSize = sizeof(ti);
     ti.hwnd = hwnd_;
     ti.uId = 1;
-    if (next < 0) {
-      tip_index_ = -1;
-      SendMessageW(tip_, TTM_TRACKACTIVATE, FALSE,
-                   reinterpret_cast<LPARAM>(&ti));
-    } else {
-      const auto& item = cells_[static_cast<size_t>(next)].item;
-      const std::wstring& text = item.name.empty() ? item.path : item.name;
-      ti.lpszText = const_cast<wchar_t*>(text.c_str());
-      SendMessageW(tip_, TTM_UPDATETIPTEXTW, 0, reinterpret_cast<LPARAM>(&ti));
-      POINT pt{};
-      GetCursorPos(&pt);
-      SendMessageW(tip_, TTM_TRACKPOSITION, 0, MAKELPARAM(pt.x + 12, pt.y + 16));
-      SendMessageW(tip_, TTM_TRACKACTIVATE, TRUE,
-                   reinterpret_cast<LPARAM>(&ti));
-      tip_index_ = next;
-    }
-  } else {
-    tip_index_ = next;
+    SendMessageW(tip_, TTM_TRACKACTIVATE, FALSE, reinterpret_cast<LPARAM>(&ti));
   }
-  // Hover chrome needs a repaint when the under-cursor icon changes.
+  const int prev = tip_index_;
+  tip_index_ =
+      (index >= 0 && index < static_cast<int>(cells_.size())) ? index : -1;
   if (tip_index_ != prev && hwnd_) {
     PresentLayered();
   }
@@ -1205,6 +1194,61 @@ void FenceWindow::ClampScroll() {
   }
 }
 
+bool FenceWindow::IconLabelRect(size_t index, RECT* out) const {
+  if (!out || index >= cells_.size()) {
+    return false;
+  }
+  const RECT& b = cells_[index].bounds;
+  if (view_mode_ == "list") {
+    // List: text starts after the glyph — approximate right of icon + pad.
+    const int icon = IconSizePx();
+    out->left = b.left + icon + S(hwnd_, 8);
+    out->top = b.top;
+    out->right = b.right;
+    out->bottom = b.bottom;
+    return out->right > out->left;
+  }
+  const int icon = IconSizePx();
+  const int font_px = S(hwnd_, 11);
+  const int line_h = font_px + S(hwnd_, 5);
+  const int idle_label_h = line_h * 2 + S(hwnd_, 4);
+  const int iy = b.top + 4;
+  const int label_top = iy + icon + 2;
+  const int label_bottom = label_top + idle_label_h + S(hwnd_, 2);
+  out->left = b.left + 2;
+  out->top = label_top;
+  out->right = b.right - 2;
+  out->bottom = (std::min)(label_bottom, static_cast<int>(b.bottom) - 2);
+  return out->bottom > out->top;
+}
+
+bool FenceWindow::IconContentRect(size_t index, RECT* out) const {
+  if (!out || index >= cells_.size()) {
+    return false;
+  }
+  const RECT& b = cells_[index].bounds;
+  if (view_mode_ == "list") {
+    // List rows: whole row is the hit target (Explorer details-style).
+    *out = b;
+    return true;
+  }
+  const int icon = IconSizePx();
+  const int font_px = S(hwnd_, 11);
+  const int line_h = font_px + S(hwnd_, 5);
+  const int idle_label_h = line_h * 2 + S(hwnd_, 4);
+  const int iy = b.top + 4;
+  const int label_top = iy + icon + 2;
+  // Glyph + idle caption shelf. Selected paint may grow taller, but
+  // expanding the hit box to the cell bottom made "blank" clicks inside the
+  // same cell re-hit the icon (rename) instead of clearing selection.
+  const int label_bottom = label_top + idle_label_h + S(hwnd_, 2);
+  out->left = b.left + 2;
+  out->top = iy - 2;
+  out->right = b.right - 2;
+  out->bottom = (std::min)(label_bottom, static_cast<int>(b.bottom) - 2);
+  return true;
+}
+
 int FenceWindow::HitTestIcon(int x, int y) const {
   if (collapsed_) {
     return -1;
@@ -1212,11 +1256,16 @@ int FenceWindow::HitTestIcon(int x, int y) const {
   if (y < S(hwnd_, kHeaderH0)) {
     return -1;
   }
-  // Full cell (grid + list) matches painted chrome / Python FenceIconItem.
-  // Gaps between cells stay blank so empty panel chrome clears selection.
+  // Explorer / Fences: only glyph + caption are "icons". Cell padding and empty
+  // panel chrome stay blank so a click clears selection (full-cell hit made
+  // nearly every grid pixel an icon — blank clicks could not deselect).
   for (size_t i = 0; i < cells_.size(); ++i) {
-    const RECT& b = cells_[i].bounds;
-    if (x >= b.left && x < b.right && y >= b.top && y < b.bottom) {
+    RECT content{};
+    if (!IconContentRect(i, &content)) {
+      continue;
+    }
+    if (x >= content.left && x < content.right && y >= content.top &&
+        y < content.bottom) {
       return static_cast<int>(i);
     }
   }
@@ -1312,10 +1361,15 @@ void FenceWindow::ApplyRubberBandSelection() {
   const int t = (std::min)(rubber_a_.y, rubber_b_.y);
   const int r = (std::max)(rubber_a_.x, rubber_b_.x);
   const int b = (std::max)(rubber_a_.y, rubber_b_.y);
+  // Intersect glyph+caption only. Full-cell marquee re-selected the icon under
+  // a blank click after a few pixels of jitter (felt like deselect never worked).
   for (size_t i = 0; i < cells_.size(); ++i) {
-    const RECT& cell = cells_[i].bounds;
-    const bool hit =
-        !(cell.right < l || cell.left > r || cell.bottom < t || cell.top > b);
+    RECT content{};
+    if (!IconContentRect(i, &content)) {
+      continue;
+    }
+    const bool hit = !(content.right < l || content.left > r ||
+                       content.bottom < t || content.top > b);
     if (hit) {
       selected_[i] = 1;
       selection_anchor_ = static_cast<int>(i);
@@ -1713,8 +1767,7 @@ void FenceWindow::FinishManualIconDrag(int x, int y) {
   const bool outside =
       x < 0 || y < 0 || x >= rc.right || y >= rc.bottom;
   if (outside) {
-    // P1-13: hand off to the OLE pin-transfer drag (cross-fence transfer /
-    // Explorer / Recycle Bin); unpins unless a fence consumed the transfer.
+    // P1-13: hand off to OLE pin-transfer (cross-fence / Explorer / apps).
     std::vector<std::wstring> paths = std::move(drag_paths_);
     drag_paths_.clear();
     drag_indices_.clear();
@@ -1828,17 +1881,18 @@ void FenceWindow::CommitReorder(int insert_index) {
 }
 
 void FenceWindow::CommitDragOutPins(std::vector<std::wstring> paths) {
-  // P1-13: start the OLE pin-transfer drag. If a fence consumed the custom
-  // format (transfer A→B), the pins already moved — do not unpin. Any other
-  // outcome (Explorer/Recycle Bin/desktop, or cancel) keeps the old drag-out
-  // semantics: unpin so the file lands back on the desktop as a float.
-  bool transferred = false;
+  // P1-13 / Fences-class: only unpin when the pin truly left the fence —
+  // desktop/public release, or OLE MOVE (Recycle / move-to-folder). Sharing
+  // to WeChat (COPY) or Esc cancel must keep the pin (old code unpinned on
+  // every non-fence drop → icons reappeared on the desktop).
   if (!paths.empty()) {
-    transferred = ShellDoDragPins(paths, Widen(id_));
-    if (!transferred) {
+    const PinDragResult result = ShellDoDragPins(paths, Widen(id_));
+    if (result == PinDragResult::Unpinned) {
+      POINT drop{};
+      GetCursorPos(&drop);
       for (const auto& p : paths) {
         if (on_unpin_) {
-          on_unpin_(this, p);
+          on_unpin_(this, p, drop);
         }
       }
     }
@@ -1869,7 +1923,9 @@ void FenceWindow::RecycleItem(int index) {
   }
   const std::wstring path = cells_[static_cast<size_t>(index)].item.path;
   if (RecycleShellPath(hwnd_, path) == IconFsResult::Ok && on_unpin_) {
-    on_unpin_(this, path);
+    POINT drop{};
+    GetCursorPos(&drop);
+    on_unpin_(this, path, drop);
   }
 }
 
@@ -1973,7 +2029,9 @@ void FenceWindow::ApplySelectionCommand(int cmd, int clicked) {
   if (cmd == 3) {
     for (const auto& p : paths) {
       if (on_unpin_) {
-        on_unpin_(this, p);
+        POINT drop{};
+        GetCursorPos(&drop);
+        on_unpin_(this, p, drop);
       }
     }
     return;
@@ -1999,7 +2057,9 @@ void FenceWindow::ApplySelectionCommand(int cmd, int clicked) {
   if (cmd == 9 && RecycleShellPaths(hwnd_, paths) == IconFsResult::Ok) {
     for (const auto& p : paths) {
       if (on_unpin_) {
-        on_unpin_(this, p);
+        POINT drop{};
+        GetCursorPos(&drop);
+        on_unpin_(this, p, drop);
       }
     }
   }
@@ -2072,7 +2132,9 @@ void FenceWindow::ShowIconMenu(int index, POINT screen) {
         ReturnNamespaceIconToDesktop(ns_clsids[i]);
       }
       if (on_unpin_) {
-        on_unpin_(this, p);
+        POINT drop{};
+        GetCursorPos(&drop);
+        on_unpin_(this, p, drop);
       }
     }
     if (on_drag_done_) {
@@ -2180,7 +2242,9 @@ void FenceWindow::DeleteSelection() {
   }
   for (const auto& p : paths) {
     if (on_unpin_) {
-      on_unpin_(this, p);
+      POINT drop{};
+      GetCursorPos(&drop);
+      on_unpin_(this, p, drop);
     }
   }
 }
@@ -2204,6 +2268,13 @@ LRESULT CALLBACK RenameEditProc(HWND hwnd, UINT msg, WPARAM wparam,
   if (msg == WM_KEYDOWN && (wparam == VK_RETURN || wparam == VK_ESCAPE)) {
     if (self) {
       self->FinishInlineRename(wparam == VK_RETURN);
+    }
+    return 0;
+  }
+  // Explorer: leaving the edit commits (Esc already handled above).
+  if (msg == WM_KILLFOCUS) {
+    if (self) {
+      self->FinishInlineRename(true);
     }
     return 0;
   }
@@ -2232,15 +2303,22 @@ void FenceWindow::BeginInlineRename() {
     rename_edit_ = nullptr;
   }
   rename_index_ = index;
-  const RECT& b = cells_[static_cast<size_t>(index)].bounds;
-  const int icon = IconSizePx();
-  const int cell_w = CellWidthPx();
+  RECT label{};
+  if (!IconLabelRect(static_cast<size_t>(index), &label)) {
+    const RECT& b = cells_[static_cast<size_t>(index)].bounds;
+    label = b;
+  }
+  POINT origin{label.left, label.top};
+  ClientToScreen(hwnd_, &origin);
+  const int edit_w =
+      (std::max)(S(hwnd_, 72), static_cast<int>(label.right - label.left));
+  const int edit_h = (std::max)(S(hwnd_, 22), S(hwnd_, 20));
+  // Popup (not WS_CHILD): UpdateLayeredWindow hosts hide child EDIT controls.
   rename_edit_ = CreateWindowExW(
-      0, L"EDIT", cells_[static_cast<size_t>(index)].item.name.c_str(),
-      WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL, b.left + 2,
-      b.top + 4 + icon, cell_w - 4, S(hwnd_, 20), hwnd_,
-      reinterpret_cast<HMENU>(static_cast<INT_PTR>(kRenameEdit)), nullptr,
-      nullptr);
+      WS_EX_TOOLWINDOW | WS_EX_TOPMOST, L"EDIT",
+      cells_[static_cast<size_t>(index)].item.name.c_str(),
+      WS_POPUP | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL, origin.x, origin.y,
+      edit_w, edit_h, hwnd_, nullptr, GetModuleHandleW(nullptr), nullptr);
   if (!rename_edit_) {
     return;
   }
@@ -2249,7 +2327,20 @@ void FenceWindow::BeginInlineRename() {
                         reinterpret_cast<LONG_PTR>(RenameEditProc)));
   SetPropW(rename_edit_, L"oldproc", reinterpret_cast<HANDLE>(rename_proc_));
   SetWindowLongPtrW(rename_edit_, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(this));
-  SendMessageW(rename_edit_, EM_SETSEL, 0, -1);
+  // Explorer: select stem, leave extension unselected for files.
+  const std::wstring& name = cells_[static_cast<size_t>(index)].item.name;
+  const std::wstring& path = cells_[static_cast<size_t>(index)].item.path;
+  const DWORD attr = GetFileAttributesW(path.c_str());
+  const bool is_dir =
+      attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_DIRECTORY);
+  int sel_end = -1;
+  if (!is_dir) {
+    const size_t dot = name.find_last_of(L'.');
+    if (dot != std::wstring::npos && dot > 0) {
+      sel_end = static_cast<int>(dot);
+    }
+  }
+  SendMessageW(rename_edit_, EM_SETSEL, 0, sel_end);
   SetFocus(rename_edit_);
 }
 
@@ -2257,12 +2348,14 @@ void FenceWindow::FinishInlineRename(bool commit) {
   if (!rename_edit_) {
     return;
   }
-  wchar_t buf[260] = {};
-  GetWindowTextW(rename_edit_, buf, 260);
-  const int index = rename_index_;
-  DestroyWindow(rename_edit_);
+  // DestroyWindow → WM_KILLFOCUS → FinishInlineRename; clear hwnd first.
+  HWND edit = rename_edit_;
   rename_edit_ = nullptr;
+  wchar_t buf[260] = {};
+  GetWindowTextW(edit, buf, 260);
+  const int index = rename_index_;
   rename_index_ = -1;
+  DestroyWindow(edit);
   if (!commit || index < 0 || index >= static_cast<int>(cells_.size())) {
     return;
   }
@@ -2311,6 +2404,9 @@ void FenceWindow::ShowFenceMenu(POINT screen) {
   // Host Explorer's folder-background menu (New / Paste / View / Refresh /
   // Undo / Sort ...) with DeskTidy extras prepended.
   const std::vector<ShellMenuExtra> extras{
+      {Tr("fence_rename"), kExtFenceRename},
+      {collapsed_ ? Tr("fence_expand") : Tr("fence_collapse"),
+       kExtFenceCollapse},
       {Tr("fence_refresh"), kExtFenceRefresh},
       {Tr("fence_hide"), kExtFenceHide},
       {position_locked_ ? Tr("fence_unlock") : Tr("fence_lock"), kExtFenceLock},
@@ -2336,6 +2432,12 @@ void FenceWindow::ShowFenceMenu(POINT screen) {
       if (on_dissolve_) {
         on_dissolve_(this);
       }
+    } else if (rc == kExtFenceRename) {
+      if (on_rename_) {
+        on_rename_(this);
+      }
+    } else if (rc == kExtFenceCollapse) {
+      SetCollapsed(!collapsed_);
     }
     return;
   }
@@ -2777,10 +2879,11 @@ LRESULT FenceWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
       if (rubber_ && (wparam & MK_LBUTTON)) {
         UpdateHoverTip(-1);
         rubber_b_ = {GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
-        // Live marquee selection like Explorer / Fences.
-        const int moved =
-            abs(rubber_b_.x - rubber_a_.x) + abs(rubber_b_.y - rubber_a_.y);
-        if (moved >= kDragThreshold) {
+        // Live marquee like Explorer / Fences. Require a real rectangle so
+        // click-jitter on blank does not re-select the nearest icon.
+        const int bw = abs(rubber_b_.x - rubber_a_.x);
+        const int bh = abs(rubber_b_.y - rubber_a_.y);
+        if (bw >= kDragThreshold && bh >= kDragThreshold) {
           ApplyRubberBandSelection();
         }
         PresentLayered();
@@ -2878,10 +2981,10 @@ LRESULT FenceWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
       }
       if (rubber_) {
         rubber_ = false;
-        const int moved =
-            abs(rubber_b_.x - rubber_a_.x) + abs(rubber_b_.y - rubber_a_.y);
-        // Click (no drag) on blank = deselect only (already cleared on press).
-        if (moved < kDragThreshold && !rubber_additive_) {
+        const int bw = abs(rubber_b_.x - rubber_a_.x);
+        const int bh = abs(rubber_b_.y - rubber_a_.y);
+        // Click / tiny jitter on blank = deselect only (cleared on press).
+        if ((bw < kDragThreshold || bh < kDragThreshold) && !rubber_additive_) {
           rubber_additive_ = false;
           ClearSelection();
           return 0;
@@ -2934,8 +3037,14 @@ LRESULT FenceWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
           } else if (shift) {
             SelectRange(idx);
           } else if (was_selected) {
-            // Re-click on an already-selected icon/label starts inline rename.
-            BeginInlineRename();
+            // Explorer: second click on the *name* (after dbl-click window)
+            // starts rename; glyph re-click keeps selection.
+            RECT label{};
+            if (IconLabelRect(static_cast<size_t>(idx), &label) &&
+                x >= label.left && x < label.right && y >= label.top &&
+                y < label.bottom) {
+              BeginInlineRename();
+            }
           } else {
             SelectOnly(idx);
           }

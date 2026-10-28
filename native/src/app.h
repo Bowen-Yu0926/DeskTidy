@@ -46,6 +46,8 @@ class App {
   void OpenTodos();
   void OpenSearch();
   void OpenVault();
+  // After 账号浮窗 hides: cancel band-settle Raise and sink fences under apps.
+  void OnVaultHidden();
   void SeatAllFencesUnderApps();
   void PersistLayouts();
   void SchedulePersistLayouts();
@@ -108,13 +110,15 @@ class App {
   void ToggleAutostart();
   void RestoreDesktopChrome();
   void EditRules();
-  void UnpinPath(const std::wstring& path);
+  // `drop` optional: when set (drag-out unpin), float lands near that screen point.
+  void UnpinPath(const std::wstring& path, const POINT* drop = nullptr);
   void RetargetPin(const std::wstring& from, const std::wstring& to);
   // P1-13: move pins from `src` fence to `dst` fence (pin_order tail), persist,
   // refresh both fences. Returns false (no mutation) for src==dst / missing dst.
   bool TransferPins(const std::wstring& src, const std::wstring& dst,
                     const std::vector<std::wstring>& paths);
   void TogglePeek();
+  void EnsureFencesVisible();
   void ToggleFencesVisible();
   void SaveLayoutSnapshot();
   void RestoreLayoutSnapshot();
@@ -139,6 +143,8 @@ class App {
   void ImportPrefs();
   void ApplyLoadedGeneralPrefs();
   void OnDesktopBlankDoubleClick();
+  // Explorer / Fences: left-click blank desktop clears fence icon selection.
+  void OnDesktopBlankLeftDown();
   // P1-6: double-click toggles stock Explorer desktop ↔ organized DeskTidy view.
   void ShowStockDesktopView();
   void ShowOrganizedDesktopView();
@@ -169,7 +175,7 @@ class App {
   // P1-13: pin-transfer drop handler + floating hint lifecycle.
   DWORD OnPinDropped(FenceWindow* fence, const std::wstring& src_fence_id,
                      const std::vector<std::wstring>& paths, bool commit);
-  void UpdatePinDragHint(POINT cursor, bool over_target, bool invalid);
+  void UpdatePinDragHint(POINT cursor, const PinDragHint& hint);
   void HidePinDragHint();
   void DissolveFence(FenceWindow* fence);
   void SetWhitelistForPaths(const std::vector<std::wstring>& paths, bool add);
@@ -188,6 +194,8 @@ class App {
   void ScheduleDesktopBandRestore();
   // False while settings/vault/todos (owned modals) should keep desktop chrome still.
   bool DesktopChromeMayRestack() const;
+  // True when current-page overlays are already attached + mapped (settle no-op).
+  bool DesktopChromeHealthy() const;
   void StartForegroundHook();
   void StopForegroundHook();
   // Worker threads (vault pull / organize) are joined with a bounded wait on
@@ -202,6 +210,8 @@ class App {
   HWINEVENTHOOK fg_hook_ = nullptr;
   std::vector<std::thread> workers_;
   int band_restore_left_ = 0;
+  // Tick until which ScheduleDesktopBandRestore is ignored (vault/settings dismiss).
+  ULONGLONG suppress_band_restore_until_ = 0;
   std::vector<std::unique_ptr<FenceWindow>> fences_;
   SettingsWindow settings_;
   TodoWindow todos_;
@@ -219,6 +229,11 @@ class App {
   std::vector<std::wstring> recent_shots_;
   size_t recent_shot_i_ = 0;
   PinMap pins_;
+  FloatPlacementMap float_placements_;
+  // Bumped on every interactive pin mutate; organize workers snapshot this so
+  // OnOrganizeDone can drop stale results instead of clobbering a fresh drop.
+  unsigned long long pins_epoch_ = 0;
+  void BumpPinsEpoch() { ++pins_epoch_; }
   std::unordered_map<std::wstring, ULONGLONG> pin_missing_since_;
   ULONGLONG pin_prune_last_ms_ = 0;
   RuleMap rules_;

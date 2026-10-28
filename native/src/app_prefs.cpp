@@ -272,7 +272,7 @@ AppPrefs LoadAppPrefsFromPath(const std::wstring& path) {
   prefs.search_desktop = ParseBoolField(json, "search_desktop", true);
   prefs.search_documents = ParseBoolField(json, "search_documents", true);
   prefs.search_downloads = ParseBoolField(json, "search_downloads", true);
-  prefs.search_all_drives = ParseBoolField(json, "search_all_drives", false);
+  prefs.search_all_drives = ParseBoolField(json, "search_all_drives", true);
   prefs.search_max_results = ParseIntField(json, "search_max_results", 50);
   if (prefs.search_max_results < 10) {
     prefs.search_max_results = 10;
@@ -344,14 +344,22 @@ AppPrefs LoadAppPrefsFromPath(const std::wstring& path) {
   prefs.close_behavior_prompted =
       ParseBoolField(json, "close_behavior_prompted", false);
   prefs.session_active = ParseBoolField(json, "session_active", false);
-  prefs.show_fences = ParseBoolField(json, "show_fences", true);
-  prefs.double_click_hide = ParseBoolField(json, "double_click_hide", true);
+  prefs.show_fences = true;  // always shown; ignore persisted false
+  prefs.double_click_hide = false;  // feature removed
   prefs.enable_public_desktop =
       ParseBoolField(json, "enable_public_desktop", false);
   prefs.vault_launcher_x = ParseIntField(json, "vault_launcher_x", -1);
   prefs.vault_launcher_y = ParseIntField(json, "vault_launcher_y", -1);
   prefs.show_page_indicator =
       ParseBoolField(json, "show_page_indicator", true);
+  {
+    const std::string chrome = ParseStringField(json, "page_chrome_style");
+    if (chrome == "tabs" || chrome == "tab" || chrome == "chips") {
+      prefs.page_chrome_style = "tabs";
+    } else {
+      prefs.page_chrome_style = "float";
+    }
+  }
   prefs.exclude_patterns = ParseStringArrayField(json, "exclude_patterns");
   if (prefs.exclude_patterns.empty()) {
     prefs.exclude_patterns = {L"desktop.ini", L"DeskTidy"};
@@ -478,6 +486,8 @@ void SaveAppPrefsToPath(const AppPrefs& prefs, const std::wstring& path) {
       << ",\n  \"vault_launcher_y\": " << prefs.vault_launcher_y
       << ",\n  \"show_page_indicator\": "
       << (prefs.show_page_indicator ? "true" : "false")
+      << ",\n  \"page_chrome_style\": \""
+      << EscapeJson(prefs.page_chrome_style) << "\""
        << ",\n  \"exclude_patterns\": [";
   for (size_t i = 0; i < prefs.exclude_patterns.size(); ++i) {
     if (i) {

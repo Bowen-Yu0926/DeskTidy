@@ -332,17 +332,28 @@ void MigrateLegacySystemFences(std::vector<FenceLayout>* fences) {
         f.title = L"其他";
       }
       f.page = 0;
+      f.pages = {0};
     } else if (f.id == "system_page2" || f.id == "system_docs") {
       f.id = "system_docs";
       if (f.title == L"第二页" || f.title.empty()) {
         f.title = L"文档";
       }
       f.page = 1;
+      f.pages = {1};
+      // Python 导入后 organize_kinds 常为空 → 一键整理退回扩展名规则，
+      // 文档会被钉到「常用」。空 kinds 时按默认补「文档」规则。
+      if (f.organize_kinds.empty()) {
+        f.organize_kinds = {"file"};
+      }
     } else if (f.id == "system_common") {
       if (f.title.empty()) {
         f.title = L"常用";
       }
       f.page = 0;
+      f.pages = {0};
+      if (f.organize_kinds.empty()) {
+        f.organize_kinds = {"icon"};
+      }
     }
   }
 }
@@ -533,9 +544,22 @@ AppState LoadAppStateFromPath(const std::wstring& path, bool inject_defaults) {
     fl.w = w;
     fl.h = h;
     fl.page = page;
-    fl.pages = fence_pages.empty() ? std::vector<int>{page} : fence_pages;
-    if (!fl.pages.empty()) {
-      fl.page = fl.pages[0];
+    if (fence_pages.empty()) {
+      fl.pages = {page};
+    } else {
+      fl.pages = fence_pages;
+      // Prefer the explicit "page" when it is a member; only fall back to
+      // pages[0] when the singleton/list disagrees (stale pages after move).
+      bool page_in_list = false;
+      for (int p : fl.pages) {
+        if (p == page) {
+          page_in_list = true;
+          break;
+        }
+      }
+      if (!page_in_list) {
+        fl.page = fl.pages[0];
+      }
     }
     fl.style_id = style_id.empty() ? "charcoal" : style_id;
     fl.portal_path = Widen(portal);
@@ -561,7 +585,7 @@ AppState LoadAppStateFromPath(const std::wstring& path, bool inject_defaults) {
     std::vector<std::string> pin_order;
     FindStringArray(obj, "pin_order", &pin_order);
     for (const auto& p : pin_order) {
-      fl.pin_order.push_back(Widen(p));
+      fl.pin_order.push_back(NormalizeStoredPath(Widen(p)));
     }
     state.fences.push_back(fl);
   }
@@ -724,6 +748,10 @@ AppState LoadAppStateFromPath(const std::wstring& path, bool inject_defaults) {
       }
     }
   }
+  // G3: page_geometries is the last user resize on that page. Profiles / fences[]
+  // can lag after automatic proportion "heal" wiped top-level sizes — promote
+  // home-page overrides so reboot matches what the user left on screen.
+  PromoteHomePageGeometries(&state.fences);
   if (inject_defaults) {
     HealFenceLayouts(&state.fences);
   }
@@ -952,7 +980,8 @@ bool SaveAppState(const AppState& state) {
       if (k) {
         out << ",";
       }
-      out << "\"" << EscapeJson(Narrow(f.pin_order[k])) << "\"";
+      out << "\""
+          << EscapeJson(Narrow(NormalizeStoredPath(f.pin_order[k]))) << "\"";
     }
     out << "]}";
     if (i + 1 < state.fences.size()) {
@@ -1066,15 +1095,152 @@ bool SaveLayouts(const std::vector<FenceLayout>& layouts) {
   return SaveAppState(state);
 }
 
+std::wstring NormalizeStoredPath(const std::wstring& path) {
+  if (path.empty()) {
+    return path;
+  }
+  std::wstring out;
+  out.reserve(path.size());
+  size_t i = 0;
+  // Preserve UNC \\server\share prefix.
+  if (path.size() >= 2 && path[0] == L'\\' && path[1] == L'\\') {
+    out.push_back(L'\\');
+    out.push_back(L'\\');
+    i = 2;
+  }
+  for (; i < path.size(); ++i) {
+    const wchar_t c = path[i];
+    if (c == L'\\' || c == L'/') {
+      if (out.empty() || out.back() != L'\\') {
+        out.push_back(L'\\');
+      }
+      while (i + 1 < path.size() &&
+             (path[i + 1] == L'\\' || path[i + 1] == L'/')) {
+        ++i;
+      }
+    } else {
+      out.push_back(c);
+    }
+  }
+  return out;
+}
+
+void PromoteHomePageGeometries(std::vector<FenceLayout>* fences) {
+  if (!fences) {
+    return;
+  }
+  for (auto& f : *fences) {
+    const auto it = f.page_geometries.find(f.page);
+    if (it == f.page_geometries.end()) {
+      continue;
+    }
+    const FencePageGeometry& g = it->second;
+    if (g.w < 120 || g.h < 80) {
+      continue;
+    }
+    f.x = g.x;
+    f.y = g.y;
+    f.w = g.w;
+    f.h = g.h;
+    f.collapsed = g.collapsed;
+    f.visible = g.visible;
+  }
+}
+
+void SyncPageGeometryFromTopLevel(FenceLayout* fence, int page) {
+  if (!fence) {
+    return;
+  }
+  auto it = fence->page_geometries.find(page);
+  if (it == fence->page_geometries.end()) {
+    return;
+  }
+  it->second.x = fence->x;
+  it->second.y = fence->y;
+  it->second.w = fence->w;
+  it->second.h = fence->h;
+  it->second.collapsed = fence->collapsed;
+  it->second.visible = fence->visible;
+}
+
+int RestoreSystemFenceProportions(std::vector<FenceLayout>* fences) {
+  if (!fences || fences->empty()) {
+    return 0;
+  }
+  FenceLayout* common = nullptr;
+  FenceLayout* side = nullptr;
+  FenceLayout* docs = nullptr;
+  for (auto& f : *fences) {
+    if (f.id == "system_common") {
+      common = &f;
+    } else if (f.id == "system_software_side") {
+      side = &f;
+    } else if (f.id == "system_docs") {
+      docs = &f;
+    }
+  }
+  if (!common || !side) {
+    return 0;
+  }
+  const auto defaults = DefaultLayouts();
+  FenceLayout def_common = defaults[0];
+  FenceLayout def_side = defaults[1];
+  FenceLayout def_docs = defaults.size() > 2 ? defaults[2] : FenceLayout{};
+  // Skewed when「常用」ate most of the top row (market: ~2/3 + ~1/3).
+  const int row_w =
+      (std::max)(1, common->w + side->w +
+                        (std::max)(0, side->x - (common->x + common->w)));
+  const bool skewed = common->w * 100 >= row_w * 78 || side->w * 100 <= row_w * 18;
+  int changed = 0;
+  if (skewed) {
+    const FenceLayout before_c = *common;
+    const FenceLayout before_s = *side;
+    common->x = def_common.x;
+    common->y = def_common.y;
+    common->w = def_common.w;
+    common->h = def_common.h;
+    side->x = def_side.x;
+    side->y = def_side.y;
+    side->w = def_side.w;
+    side->h = def_side.h;
+    if (before_c.x != common->x || before_c.y != common->y ||
+        before_c.w != common->w || before_c.h != common->h) {
+      SyncPageGeometryFromTopLevel(common, common->page);
+      ++changed;
+    }
+    if (before_s.x != side->x || before_s.y != side->y ||
+        before_s.w != side->w || before_s.h != side->h) {
+      SyncPageGeometryFromTopLevel(side, side->page);
+      ++changed;
+    }
+  }
+  if (docs && def_docs.w > 0) {
+    // Full-width docs strip that collapsed too short → restore default height.
+    const RECT work = PrimaryWorkArea();
+    const int aw = (std::max)(1, static_cast<int>(work.right - work.left));
+    if (docs->w * 100 >= aw * 90 && docs->h + 40 < def_docs.h) {
+      docs->x = def_docs.x;
+      docs->y = def_docs.y;
+      docs->w = def_docs.w;
+      docs->h = def_docs.h;
+      SyncPageGeometryFromTopLevel(docs, docs->page);
+      ++changed;
+    }
+  }
+  return changed;
+}
+
 int HealFenceLayouts(std::vector<FenceLayout>* fences) {
   if (!fences || fences->empty()) {
     return 0;
   }
+  // Do not call RestoreSystemFenceProportions here — that wiped user-resized
+  // 常用/其他 rows on every boot (side <18% of row looked "skewed").
+  int changed = 0;
   constexpr int kMinW = 200;
   constexpr int kMinH = 180;
   const RECT virt = VirtualScreenRect();
   const RECT primary = PrimaryWorkArea();
-  int changed = 0;
   int cascade = 0;
   for (auto& f : *fences) {
     FenceLayout before = f;
@@ -1110,6 +1276,7 @@ int HealFenceLayouts(std::vector<FenceLayout>* fences) {
     }
     if (f.x != before.x || f.y != before.y || f.w != before.w ||
         f.h != before.h) {
+      SyncPageGeometryFromTopLevel(&f, f.page);
       ++changed;
     }
   }
@@ -1145,6 +1312,7 @@ int HealFenceLayouts(std::vector<FenceLayout>* fences) {
       b.h = rc.bottom - rc.top;
       if (b.x != before.x || b.y != before.y || b.w != before.w ||
           b.h != before.h) {
+        SyncPageGeometryFromTopLevel(&b, b.page);
         ++changed;
       }
     }

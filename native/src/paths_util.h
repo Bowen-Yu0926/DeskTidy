@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <string>
 
 std::wstring NativeDataDir();
@@ -34,3 +35,18 @@ std::wstring NativeExeDir();
 // Atomic UTF-8 write: temp + flush + MoveFileEx replace (optional .bak).
 bool AtomicWriteUtf8File(const std::wstring& path, const std::string& utf8,
                          bool keep_bak = true);
+
+// Escape a UTF-8 string for embedding inside a JSON "..." value.
+std::string EscapeJsonUtf8(const std::string& s);
+
+// Read a UTF-8 text file; if missing/empty/tiny, try path.bak (layout-style).
+bool ReadUtf8FileWithBak(const std::wstring& path, std::string* out);
+
+// True when path is missing or its size is below min_bytes (treat as empty).
+bool FileMissingOrTiny(const std::wstring& path, std::uint32_t min_bytes = 8);
+
+// One-shot: when running non-portable, copy sparse user files (e.g.
+// page_folders.json) from orphan portable sidecars (<exe>\data and the
+// Desktidy ↔ Desktidy-cpp mirror build tree). Prevents "settings vanished"
+// after switching portable debug builds → installed LocalAppData.
+bool AdoptOrphanPortableSidecarOnce();

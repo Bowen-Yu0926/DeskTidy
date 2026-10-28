@@ -268,24 +268,62 @@ std::wstring RuleFilePath() {
 }
 
 RuleMap DefaultRules() {
+  // 两页模型：快捷方式 → 软件分区；其余文件（文档/图片等）→ 文档分区。
+  // 旧版曾把 .docx/.xlsx 指到 system_common（常用），一键整理后文档会
+  // 堆在工作页或看起来像「没进分区」。
   return {
       {L".lnk", "system_software"},
       {L".exe", "system_software"},
       {L".url", "system_software"},
-      {L".pdf", "system_common"},
-      {L".docx", "system_common"},
-      {L".doc", "system_common"},
-      {L".xlsx", "system_common"},
-      {L".pptx", "system_common"},
-      {L".txt", "system_common"},
-      {L".md", "system_common"},
-      {L".png", "system_common"},
-      {L".jpg", "system_common"},
-      {L".jpeg", "system_common"},
-      {L".zip", "system_common"},
-      {L"*", "system_common"},
+      {L".pdf", "system_docs"},
+      {L".docx", "system_docs"},
+      {L".doc", "system_docs"},
+      {L".xls", "system_docs"},
+      {L".xlsx", "system_docs"},
+      {L".ppt", "system_docs"},
+      {L".pptx", "system_docs"},
+      {L".txt", "system_docs"},
+      {L".md", "system_docs"},
+      {L".rtf", "system_docs"},
+      {L".png", "system_docs"},
+      {L".jpg", "system_docs"},
+      {L".jpeg", "system_docs"},
+      {L".zip", "system_docs"},
+      {L"*", "system_docs"},
   };
 }
+
+namespace {
+
+bool IsSoftwareExtensionKey(const std::wstring& key) {
+  const std::wstring lower = FoldLower(key);
+  return lower == L".lnk" || lower == L".url" || lower == L".exe";
+}
+
+// 把仍指向 system_common 的文档类扩展名 / 通配迁到 system_docs。
+int MigrateDocumentRulesLocked(RuleMap* rules) {
+  if (!rules) {
+    return 0;
+  }
+  int n = 0;
+  for (auto& kv : *rules) {
+    if (kv.second != "system_common") {
+      continue;
+    }
+    if (kv.first == L"*") {
+      kv.second = "system_docs";
+      ++n;
+      continue;
+    }
+    if (IsExtensionKey(kv.first) && !IsSoftwareExtensionKey(kv.first)) {
+      kv.second = "system_docs";
+      ++n;
+    }
+  }
+  return n;
+}
+
+}  // namespace
 
 RuleMap LoadRules() {
   std::ifstream in(RuleFilePath());
@@ -355,6 +393,8 @@ RuleMap LoadRules() {
   if (rules.empty()) {
     return DefaultRules();
   }
+  // 旧规则把文档扩展名指到 system_common（常用）；对齐两页模型迁到文档分区。
+  MigrateDocumentRulesLocked(&rules);
   return rules;
 }
 

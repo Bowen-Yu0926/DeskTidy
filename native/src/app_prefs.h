@@ -49,7 +49,8 @@ struct AppPrefs {
   bool search_documents = true;
   bool search_downloads = true;
   // When true, search fixed drives (Python file_search.search_all_drives).
-  bool search_all_drives = false;
+  // Default on — market parity with Everything / whole-disk desktop search.
+  bool search_all_drives = true;
   int search_max_results = 50;
   int search_max_depth = 12;
   // U1 file_search.include_open_folders / include_hidden / threads (Python
@@ -87,14 +88,16 @@ struct AppPrefs {
   bool close_behavior_prompted = false;
   // Running-session marker (Python session_active).
   bool session_active = false;
-  bool show_fences = true;
-  bool double_click_hide = true;
+  bool show_fences = true;          // always on; UI toggle removed
+  bool double_click_hide = false;   // feature removed; kept for prefs compat
   bool enable_public_desktop = false;
   // Desktop 「账」float position (-1 = default corner).
   int vault_launcher_x = -1;
   int vault_launcher_y = -1;
   // Right-edge page bar when pet does not host pages (Python show_page_indicator).
   bool show_page_indicator = true;
+  // Edge page chrome: "float" = mist card peek; "tabs" = discrete bookmark chips.
+  std::string page_chrome_style = "float";
   // Portal / desktop scan exclude patterns (Python exclude_patterns).
   std::vector<std::wstring> exclude_patterns;
   // U6 first-run markers (Python first_run_guide_done / first_run_organize_done).

@@ -8,7 +8,6 @@
 #include <Shellapi.h>
 
 #include <algorithm>
-#include <fstream>
 #include <sstream>
 
 namespace {
@@ -17,17 +16,8 @@ std::wstring CfgPath() {
   return JoinPath(NativeDataDir(), L"page_folders.json");
 }
 
-}  // namespace
-
-std::vector<PageFolderItem> LoadPageFolders() {
+std::vector<PageFolderItem> ParsePageFoldersJson(const std::string& json) {
   std::vector<PageFolderItem> out;
-  std::ifstream in(CfgPath());
-  if (!in) {
-    return out;
-  }
-  std::ostringstream ss;
-  ss << in.rdbuf();
-  const std::string json = ss.str();
   size_t pos = 0;
   while (true) {
     const size_t start = json.find('{', pos);
@@ -76,12 +66,27 @@ std::vector<PageFolderItem> LoadPageFolders() {
   return out;
 }
 
+}  // namespace
+
+std::vector<PageFolderItem> LoadPageFolders() {
+  // Portable → LocalAppData switches used to leave page_folders behind in
+  // <exe>\data; adopt before the first read so settings/page-bar stay filled.
+  AdoptOrphanPortableSidecarOnce();
+
+  std::string json;
+  if (!ReadUtf8FileWithBak(CfgPath(), &json)) {
+    return {};
+  }
+  return ParsePageFoldersJson(json);
+}
+
 bool SavePageFolders(const std::vector<PageFolderItem>& items) {
   std::ostringstream out;
   out << "{\n  \"folders\": [\n";
   for (size_t i = 0; i < items.size(); ++i) {
-    out << "    {\"name\":\"" << NarrowUtf8(items[i].name) << "\",\"path\":\""
-        << NarrowUtf8(items[i].path) << "\"}";
+    out << "    {\"name\":\"" << EscapeJsonUtf8(NarrowUtf8(items[i].name))
+        << "\",\"path\":\"" << EscapeJsonUtf8(NarrowUtf8(items[i].path))
+        << "\"}";
     if (i + 1 < items.size()) {
       out << ",";
     }
@@ -96,6 +101,7 @@ namespace {
 struct Ctx {
   std::vector<PageFolderItem> items;
   int sel = 0;
+  bool dirty = false;
 };
 
 std::wstring BuildState(Ctx* ctx) {
@@ -142,6 +148,18 @@ bool BrowseAddFolder(HWND owner, Ctx* ctx) {
   }
   ctx->items.push_back(std::move(it));
   ctx->sel = static_cast<int>(ctx->items.size()) - 1;
+  ctx->dirty = true;
+  return true;
+}
+
+bool PersistIfDirty(Ctx* ctx) {
+  if (!ctx || !ctx->dirty) {
+    return true;
+  }
+  if (!SavePageFolders(ctx->items)) {
+    return false;
+  }
+  ctx->dirty = false;
   return true;
 }
 
@@ -174,6 +192,8 @@ void EditPageFoldersDialog(HWND owner) {
     }
     if (id == L"add") {
       if (BrowseAddFolder(parent, &ctx)) {
+        // Market parity: list edits persist immediately (no silent discard on X).
+        PersistIfDirty(&ctx);
         MistWebDialogPushState(&dlg);
       }
       return false;
@@ -187,6 +207,8 @@ void EditPageFoldersDialog(HWND owner) {
         if (!neu.empty()) {
           it.name = neu;
           ctx.sel = index;
+          ctx.dirty = true;
+          PersistIfDirty(&ctx);
           MistWebDialogPushState(&dlg);
         }
       }
@@ -199,21 +221,31 @@ void EditPageFoldersDialog(HWND owner) {
         ctx.sel = ctx.items.empty()
                       ? -1
                       : (std::min)(index, static_cast<int>(ctx.items.size()) - 1);
+        ctx.dirty = true;
+        PersistIfDirty(&ctx);
         MistWebDialogPushState(&dlg);
       }
       return false;
     }
     if (id == L"save") {
-      SavePageFolders(ctx.items);
+      ctx.dirty = true;
+      if (!PersistIfDirty(&ctx)) {
+        MessageBoxW(parent, L"保存失败，请检查磁盘权限后重试。", L"分页文件夹",
+                    MB_OK | MB_ICONWARNING);
+        return false;
+      }
       return true;
     }
     if (id == L"cancel") {
+      // Dirty edits already flushed on each mutation; cancel just closes.
       return true;
     }
     return false;
   };
 
   MistWebDialogRun(&dlg, L"分页文件夹", 560, 440);
+  // Closing the title-bar X used to discard unsaved adds — flush once more.
+  PersistIfDirty(&ctx);
 }
 
 void OpenPageFolderMenu(HWND owner) {

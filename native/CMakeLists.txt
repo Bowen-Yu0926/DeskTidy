@@ -44,6 +44,7 @@ add_executable(desktidy_native WIN32
   src/snapshot.cpp
   src/shell_verbs.cpp
   src/public_host.cpp
+  src/float_placements.cpp
   src/todo_window.cpp
   src/search_window.cpp
   src/vault_window.cpp
@@ -262,4 +263,21 @@ add_custom_command(TARGET desktidy_native POST_BUILD
 
 if(MSVC)
   target_compile_options(desktidy_native PRIVATE /W4 /permissive- /utf-8)
+endif()
+
+# Headless geometry unit tests (no Win32 UI).
+add_executable(test_layout_geom
+  tests/test_layout_geom.cpp
+  src/layout.cpp
+  src/display_geom.cpp
+  src/log.cpp
+  src/paths_util.cpp
+)
+target_include_directories(test_layout_geom PRIVATE src)
+target_compile_definitions(test_layout_geom PRIVATE
+  UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+target_link_libraries(test_layout_geom PRIVATE
+  user32 gdi32 shell32 ole32 advapi32)
+if(MSVC)
+  target_compile_options(test_layout_geom PRIVATE /W4 /permissive- /utf-8)
 endif()

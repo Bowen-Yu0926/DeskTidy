@@ -305,14 +305,15 @@ void NotesWebView::Hide() {
 }
 
 void NotesWebView::Resize() {
-  if (!host_ || !parent_) {
+  // Only sync WebView2 bounds to the host HWND. Parent layout (tabs / sidebar /
+  // editor rect) owns host_ geometry via MoveWindow — never fill the whole
+  // parent here (that covered DeskNote chrome after opening a .md preview).
+  if (!host_) {
     return;
   }
-  RECT rc{};
-  GetClientRect(parent_, &rc);
-  MoveWindow(host_, 0, 0, rc.right, rc.bottom, TRUE);
+  RECT bounds{};
+  GetClientRect(host_, &bounds);
   if (controller_) {
-    RECT bounds{0, 0, rc.right, rc.bottom};
     static_cast<ICoreWebView2Controller*>(controller_)->put_Bounds(bounds);
   }
 }
