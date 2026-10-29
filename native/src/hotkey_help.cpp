@@ -2,6 +2,7 @@
 
 #include "hotkey_store.h"
 #include "i18n.h"
+#include "mist_msg.h"
 #include "paths_util.h"
 
 #include <string>
@@ -30,6 +31,5 @@ void ShowHotkeyHelp(HWND owner) {
     body += L"\n";
   }
   body += Tr("hk_help_footer");
-  MessageBoxW(owner, body.c_str(), Tr("hk_help_title").c_str(),
-              MB_OK | MB_ICONINFORMATION);
+  MistAlert(owner, Tr("hk_help_title").c_str(), body.c_str(), MistMsgTone::Info);
 }

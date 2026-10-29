@@ -1,5 +1,6 @@
 #include "desknote_launch.h"
 
+#include "mist_msg.h"
 #include "paths_util.h"
 
 #include <Shellapi.h>
@@ -183,10 +184,10 @@ bool LaunchOrFocusDeskNote(const std::vector<std::wstring>& paths) {
 
   const std::wstring exe = DeskNoteExePath();
   if (GetFileAttributesW(exe.c_str()) == INVALID_FILE_ATTRIBUTES) {
-    MessageBoxW(nullptr,
-                L"未找到 deskNote.exe。\n请重新编译 native（会同时生成 "
-                L"deskNote.exe）。",
-                L"DeskNote", MB_OK | MB_ICONWARNING);
+    MistAlert(nullptr, L"DeskNote",
+              L"未找到 deskNote.exe。\n请重新编译 native（会同时生成 "
+              L"deskNote.exe）。",
+              MistMsgTone::Warn);
     return false;
   }
 

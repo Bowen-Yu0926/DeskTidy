@@ -2048,8 +2048,7 @@ void App::DispatchSettingsCommand(const std::wstring& id) {
       const auto& item = list[static_cast<size_t>(index)];
       const std::wstring ask =
           std::wstring(L"确定恢复快照「") + item.name + L"」？";
-      if (MessageBoxW(owner, ask.c_str(), L"恢复快照",
-                      MB_YESNO | MB_ICONQUESTION) == IDYES) {
+      if (MistConfirm(owner, L"恢复快照", ask.c_str(), MistMsgTone::Warn)) {
         AppState state;
         if (LoadSnapshotWithIcons(item.path, &state)) {
           ReloadFencesFromState(state, /*heal_geometry=*/false);
@@ -2057,8 +2056,7 @@ void App::DispatchSettingsCommand(const std::wstring& id) {
           ShowToast(L"已恢复所选快照");
           PushExtensionSettings();
         } else {
-          MessageBoxW(owner, L"无法读取该快照。", L"布局快照",
-                      MB_OK | MB_ICONWARNING);
+          MistAlert(owner, L"布局快照", L"无法读取该快照。", MistMsgTone::Warn);
         }
       }
     }
@@ -2071,15 +2069,13 @@ void App::DispatchSettingsCommand(const std::wstring& id) {
       const auto& item = list[static_cast<size_t>(index)];
       const std::wstring ask =
           std::wstring(L"确定删除快照「") + item.name + L"」？";
-      if (MessageBoxW(owner, ask.c_str(), L"删除快照",
-                      MB_YESNO | MB_ICONWARNING) == IDYES) {
+      if (MistConfirm(owner, L"删除快照", ask.c_str(), MistMsgTone::Danger)) {
         if (DeleteSnapshot(item.path) ||
             GetFileAttributesW(item.path.c_str()) == INVALID_FILE_ATTRIBUTES) {
           ShowToast(L"已删除快照");
           PushExtensionSettings();
         } else {
-          MessageBoxW(owner, L"删除失败。", L"布局快照",
-                      MB_OK | MB_ICONWARNING);
+          MistAlert(owner, L"布局快照", L"删除失败。", MistMsgTone::Warn);
         }
       }
     }
@@ -2419,12 +2415,11 @@ void App::OpenSearch() {
 }
 void App::OpenVault() {
   if (!prefs_.vault_enabled || !VaultHttpLoggedIn()) {
-    const int r = MessageBoxW(
-        settings_.Hwnd(),
-        L"账号管理未启用或未登录。\n\n是否现在登录并启用？\n"
-        L"（也可在设置 → 账号管理中操作）",
-        L"账号库", MB_YESNO | MB_ICONQUESTION);
-    if (r != IDYES) {
+    if (!MistConfirm(
+            settings_.Hwnd(), L"账号库",
+            L"账号管理未启用或未登录。\n\n是否现在登录并启用？\n"
+            L"（也可在设置 → 账号管理中操作）",
+            MistMsgTone::Info)) {
       return;
     }
     if (!VaultHttpHealth()) {
@@ -2580,8 +2575,7 @@ void App::RestoreLayoutSnapshot() {
   if (!applied_path.empty()) {
     RestoreSnapshotShellIcons(applied_path);
   }
-  MessageBoxW(settings_.Hwnd(), L"已恢复所选快照。", L"布局快照",
-              MB_OK | MB_ICONINFORMATION);
+  ShowToast(L"已恢复所选快照");
 }
 
 void App::ReloadFencesFromState(const AppState& state, bool heal_geometry) {
@@ -2689,30 +2683,30 @@ void App::TogglePageLock(int page) {
 }
 
 void App::OpenMinutes() {
-  const int choice = MessageBoxW(
-      settings_.Hwnd(),
+  const MistMsgResult choice = MistMessage(
+      settings_.Hwnd(), L"会议纪要",
       L"会议纪要：\n\n"
       L"是 = 新建 Markdown\n"
       L"否 = 新建 Word (.docx)\n"
       L"取消 = 更多…",
-      L"会议纪要", MB_YESNOCANCEL | MB_ICONQUESTION);
-  if (choice == IDYES) {
+      MistMsgKind::YesNoCancel, MistMsgTone::Info);
+  if (choice == MistMsgResult::Yes) {
     CreateAndOpenMinutes(settings_.Hwnd());
     return;
   }
-  if (choice == IDNO) {
+  if (choice == MistMsgResult::No) {
     CreateAndOpenMinutesDocx(settings_.Hwnd());
     return;
   }
-  const int more = MessageBoxW(
-      settings_.Hwnd(),
+  const MistMsgResult more = MistMessage(
+      settings_.Hwnd(), L"会议纪要",
       L"更多：\n\n是 = 打开最近纪要\n否 = 打开文件夹\n取消 = 设置文件夹",
-      L"会议纪要", MB_YESNOCANCEL | MB_ICONQUESTION);
-  if (more == IDYES) {
+      MistMsgKind::YesNoCancel, MistMsgTone::Info);
+  if (more == MistMsgResult::Yes) {
     OpenRecentMinutes(settings_.Hwnd());
-  } else if (more == IDNO) {
+  } else if (more == MistMsgResult::No) {
     OpenMinutesFolder(settings_.Hwnd());
-  } else if (more == IDCANCEL) {
+  } else if (more == MistMsgResult::Cancel) {
     ConfigureMinutesFolder(settings_.Hwnd());
   }
 }
@@ -3325,8 +3319,8 @@ void App::ImportPrefs() {
   if (!GetOpenFileNameW(&ofn)) {
     return;
   }
-  if (MessageBoxW(settings_.Hwnd(), L"导入配置将覆盖当前设置，是否继续？",
-                  L"确认导入", MB_YESNO | MB_ICONQUESTION) != IDYES) {
+  if (!MistConfirm(settings_.Hwnd(), L"确认导入",
+                   L"导入配置将覆盖当前设置，是否继续？", MistMsgTone::Warn)) {
     return;
   }
   prefs_ = LoadAppPrefsFromPath(path);
@@ -3336,9 +3330,8 @@ void App::ImportPrefs() {
   ApplyUiThemeId(prefs_.ui_theme);
   settings_.SetOrganizePrefs(prefs_.auto_organize_on_startup,
                              prefs_.auto_organize_watch);
-  MessageBoxW(settings_.Hwnd(),
-              L"配置已导入，部分选项可能需要重启生效。", L"导入完成",
-              MB_OK | MB_ICONINFORMATION);
+  MistAlert(settings_.Hwnd(), L"导入完成",
+            L"配置已导入，部分选项可能需要重启生效。", MistMsgTone::Info);
 }
 
 void App::OpenNotes() { LaunchOrFocusDeskNote(); }
@@ -3350,11 +3343,10 @@ void App::OpenPathsInNotes(const std::vector<std::wstring>& paths) {
 void App::RequestQuit() {
   // T4: confirm when a recording is in progress (exit would stop it).
   if (IsScreenRecording()) {
-    const int r = MessageBoxW(
-        settings_.Hwnd(),
-        L"正在录屏，退出将停止录制并保存当前片段。\n是否继续退出？",
-        L"退出确认", MB_YESNO | MB_ICONQUESTION);
-    if (r != IDYES) {
+    if (!MistConfirm(
+            settings_.Hwnd(), L"退出确认",
+            L"正在录屏，退出将停止录制并保存当前片段。\n是否继续退出？",
+            MistMsgTone::Warn)) {
       return;
     }
   }
@@ -3367,13 +3359,12 @@ void App::HandleSettingsClose() {
   // Only reached when close_to_tray is false. First close asks once and
   // remembers (Python closeEvent → close_behavior_prompted).
   if (!prefs_.close_behavior_prompted) {
-    const int r = MessageBoxW(
-        settings_.Hwnd(),
+    const bool keep_background = MistConfirm(
+        settings_.Hwnd(), L"后台运行",
         L"关闭 DeskTidy 窗口后是否在系统托盘后台继续运行？\n\n"
         L"「是」：隐藏到托盘，桌面分区继续工作，此选择将被记住。\n"
         L"「否」：按退出流程处理（分区整理会保留）。",
-        L"后台运行", MB_YESNO | MB_ICONQUESTION);
-    const bool keep_background = (r == IDYES);
+        MistMsgTone::Info);
     prefs_.close_behavior_prompted = true;
     prefs_.close_to_tray = keep_background;
     SaveAppPrefs(prefs_);
@@ -3544,15 +3535,16 @@ void App::PromptAvailableUpdate(const std::wstring& latest,
                                 const std::wstring& html_url) {
   const std::wstring msg = L"发现新版本 " + latest + L"（当前 " + current +
                            L"）。\n\n是：下载并静默安装\n否：打开发布页\n取消：稍后";
-  const int answer = MessageBoxW(message_hwnd_, msg.c_str(), L"检查更新",
-                                 MB_YESNOCANCEL | MB_ICONQUESTION);
-  if (answer == IDNO) {
+  const MistMsgResult answer =
+      MistMessage(message_hwnd_, L"检查更新", msg.c_str(),
+                  MistMsgKind::YesNoCancel, MistMsgTone::Info);
+  if (answer == MistMsgResult::No) {
     ShellExecuteW(nullptr, L"open",
                   html_url.empty()
                       ? L"https://github.com/Bowen-Yu0926/DeskTidy-Releases/releases/latest"
                       : html_url.c_str(),
                   nullptr, nullptr, SW_SHOWNORMAL);
-  } else if (answer == IDYES) {
+  } else if (answer == MistMsgResult::Yes) {
     update_progress_last_pct_ = -1;
     UpdateToastText(L"正在下载更新…", 5000);
     StartUpdateInstallAsync(message_hwnd_);
@@ -3624,12 +3616,11 @@ void App::OnUpdateInstallDone(UpdateInstallResult* r) {
     return;
   }
   UpdateToastText(L"下载完成，准备安装…", 3000);
-  const int answer = MessageBoxW(
-      message_hwnd_,
-      L"安装包已下载并通过校验。\n\n点击「是」将关闭 DeskTidy 并开始静默安装。"
-      L"是否立即安装？",
-      L"下载完成", MB_YESNO | MB_ICONQUESTION);
-  if (answer != IDYES) {
+  if (!MistConfirm(
+          message_hwnd_, L"下载完成",
+          L"安装包已下载并通过校验。\n\n点击「是」将关闭 DeskTidy 并开始静默安装。"
+          L"是否立即安装？",
+          MistMsgTone::Info)) {
     return;
   }
   std::wstring err;
@@ -3893,8 +3884,8 @@ void App::DeletePageAt(int page) {
         L"该页有 " + std::to_wstring(content) +
         L" 个分区，删除后这些分区将移至工作页。\n确定删除页面「" +
         page_names_[static_cast<size_t>(page)] + L"」？";
-    if (MessageBoxW(settings_.Hwnd(), msg.c_str(), L"删除页面",
-                    MB_YESNO | MB_ICONWARNING) != IDYES) {
+    if (!MistConfirm(settings_.Hwnd(), L"删除页面", msg.c_str(),
+                     MistMsgTone::Danger)) {
       return;
     }
   }
@@ -4203,7 +4194,7 @@ void App::HandleIncomingPaths(FenceWindow* fence,
   if (failed.size() > 12) {
     msg += L"…";
   }
-  MessageBoxW(settings_.Hwnd(), msg.c_str(), L"导入失败", MB_OK | MB_ICONWARNING);
+  MistAlert(settings_.Hwnd(), L"导入失败", msg.c_str(), MistMsgTone::Warn);
 }
 
 void App::UnpinPath(const std::wstring& path, const POINT* drop) {
@@ -4456,9 +4447,58 @@ void App::PruneStickyMissingPins() {
     return;  // 10s throttle; watch timer ticks every 2s
   }
   pin_prune_last_ms_ = now;
+
+  auto file_name = [](const std::wstring& path) -> std::wstring {
+    const size_t slash = path.find_last_of(L"\\/");
+    return slash == std::wstring::npos ? path : path.substr(slash + 1);
+  };
+  auto link_stem = [](std::wstring name) -> std::wstring {
+    if (name.size() > 4) {
+      const wchar_t* ext = name.c_str() + name.size() - 4;
+      if (_wcsicmp(ext, L".lnk") == 0 || _wcsicmp(ext, L".url") == 0) {
+        name.resize(name.size() - 4);
+      }
+    }
+    // Installers often use 「启动 Foo.lnk」 while Public Desktop has Foo.lnk.
+    constexpr wchar_t kLaunch[] = L"启动 ";
+    if (name.size() > 3 && _wcsnicmp(name.c_str(), kLaunch, 3) == 0) {
+      name.erase(0, 3);
+    }
+    return name;
+  };
+  // When a pinned .lnk disappears (move / per-user→Public reinstall), keep the
+  // fence seat if the same shortcut still exists on Desktop / Public Desktop.
+  auto find_desktop_replacement =
+      [&](const std::wstring& missing) -> std::wstring {
+    const std::wstring want_name = file_name(missing);
+    const std::wstring want_stem = link_stem(want_name);
+    if (want_stem.empty()) {
+      return {};
+    }
+    InvalidateDesktopScanCache();
+    const auto items = ScanDesktopItems();
+    std::wstring stem_hit;
+    for (const auto& it : items) {
+      if (!it.is_link) {
+        continue;
+      }
+      const std::wstring bn = file_name(it.path);
+      if (_wcsicmp(bn.c_str(), want_name.c_str()) == 0) {
+        return it.path;
+      }
+      if (stem_hit.empty() &&
+          _wcsicmp(link_stem(bn).c_str(), want_stem.c_str()) == 0) {
+        stem_hit = it.path;
+      }
+    }
+    return stem_hit;
+  };
+
   int dropped = 0;
+  int retargeted = 0;
   for (auto it = pins_.begin(); it != pins_.end();) {
-    const std::wstring& path = it->first;
+    const std::wstring path = it->first;
+    const std::string fence_id = it->second;
     if (!path.empty() &&
         GetFileAttributesW(path.c_str()) != INVALID_FILE_ATTRIBUTES) {
       pin_missing_since_.erase(path);
@@ -4476,15 +4516,109 @@ void App::PruneStickyMissingPins() {
       continue;
     }
     pin_missing_since_.erase(miss);
+
+    const std::wstring replacement = find_desktop_replacement(path);
+    if (!replacement.empty() &&
+        NormalizePinKey(replacement) != NormalizePinKey(path)) {
+      const std::string* existing = FindPin(pins_, replacement);
+      if (!existing) {
+        LogLine(L"[pin] sticky prune retarget: %s -> %s", path.c_str(),
+                replacement.c_str());
+        it = pins_.erase(it);
+        SetPin(&pins_, replacement, fence_id);
+        RetargetFloatPlacement(&float_placements_, path, replacement);
+        for (auto& fence : fences_) {
+          if (!fence) {
+            continue;
+          }
+          auto order = fence->PinOrder();
+          bool changed = false;
+          for (auto& p : order) {
+            if (NormalizePinKey(p) == NormalizePinKey(path)) {
+              p = replacement;
+              changed = true;
+            }
+          }
+          if (changed) {
+            fence->SetPinOrder(std::move(order));
+          }
+        }
+        ++retargeted;
+        continue;
+      }
+    }
+
     LogLine(L"[pin] sticky prune drop: %s", path.c_str());
+    EraseFloatPlacement(&float_placements_, path);
     it = pins_.erase(it);
     ++dropped;
   }
-  if (dropped > 0) {
-    BumpPinsEpoch();
-    SavePins(pins_);
+
+  // Same sticky window for orphan floats (e.g. 「启动 Foo.lnk」 after Public
+  // reinstall) so a deleted desk icon does not keep a ghost seat forever.
+  int float_dropped = 0;
+  int float_retargeted = 0;
+  std::vector<std::wstring> float_keys;
+  float_keys.reserve(float_placements_.size());
+  for (const auto& kv : float_placements_) {
+    float_keys.push_back(kv.first);
+  }
+  for (const std::wstring& key : float_keys) {
+    auto it = float_placements_.find(key);
+    if (it == float_placements_.end()) {
+      continue;
+    }
+    const std::wstring path =
+        it->second.path.empty() ? it->first : it->second.path;
+    if (!path.empty() &&
+        GetFileAttributesW(path.c_str()) != INVALID_FILE_ATTRIBUTES) {
+      pin_missing_since_.erase(path);
+      continue;
+    }
+    auto miss = pin_missing_since_.find(path);
+    if (miss == pin_missing_since_.end()) {
+      pin_missing_since_[path] = now;
+      continue;
+    }
+    if (now - miss->second < kStickyGraceMs) {
+      continue;
+    }
+    pin_missing_since_.erase(miss);
+
+    const std::wstring replacement = find_desktop_replacement(path);
+    if (!replacement.empty() &&
+        NormalizePinKey(replacement) != NormalizePinKey(path) &&
+        float_placements_.find(NormalizePinKey(replacement)) ==
+            float_placements_.end() &&
+        !FindPin(pins_, replacement)) {
+      LogLine(L"[float] sticky prune retarget: %s -> %s", path.c_str(),
+              replacement.c_str());
+      RetargetFloatPlacement(&float_placements_, path, replacement);
+      ++float_retargeted;
+      continue;
+    }
+
+    LogLine(L"[float] sticky prune drop: %s", path.c_str());
+    float_placements_.erase(key);
+    ++float_dropped;
+  }
+
+  if (dropped > 0 || retargeted > 0 || float_dropped > 0 ||
+      float_retargeted > 0) {
+    if (dropped > 0 || retargeted > 0) {
+      BumpPinsEpoch();
+      SavePins(pins_);
+    }
+    if (retargeted > 0 || float_dropped > 0 || float_retargeted > 0) {
+      SaveFloatPlacements(float_placements_);
+    }
+    if (retargeted > 0) {
+      PersistLayouts();
+    }
     RefreshDesktopIcons();
-    LogLine(L"[pin] sticky prune dropped=%d", dropped);
+    LogLine(L"[pin] sticky prune dropped=%d retargeted=%d float_dropped=%d "
+            L"float_retargeted=%d",
+            dropped, retargeted, float_dropped, float_retargeted);
   }
 }
 
@@ -5073,8 +5207,7 @@ void App::OnOrganizeDone(OrganizeJobResult* job) {
   } else {
     swprintf_s(buf, L"虚拟整理完成：写入 %d 条钉选。", applied);
   }
-  MessageBoxW(settings_.Hwnd() ? settings_.Hwnd() : message_hwnd_, buf,
-              L"DeskTidy Native", MB_OK | MB_ICONINFORMATION);
+  ShowToast(buf);
 }
 
 void App::SetOrganizeStartup(bool on) {
@@ -5119,8 +5252,8 @@ void App::TogglePet() { SetPetVisible(!pet_visible_); }
 
 void App::SetAutostart(bool on) {
   if (!SetNativeAutostart(on)) {
-    MessageBoxW(settings_.Hwnd(), L"无法更新开机启动快捷方式。",
-                L"DeskTidy Native", MB_OK | MB_ICONWARNING);
+    MistAlert(settings_.Hwnd(), L"DeskTidy", L"无法更新开机启动快捷方式。",
+              MistMsgTone::Warn);
   }
   settings_.SetToggles(dock_visible_, pet_visible_, IsNativeAutostartEnabled());
 }
@@ -5714,8 +5847,8 @@ LRESULT CALLBACK App::TrayWndProc(HWND hwnd, UINT msg, WPARAM wparam,
                 L"DeskTidy 桌面整理\n版本 " + NativeProductVersion() +
                 L"\n\n官网 / 发布页：\ngithub.com/Bowen-Yu0926/DeskTidy-Releases\n\n"
                 L"「是」打开发布页\n「否」打开使用说明";
-            if (MessageBoxW(hwnd, msg.c_str(), L"关于 DeskTidy",
-                            MB_YESNO | MB_ICONINFORMATION) == IDYES) {
+            if (MistConfirm(hwnd, L"关于 DeskTidy", msg.c_str(),
+                            MistMsgTone::Info)) {
               ShellExecuteW(
                   nullptr, L"open",
                   L"https://github.com/Bowen-Yu0926/DeskTidy-Releases/releases/latest",

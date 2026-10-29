@@ -1,9 +1,11 @@
 #include "snapshot_ui.h"
 
 #include "i18n.h"
+#include "mist_msg.h"
 #include "mist_webview.h"
 #include "prompt_text.h"
 #include "snapshot.h"
+#include "toast.h"
 
 #include <Windows.h>
 
@@ -108,8 +110,8 @@ bool ManageSnapshotsDialog(HWND owner, AppState* applied,
   }
   auto list = ListSnapshots();
   if (list.empty()) {
-    MessageBoxW(owner, Tr("snap_empty").c_str(), Tr("snap_title").c_str(),
-                MB_OK | MB_ICONINFORMATION);
+    MistAlert(owner, Tr("snap_title").c_str(), Tr("snap_empty").c_str(),
+              MistMsgTone::Info);
     return false;
   }
 
@@ -125,11 +127,83 @@ bool ManageSnapshotsDialog(HWND owner, AppState* applied,
   dlg.user_data_subdir = L"webview2-snapshot";
   dlg.html_path = MistFindAssetHtml(L"dialogs\\snapshot.html");
   if (dlg.html_path.empty()) {
-    MessageBoxW(owner, L"找不到 snapshot.html", Tr("snap_title").c_str(),
-                MB_OK | MB_ICONWARNING);
+    MistAlert(owner, Tr("snap_title").c_str(), L"找不到 snapshot.html",
+              MistMsgTone::Warn);
     return false;
   }
   dlg.build_state = [&ctx]() { return BuildState(&ctx); };
+  // Nested Mist / MessageBox inside WebMessageReceived freezes — always defer.
+  constexpr WPARAM kDeferRestore = 1;
+  constexpr WPARAM kDeferDelete = 2;
+  constexpr WPARAM kDeferRename = 3;
+  dlg.on_deferred = [&](WPARAM op, LPARAM index_lp) {
+    const int sel = static_cast<int>(index_lp);
+    if (sel < 0 || sel >= static_cast<int>(ctx.list.size())) {
+      return;
+    }
+    HWND parent = dlg.hwnd ? dlg.hwnd : owner;
+    const auto& item = ctx.list[static_cast<size_t>(sel)];
+    if (op == kDeferRestore) {
+      const std::wstring ask =
+          Tr("snap_restore_ask") + L"\n「" + item.name + L"」";
+      if (!MistConfirm(parent, Tr("snap_restore_title").c_str(), ask.c_str(),
+                       MistMsgTone::Warn)) {
+        return;
+      }
+      if (!LoadSnapshotWithIcons(item.path, ctx.applied)) {
+        MistAlert(parent, Tr("snap_title").c_str(), Tr("snap_read_fail").c_str(),
+                  MistMsgTone::Warn);
+        return;
+      }
+      if (ctx.applied_path) {
+        *ctx.applied_path = item.path;
+      }
+      ctx.restored = true;
+      MistWebDialogClose(&dlg);
+      return;
+    }
+    if (op == kDeferDelete) {
+      const std::wstring ask =
+          Tr("snap_delete_ask") + L"\n「" + item.name + L"」";
+      if (!MistConfirm(parent, Tr("snap_delete_title").c_str(), ask.c_str(),
+                       MistMsgTone::Danger)) {
+        return;
+      }
+      if (DeleteSnapshot(item.path)) {
+        ctx.list.erase(ctx.list.begin() + sel);
+        if (sel < static_cast<int>(ctx.previews.size())) {
+          ctx.previews.erase(ctx.previews.begin() + sel);
+        }
+        if (ctx.list.empty()) {
+          MistWebDialogClose(&dlg);
+          return;
+        }
+        ctx.sel = std::min(sel, static_cast<int>(ctx.list.size()) - 1);
+        MistWebDialogPushState(&dlg);
+      } else {
+        MistAlert(parent, Tr("snap_title").c_str(),
+                  Tr("snap_delete_fail").c_str(), MistMsgTone::Warn);
+      }
+      return;
+    }
+    if (op == kDeferRename) {
+      // Deferred: Mist prompt is OK (not on WebMessageReceived stack).
+      const std::wstring nv =
+          PromptText(parent, L"重命名快照", L"新名称", item.name);
+      if (nv.empty() || nv == item.name) {
+        return;
+      }
+      if (!RenameSnapshot(item.path, nv)) {
+        MistAlert(parent, L"重命名快照", Tr("snap_delete_fail").c_str(),
+                  MistMsgTone::Warn);
+        return;
+      }
+      ctx.list = ListSnapshots();
+      ctx.previews.clear();
+      ctx.sel = 0;
+      MistWebDialogPushState(&dlg);
+    }
+  };
   dlg.on_message = [&](const std::wstring& json) -> bool {
     const std::wstring type = MistJsonStringField(json, L"type");
     if (type != L"action") {
@@ -143,80 +217,18 @@ bool ManageSnapshotsDialog(HWND owner, AppState* applied,
       MistWebDialogPushState(&dlg);
       return false;
     }
-    if (id == L"restore") {
+    if (id == L"restore" || id == L"delete" || id == L"rename") {
       const int sel = MistJsonIntField(json, L"index", ctx.sel);
-      if (sel < 0 || sel >= static_cast<int>(ctx.list.size())) {
+      if (!dlg.hwnd || sel < 0 || sel >= static_cast<int>(ctx.list.size())) {
         return false;
       }
-      const auto& item = ctx.list[static_cast<size_t>(sel)];
-      const std::wstring ask =
-          Tr("snap_restore_ask") + L"\n「" + item.name + L"」";
-      HWND parent = dlg.hwnd ? dlg.hwnd : owner;
-      if (MessageBoxW(parent, ask.c_str(), Tr("snap_restore_title").c_str(),
-                      MB_YESNO | MB_ICONQUESTION) != IDYES) {
-        return false;
+      WPARAM op = kDeferRestore;
+      if (id == L"delete") {
+        op = kDeferDelete;
+      } else if (id == L"rename") {
+        op = kDeferRename;
       }
-      if (!LoadSnapshotWithIcons(item.path, ctx.applied)) {
-        MessageBoxW(parent, Tr("snap_read_fail").c_str(),
-                    Tr("snap_title").c_str(), MB_OK | MB_ICONWARNING);
-        return false;
-      }
-      if (ctx.applied_path) {
-        *ctx.applied_path = item.path;
-      }
-      ctx.restored = true;
-      return true;
-    }
-    if (id == L"delete") {
-      const int sel = MistJsonIntField(json, L"index", ctx.sel);
-      if (sel < 0 || sel >= static_cast<int>(ctx.list.size())) {
-        return false;
-      }
-      const auto& item = ctx.list[static_cast<size_t>(sel)];
-      const std::wstring ask =
-          Tr("snap_delete_ask") + L"\n「" + item.name + L"」";
-      HWND parent = dlg.hwnd ? dlg.hwnd : owner;
-      if (MessageBoxW(parent, ask.c_str(), Tr("snap_delete_title").c_str(),
-                      MB_YESNO | MB_ICONWARNING) != IDYES) {
-        return false;
-      }
-      if (DeleteSnapshot(item.path)) {
-        ctx.list.erase(ctx.list.begin() + sel);
-        if (sel < static_cast<int>(ctx.previews.size())) {
-          ctx.previews.erase(ctx.previews.begin() + sel);
-        }
-        if (ctx.list.empty()) {
-          return true;
-        }
-        ctx.sel = std::min(sel, static_cast<int>(ctx.list.size()) - 1);
-        MistWebDialogPushState(&dlg);
-      } else {
-        MessageBoxW(parent, Tr("snap_delete_fail").c_str(),
-                    Tr("snap_title").c_str(), MB_OK | MB_ICONWARNING);
-      }
-      return false;
-    }
-    if (id == L"rename") {
-      const int sel = MistJsonIntField(json, L"index", ctx.sel);
-      if (sel < 0 || sel >= static_cast<int>(ctx.list.size())) {
-        return false;
-      }
-      HWND parent = dlg.hwnd ? dlg.hwnd : owner;
-      const auto& item = ctx.list[static_cast<size_t>(sel)];
-      const std::wstring nv =
-          PromptText(parent, L"重命名快照", L"新名称", item.name);
-      if (nv.empty() || nv == item.name) {
-        return false;
-      }
-      if (!RenameSnapshot(item.path, nv)) {
-        MessageBoxW(parent, Tr("snap_delete_fail").c_str(), L"重命名快照",
-                    MB_OK | MB_ICONWARNING);
-        return false;
-      }
-      ctx.list = ListSnapshots();
-      ctx.previews.clear();
-      ctx.sel = 0;
-      MistWebDialogPushState(&dlg);
+      PostMessageW(dlg.hwnd, WM_APP + 81, op, static_cast<LPARAM>(sel));
       return false;
     }
     if (id == L"close") {

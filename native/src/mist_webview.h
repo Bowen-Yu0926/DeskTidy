@@ -30,6 +30,10 @@ struct MistWebDialog {
   std::function<std::wstring()> build_state;
   // Return true to close the dialog after handling.
   std::function<bool(const std::wstring& json)> on_message;
+  // Optional: run off the WebMessageReceived stack via
+  // PostMessageW(hwnd, WM_APP+81, wparam, lparam). Use for folder pickers /
+  // nested PromptText (SHBrowse / Mist from inside on_message freezes).
+  std::function<void(WPARAM, LPARAM)> on_deferred;
 };
 
 // Blocks until the dialog closes. Returns after WM_DESTROY.

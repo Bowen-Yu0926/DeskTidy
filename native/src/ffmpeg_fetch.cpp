@@ -1,6 +1,7 @@
 #include "ffmpeg_fetch.h"
 
 #include "log.h"
+#include "mist_msg.h"
 #include "paths_util.h"
 #include "tool_paths.h"
 
@@ -508,20 +509,19 @@ bool EnsureFfmpegForRecording(HWND owner, std::wstring* out_exe) {
       }
       return true;
     }
-    const int r = MessageBoxW(
-        owner,
-        (L"检测到 ffmpeg，但能力不满足录屏要求：\n" + err +
-         L"\n\n是否重新下载完整版本（约 80 MB）？")
-            .c_str(),
-        L"录屏", MB_YESNO | MB_ICONWARNING);
-    if (r != IDYES) {
+    if (!MistConfirm(
+            owner, L"录屏",
+            (L"检测到 ffmpeg，但能力不满足录屏要求：\n" + err +
+             L"\n\n是否重新下载完整版本（约 80 MB）？")
+                .c_str(),
+            MistMsgTone::Warn)) {
       return false;
     }
   } else {
-    const int r = MessageBoxW(
-        owner, L"录屏需要 FFmpeg。\n未找到 FFmpeg，是否自动下载（约 80 MB）？",
-        L"录屏", MB_YESNO | MB_ICONQUESTION);
-    if (r != IDYES) {
+    if (!MistConfirm(
+            owner, L"录屏",
+            L"录屏需要 FFmpeg。\n未找到 FFmpeg，是否自动下载（约 80 MB）？",
+            MistMsgTone::Info)) {
       return false;
     }
   }
@@ -532,12 +532,11 @@ bool EnsureFfmpegForRecording(HWND owner, std::wstring* out_exe) {
   CloseProgress();
   if (!ok) {
     LogLine(L"[ffmpeg] fetch failed: %s", err.c_str());
-    MessageBoxW(
-        owner,
-        (L"下载 FFmpeg 失败。\n" + (err.empty() ? L"未知错误" : err) +
-         L"\n\n建议手动安装：winget install Gyan.FFmpeg")
-            .c_str(),
-        L"录屏", MB_OK | MB_ICONERROR);
+    MistAlert(owner, L"录屏",
+              (L"下载 FFmpeg 失败。\n" + (err.empty() ? L"未知错误" : err) +
+               L"\n\n建议手动安装：winget install Gyan.FFmpeg")
+                  .c_str(),
+              MistMsgTone::Danger);
     return false;
   }
   if (out_exe) {

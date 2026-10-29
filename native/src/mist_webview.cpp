@@ -243,6 +243,12 @@ LRESULT CALLBACK MistWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
         MistFocusDialog(dlg);
       }
       return 0;
+    case WM_APP + 81:
+      // Deferred host work posted from on_message (browse / nested prompt).
+      if (dlg && dlg->on_deferred) {
+        dlg->on_deferred(wparam, lparam);
+      }
+      return 0;
     case WM_ERASEBKGND:
       // Frameless: skip GDI fill so DWM/WebView transparency shows through.
       if (dlg && dlg->frameless) {

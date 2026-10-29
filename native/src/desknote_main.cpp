@@ -4,6 +4,7 @@
 #include "file_assoc.h"
 #include "i18n.h"
 #include "log.h"
+#include "mist_msg.h"
 #include "notes_window.h"
 #include "paths_util.h"
 #include "ui_theme.h"
@@ -212,13 +213,11 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
 
   if (elev_save) {
     notes.OpenPaths({cmd.elev_save_target});
-    MessageBoxW(notes.Hwnd(),
-                elev_save_ok
-                    ? (L"已以管理员权限保存：\n" + cmd.elev_save_target).c_str()
-                    : (L"以管理员权限保存失败：\n" + cmd.elev_save_target).c_str(),
-                L"保存",
-                elev_save_ok ? (MB_OK | MB_ICONINFORMATION)
-                             : (MB_OK | MB_ICONWARNING));
+    MistAlert(notes.Hwnd(), L"保存",
+              elev_save_ok
+                  ? (L"已以管理员权限保存：\n" + cmd.elev_save_target).c_str()
+                  : (L"以管理员权限保存失败：\n" + cmd.elev_save_target).c_str(),
+              elev_save_ok ? MistMsgTone::Info : MistMsgTone::Warn);
   } else if (cmd.paths.empty()) {
     notes.Present();
   } else {

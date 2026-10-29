@@ -15,6 +15,8 @@ class CaptureOverlay {
 
   bool Begin(HINSTANCE instance, DoneFn on_done, bool auto_pin = false);
   void Cancel();
+  HWND Hwnd() const { return hwnd_; }
+  bool IsActive() const { return hwnd_ != nullptr; }
 
  private:
   enum class FinishAction { Copy, Save, Pin };
@@ -71,6 +73,9 @@ class CaptureOverlay {
   void DestroyToolbar();
   int HitToolbar(int x, int y) const;
   void OnToolbarCommand(int id);
+  void UpdateToolbarHover(int id);
+  void HideToolbarTip();
+  void ShowToolbarTip(int id);
   void UndoAnnotation();
   void BeginDraft(Tool tool, POINT pt);
   bool UpdateDraft(POINT pt);
@@ -103,6 +108,8 @@ class CaptureOverlay {
 
   HWND hwnd_ = nullptr;
   HWND toolbar_ = nullptr;
+  HWND tip_hwnd_ = nullptr;
+  int tb_hover_id_ = 0;
   HWND text_edit_ = nullptr;
   WNDPROC text_edit_prev_ = nullptr;
   HINSTANCE instance_ = nullptr;

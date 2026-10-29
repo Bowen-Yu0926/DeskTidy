@@ -1,6 +1,7 @@
 #include "pinned_image.h"
 
 #include "i18n.h"
+#include "mist_msg.h"
 
 #include <Shellapi.h>
 #include <ShlObj.h>
@@ -177,8 +178,8 @@ void PinnedImage::SaveAs() {
   }
   Gdiplus::GdiplusShutdown(token);
   if (!saved) {
-    MessageBoxW(hwnd_, L"另存为失败，请检查路径或磁盘空间。", L"贴图",
-                MB_OK | MB_ICONERROR);
+    MistAlert(hwnd_, L"贴图", L"另存为失败，请检查路径或磁盘空间。",
+              MistMsgTone::Danger);
   }
 }
 

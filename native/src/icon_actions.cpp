@@ -3,6 +3,7 @@
 #include "namespace_icons.h"
 
 #include "i18n.h"
+#include "mist_msg.h"
 #include "prompt_text.h"
 #include "shell_clipboard.h"
 #include "toast.h"
@@ -317,8 +318,7 @@ IconFsResult RecycleShellPaths(HWND owner,
   }
   const std::wstring prompt =
       L"将选中的 " + std::to_wstring(paths.size()) + L" 项移到回收站？";
-  if (MessageBoxW(owner, prompt.c_str(), L"删除", MB_YESNO | MB_ICONQUESTION) !=
-      IDYES) {
+  if (!MistConfirm(owner, L"删除", prompt.c_str(), MistMsgTone::Warn)) {
     return IconFsResult::Cancelled;
   }
   // P1-11: capture namespace CLSID before delete so Explorer icons can return.
@@ -352,8 +352,7 @@ IconFsResult RecycleShellPaths(HWND owner,
 }
 
 IconFsResult RecycleShellPath(HWND owner, const std::wstring& path) {
-  if (MessageBoxW(owner, L"将此项移到回收站？", L"删除",
-                  MB_YESNO | MB_ICONQUESTION) != IDYES) {
+  if (!MistConfirm(owner, L"删除", L"将此项移到回收站？", MistMsgTone::Warn)) {
     return IconFsResult::Cancelled;
   }
   const std::wstring ns_clsid = GetLnkNamespaceClsid(path);

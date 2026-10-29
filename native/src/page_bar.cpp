@@ -936,7 +936,8 @@ void PageBar::Paint(HDC) {
     Gdiplus::Font font_util(face, em_util, Gdiplus::FontStyleRegular,
                             Gdiplus::UnitPixel);
     Gdiplus::StringFormat fmt;
-    fmt.SetAlignment(Gdiplus::StringAlignmentNear);
+    // Slightly centered in the chip (WeChat/dock feel); lock/rail keep side insets.
+    fmt.SetAlignment(Gdiplus::StringAlignmentCenter);
     fmt.SetLineAlignment(Gdiplus::StringAlignmentCenter);
     fmt.SetFormatFlags(Gdiplus::StringFormatFlagsNoWrap);
     fmt.SetTrimming(Gdiplus::StringTrimmingEllipsisCharacter);
@@ -1058,21 +1059,23 @@ void PageBar::Paint(HDC) {
                                          cy + 5.f * font_scale_, rail_w,
                                          bh - 10.f * font_scale_));
         }
-        const float left_pad =
-            std::round((on ? 12.f : (utility ? 10.f : 11.f)) * font_scale_);
-        const float right_pad =
-            std::round((locked ? 16.f : 10.f) * font_scale_);
+        const float rail_reserve =
+            on ? std::round(10.f * font_scale_) : 0.f;
+        const float lock_reserve =
+            locked ? std::round(14.f * font_scale_) : 0.f;
+        const float side = std::round(8.f * font_scale_);
+        const float text_x = cx + side + rail_reserve;
+        const float text_w =
+            bw - side * 2.f - rail_reserve - lock_reserve;
         const Gdiplus::Color ink_c =
             utility ? Gdiplus::Color(220, 71, 85, 105)
                     : Gdiplus::Color(255, 26, 35, 50);
         Gdiplus::SolidBrush ink(ink_c);
         const Gdiplus::Font& font =
             on ? font_on : (utility ? font_util : font_page);
-        if (expand_t_ > 0.35f) {
+        if (expand_t_ > 0.35f && text_w > 8.f) {
           g.DrawString(s.label.c_str(), -1, &font,
-                       Gdiplus::RectF(cx + left_pad, cy,
-                                      bw - left_pad - right_pad, bh),
-                       &fmt, &ink);
+                       Gdiplus::RectF(text_x, cy, text_w, bh), &fmt, &ink);
         }
         if (locked && expand_t_ > 0.45f) {
           const float lw = std::round(5.5f * font_scale_);
@@ -1139,17 +1142,21 @@ void PageBar::Paint(HDC) {
           g.FillRectangle(&rail, cx + 5.f, cy + (bh - rail_h) * 0.5f, 2.2f,
                           rail_h);
         }
-        const float left_pad = on ? 13.f : (utility ? 9.f : 8.f);
-        const float right_pad = locked ? 14.f : 6.f;
+        // Center label in the tab body; leave room for active rail + lock.
+        const float rail_reserve = on ? 8.f : 0.f;
+        const float lock_reserve = locked ? 14.f : 0.f;
+        const float side = 6.f;
+        const float text_x = cx + side + rail_reserve;
+        const float text_w = bw - side * 2.f - rail_reserve - lock_reserve;
         Gdiplus::SolidBrush ink(
             on ? Gdiplus::Color(255, ar, ag, ab)
                : Gdiplus::Color(255, utility ? 100 : 15, utility ? 116 : 23,
                                 utility ? 139 : 42));
         const Gdiplus::Font& font = utility ? font_util : font_page;
-        g.DrawString(s.label.c_str(), -1, &font,
-                     Gdiplus::RectF(cx + left_pad, cy,
-                                    bw - left_pad - right_pad, bh),
-                     &fmt, &ink);
+        if (text_w > 8.f) {
+          g.DrawString(s.label.c_str(), -1, &font,
+                       Gdiplus::RectF(text_x, cy, text_w, bh), &fmt, &ink);
+        }
         if (locked) {
           const float lw = 6.f;
           const float lx = cx + bw - 11.f;

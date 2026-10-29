@@ -26,6 +26,10 @@
 #include <string>
 #include <vector>
 
+#ifndef WDA_EXCLUDEFROMCAPTURE
+#define WDA_EXCLUDEFROMCAPTURE 0x00000011
+#endif
+
 // Forward declaration (defined in app_prefs.cpp): normalizes record mic device.
 std::wstring NormalizeRecordMic(const std::wstring& mic);
 
@@ -35,6 +39,15 @@ constexpr wchar_t kBadgeClass[] = L"DeskTidyNativeRecBadge";
 constexpr wchar_t kBorderClass[] = L"DeskTidyNativeRecBorder";
 constexpr UINT kBadgeTimer = 1;
 constexpr int kBorderPx = 3;
+
+// Market parity (OBS / ShareX / Game Bar): recording chrome stays on screen for
+// the user but must not appear in gdigrab / Desktop Duplication output.
+void ExcludeOverlayFromCapture(HWND hwnd) {
+  if (!hwnd) {
+    return;
+  }
+  SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE);
+}
 
 HANDLE g_proc = nullptr;
 DWORD g_proc_pid = 0;
@@ -461,6 +474,7 @@ void ShowBorders(HINSTANCE instance, const RECT& target, bool clear_first) {
         s.bottom - s.top, nullptr, nullptr, instance, nullptr);
     if (hwnd) {
       SetLayeredWindowAttributes(hwnd, 0, 220, LWA_ALPHA);
+      ExcludeOverlayFromCapture(hwnd);
       ShowWindow(hwnd, SW_SHOWNOACTIVATE);
       g_borders.push_back(hwnd);
     }
@@ -528,8 +542,7 @@ LRESULT CALLBACK BadgeProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
             LogLine(L"[record] size cap %d MiB reached — stopping",
                     g_cmd.max_mb);
             StopScreenRecord();
-            MessageBoxW(nullptr, L"录制文件已达大小上限，已自动停止。", L"录屏",
-                        MB_OK | MB_ICONINFORMATION);
+            ShowToast(L"录制文件已达大小上限，已自动停止");
             return 0;
           }
         }
@@ -642,6 +655,7 @@ void ShowBadges(HINSTANCE instance) {
       WS_POPUP, badge_work.right - ww - 16, badge_work.top + 12, ww, hh,
       nullptr, nullptr, instance, nullptr);
   if (b) {
+    ExcludeOverlayFromCapture(b);
     SetTimer(b, kBadgeTimer, 500, nullptr);
     ShowWindow(b, SW_SHOWNOACTIVATE);
     g_badges.push_back(b);
@@ -1508,7 +1522,7 @@ bool StartRecording(HWND owner) {
   g_out_path.clear();
   g_paused = false;
   if (!SpawnSegment(1, g_cmd.seconds > 0)) {
-    MessageBoxW(owner, L"无法启动 ffmpeg。", L"录屏", MB_OK | MB_ICONWARNING);
+    MistAlert(owner, L"录屏", L"无法启动 ffmpeg。", MistMsgTone::Warn);
     g_out_path.clear();
     g_cmd = RecCmd{};
     return false;

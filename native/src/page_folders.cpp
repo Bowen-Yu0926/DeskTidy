@@ -1,8 +1,11 @@
 #include "page_folders.h"
 
+#include "mist_msg.h"
 #include "mist_webview.h"
 #include "paths_util.h"
 #include "prompt_text.h"
+#include "toast.h"
+#include "tools_misc.h"
 
 #include <ShlObj.h>
 #include <Shellapi.h>
@@ -123,24 +126,16 @@ std::wstring BuildState(Ctx* ctx) {
 }
 
 bool BrowseAddFolder(HWND owner, Ctx* ctx) {
-  BROWSEINFOW bi{};
-  bi.hwndOwner = owner;
-  bi.lpszTitle = L"选择文件夹";
-  bi.ulFlags = BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE;
-  LPITEMIDLIST pidl = SHBrowseForFolderW(&bi);
-  if (!pidl) {
-    return false;
-  }
-  wchar_t path[MAX_PATH] = {};
-  SHGetPathFromIDListW(pidl, path);
-  CoTaskMemFree(pidl);
-  if (!path[0]) {
+  // Prefer the shared picker (same as wallpaper / record dir).
+  const std::wstring path = BrowseFolderDialog(owner, L"选择文件夹");
+  if (path.empty()) {
     return false;
   }
   PageFolderItem it;
   it.path = path;
   const size_t slash = it.path.find_last_of(L"\\/");
   it.name = slash == std::wstring::npos ? it.path : it.path.substr(slash + 1);
+  // Called from on_deferred (off WebMessageReceived) — Mist prompt is safe.
   const std::wstring custom =
       PromptText(owner, L"分页文件夹", L"显示名称：", it.name);
   if (!custom.empty()) {
@@ -174,32 +169,26 @@ void EditPageFoldersDialog(HWND owner) {
   dlg.user_data_subdir = L"webview2-page-folders";
   dlg.html_path = MistFindAssetHtml(L"dialogs\\page_folders.html");
   if (dlg.html_path.empty()) {
-    MessageBoxW(owner, L"找不到 page_folders.html", L"分页文件夹",
-                MB_OK | MB_ICONWARNING);
+    MistAlert(owner, L"分页文件夹", L"找不到 page_folders.html",
+              MistMsgTone::Warn);
     return;
   }
   dlg.build_state = [&ctx]() { return BuildState(&ctx); };
-  dlg.on_message = [&](const std::wstring& json) -> bool {
-    const std::wstring type = MistJsonStringField(json, L"type");
-    if (type != L"action") {
-      return false;
-    }
-    const std::wstring id = MistJsonStringField(json, L"id");
+  // Leave WebMessageReceived before folder picker / rename (nested browse or
+  // Mist prompt from that stack freezes the page-folders dialog).
+  constexpr WPARAM kDeferAdd = 1;
+  constexpr WPARAM kDeferRename = 2;
+  dlg.on_deferred = [&](WPARAM op, LPARAM index_lp) {
     HWND parent = dlg.hwnd ? dlg.hwnd : owner;
-    if (id == L"ready") {
-      MistWebDialogPushState(&dlg);
-      return false;
-    }
-    if (id == L"add") {
+    if (op == kDeferAdd) {
       if (BrowseAddFolder(parent, &ctx)) {
-        // Market parity: list edits persist immediately (no silent discard on X).
         PersistIfDirty(&ctx);
         MistWebDialogPushState(&dlg);
       }
-      return false;
+      return;
     }
-    if (id == L"rename") {
-      const int index = MistJsonIntField(json, L"index", -1);
+    if (op == kDeferRename) {
+      const int index = static_cast<int>(index_lp);
       if (index >= 0 && index < static_cast<int>(ctx.items.size())) {
         auto& it = ctx.items[static_cast<size_t>(index)];
         const std::wstring neu =
@@ -211,6 +200,30 @@ void EditPageFoldersDialog(HWND owner) {
           PersistIfDirty(&ctx);
           MistWebDialogPushState(&dlg);
         }
+      }
+    }
+  };
+  dlg.on_message = [&](const std::wstring& json) -> bool {
+    const std::wstring type = MistJsonStringField(json, L"type");
+    if (type != L"action") {
+      return false;
+    }
+    const std::wstring id = MistJsonStringField(json, L"id");
+    if (id == L"ready") {
+      MistWebDialogPushState(&dlg);
+      return false;
+    }
+    if (id == L"add") {
+      if (dlg.hwnd) {
+        PostMessageW(dlg.hwnd, WM_APP + 81, kDeferAdd, 0);
+      }
+      return false;
+    }
+    if (id == L"rename") {
+      const int index = MistJsonIntField(json, L"index", -1);
+      if (dlg.hwnd && index >= 0) {
+        PostMessageW(dlg.hwnd, WM_APP + 81, kDeferRename,
+                     static_cast<LPARAM>(index));
       }
       return false;
     }
@@ -230,8 +243,8 @@ void EditPageFoldersDialog(HWND owner) {
     if (id == L"save") {
       ctx.dirty = true;
       if (!PersistIfDirty(&ctx)) {
-        MessageBoxW(parent, L"保存失败，请检查磁盘权限后重试。", L"分页文件夹",
-                    MB_OK | MB_ICONWARNING);
+        // Toast only — MistAlert from WebMessageReceived can freeze the host.
+        ShowToast(L"保存失败，请检查磁盘权限后重试");
         return false;
       }
       return true;
@@ -251,8 +264,8 @@ void EditPageFoldersDialog(HWND owner) {
 void OpenPageFolderMenu(HWND owner) {
   auto items = LoadPageFolders();
   if (items.empty()) {
-    if (MessageBoxW(owner, L"还没有分页文件夹。现在添加？", L"分页文件夹",
-                    MB_YESNO | MB_ICONQUESTION) == IDYES) {
+    if (MistConfirm(owner, L"分页文件夹", L"还没有分页文件夹。现在添加？",
+                    MistMsgTone::Info)) {
       EditPageFoldersDialog(owner);
     }
     return;

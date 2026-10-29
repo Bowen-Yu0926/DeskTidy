@@ -255,6 +255,19 @@ std::wstring RunPickDialog(HWND owner, const std::wstring& dir,
     json += L"]}";
     return json;
   };
+  constexpr WPARAM kDeferNew = 1;
+  dlg.on_deferred = [&](WPARAM op, LPARAM) {
+    if (op != kDeferNew || !allow_new) {
+      return;
+    }
+    HWND parent = dlg.hwnd ? dlg.hwnd : owner;
+    const std::wstring name = PromptText(
+        parent, L"新建笔记", L"文件名（不含路径，如 idea.md）：", L"note.md");
+    if (!name.empty()) {
+      result = JoinPath(dir, name);
+      MistWebDialogClose(&dlg);
+    }
+  };
   dlg.on_message = [&](const std::wstring& json) -> bool {
     const std::wstring type = MistJsonStringField(json, L"type");
     if (type != L"action") {
@@ -274,13 +287,9 @@ std::wstring RunPickDialog(HWND owner, const std::wstring& dir,
       return false;
     }
     if (id == L"new" && allow_new) {
-      // Nested MistWebDialog freezes — use Win32 prompt while pick list is open.
-      HWND parent = dlg.hwnd ? dlg.hwnd : owner;
-      const std::wstring name = PromptTextWin32(
-          parent, L"新建笔记", L"文件名（不含路径，如 idea.md）：", L"note.md");
-      if (!name.empty()) {
-        result = JoinPath(dir, name);
-        return true;
+      // Leave WebMessageReceived before Mist prompt (nested host freezes).
+      if (dlg.hwnd) {
+        PostMessageW(dlg.hwnd, WM_APP + 81, kDeferNew, 0);
       }
       return false;
     }

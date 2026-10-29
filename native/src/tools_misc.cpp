@@ -5,10 +5,12 @@
 #include "help_center.h"
 #include "i18n.h"
 #include "log.h"
+#include "mist_msg.h"
 #include "mist_webview.h"
 #include "paths_util.h"
 #include "prompt_text.h"
 #include "screen_record.h"
+#include "toast.h"
 #include "tool_paths.h"
 #include "update_check.h"
 
@@ -361,8 +363,8 @@ bool RandomWallpaperFromLibrary(HWND owner) {
   }
   auto images = ListImagesInFolder(folder);
   if (images.empty()) {
-    MessageBoxW(owner, Tr("wallpaper_no_images").c_str(),
-                Tr("wallpaper_title").c_str(), MB_OK | MB_ICONWARNING);
+    MistAlert(owner, Tr("wallpaper_title").c_str(),
+              Tr("wallpaper_no_images").c_str(), MistMsgTone::Warn);
     return false;
   }
   std::wstring chosen;
@@ -376,8 +378,8 @@ bool RandomWallpaperFromLibrary(HWND owner) {
   if (ok) {
     RememberLastImage(chosen);
   } else {
-    MessageBoxW(owner, L"设置壁纸失败。", Tr("wallpaper_title").c_str(),
-                MB_OK | MB_ICONERROR);
+    MistAlert(owner, Tr("wallpaper_title").c_str(), L"设置壁纸失败。",
+              MistMsgTone::Danger);
   }
   return ok;
 }
@@ -422,17 +424,18 @@ bool PickAndSetWallpaper(HWND owner) {
 }
 
 bool WallpaperMenu(HWND owner) {
-  const int choice = MessageBoxW(owner, Tr("wallpaper_prompt").c_str(),
-                                 Tr("wallpaper_title").c_str(),
-                                 MB_YESNOCANCEL | MB_ICONQUESTION);
-  if (choice == IDYES) {
+  const MistMsgResult choice =
+      MistMessage(owner, Tr("wallpaper_title").c_str(),
+                  Tr("wallpaper_prompt").c_str(), MistMsgKind::YesNoCancel,
+                  MistMsgTone::Info);
+  if (choice == MistMsgResult::Yes) {
     return PickAndSetWallpaper(owner);
   }
-  if (choice == IDCANCEL) {
+  if (choice == MistMsgResult::Cancel) {
     const std::wstring prev = ReadOriginalWallpaper();
     if (prev.empty()) {
-      MessageBoxW(owner, Tr("wallpaper_no_original").c_str(),
-                  Tr("wallpaper_title").c_str(), MB_OK | MB_ICONINFORMATION);
+      MistAlert(owner, Tr("wallpaper_title").c_str(),
+                Tr("wallpaper_no_original").c_str(), MistMsgTone::Info);
       return false;
     }
     return ApplyWallpaperPath(prev, false, false);
@@ -456,8 +459,8 @@ bool WallpaperMenu(HWND owner) {
   }
   auto images = ListImagesInFolder(folder);
   if (images.empty()) {
-    MessageBoxW(owner, Tr("wallpaper_no_images").c_str(),
-                Tr("wallpaper_title").c_str(), MB_OK | MB_ICONWARNING);
+    MistAlert(owner, Tr("wallpaper_title").c_str(),
+              Tr("wallpaper_no_images").c_str(), MistMsgTone::Warn);
     return false;
   }
   std::wstring chosen;
@@ -471,8 +474,8 @@ bool WallpaperMenu(HWND owner) {
   if (ok) {
     RememberLastImage(chosen);
   } else {
-    MessageBoxW(owner, L"设置壁纸失败。", Tr("wallpaper_title").c_str(),
-                MB_OK | MB_ICONERROR);
+    MistAlert(owner, Tr("wallpaper_title").c_str(), L"设置壁纸失败。",
+              MistMsgTone::Danger);
   }
   return ok;
 }
@@ -518,8 +521,7 @@ bool CaptureRegionToPng(HWND owner) {
   DeleteDC(mem);
   ReleaseDC(nullptr, screen);
   if (ok) {
-    MessageBoxW(owner, path.c_str(), L"全屏截图已保存",
-                MB_OK | MB_ICONINFORMATION);
+    ShowToast(std::wstring(L"全屏截图已保存：") + path);
   }
   return ok;
 }
@@ -535,8 +537,8 @@ void ConfigureScreenRecord(HWND owner) {
   dlg.user_data_subdir = L"webview2-rec-cfg";
   dlg.html_path = MistFindAssetHtml(L"dialogs\\record_cfg.html");
   if (dlg.html_path.empty()) {
-    MessageBoxW(owner, L"找不到 record_cfg.html", Tr("record_title").c_str(),
-                MB_OK | MB_ICONWARNING);
+    MistAlert(owner, Tr("record_title").c_str(), L"找不到 record_cfg.html",
+              MistMsgTone::Warn);
     return;
   }
   dlg.build_state = [&]() {
@@ -571,26 +573,37 @@ void ConfigureScreenRecord(HWND owner) {
     json += L"]}";
     return json;
   };
+  // Folder picker from WebMessageReceived freezes the mist host — defer.
+  constexpr WPARAM kDeferBrowse = 1;
+  dlg.on_deferred = [&](WPARAM op, LPARAM) {
+    if (op != kDeferBrowse) {
+      return;
+    }
+    HWND parent = dlg.hwnd ? dlg.hwnd : owner;
+    const std::wstring path =
+        BrowseFolderDialog(parent, L"选择录屏保存文件夹");
+    if (path.empty()) {
+      return;
+    }
+    prefs.record_output_dir = path;
+    std::wstring msg = L"{\"type\":\"dir_picked\",\"path\":\"";
+    msg += MistJsonEscape(path);
+    msg += L"\"}";
+    MistWebDialogPostJson(&dlg, msg);
+  };
   dlg.on_message = [&](const std::wstring& json) -> bool {
     const std::wstring type = MistJsonStringField(json, L"type");
     if (type != L"action") {
       return false;
     }
     const std::wstring id = MistJsonStringField(json, L"id");
-    HWND parent = dlg.hwnd ? dlg.hwnd : owner;
     if (id == L"ready") {
       MistWebDialogPushState(&dlg);
       return false;
     }
     if (id == L"browse") {
-      const std::wstring path =
-          BrowseFolderDialog(parent, L"选择录屏保存文件夹");
-      if (!path.empty()) {
-        prefs.record_output_dir = path;
-        std::wstring msg = L"{\"type\":\"dir_picked\",\"path\":\"";
-        msg += MistJsonEscape(path);
-        msg += L"\"}";
-        MistWebDialogPostJson(&dlg, msg);
+      if (dlg.hwnd) {
+        PostMessageW(dlg.hwnd, WM_APP + 81, kDeferBrowse, 0);
       }
       return false;
     }
@@ -621,8 +634,7 @@ void ConfigureScreenRecord(HWND owner) {
   MistWebDialogRun(&dlg, Tr("record_settings").c_str(), 460, 420);
   if (ok) {
     SaveAppPrefs(prefs);
-    MessageBoxW(owner, Tr("record_saved").c_str(), Tr("record_title").c_str(),
-                MB_OK | MB_ICONINFORMATION);
+    ShowToast(Tr("record_saved"));
   }
 }
 

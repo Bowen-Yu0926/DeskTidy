@@ -3,6 +3,7 @@
 #include "autostart.h"
 #include "file_assoc.h"
 #include "log.h"
+#include "mist_msg.h"
 #include "namespace_icons.h"
 #include "paths_util.h"
 #include "shell_icons.h"
@@ -207,15 +208,15 @@ void CleanNativeDataDir() {
 }  // namespace
 
 void RunNativeCleanup(HWND owner) {
-  const int wipe = MessageBoxW(
-      owner,
+  const MistMsgResult wipe = MistMessage(
+      owner, L"卸载清理",
       L"卸载清理 DeskTidy Native：\n\n"
       L"将恢复桌面图标、取消右键动词、关闭开机启动，并结束其它实例。\n\n"
       L"是 = 同时删除数据目录（可进回收站）\n"
       L"否 = 仅清理注册项与开机启动\n"
       L"取消 = 返回",
-      L"卸载清理", MB_YESNOCANCEL | MB_ICONWARNING);
-  if (wipe == IDCANCEL) {
+      MistMsgKind::YesNoCancel, MistMsgTone::Danger);
+  if (wipe == MistMsgResult::Cancel) {
     return;
   }
 
@@ -225,15 +226,15 @@ void RunNativeCleanup(HWND owner) {
   SetNativeAutostart(false);
   RemoveDesktopShortcuts();
 
-  if (wipe == IDYES) {
+  if (wipe == MistMsgResult::Yes) {
     WipeDirectory(NativeDataDir());
-    MessageBoxW(owner,
-                L"已恢复桌面图标、清理注册项与开机启动，并尝试删除数据目录。",
-                L"卸载清理", MB_OK | MB_ICONINFORMATION);
+    MistAlert(owner, L"卸载清理",
+              L"已恢复桌面图标、清理注册项与开机启动，并尝试删除数据目录。",
+              MistMsgTone::Info);
   } else {
-    MessageBoxW(owner,
-                L"已恢复桌面图标，并取消右键动词与开机启动。数据目录保留。",
-                L"卸载清理", MB_OK | MB_ICONINFORMATION);
+    MistAlert(owner, L"卸载清理",
+              L"已恢复桌面图标，并取消右键动词与开机启动。数据目录保留。",
+              MistMsgTone::Info);
   }
 }
 

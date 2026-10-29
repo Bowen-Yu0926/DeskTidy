@@ -1,5 +1,6 @@
 #include "whitelist.h"
 
+#include "mist_msg.h"
 #include "mist_webview.h"
 #include "paths_util.h"
 
@@ -308,8 +309,7 @@ void EditWhitelistDialog(HWND owner) {
   dlg.user_data_subdir = L"webview2-whitelist";
   dlg.html_path = MistFindAssetHtml(L"dialogs\\whitelist.html");
   if (dlg.html_path.empty()) {
-    MessageBoxW(owner, L"找不到 whitelist.html", L"整理白名单",
-                MB_OK | MB_ICONWARNING);
+    MistAlert(owner, L"整理白名单", L"找不到 whitelist.html", MistMsgTone::Warn);
     return;
   }
   dlg.build_state = [&ctx]() { return BuildState(&ctx); };

@@ -2,6 +2,7 @@
 
 #include "first_run.h"
 #include "i18n.h"
+#include "mist_msg.h"
 #include "mist_webview.h"
 #include "paths_util.h"
 #include "tool_paths.h"
@@ -54,9 +55,9 @@ std::string ReadWholeFile(const std::wstring& path) {
 void OpenHelpDocs(HWND owner) {
   const std::wstring path = FindHelpDocHtml();
   if (path.empty()) {
-    MessageBoxW(owner,
-                L"未找到帮助页模板（docs/desktidy.html）。请确认安装完整。",
-                L"无法打开帮助", MB_OK | MB_ICONWARNING);
+    MistAlert(owner, L"无法打开帮助",
+              L"未找到帮助页模板（docs/desktidy.html）。请确认安装完整。",
+              MistMsgTone::Warn);
     return;
   }
   std::string html = ReadWholeFile(path);
@@ -98,7 +99,7 @@ void ShowAppHelpCenter(HWND owner) {
   dlg.user_data_subdir = L"webview2-help";
   dlg.html_path = MistFindAssetHtml(L"dialogs\\help.html");
   if (dlg.html_path.empty()) {
-    MessageBoxW(owner, L"找不到 help.html", L"帮助", MB_OK | MB_ICONWARNING);
+    MistAlert(owner, L"帮助", L"找不到 help.html", MistMsgTone::Warn);
     return;
   }
   dlg.build_state = []() { return std::wstring(L"{\"type\":\"state\"}"); };

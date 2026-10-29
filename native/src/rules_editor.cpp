@@ -1,5 +1,6 @@
 #include "rules_editor.h"
 
+#include "mist_msg.h"
 #include "mist_webview.h"
 #include "paths_util.h"
 
@@ -104,11 +105,31 @@ bool EditRulesDialog(
   dlg.user_data_subdir = L"webview2-rules";
   dlg.html_path = MistFindAssetHtml(L"dialogs\\rules.html");
   if (dlg.html_path.empty()) {
-    MessageBoxW(owner, L"找不到 rules.html", L"整理规则",
-                MB_OK | MB_ICONWARNING);
+    MistAlert(owner, L"整理规则", L"找不到 rules.html", MistMsgTone::Warn);
     return false;
   }
   dlg.build_state = [&ctx]() { return BuildState(&ctx); };
+  constexpr WPARAM kDeferWarn = 1;
+  constexpr WPARAM kDeferReset = 2;
+  std::wstring pending_warn;
+  dlg.on_deferred = [&](WPARAM op, LPARAM) {
+    HWND parent = dlg.hwnd ? dlg.hwnd : owner;
+    if (op == kDeferWarn) {
+      if (!pending_warn.empty()) {
+        MistAlert(parent, L"整理规则", pending_warn.c_str(), MistMsgTone::Warn);
+        pending_warn.clear();
+      }
+      return;
+    }
+    if (op == kDeferReset) {
+      if (MistConfirm(parent, L"整理规则", L"恢复为内置默认规则？",
+                      MistMsgTone::Warn)) {
+        *ctx.rules = DefaultRules();
+        LoadRows(&ctx);
+        MistWebDialogPushState(&dlg);
+      }
+    }
+  };
   dlg.on_message = [&](const std::wstring& json) -> bool {
     const std::wstring type = MistJsonStringField(json, L"type");
     if (type != L"action") {
@@ -124,9 +145,10 @@ bool EditRulesDialog(
       const std::wstring fence = MistJsonStringField(json, L"fence");
       const std::string reason = ValidateRule(pattern, NarrowUtf8(fence));
       if (!reason.empty()) {
-        MessageBoxW(dlg.hwnd ? dlg.hwnd : owner,
-                    (std::wstring(L"规则无效：") + WidenUtf8(reason)).c_str(),
-                    L"整理规则", MB_OK | MB_ICONWARNING);
+        pending_warn = L"规则无效：" + WidenUtf8(reason);
+        if (dlg.hwnd) {
+          PostMessageW(dlg.hwnd, WM_APP + 81, kDeferWarn, 0);
+        }
         return false;
       }
       if (!pattern.empty() && !fence.empty()) {
@@ -141,9 +163,10 @@ bool EditRulesDialog(
       const std::wstring fence = MistJsonStringField(json, L"fence");
       const std::string reason = ValidateRule(pattern, NarrowUtf8(fence));
       if (!reason.empty()) {
-        MessageBoxW(dlg.hwnd ? dlg.hwnd : owner,
-                    (std::wstring(L"规则无效：") + WidenUtf8(reason)).c_str(),
-                    L"整理规则", MB_OK | MB_ICONWARNING);
+        pending_warn = L"规则无效：" + WidenUtf8(reason);
+        if (dlg.hwnd) {
+          PostMessageW(dlg.hwnd, WM_APP + 81, kDeferWarn, 0);
+        }
         return false;
       }
       if (index >= 0 && index < static_cast<int>(ctx.rows.size()) &&
@@ -162,11 +185,8 @@ bool EditRulesDialog(
       return false;
     }
     if (id == L"reset") {
-      if (MessageBoxW(dlg.hwnd ? dlg.hwnd : owner, L"恢复为内置默认规则？",
-                      L"整理规则", MB_YESNO | MB_ICONQUESTION) == IDYES) {
-        *ctx.rules = DefaultRules();
-        LoadRows(&ctx);
-        MistWebDialogPushState(&dlg);
+      if (dlg.hwnd) {
+        PostMessageW(dlg.hwnd, WM_APP + 81, kDeferReset, 0);
       }
       return false;
     }

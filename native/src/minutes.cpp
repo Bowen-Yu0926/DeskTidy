@@ -1,9 +1,11 @@
 #include "minutes.h"
 
 #include "i18n.h"
+#include "mist_msg.h"
 #include "mist_webview.h"
 #include "paths_util.h"
 #include "prompt_text.h"
+#include "toast.h"
 #include "tool_paths.h"
 
 #include <ShlObj.h>
@@ -373,8 +375,7 @@ void ConfigureMinutesFolder(HWND owner) {
   CoTaskMemFree(pidl);
   if (path[0]) {
     WriteFolderCfg(path);
-    MessageBoxW(owner, path, Tr("minutes_folder_set").c_str(),
-                MB_OK | MB_ICONINFORMATION);
+    ShowToast(std::wstring(Tr("minutes_folder_set")) + L"：\n" + path);
   }
 }
 
@@ -424,7 +425,7 @@ std::wstring CreateAndOpenMinutesDocx(HWND owner) {
   wchar_t stem[32];
   swprintf_s(stem, L"%04d%02d%02d_%03d", st.wYear, st.wMonth, st.wDay, serial);
   if (!WriteMinutesDocx(path, st.wYear, st.wMonth, st.wDay, NarrowUtf8(stem))) {
-    MessageBoxW(owner, L"无法写入纪要文件。", L"会议纪要", MB_OK | MB_ICONERROR);
+    MistAlert(owner, L"会议纪要", L"无法写入纪要文件。", MistMsgTone::Danger);
     return std::wstring();
   }
   ShellExecuteW(owner, L"open", path.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
@@ -454,8 +455,8 @@ bool OpenRecentMinutes(HWND owner) {
     files.resize(40);
   }
   if (files.empty()) {
-    MessageBoxW(owner, Tr("minutes_empty").c_str(), Tr("minutes_title").c_str(),
-                MB_OK | MB_ICONINFORMATION);
+    MistAlert(owner, Tr("minutes_title").c_str(), Tr("minutes_empty").c_str(),
+              MistMsgTone::Info);
     return false;
   }
 
@@ -465,8 +466,8 @@ bool OpenRecentMinutes(HWND owner) {
   dlg.user_data_subdir = L"webview2-minutes";
   dlg.html_path = MistFindAssetHtml(L"dialogs\\pick_list.html");
   if (dlg.html_path.empty()) {
-    MessageBoxW(owner, L"找不到 pick_list.html", Tr("minutes_title").c_str(),
-                MB_OK | MB_ICONWARNING);
+    MistAlert(owner, Tr("minutes_title").c_str(), L"找不到 pick_list.html",
+              MistMsgTone::Warn);
     return false;
   }
   dlg.build_state = [&]() {

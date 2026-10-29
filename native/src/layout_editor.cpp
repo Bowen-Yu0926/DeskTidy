@@ -3,7 +3,9 @@
 #include "display_geom.h"
 #include "fence_style.h"
 #include "i18n.h"
+#include "mist_msg.h"
 #include "prompt_text.h"
+#include "toast.h"
 
 #include <ShlObj.h>
 #include <windowsx.h>
@@ -417,8 +419,7 @@ void DeleteSelected() {
   }
   // Keep at least one fence per page.
   if (PageFenceIndices().size() <= 1) {
-    MessageBoxW(g_hwnd, Tr("layout_keep_one").c_str(),
-                Tr("layout_editor").c_str(), MB_OK | MB_ICONINFORMATION);
+    ShowToast(Tr("layout_keep_one"));
     return;
   }
   for (int idx : g_sel) {
@@ -426,8 +427,7 @@ void DeleteSelected() {
       continue;
     }
     if (g_state->fences[static_cast<size_t>(idx)].id.rfind("system_", 0) == 0) {
-      MessageBoxW(g_hwnd, Tr("layout_no_system").c_str(),
-                  Tr("layout_editor").c_str(), MB_OK | MB_ICONINFORMATION);
+      ShowToast(Tr("layout_no_system"));
       return;
     }
   }
@@ -455,14 +455,14 @@ void BrowsePortal() {
     }
   }
   if (any_portal) {
-    const int r = MessageBoxW(
-        g_hwnd,
+    const MistMsgResult r = MistMessage(
+        g_hwnd, L"门户文件夹",
         L"所选分区已是门户。\n\n是 = 更换门户文件夹\n否 = 取消门户（转回普通分区）\n取消 = 返回",
-        L"门户文件夹", MB_YESNOCANCEL | MB_ICONQUESTION);
-    if (r == IDCANCEL) {
+        MistMsgKind::YesNoCancel, MistMsgTone::Warn);
+    if (r == MistMsgResult::Cancel) {
       return;
     }
-    if (r == IDNO) {
+    if (r == MistMsgResult::No) {
       for (int idx : g_sel) {
         if (idx >= 0 && idx < static_cast<int>(g_state->fences.size())) {
           g_state->fences[static_cast<size_t>(idx)].portal_path.clear();
@@ -592,8 +592,7 @@ void AddPage() {
     return;
   }
   if (g_state->page_names.size() >= static_cast<size_t>(kMaxPages)) {
-    MessageBoxW(g_hwnd, L"最多 12 页。", Tr("layout_editor").c_str(),
-                MB_OK | MB_ICONINFORMATION);
+    ShowToast(L"最多 12 页。");
     return;
   }
   g_state->page_names.push_back(
@@ -618,8 +617,7 @@ void DeletePage(int page) {
   if (!g_state || page <= 1 ||
       page >= static_cast<int>(g_state->page_names.size())) {
     if (g_state && page <= 1) {
-      MessageBoxW(g_hwnd, Tr("layout_no_system").c_str(),
-                  Tr("layout_editor").c_str(), MB_OK | MB_ICONINFORMATION);
+      ShowToast(Tr("layout_no_system"));
     }
     return;
   }

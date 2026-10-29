@@ -3,6 +3,7 @@
 #include "brand_mark.h"
 #include "display_geom.h"
 #include "i18n.h"
+#include "mist_msg.h"
 #include "paths_util.h"
 #include "prompt_text.h"
 #include "toast.h"
@@ -1133,8 +1134,8 @@ void VaultWindow::DeleteAt(int index) {
   HWND owner = (hwnd_ && IsWindow(hwnd_) && IsWindowVisible(hwnd_))
                    ? hwnd_
                    : GetForegroundWindow();
-  if (MessageBoxW(owner, L"确定删除该账号？", L"账号管理",
-                  MB_YESNO | MB_ICONQUESTION | MB_SETFOREGROUND) != IDYES) {
+  if (!MistConfirm(owner, L"账号管理", L"确定删除该账号？",
+                   MistMsgTone::Danger)) {
     return;
   }
   entries_.erase(entries_.begin() + index);
@@ -1397,8 +1398,8 @@ void VaultWindow::ImportBackup() {
   }
   std::string raw = ReadWholeFileBytes(file);
   if (raw.empty()) {
-    MessageBoxW(hwnd_, L"导入失败：文件为空或无法读取。", L"账号管理",
-                MB_OK | MB_ICONWARNING);
+    MistAlert(hwnd_, L"账号管理", L"导入失败：文件为空或无法读取。",
+              MistMsgTone::Warn);
     return;
   }
   // Strip an optional UTF-8 BOM (Python reads with encoding="utf-8-sig").
@@ -1412,8 +1413,8 @@ void VaultWindow::ImportBackup() {
     std::vector<VaultHttpCredential> creds =
         ParseImportCredentials(WidenUtf8(raw));
     if (creds.empty()) {
-      MessageBoxW(hwnd_, L"导入失败：JSON 中无可导入的账号条目。", L"账号管理",
-                  MB_OK | MB_ICONWARNING);
+      MistAlert(hwnd_, L"账号管理", L"导入失败：JSON 中无可导入的账号条目。",
+                MistMsgTone::Warn);
       return;
     }
     // Merge by title+username (Python import creates; never wipe local) — P0-9.
@@ -1456,8 +1457,9 @@ void VaultWindow::ImportBackup() {
   std::vector<BYTE> enc(raw.begin(), raw.end());
   std::string plain;
   if (!UnprotectBlob(enc, &plain)) {
-    MessageBoxW(hwnd_, L"导入失败：DPAPI 文件无法解密（可能来自其他 Windows 账户）。",
-                L"账号管理", MB_OK | MB_ICONWARNING);
+    MistAlert(hwnd_, L"账号管理",
+              L"导入失败：DPAPI 文件无法解密（可能来自其他 Windows 账户）。",
+              MistMsgTone::Warn);
     return;
   }
   std::istringstream ss(plain);
@@ -1559,8 +1561,8 @@ void VaultWindow::CloudRegister() {
   const std::wstring pass2 =
       PromptPassword(hwnd_, L"云保险库注册", L"确认密码：");
   if (pass != pass2) {
-    MessageBoxW(hwnd_, L"两次输入的密码不一致。", L"云保险库注册",
-                MB_OK | MB_ICONWARNING);
+    MistAlert(hwnd_, L"云保险库注册", L"两次输入的密码不一致。",
+              MistMsgTone::Warn);
     return;
   }
   const HWND h = hwnd_;
@@ -1660,11 +1662,11 @@ void VaultWindow::CloudSync() {
     CloudLogin();
     return;
   }
-  const int mode = MessageBoxW(
-      hwnd_,
+  const MistMsgResult mode = MistMessage(
+      hwnd_, Tr("vault").c_str(),
       L"云同步模式：\n\n是 = 零知识 (enc_ver=1，需主密码)\n否 = 服务端加密 (enc_ver=0)\n取消 = 返回",
-      Tr("vault").c_str(), MB_YESNOCANCEL | MB_ICONQUESTION);
-  if (mode == IDCANCEL) {
+      MistMsgKind::YesNoCancel, MistMsgTone::Info);
+  if (mode == MistMsgResult::Cancel) {
     return;
   }
   const std::vector<VaultHttpCredential> snapshot = SnapshotCredentials();
@@ -1717,7 +1719,7 @@ void VaultWindow::CloudSync() {
     }).detach();
   };
 
-  if (mode == IDYES) {
+  if (mode == MistMsgResult::Yes) {
     std::wstring salt_b64;
     int iterations = 0;
     std::wstring key_check;
@@ -1730,8 +1732,8 @@ void VaultWindow::CloudSync() {
       }
       const std::vector<BYTE> salt = VaultDecodeSalt(NarrowUtf8(salt_b64));
       if (salt.empty()) {
-        MessageBoxW(hwnd_, L"KDF 参数无效。", Tr("vault").c_str(),
-                    MB_OK | MB_ICONWARNING);
+        MistAlert(hwnd_, Tr("vault").c_str(), L"KDF 参数无效。",
+                  MistMsgTone::Warn);
         return;
       }
       zk_worker(master, salt, iterations, key_check, algo, true);
@@ -1744,8 +1746,8 @@ void VaultWindow::CloudSync() {
       const std::wstring master2 =
           PromptPassword(hwnd_, L"零知识保险库", L"确认主密码：");
       if (master != master2) {
-        MessageBoxW(hwnd_, L"两次输入的主密码不一致。", Tr("vault").c_str(),
-                    MB_OK | MB_ICONWARNING);
+        MistAlert(hwnd_, Tr("vault").c_str(), L"两次输入的主密码不一致。",
+                  MistMsgTone::Warn);
         return;
       }
       zk_worker(master, VaultNewSalt(16), kVaultKdfIterations, L"",
@@ -1821,8 +1823,9 @@ LRESULT VaultWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
         ShowToast(L"云登录成功");
         StartCloudRefresh();
       } else {
-        MessageBoxW(hwnd_, L"登录失败（用户名或密码错误，或服务端不可达）。",
-                    Tr("vault").c_str(), MB_OK | MB_ICONWARNING);
+        MistAlert(hwnd_, Tr("vault").c_str(),
+                  L"登录失败（用户名或密码错误，或服务端不可达）。",
+                  MistMsgTone::Warn);
       }
       PushState();
       if (on_login_result_) {
@@ -1848,8 +1851,8 @@ LRESULT VaultWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
           ShowToast(outcome->message.empty() ? L"同步失败，已离线"
                                              : outcome->message.c_str());
         } else {
-          MessageBoxW(hwnd_, outcome->message.c_str(), Tr("vault").c_str(),
-                      MB_OK | MB_ICONWARNING);
+          MistAlert(hwnd_, Tr("vault").c_str(), outcome->message.c_str(),
+                    MistMsgTone::Warn);
         }
         PushState();
       }

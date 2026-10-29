@@ -1,6 +1,7 @@
 #include "desknote_help.h"
 
 #include "i18n.h"
+#include "mist_msg.h"
 #include "mist_webview.h"
 
 #include <cstring>
@@ -16,8 +17,9 @@ void ShowDeskNoteHelp(HWND owner) {
   dlg.user_data_subdir = L"webview2-desknote-help";
   dlg.html_path = MistFindAssetHtml(rel);
   if (dlg.html_path.empty()) {
-    MessageBoxW(owner, L"找不到 DeskNote 帮助页（assets/dialogs/desknote_help*.html）。",
-                L"帮助", MB_OK | MB_ICONWARNING);
+    MistAlert(owner, L"帮助",
+              L"找不到 DeskNote 帮助页（assets/dialogs/desknote_help*.html）。",
+              MistMsgTone::Warn);
     return;
   }
   dlg.build_state = []() { return std::wstring(L"{\"type\":\"state\"}"); };

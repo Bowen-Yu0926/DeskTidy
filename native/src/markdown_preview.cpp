@@ -1,5 +1,6 @@
 #include "markdown_preview.h"
 
+#include "mist_msg.h"
 #include "paths_util.h"
 
 #include <Shellapi.h>
@@ -309,7 +310,7 @@ bool PreviewMarkdownText(HWND owner, const std::wstring& md,
   {
     std::ofstream out(path, std::ios::binary);
     if (!out) {
-      MessageBoxW(owner, L"无法写入预览文件。", L"预览", MB_OK | MB_ICONWARNING);
+      MistAlert(owner, L"预览", L"无法写入预览文件。", MistMsgTone::Warn);
       return false;
     }
     out << NarrowUtf8(html);
@@ -317,7 +318,7 @@ bool PreviewMarkdownText(HWND owner, const std::wstring& md,
   const HINSTANCE r =
       ShellExecuteW(owner, L"open", path.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
   if (reinterpret_cast<INT_PTR>(r) <= 32) {
-    MessageBoxW(owner, L"无法打开浏览器预览。", L"预览", MB_OK | MB_ICONWARNING);
+    MistAlert(owner, L"预览", L"无法打开浏览器预览。", MistMsgTone::Warn);
     return false;
   }
   return true;
@@ -326,7 +327,7 @@ bool PreviewMarkdownText(HWND owner, const std::wstring& md,
 bool PreviewMarkdownFile(HWND owner, const std::wstring& path) {
   std::ifstream in(path, std::ios::binary);
   if (!in) {
-    MessageBoxW(owner, L"无法读取文件。", L"预览", MB_OK | MB_ICONWARNING);
+    MistAlert(owner, L"预览", L"无法读取文件。", MistMsgTone::Warn);
     return false;
   }
   std::ostringstream ss;
@@ -334,8 +335,9 @@ bool PreviewMarkdownFile(HWND owner, const std::wstring& path) {
   std::string raw = ss.str();
   // Strip RTF roughly — if looks like RTF, preview plain GetWindowText instead.
   if (raw.rfind("{\\rtf", 0) == 0) {
-    MessageBoxW(owner, L"当前是 RTF。请另存为 .md/.txt 后再预览，或直接预览编辑区文本。",
-                L"预览", MB_OK | MB_ICONINFORMATION);
+    MistAlert(owner, L"预览",
+              L"当前是 RTF。请另存为 .md/.txt 后再预览，或直接预览编辑区文本。",
+              MistMsgTone::Info);
     return false;
   }
   std::wstring base;

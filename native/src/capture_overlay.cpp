@@ -2,6 +2,7 @@
 
 #include "display_geom.h"
 #include "log.h"
+#include "mist_msg.h"
 #include "paths_util.h"
 
 #include <ShlObj.h>
@@ -23,8 +24,48 @@
 namespace {
 constexpr wchar_t kClass[] = L"DeskTidyNativeCapture";
 constexpr wchar_t kTbClass[] = L"DeskTidyNativeCaptureTb";
+constexpr wchar_t kTipClass[] = L"DeskTidyNativeCaptureTip";
 bool g_reg = false;
 bool g_tb_reg = false;
+bool g_tip_reg = false;
+
+// WeChat / Snipaste parity: Esc must cancel even when toolbar stole focus or
+// the overlay lost keyboard focus after ReleaseCapture.
+CaptureOverlay* g_active_capture = nullptr;
+HHOOK g_capture_esc_hook = nullptr;
+
+LRESULT CALLBACK CaptureEscHookProc(int code, WPARAM wparam, LPARAM lparam) {
+  if (code == HC_ACTION &&
+      (wparam == WM_KEYDOWN || wparam == WM_SYSKEYDOWN) && g_active_capture) {
+    const auto* kb = reinterpret_cast<KBDLLHOOKSTRUCT*>(lparam);
+    if (kb && kb->vkCode == VK_ESCAPE) {
+      HWND target = g_active_capture->Hwnd();
+      if (target && IsWindow(target)) {
+        PostMessageW(target, WM_KEYDOWN, VK_ESCAPE, 0);
+        return 1;  // swallow — overlay owns Esc while capturing
+      }
+    }
+  }
+  return CallNextHookEx(g_capture_esc_hook, code, wparam, lparam);
+}
+
+void InstallCaptureEscHook(CaptureOverlay* self) {
+  g_active_capture = self;
+  if (!g_capture_esc_hook) {
+    g_capture_esc_hook =
+        SetWindowsHookExW(WH_KEYBOARD_LL, CaptureEscHookProc, nullptr, 0);
+  }
+}
+
+void UninstallCaptureEscHook(CaptureOverlay* self) {
+  if (g_active_capture == self) {
+    g_active_capture = nullptr;
+  }
+  if (g_capture_esc_hook && !g_active_capture) {
+    UnhookWindowsHookEx(g_capture_esc_hook);
+    g_capture_esc_hook = nullptr;
+  }
+}
 
 constexpr COLORREF kColors[] = {
     RGB(250, 81, 81),   // red
@@ -55,9 +96,58 @@ enum TbId {
   TbCount = TbCancel
 };
 
-constexpr int kTbBtn = 32;
-constexpr int kTbPad = 6;
-constexpr int kTbGap = 2;
+// WeChat-style toolbar metrics @96 DPI (larger hit targets + glyphs).
+constexpr int kTbBtn96 = 40;
+constexpr int kTbPad96 = 8;
+constexpr int kTbGap96 = 4;
+constexpr int kTbSep96 = 8;
+constexpr int kTbIconStroke96 = 2;
+constexpr int kTbTipFont96 = 13;
+
+int TbDpi() {
+  const int d = SystemDpi();
+  return d > 0 ? d : 96;
+}
+
+int TbSx(int px96) { return MulDiv(px96, TbDpi(), 96); }
+int TbBtn() { return TbSx(kTbBtn96); }
+int TbPad() { return TbSx(kTbPad96); }
+int TbGap() { return TbSx(kTbGap96); }
+int TbSep() { return TbSx(kTbSep96); }
+
+LRESULT CALLBACK CaptureTipProc(HWND hwnd, UINT msg, WPARAM wparam,
+                                LPARAM lparam) {
+  switch (msg) {
+    case WM_PAINT: {
+      PAINTSTRUCT ps{};
+      HDC hdc = BeginPaint(hwnd, &ps);
+      RECT rc{};
+      GetClientRect(hwnd, &rc);
+      HBRUSH bg = CreateSolidBrush(RGB(45, 45, 45));
+      FillRect(hdc, &rc, bg);
+      DeleteObject(bg);
+      wchar_t text[64]{};
+      GetWindowTextW(hwnd, text, 64);
+      SetBkMode(hdc, TRANSPARENT);
+      SetTextColor(hdc, RGB(255, 255, 255));
+      HFONT tip_font = CreateFontW(
+          -TbSx(kTbTipFont96), 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
+          DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+          CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Microsoft YaHei UI");
+      HGDIOBJ oldf = SelectObject(hdc, tip_font);
+      DrawTextW(hdc, text, -1, &rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+      SelectObject(hdc, oldf);
+      DeleteObject(tip_font);
+      EndPaint(hwnd, &ps);
+      return 0;
+    }
+    case WM_ERASEBKGND:
+      return 1;
+    default:
+      break;
+  }
+  return DefWindowProcW(hwnd, msg, wparam, lparam);
+}
 
 int GetEncoderClsid(const WCHAR* format, CLSID* pClsid) {
   UINT num = 0, size = 0;
@@ -348,25 +438,199 @@ RECT TbButtonRect(int id) {
       break;
     }
   }
-  int x = kTbPad + slot * (kTbBtn + kTbGap);
+  const int btn = TbBtn();
+  const int pad = TbPad();
+  const int gap = TbGap();
+  const int sep = TbSep();
+  int x = pad + slot * (btn + gap);
   if (slot >= 6) {
-    x += 6;
+    x += sep;
   }
   if (slot >= 9) {
-    x += 6;
+    x += sep;
   }
-  return {x, kTbPad, x + kTbBtn, kTbPad + kTbBtn};
+  return {x, pad, x + btn, pad + btn};
 }
 
 int ToolbarWidth() {
   RECT last = TbButtonRect(TbCancel);
-  return last.right + kTbPad;
+  return last.right + TbPad();
 }
 
-int ToolbarHeight() { return kTbPad * 2 + kTbBtn; }
+int ToolbarHeight() { return TbPad() * 2 + TbBtn(); }
 
 Gdiplus::Color GpColor(COLORREF c, BYTE a = 255) {
   return Gdiplus::Color(a, GetRValue(c), GetGValue(c), GetBValue(c));
+}
+
+const wchar_t* TbTipText(int id) {
+  switch (id) {
+    case TbRect:
+      return L"矩形";
+    case TbEllipse:
+      return L"椭圆";
+    case TbArrow:
+      return L"箭头";
+    case TbBrush:
+      return L"画笔";
+    case TbMosaic:
+      return L"马赛克";
+    case TbText:
+      return L"文字";
+    case TbUndo:
+      return L"撤销";
+    case TbColor:
+      return L"颜色";
+    case TbWidth:
+      return L"粗细";
+    case TbCopy:
+      return L"完成";
+    case TbSave:
+      return L"另存为";
+    case TbCancel:
+      return L"退出";
+    default:
+      return L"";
+  }
+}
+
+void DrawTbGlyph(Gdiplus::Graphics& g, int id, const RECT& r, bool active,
+                 COLORREF swatch, int width_value) {
+  const Gdiplus::REAL cx =
+      static_cast<Gdiplus::REAL>(r.left + r.right) * 0.5f;
+  const Gdiplus::REAL cy =
+      static_cast<Gdiplus::REAL>(r.top + r.bottom) * 0.5f;
+  const Gdiplus::REAL cell =
+      static_cast<Gdiplus::REAL>((std::min)(r.right - r.left, r.bottom - r.top));
+  // WeChat icons fill ~55% of the cell (was ~unicode 11px in 32px → too small).
+  const Gdiplus::REAL s = cell * 0.28f;
+  const Gdiplus::REAL stroke =
+      static_cast<Gdiplus::REAL>((std::max)(2, TbSx(kTbIconStroke96)));
+  const Gdiplus::Color ink =
+      active ? Gdiplus::Color(255, 7, 193, 96) : Gdiplus::Color(255, 45, 45, 45);
+  Gdiplus::Pen pen(ink, stroke);
+  pen.SetLineCap(Gdiplus::LineCapRound, Gdiplus::LineCapRound,
+                 Gdiplus::DashCapRound);
+  pen.SetLineJoin(Gdiplus::LineJoinRound);
+  Gdiplus::SolidBrush br(ink);
+
+  switch (id) {
+    case TbRect:
+      g.DrawRectangle(&pen, cx - s, cy - s * 0.75f, s * 2.f, s * 1.5f);
+      break;
+    case TbEllipse:
+      g.DrawEllipse(&pen, cx - s, cy - s * 0.75f, s * 2.f, s * 1.5f);
+      break;
+    case TbArrow: {
+      g.DrawLine(&pen, cx - s, cy + s * 0.55f, cx + s * 0.35f, cy - s * 0.55f);
+      Gdiplus::PointF head[3] = {
+          {cx + s, cy - s * 0.75f},
+          {cx + s * 0.15f, cy - s * 0.55f},
+          {cx + s * 0.55f, cy - s * 0.05f},
+      };
+      g.FillPolygon(&br, head, 3);
+      break;
+    }
+    case TbBrush: {
+      // Pen tip + barrel (WeChat-like).
+      g.DrawLine(&pen, cx - s * 0.75f, cy + s * 0.75f, cx + s * 0.35f,
+                 cy - s * 0.45f);
+      Gdiplus::PointF tip[3] = {
+          {cx + s * 0.85f, cy - s * 0.85f},
+          {cx + s * 0.15f, cy - s * 0.55f},
+          {cx + s * 0.55f, cy - s * 0.15f},
+      };
+      g.FillPolygon(&br, tip, 3);
+      break;
+    }
+    case TbMosaic: {
+      const Gdiplus::REAL step = s * 0.7f;
+      for (int row = 0; row < 3; ++row) {
+        for (int col = 0; col < 3; ++col) {
+          if ((row + col) & 1) {
+            continue;
+          }
+          g.FillRectangle(&br, cx - s + col * step, cy - s + row * step,
+                          step * 0.85f, step * 0.85f);
+        }
+      }
+      break;
+    }
+    case TbText: {
+      Gdiplus::FontFamily fam(L"Segoe UI");
+      Gdiplus::Font font(&fam, cell * 0.42f, Gdiplus::FontStyleBold,
+                         Gdiplus::UnitPixel);
+      Gdiplus::StringFormat fmt;
+      fmt.SetAlignment(Gdiplus::StringAlignmentCenter);
+      fmt.SetLineAlignment(Gdiplus::StringAlignmentCenter);
+      Gdiplus::RectF box(static_cast<Gdiplus::REAL>(r.left),
+                         static_cast<Gdiplus::REAL>(r.top),
+                         static_cast<Gdiplus::REAL>(r.right - r.left),
+                         static_cast<Gdiplus::REAL>(r.bottom - r.top));
+      g.DrawString(L"A", -1, &font, box, &fmt, &br);
+      break;
+    }
+    case TbUndo: {
+      Gdiplus::REAL rad = s * 0.95f;
+      g.DrawArc(&pen, cx - rad, cy - rad * 0.85f, rad * 2.f, rad * 2.f, 210.f,
+                240.f);
+      Gdiplus::PointF arrow[3] = {
+          {cx - rad * 0.95f, cy - rad * 0.15f},
+          {cx - rad * 0.25f, cy - rad * 0.85f},
+          {cx - rad * 0.15f, cy - rad * 0.05f},
+      };
+      g.FillPolygon(&br, arrow, 3);
+      break;
+    }
+    case TbColor: {
+      const Gdiplus::REAL d = s * 1.55f;
+      Gdiplus::SolidBrush fill(GpColor(swatch));
+      g.FillEllipse(&fill, cx - d * 0.5f, cy - d * 0.5f, d, d);
+      Gdiplus::Pen rim(Gdiplus::Color(160, 120, 120, 120), 1.f);
+      g.DrawEllipse(&rim, cx - d * 0.5f, cy - d * 0.5f, d, d);
+      break;
+    }
+    case TbWidth: {
+      wchar_t buf[8];
+      swprintf_s(buf, L"%d", width_value);
+      Gdiplus::FontFamily fam(L"Segoe UI");
+      Gdiplus::Font font(&fam, cell * 0.38f, Gdiplus::FontStyleBold,
+                         Gdiplus::UnitPixel);
+      Gdiplus::StringFormat fmt;
+      fmt.SetAlignment(Gdiplus::StringAlignmentCenter);
+      fmt.SetLineAlignment(Gdiplus::StringAlignmentCenter);
+      Gdiplus::RectF box(static_cast<Gdiplus::REAL>(r.left),
+                         static_cast<Gdiplus::REAL>(r.top),
+                         static_cast<Gdiplus::REAL>(r.right - r.left),
+                         static_cast<Gdiplus::REAL>(r.bottom - r.top));
+      g.DrawString(buf, -1, &font, box, &fmt, &br);
+      break;
+    }
+    case TbCopy: {
+      Gdiplus::PointF chk[3] = {{cx - s * 0.85f, cy},
+                                {cx - s * 0.15f, cy + s * 0.7f},
+                                {cx + s * 0.95f, cy - s * 0.75f}};
+      g.DrawLines(&pen, chk, 3);
+      break;
+    }
+    case TbSave: {
+      // Floppy / save glyph.
+      g.DrawRectangle(&pen, cx - s, cy - s, s * 2.f, s * 2.f);
+      g.FillRectangle(&br, cx - s * 0.55f, cy - s, s * 1.1f, s * 0.7f);
+      Gdiplus::SolidBrush hole(Gdiplus::Color(255, 245, 245, 245));
+      g.FillRectangle(&hole, cx - s * 0.55f, cy + s * 0.15f, s * 1.1f, s * 0.7f);
+      break;
+    }
+    case TbCancel: {
+      g.DrawLine(&pen, cx - s * 0.75f, cy - s * 0.75f, cx + s * 0.75f,
+                 cy + s * 0.75f);
+      g.DrawLine(&pen, cx + s * 0.75f, cy - s * 0.75f, cx - s * 0.75f,
+                 cy + s * 0.75f);
+      break;
+    }
+    default:
+      break;
+  }
 }
 
 }  // namespace
@@ -701,10 +965,12 @@ bool CaptureOverlay::Begin(HINSTANCE instance, DoneFn on_done, bool auto_pin) {
   SetForegroundWindow(hwnd_);
   SetFocus(hwnd_);
   SetCapture(hwnd_);
+  InstallCaptureEscHook(this);
   return true;
 }
 
 void CaptureOverlay::Cancel() {
+  UninstallCaptureEscHook(this);
   DestroyInlineText();
   LeaveAnnotateMode();
   if (hwnd_) {
@@ -731,17 +997,112 @@ void CaptureOverlay::CreateToolbar() {
     g_tb_reg = true;
   }
   toolbar_ = CreateWindowExW(
-      WS_EX_TOPMOST | WS_EX_TOOLWINDOW, kTbClass, L"", WS_POPUP, 0, 0,
-      ToolbarWidth(), ToolbarHeight(), hwnd_, nullptr, instance_, this);
+      WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, kTbClass, L"",
+      WS_POPUP, 0, 0, ToolbarWidth(), ToolbarHeight(), hwnd_, nullptr,
+      instance_, this);
   if (toolbar_) {
     SetWindowLongPtrW(toolbar_, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(this));
   }
 }
 
 void CaptureOverlay::DestroyToolbar() {
+  HideToolbarTip();
+  tb_hover_id_ = 0;
   if (toolbar_) {
     DestroyWindow(toolbar_);
     toolbar_ = nullptr;
+  }
+}
+
+void CaptureOverlay::HideToolbarTip() {
+  if (tip_hwnd_) {
+    DestroyWindow(tip_hwnd_);
+    tip_hwnd_ = nullptr;
+  }
+}
+
+void CaptureOverlay::ShowToolbarTip(int id) {
+  const wchar_t* text = TbTipText(id);
+  if (!text || !text[0] || !toolbar_) {
+    HideToolbarTip();
+    return;
+  }
+  RECT btn = TbButtonRect(id);
+  POINT origin{btn.left + (btn.right - btn.left) / 2, btn.bottom};
+  ClientToScreen(toolbar_, &origin);
+
+  HDC screen = GetDC(nullptr);
+  HFONT font = CreateFontW(-TbSx(kTbTipFont96), 0, 0, 0, FW_SEMIBOLD, FALSE,
+                           FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
+                           CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+                           DEFAULT_PITCH | FF_SWISS, L"Microsoft YaHei UI");
+  HGDIOBJ old = SelectObject(screen, font);
+  SIZE sz{};
+  GetTextExtentPoint32W(screen, text, static_cast<int>(wcslen(text)), &sz);
+  SelectObject(screen, old);
+  ReleaseDC(nullptr, screen);
+  DeleteObject(font);
+
+  const int pad_x = TbSx(10);
+  const int pad_y = TbSx(6);
+  const int tw = sz.cx + pad_x * 2;
+  const int th = sz.cy + pad_y * 2;
+  int x = origin.x - tw / 2;
+  int y = origin.y + TbSx(6);
+  const RECT vs = VirtualScreenRect();
+  if (x < vs.left) {
+    x = vs.left;
+  }
+  if (x + tw > vs.right) {
+    x = vs.right - tw;
+  }
+  if (y + th > vs.bottom) {
+    POINT above{btn.left + (btn.right - btn.left) / 2, btn.top};
+    ClientToScreen(toolbar_, &above);
+    y = above.y - th - TbSx(6);
+  }
+
+  if (!g_tip_reg) {
+    WNDCLASSEXW wc{};
+    wc.cbSize = sizeof(wc);
+    wc.lpfnWndProc = CaptureTipProc;
+    wc.hInstance = instance_;
+    wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
+    wc.lpszClassName = kTipClass;
+    RegisterClassExW(&wc);
+    g_tip_reg = true;
+  }
+  if (!tip_hwnd_) {
+    tip_hwnd_ = CreateWindowExW(
+        WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_LAYERED,
+        kTipClass, text, WS_POPUP, x, y, tw, th, toolbar_, nullptr, instance_,
+        nullptr);
+    if (tip_hwnd_) {
+      SetLayeredWindowAttributes(tip_hwnd_, 0, 235, LWA_ALPHA);
+    }
+  } else {
+    SetWindowTextW(tip_hwnd_, text);
+    SetWindowPos(tip_hwnd_, HWND_TOPMOST, x, y, tw, th,
+                 SWP_NOACTIVATE | SWP_SHOWWINDOW);
+    InvalidateRect(tip_hwnd_, nullptr, FALSE);
+  }
+  if (tip_hwnd_) {
+    ShowWindow(tip_hwnd_, SW_SHOWNOACTIVATE);
+  }
+}
+
+void CaptureOverlay::UpdateToolbarHover(int id) {
+  if (id == tb_hover_id_) {
+    return;
+  }
+  tb_hover_id_ = id;
+  if (toolbar_) {
+    InvalidateRect(toolbar_, nullptr, FALSE);
+  }
+  if (id) {
+    ShowToolbarTip(id);
+  } else {
+    HideToolbarTip();
   }
 }
 
@@ -754,7 +1115,7 @@ void CaptureOverlay::PlaceToolbar() {
   const int tw = ToolbarWidth();
   const int th = ToolbarHeight();
   int x = origin.x + sel_.left + (sel_.right - sel_.left - tw) / 2;
-  int y = origin.y + sel_.bottom + 8;
+  int y = origin.y + sel_.bottom + TbSx(10);
   const RECT vs = VirtualScreenRect();
   if (x + tw > vs.right) {
     x = vs.right - tw;
@@ -763,7 +1124,7 @@ void CaptureOverlay::PlaceToolbar() {
     x = vs.left;
   }
   if (y + th > vs.bottom) {
-    y = origin.y + sel_.top - th - 8;
+    y = origin.y + sel_.top - th - TbSx(10);
   }
   if (y < vs.top) {
     y = vs.top;
@@ -779,6 +1140,12 @@ void CaptureOverlay::EnterAnnotateMode() {
   ReleaseCapture();
   CreateToolbar();
   PlaceToolbar();
+  // Keep keyboard on the overlay so Esc / Ctrl+Z / Ctrl+C keep working
+  // (toolbar is WS_EX_NOACTIVATE; hook is the fallback).
+  if (hwnd_) {
+    SetForegroundWindow(hwnd_);
+    SetFocus(hwnd_);
+  }
   RequestRepaint();
 }
 
@@ -1422,16 +1789,16 @@ bool CaptureOverlay::FinishSelection(FinishAction action) {
     }
     if (!SaveBitmapToFile(bmp, path)) {
       DeleteObject(bmp);
-      MessageBoxW(nullptr, L"截图保存失败，请检查路径或磁盘空间。", L"区域截图",
-                  MB_OK | MB_ICONERROR);
+      MistAlert(nullptr, L"区域截图", L"截图保存失败，请检查路径或磁盘空间。",
+                MistMsgTone::Danger);
       return false;
     }
   } else {
     path = default_shot_path();
     if (!SaveBitmapToFile(bmp, path)) {
       DeleteObject(bmp);
-      MessageBoxW(nullptr, L"截图保存失败，无法钉到桌面。", L"区域截图",
-                  MB_OK | MB_ICONERROR);
+      MistAlert(nullptr, L"区域截图", L"截图保存失败，无法钉到桌面。",
+                MistMsgTone::Danger);
       return false;
     }
     pin = true;
@@ -1486,53 +1853,63 @@ void CaptureOverlay::PaintToolbar(HDC hdc) {
   GetClientRect(toolbar_, &rc);
   Gdiplus::Graphics g(hdc);
   g.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
-  Gdiplus::SolidBrush bg(Gdiplus::Color(240, 245, 245, 245));
-  g.FillRectangle(&bg, 0, 0, rc.right, rc.bottom);
-  Gdiplus::Pen edge(Gdiplus::Color(180, 180, 180), 1);
-  g.DrawRectangle(&edge, 0, 0, rc.right - 1, rc.bottom - 1);
+  g.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHalf);
 
-  auto label = [&](int id, const wchar_t* text, bool active) {
+  // Soft card like WeChat capture bar.
+  const Gdiplus::REAL radius =
+      static_cast<Gdiplus::REAL>((std::max)(6, TbSx(8)));
+  Gdiplus::GraphicsPath path;
+  const Gdiplus::REAL w = static_cast<Gdiplus::REAL>(rc.right);
+  const Gdiplus::REAL h = static_cast<Gdiplus::REAL>(rc.bottom);
+  path.AddArc(0.f, 0.f, radius * 2, radius * 2, 180.f, 90.f);
+  path.AddArc(w - radius * 2, 0.f, radius * 2, radius * 2, 270.f, 90.f);
+  path.AddArc(w - radius * 2, h - radius * 2, radius * 2, radius * 2, 0.f,
+              90.f);
+  path.AddArc(0.f, h - radius * 2, radius * 2, radius * 2, 90.f, 90.f);
+  path.CloseFigure();
+  Gdiplus::SolidBrush bg(Gdiplus::Color(250, 250, 250, 250));
+  g.FillPath(&bg, &path);
+  Gdiplus::Pen edge(Gdiplus::Color(200, 200, 200), 1.f);
+  g.DrawPath(&edge, &path);
+
+  auto paint_btn = [&](int id, bool active) {
     RECT r = TbButtonRect(id);
-    if (active) {
-      Gdiplus::SolidBrush hi(Gdiplus::Color(60, 7, 193, 96));
-      g.FillRectangle(&hi, static_cast<INT>(r.left), static_cast<INT>(r.top),
-                      static_cast<INT>(r.right - r.left),
-                      static_cast<INT>(r.bottom - r.top));
+    const bool hover = (tb_hover_id_ == id);
+    if (active || hover) {
+      Gdiplus::SolidBrush hi(active ? Gdiplus::Color(55, 7, 193, 96)
+                                    : Gdiplus::Color(40, 0, 0, 0));
+      Gdiplus::GraphicsPath cell;
+      const Gdiplus::REAL x = static_cast<Gdiplus::REAL>(r.left);
+      const Gdiplus::REAL y = static_cast<Gdiplus::REAL>(r.top);
+      const Gdiplus::REAL bw =
+          static_cast<Gdiplus::REAL>(r.right - r.left);
+      const Gdiplus::REAL bh =
+          static_cast<Gdiplus::REAL>(r.bottom - r.top);
+      const Gdiplus::REAL rad =
+          static_cast<Gdiplus::REAL>((std::max)(4, TbSx(6)));
+      cell.AddArc(x, y, rad * 2, rad * 2, 180.f, 90.f);
+      cell.AddArc(x + bw - rad * 2, y, rad * 2, rad * 2, 270.f, 90.f);
+      cell.AddArc(x + bw - rad * 2, y + bh - rad * 2, rad * 2, rad * 2, 0.f,
+                  90.f);
+      cell.AddArc(x, y + bh - rad * 2, rad * 2, rad * 2, 90.f, 90.f);
+      cell.CloseFigure();
+      g.FillPath(&hi, &cell);
     }
-    Gdiplus::FontFamily fam(L"Segoe UI");
-    Gdiplus::Font font(&fam, 11, Gdiplus::FontStyleRegular, Gdiplus::UnitPixel);
-    Gdiplus::SolidBrush br(active ? Gdiplus::Color(255, 7, 193, 96)
-                                  : Gdiplus::Color(255, 40, 40, 40));
-    Gdiplus::StringFormat fmt;
-    fmt.SetAlignment(Gdiplus::StringAlignmentCenter);
-    fmt.SetLineAlignment(Gdiplus::StringAlignmentCenter);
-    Gdiplus::RectF box(static_cast<Gdiplus::REAL>(r.left),
-                       static_cast<Gdiplus::REAL>(r.top),
-                       static_cast<Gdiplus::REAL>(r.right - r.left),
-                       static_cast<Gdiplus::REAL>(r.bottom - r.top));
-    g.DrawString(text, -1, &font, box, &fmt, &br);
+    DrawTbGlyph(g, id, r, active, stroke_color_, stroke_width_);
   };
 
-  label(TbRect, L"□", tool_ == Tool::Rect);
-  label(TbEllipse, L"○", tool_ == Tool::Ellipse);
-  label(TbArrow, L"→", tool_ == Tool::Arrow);
-  label(TbBrush, L"✎", tool_ == Tool::Brush);
-  label(TbMosaic, L"▦", tool_ == Tool::Mosaic);
-  label(TbText, L"A", tool_ == Tool::Text);
-  label(TbUndo, L"↶", false);
-  {
-    RECT r = TbButtonRect(TbColor);
-    Gdiplus::SolidBrush br(GpColor(stroke_color_));
-    g.FillEllipse(&br, r.left + 8, r.top + 8, 16, 16);
-  }
-  {
-    wchar_t buf[8];
-    swprintf_s(buf, L"%d", stroke_width_);
-    label(TbWidth, buf, false);
-  }
-  label(TbCopy, L"✓", false);
-  label(TbSave, L"💾", false);
-  label(TbCancel, L"✕", false);
+  paint_btn(TbRect, tool_ == Tool::Rect);
+  paint_btn(TbEllipse, tool_ == Tool::Ellipse);
+  paint_btn(TbArrow, tool_ == Tool::Arrow);
+  paint_btn(TbBrush, tool_ == Tool::Brush);
+  paint_btn(TbMosaic, tool_ == Tool::Mosaic);
+  paint_btn(TbText, tool_ == Tool::Text);
+  paint_btn(TbUndo, false);
+  paint_btn(TbColor, false);
+  paint_btn(TbWidth, false);
+  paint_btn(TbCopy, false);
+  paint_btn(TbSave, false);
+  paint_btn(TbCancel, false);
 }
 
 LRESULT CALLBACK CaptureOverlay::ToolbarProc(HWND hwnd, UINT msg, WPARAM wparam,
@@ -1562,14 +1939,38 @@ LRESULT CaptureOverlay::HandleToolbar(UINT msg, WPARAM wparam, LPARAM lparam) {
       EndPaint(toolbar_, &ps);
       return 0;
     }
+    case WM_MOUSEMOVE: {
+      TRACKMOUSEEVENT tme{};
+      tme.cbSize = sizeof(tme);
+      tme.dwFlags = TME_LEAVE;
+      tme.hwndTrack = toolbar_;
+      TrackMouseEvent(&tme);
+      UpdateToolbarHover(
+          HitToolbar(GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)));
+      return 0;
+    }
+    case WM_MOUSELEAVE:
+      UpdateToolbarHover(0);
+      return 0;
     case WM_LBUTTONUP: {
       const int id = HitToolbar(GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam));
       if (id) {
         OnToolbarCommand(id);
       }
+      if (hwnd_) {
+        SetFocus(hwnd_);
+      }
       return 0;
     }
+    case WM_KEYDOWN:
+    case WM_SYSKEYDOWN:
+      if (wparam == VK_ESCAPE) {
+        Cancel();
+        return 0;
+      }
+      break;
     case WM_DESTROY:
+      HideToolbarTip();
       toolbar_ = nullptr;
       return 0;
     default:
@@ -1729,12 +2130,18 @@ LRESULT CaptureOverlay::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
       Cancel();
       return 0;
     case WM_KEYDOWN:
+    case WM_SYSKEYDOWN:
       if (wparam == VK_ESCAPE) {
+        // WeChat: Esc exits capture. While typing, first Esc only closes the
+        // text box; a second Esc (or Esc with no editor) cancels the shot.
         if (text_edit_) {
           CancelInlineText();
           return 0;
         }
         Cancel();
+        return 0;
+      }
+      if (msg == WM_SYSKEYDOWN) {
         return 0;
       }
       if (wparam == 'Z' && (GetKeyState(VK_CONTROL) & 0x8000)) {
@@ -1762,6 +2169,7 @@ LRESULT CaptureOverlay::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
       }
       return 0;
     case WM_DESTROY:
+      UninstallCaptureEscHook(this);
       DestroyInlineText();
       DestroyToolbar();
       hwnd_ = nullptr;
