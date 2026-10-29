@@ -230,6 +230,9 @@ add_custom_command(TARGET desktidy_native POST_BUILD
           ${CMAKE_CURRENT_SOURCE_DIR}/assets/dialogs/record_cfg.html
           $<TARGET_FILE_DIR:desktidy_native>/assets/dialogs/record_cfg.html
   COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          ${CMAKE_CURRENT_SOURCE_DIR}/assets/dialogs/record_done.html
+          $<TARGET_FILE_DIR:desktidy_native>/assets/dialogs/record_done.html
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
           ${CMAKE_CURRENT_SOURCE_DIR}/assets/dialogs/help.html
           $<TARGET_FILE_DIR:desktidy_native>/assets/dialogs/help.html
   COMMAND ${CMAKE_COMMAND} -E copy_if_different

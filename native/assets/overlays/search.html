@@ -6,70 +6,126 @@
 <title>文件搜索</title>
 <style>
   :root {
-    --bg: #EEF1F6; --card: rgba(255,255,255,0.96); --border: #C9D2DE;
-    --text: #1A2332; --muted: #64748B; --accent: #1D4ED8; --accent-soft: #E0E7FF;
-    --primary: #16A34A; --primary-hover: #15803D; --row: #F8FAFC; --sidebar: #1A2740;
+    --bg: #F4F6FA;
+    --card: #FFFFFF;
+    --border: #D8E0EA;
+    --text: #152033;
+    --muted: #6B7A90;
+    --accent: #2563EB;
+    --accent-soft: #EFF4FF;
+    --accent-deep: #1D4ED8;
+    --row: #F8FAFC;
+    --sidebar: #15233A;
+    --chip: #EEF2F7;
+    --chip-on: #DBEAFE;
+    --chip-on-border: #93C5FD;
+    --danger-soft: #FEE2E2;
   }
   * { box-sizing: border-box; }
   html, body {
     margin: 0; height: 100%; overflow: hidden;
-    font-family: "Microsoft YaHei UI", "Segoe UI", sans-serif;
+    font-family: "Segoe UI Variable Text", "Microsoft YaHei UI", "Segoe UI", sans-serif;
     background: transparent; color: var(--text); font-size: 13px; user-select: none;
   }
   #card {
     height: 100%; display: flex; flex-direction: column;
-    background: var(--card); border: 1px solid var(--border); border-radius: 14px;
-    overflow: hidden; box-shadow: 0 12px 36px rgba(26,35,50,0.16);
+    background: linear-gradient(180deg, #FFFFFF 0%, #F7F9FC 100%);
+    border: 1px solid var(--border); border-radius: 16px;
+    overflow: hidden; box-shadow: 0 18px 48px rgba(21, 32, 51, 0.18);
   }
   #title {
-    display: flex; align-items: center; gap: 8px;
-    padding: 10px 12px 10px 14px; background: var(--sidebar); color: #EAF0FA;
+    display: flex; align-items: center; gap: 10px;
+    padding: 12px 14px 12px 16px; background: var(--sidebar); color: #EAF0FA;
     cursor: move;
   }
-  #title .t { font-weight: 800; font-size: 14px; flex: 1; }
-  #title .hint { color: #93A4BF; font-size: 11px; }
+  #title .t { font-weight: 750; font-size: 14px; letter-spacing: 0.2px; }
+  #title .hint { color: #9AAFCB; font-size: 12px; flex: 1; text-align: right; }
   #hide {
-    width: 28px; height: 28px; border: 0; border-radius: 8px;
-    background: transparent; color: #93A4BF; font-size: 18px; cursor: pointer;
+    width: 30px; height: 30px; border: 0; border-radius: 9px;
+    background: transparent; color: #9AAFCB; font-size: 18px; line-height: 1; cursor: pointer;
   }
-  #hide:hover { background: rgba(29,78,216,0.26); color: #fff; }
-  .toolbar {
-    display: flex; gap: 8px; align-items: center; padding: 10px 12px 6px;
-  }
+  #hide:hover { background: rgba(37,99,235,0.28); color: #fff; }
+  .body { display: flex; flex-direction: column; flex: 1; min-height: 0; padding: 12px 14px 0; gap: 10px; }
+  .toolbar { display: flex; gap: 8px; align-items: center; }
   #q {
-    flex: 1; min-width: 0; height: 36px; padding: 0 12px;
-    border: 1px solid var(--border); border-radius: 10px; font: inherit; outline: none;
+    flex: 1; min-width: 0; height: 40px; padding: 0 14px;
+    border: 1px solid var(--border); border-radius: 12px; font: inherit; outline: none;
+    background: #fff; box-shadow: inset 0 1px 0 rgba(255,255,255,0.8);
   }
-  #q:focus { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
+  #q:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(37,99,235,0.14); }
   .btn {
-    border: 1px solid var(--border); background: #fff; border-radius: 10px;
-    padding: 8px 12px; font: inherit; font-weight: 700; cursor: pointer; white-space: nowrap;
+    border: 1px solid var(--border); background: #fff; border-radius: 11px;
+    padding: 9px 14px; font: inherit; font-weight: 700; cursor: pointer; white-space: nowrap;
+    transition: background .12s, border-color .12s, color .12s, opacity .12s;
   }
-  .btn:hover { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
-  .btn.primary { background: var(--primary); border-color: var(--primary); color: #fff; }
-  .btn.primary:hover { background: var(--primary-hover); color: #fff; }
-  .opts {
-    padding: 0 12px 4px; display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12px;
+  .btn:hover { background: var(--accent-soft); border-color: var(--accent); color: var(--accent-deep); }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .btn.primary:hover { background: var(--accent-deep); color: #fff; }
+  .btn:disabled { opacity: 0.55; cursor: default; }
+  .section-label {
+    font-size: 11px; font-weight: 700; color: var(--muted); letter-spacing: 0.04em;
+    text-transform: uppercase; margin: 0 0 6px;
   }
-  .opts label { display: flex; align-items: center; gap: 6px; cursor: pointer; }
-  .types {
-    padding: 0 12px 8px; display: flex; flex-wrap: wrap; gap: 6px 12px;
-    color: var(--muted); font-size: 12px;
+  .chips {
+    display: flex; flex-wrap: wrap; gap: 6px; align-items: center;
   }
-  .types label { display: flex; align-items: center; gap: 5px; cursor: pointer; }
-  #list { flex: 1; overflow: auto; padding: 4px 12px 8px; }
+  .chip {
+    display: inline-flex; align-items: center; gap: 5px;
+    border: 1px solid var(--border); background: var(--chip); color: var(--text);
+    border-radius: 999px; padding: 5px 11px; font-size: 12px; font-weight: 650;
+    cursor: pointer; user-select: none;
+  }
+  .chip:hover { border-color: var(--accent); background: var(--accent-soft); }
+  .chip.on { background: var(--chip-on); border-color: var(--chip-on-border); color: var(--accent-deep); }
+  .chip.ghost {
+    background: transparent; border-style: dashed; color: var(--muted); font-weight: 600;
+  }
+  .chip input { display: none; }
+  .progress-wrap {
+    display: none; flex-direction: column; gap: 6px;
+  }
+  .progress-wrap.show { display: flex; }
+  .progress-meta {
+    display: flex; justify-content: space-between; gap: 8px;
+    font-size: 12px; color: var(--muted);
+  }
+  .bar {
+    height: 6px; border-radius: 999px; background: #E8EEF6; overflow: hidden;
+  }
+  .bar > i {
+    display: block; height: 100%; width: 0%;
+    background: linear-gradient(90deg, #60A5FA, #2563EB);
+    border-radius: inherit; transition: width .18s ease;
+  }
+  .bar.indeterminate > i {
+    width: 36% !important;
+    animation: slide 1.1s ease-in-out infinite;
+  }
+  @keyframes slide {
+    0% { transform: translateX(-120%); }
+    100% { transform: translateX(320%); }
+  }
+  #list {
+    flex: 1; overflow: auto; padding: 2px 0 8px;
+    margin: 0 -2px; padding-left: 2px; padding-right: 2px;
+  }
   .item {
-    padding: 9px 12px; border: 1px solid var(--border); border-radius: 10px;
+    padding: 10px 12px; border: 1px solid transparent; border-radius: 12px;
     background: var(--row); margin-bottom: 6px; cursor: pointer;
     border-left: 3px solid transparent;
+    transition: background .1s, border-color .1s;
   }
-  .item:hover { background: var(--accent-soft); }
-  .item.sel { border-left-color: var(--accent); background: var(--accent-soft); }
-  .item .name { font-weight: 800; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .item .path { font-size: 11px; color: var(--muted); margin-top: 2px; word-break: break-all; }
-  #empty { color: var(--muted); text-align: center; padding: 48px 12px; }
+  .item:hover { background: var(--accent-soft); border-color: #Dbeafe; }
+  .item.sel {
+    border-left-color: var(--accent); background: var(--accent-soft);
+    border-color: #BFDBFE;
+  }
+  .item .name { font-weight: 750; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .item .path { font-size: 11px; color: var(--muted); margin-top: 3px; word-break: break-all; line-height: 1.35; }
+  #empty { color: var(--muted); text-align: center; padding: 56px 16px; line-height: 1.6; }
   .foot {
-    display: flex; gap: 8px; padding: 8px 12px 12px; border-top: 1px solid var(--border);
+    display: flex; gap: 8px; padding: 10px 14px 14px; border-top: 1px solid var(--border);
+    background: rgba(255,255,255,0.72);
   }
 </style>
 </head>
@@ -80,23 +136,39 @@
     <div class="hint" id="status">输入文件名</div>
     <button id="hide" title="关闭">×</button>
   </div>
-  <div class="toolbar">
-    <input id="q" type="text" placeholder="文件名关键词…" />
-    <button class="btn primary" id="go">搜索</button>
+  <div class="body">
+    <div class="toolbar">
+      <input id="q" type="text" placeholder="文件名关键词…" />
+      <button class="btn primary" id="go">搜索</button>
+    </div>
+    <div>
+      <div class="section-label">搜索范围</div>
+      <div class="chips" id="drives"></div>
+      <div style="margin-top:6px;font-size:11px;color:var(--muted)">
+        未选磁盘时，仅搜索桌面 / 文档 / 下载
+      </div>
+    </div>
+    <div>
+      <div class="section-label">文件类型</div>
+      <div class="chips" id="types">
+        <label class="chip"><input type="checkbox" data-type="word" /> Word</label>
+        <label class="chip"><input type="checkbox" data-type="excel" /> Excel</label>
+        <label class="chip"><input type="checkbox" data-type="ppt" /> PPT</label>
+        <label class="chip"><input type="checkbox" data-type="pdf" /> PDF</label>
+        <label class="chip"><input type="checkbox" data-type="md" /> Markdown</label>
+        <label class="chip"><input type="checkbox" data-type="image" /> 图片</label>
+        <label class="chip"><input type="checkbox" data-type="video" /> 视频</label>
+      </div>
+    </div>
+    <div class="progress-wrap" id="progress">
+      <div class="progress-meta">
+        <span id="progress_text">准备搜索…</span>
+        <span id="progress_pct">0%</span>
+      </div>
+      <div class="bar" id="bar"><i id="bar_fill"></i></div>
+    </div>
+    <div id="list"></div>
   </div>
-  <div class="opts">
-    <label><input type="checkbox" id="all" checked /> 所有固定磁盘</label>
-  </div>
-  <div class="types" id="types">
-    <label><input type="checkbox" data-type="word" /> Word</label>
-    <label><input type="checkbox" data-type="excel" /> Excel</label>
-    <label><input type="checkbox" data-type="ppt" /> PPT</label>
-    <label><input type="checkbox" data-type="pdf" /> PDF</label>
-    <label><input type="checkbox" data-type="md" /> Markdown</label>
-    <label><input type="checkbox" data-type="image" /> 图片</label>
-    <label><input type="checkbox" data-type="video" /> 视频</label>
-  </div>
-  <div id="list"></div>
   <div class="foot">
     <button class="btn primary" id="open">打开</button>
     <button class="btn" id="reveal">打开所在位置</button>
@@ -106,6 +178,9 @@
   let items = [];
   let sel = -1;
   let dragging = false;
+  let drives = [];          // available letters ["C","D"]
+  let selectedDrives = [];  // default empty — no all-select
+  let searching = false;
 
   function post(msg) {
     try { chrome.webview.postMessage(JSON.stringify(msg)); } catch (e) {}
@@ -126,21 +201,84 @@
     const want = new Set(Array.isArray(list) ? list : []);
     document.querySelectorAll('#types input[data-type]').forEach(el => {
       el.checked = want.has(el.dataset.type);
+      el.closest('.chip').classList.toggle('on', el.checked);
     });
   }
+  function syncTypeChips() {
+    document.querySelectorAll('#types input[data-type]').forEach(el => {
+      el.closest('.chip').classList.toggle('on', el.checked);
+    });
+  }
+  function renderDrives() {
+    const host = document.getElementById('drives');
+    const letters = Array.isArray(drives) ? drives : [];
+    const selSet = new Set(selectedDrives.map(x => String(x).toUpperCase()));
+    let html = letters.map(d => {
+      const L = String(d).toUpperCase();
+      const on = selSet.has(L) ? ' on' : '';
+      return `<button type="button" class="chip${on}" data-drive="${esc(L)}">${esc(L)}:</button>`;
+    }).join('');
+    html += `<button type="button" class="chip ghost" data-act="all">全选</button>`;
+    html += `<button type="button" class="chip ghost" data-act="none">清空</button>`;
+    host.innerHTML = html;
+    host.querySelectorAll('[data-drive]').forEach(btn => {
+      btn.onclick = () => {
+        const L = btn.dataset.drive;
+        const i = selectedDrives.findIndex(x => String(x).toUpperCase() === L);
+        if (i >= 0) selectedDrives.splice(i, 1);
+        else selectedDrives.push(L);
+        renderDrives();
+        post({ type: 'action', id: 'drives', drives: selectedDrives.slice() });
+      };
+    });
+    host.querySelector('[data-act="all"]').onclick = () => {
+      selectedDrives = letters.slice();
+      renderDrives();
+      post({ type: 'action', id: 'drives', drives: selectedDrives.slice() });
+    };
+    host.querySelector('[data-act="none"]').onclick = () => {
+      selectedDrives = [];
+      renderDrives();
+      post({ type: 'action', id: 'drives', drives: [] });
+    };
+  }
+  function setProgress(show, pct, text) {
+    const wrap = document.getElementById('progress');
+    const bar = document.getElementById('bar');
+    const fill = document.getElementById('bar_fill');
+    wrap.classList.toggle('show', !!show);
+    document.getElementById('go').disabled = !!show;
+    searching = !!show;
+    if (!show) {
+      fill.style.width = '0%';
+      bar.classList.remove('indeterminate');
+      return;
+    }
+    const p = Math.max(0, Math.min(100, pct | 0));
+    document.getElementById('progress_text').textContent = text || '搜索中…';
+    document.getElementById('progress_pct').textContent = p + '%';
+    if (p <= 0) {
+      bar.classList.add('indeterminate');
+      fill.style.width = '36%';
+    } else {
+      bar.classList.remove('indeterminate');
+      fill.style.width = p + '%';
+    }
+  }
   function doSearch() {
+    if (searching) return;
     post({
       type: 'action',
       id: 'search',
       query: document.getElementById('q').value,
-      all_drives: document.getElementById('all').checked,
+      drives: selectedDrives.slice(),
       types: selectedTypes()
     });
   }
   function render() {
     const list = document.getElementById('list');
     if (!items.length) {
-      list.innerHTML = '<div id="empty">无结果</div>';
+      list.innerHTML = '<div id="empty">无结果<br/><span style="font-size:12px">输入关键词后点搜索</span></div>';
       return;
     }
     list.innerHTML = items.map((p, i) =>
@@ -149,39 +287,63 @@
         <div class="path">${esc(p)}</div>
       </div>`).join('');
     list.querySelectorAll('.item').forEach(el => {
-      el.onclick = () => { sel = +el.dataset.i; render(); };
-      el.ondblclick = () => post({ type: 'action', id: 'open', index: sel });
+      // Single click → open containing folder and select the file.
+      el.addEventListener('click', e => {
+        e.preventDefault();
+        e.stopPropagation();
+        sel = +el.dataset.i;
+        document.querySelectorAll('.item').forEach(n => n.classList.toggle('sel', +n.dataset.i === sel));
+        post({ type: 'action', id: 'reveal', index: sel });
+      });
       el.oncontextmenu = e => {
         e.preventDefault();
-        sel = +el.dataset.i; render();
+        sel = +el.dataset.i;
+        document.querySelectorAll('.item').forEach(n => n.classList.toggle('sel', +n.dataset.i === sel));
         post({ type: 'action', id: 'context', index: sel, x: e.screenX, y: e.screenY });
       };
     });
   }
   window.applyState = function(m) {
-    if (!m || m.type !== 'state') return;
+    if (!m) return;
+    if (m.type === 'progress') {
+      setProgress(true, m.pct || 0, m.status || '搜索中…');
+      if (Array.isArray(m.items)) {
+        items = m.items.slice();
+        if (sel >= items.length) sel = items.length ? 0 : -1;
+        render();
+      }
+      if (m.status) document.getElementById('status').textContent = m.status;
+      return;
+    }
+    if (m.type !== 'state') return;
     items = Array.isArray(m.items) ? m.items.slice() : [];
     if (typeof m.sel === 'number') sel = m.sel;
     if (sel >= items.length) sel = items.length ? 0 : -1;
-    document.getElementById('all').checked = !!m.all_drives;
+    if (Array.isArray(m.drives)) drives = m.drives.map(x => String(x).toUpperCase());
+    if (Array.isArray(m.selected_drives)) {
+      // Never invent a default C:; only honor explicit host list (may be empty).
+      selectedDrives = m.selected_drives
+        .map(x => String(x).toUpperCase())
+        .filter(x => /^[A-Z]$/.test(x));
+    }
     if (Array.isArray(m.types)) setTypes(m.types);
     if (typeof m.query === 'string' && document.activeElement !== document.getElementById('q')) {
       document.getElementById('q').value = m.query;
     }
-    document.getElementById('status').textContent = m.status || (items.length ? (items.length + ' 项') : '输入文件名');
+    document.getElementById('status').textContent =
+      m.status || (items.length ? (items.length + ' 项') : '输入文件名');
+    setProgress(!!m.searching, m.progress || 0, m.status);
+    renderDrives();
     render();
   };
-  // Search only on explicit action (按钮 / Enter) — not while typing.
   document.getElementById('go').onclick = () => doSearch();
   document.getElementById('q').onkeydown = e => {
     if (e.key === 'Enter') doSearch();
     if (e.key === 'Escape') post({ type: 'action', id: 'hide' });
   };
-  document.getElementById('all').onchange = () => {
-    post({ type: 'action', id: 'all_drives', value: document.getElementById('all').checked });
-  };
   document.querySelectorAll('#types input[data-type]').forEach(el => {
     el.onchange = () => {
+      syncTypeChips();
       post({ type: 'action', id: 'types', types: selectedTypes() });
     };
   });
@@ -205,6 +367,7 @@
       applyState(m);
     });
   } catch (e) {}
+  syncTypeChips();
   post({ type: 'action', id: 'ready' });
   setTimeout(() => document.getElementById('q').focus(), 80);
 </script>

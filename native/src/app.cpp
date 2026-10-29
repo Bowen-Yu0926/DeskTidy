@@ -2052,7 +2052,8 @@ void App::DispatchSettingsCommand(const std::wstring& id) {
                       MB_YESNO | MB_ICONQUESTION) == IDYES) {
         AppState state;
         if (LoadSnapshotWithIcons(item.path, &state)) {
-          ReloadFencesFromState(state);
+          ReloadFencesFromState(state, /*heal_geometry=*/false);
+          RestoreSnapshotShellIcons(item.path);
           ShowToast(L"已恢复所选快照");
           PushExtensionSettings();
         } else {
@@ -2571,15 +2572,19 @@ void App::SaveLayoutSnapshot() {
 
 void App::RestoreLayoutSnapshot() {
   AppState state;
-  if (!ManageSnapshotsDialog(settings_.Hwnd(), &state)) {
+  std::wstring applied_path;
+  if (!ManageSnapshotsDialog(settings_.Hwnd(), &state, &applied_path)) {
     return;
   }
-  ReloadFencesFromState(state);
+  ReloadFencesFromState(state, /*heal_geometry=*/false);
+  if (!applied_path.empty()) {
+    RestoreSnapshotShellIcons(applied_path);
+  }
   MessageBoxW(settings_.Hwnd(), L"已恢复所选快照。", L"布局快照",
               MB_OK | MB_ICONINFORMATION);
 }
 
-void App::ReloadFencesFromState(const AppState& state) {
+void App::ReloadFencesFromState(const AppState& state, bool heal_geometry) {
   for (auto& f : fences_) {
     if (f) {
       f->Destroy();
@@ -2592,8 +2597,13 @@ void App::ReloadFencesFromState(const AppState& state) {
   NormalizePageNames(&page_names_);
   dock_visible_ = prefs_.dock_visible;
   pet_visible_ = state.pet_visible;
+  // Snapshot / layout file may have rewritten pins.json — reload or the UI
+  // keeps the pre-apply pin map and looks unchanged.
+  pins_ = LoadPins();
   AppState healed = state;
-  HealFenceLayouts(&healed.fences);
+  if (heal_geometry) {
+    HealFenceLayouts(&healed.fences);
+  }
   for (const auto& layout : healed.fences) {
     SpawnFence(layout);
   }
@@ -3825,9 +3835,11 @@ void App::CreateFenceOnPage(int page, bool switch_to_page) {
 }
 
 void App::EnsureOrganizeFencesForEmptyPages() {
-  // Match Python ensure_organize_fence_for_page: prefer an existing file-capable
-  // fence, else adopt a kinds-empty fence, else create a document fence so
-  // virtual organize lands in a visible partition (not free floats).
+  // After virtual organize: make sure there is somewhere for "file" items to
+  // land. ResolveFenceByKind already falls through to other pages, so a global
+  // file fence (system_docs) is enough — do NOT rewrite empty organize_kinds.
+  // Empty kinds =「不参与整理」(UI / default「其他」); adopting them as file was
+  // stomping user intent every organize (logs: empty-page fences adopted=1).
   auto has_file_kind = [](const std::vector<std::string>& kinds) {
     for (const auto& k : kinds) {
       if (k == "file") {
@@ -3836,41 +3848,26 @@ void App::EnsureOrganizeFencesForEmptyPages() {
     }
     return false;
   };
-  int created = 0;
-  int adopted = 0;
-  for (int p = 0; p < static_cast<int>(page_names_.size()); ++p) {
-    FenceWindow* adopt = nullptr;
-    bool has_file = false;
-    for (const auto& fence : fences_) {
-      if (!fence || !fence->OnPage(p)) {
-        continue;
-      }
-      const auto& kinds = fence->OrganizeKinds();
-      if (has_file_kind(kinds)) {
-        has_file = true;
-        break;
-      }
-      if (kinds.empty() && adopt == nullptr) {
-        adopt = fence.get();
-      }
+  bool global_file = false;
+  for (const auto& fence : fences_) {
+    if (fence && has_file_kind(fence->OrganizeKinds())) {
+      global_file = true;
+      break;
     }
-    if (has_file) {
-      continue;
-    }
-    if (adopt != nullptr) {
-      adopt->SetOrganizeKinds({"file"});
-      ++adopted;
-      continue;
-    }
-    CreateFenceOnPage(p, /*switch_to_page=*/false);
-    ++created;
   }
-  if (created > 0 || adopted > 0) {
-    PersistLayouts();
-    RefreshSettingsList();
-    LogLine(L"[organize] empty-page fences created=%d adopted=%d", created,
-            adopted);
+  if (global_file) {
+    return;
   }
+  // No file landing zone anywhere — create one on the current page (or 0).
+  const int page =
+      (current_page_ >= 0 &&
+       current_page_ < static_cast<int>(page_names_.size()))
+          ? current_page_
+          : 0;
+  CreateFenceOnPage(page, /*switch_to_page=*/false);
+  PersistLayouts();
+  RefreshSettingsList();
+  LogLine(L"[organize] empty-page fences created=1 (no global file zone)");
 }
 
 void App::DeletePageAt(int page) {

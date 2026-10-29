@@ -298,7 +298,7 @@ AppPrefs LoadAppPrefsFromPath(const std::wstring& path) {
   prefs.search_desktop = ParseBoolField(json, "search_desktop", true);
   prefs.search_documents = ParseBoolField(json, "search_documents", true);
   prefs.search_downloads = ParseBoolField(json, "search_downloads", true);
-  prefs.search_all_drives = ParseBoolField(json, "search_all_drives", true);
+  prefs.search_all_drives = ParseBoolField(json, "search_all_drives", false);
   prefs.search_max_results = ParseIntField(json, "search_max_results", 50);
   if (prefs.search_max_results < 10) {
     prefs.search_max_results = 10;

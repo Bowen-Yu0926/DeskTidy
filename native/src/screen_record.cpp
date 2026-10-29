@@ -5,6 +5,7 @@
 #include "ffmpeg_fetch.h"
 #include "i18n.h"
 #include "log.h"
+#include "mist_msg.h"
 #include "mist_webview.h"
 #include "paths_util.h"
 #include "prompt_text.h"
@@ -649,15 +650,23 @@ void ShowBadges(HINSTANCE instance) {
 
 bool PickRecordMonitor(HWND owner, const std::vector<MonitorInfo>& mons,
                        int* mon_index) {
-  if (!mon_index) {
+  if (!mon_index || mons.empty()) {
     return false;
   }
-  *mon_index = -1;
-  if (mons.size() <= 1) {
+  // Default / single display: primary (or the only) monitor — no "整桌面".
+  int primary = 0;
+  for (size_t i = 0; i < mons.size(); ++i) {
+    if (mons[i].primary) {
+      primary = static_cast<int>(i);
+      break;
+    }
+  }
+  *mon_index = primary;
+  if (mons.size() == 1) {
     return true;
   }
   std::vector<std::wstring> labels;
-  labels.push_back(L"整桌面（所有显示器）");
+  labels.reserve(mons.size());
   for (size_t i = 0; i < mons.size(); ++i) {
     const auto& m = mons[i];
     std::wstring lab = L"显示器 " + std::to_wstring(i + 1) + L"： " +
@@ -669,7 +678,7 @@ bool PickRecordMonitor(HWND owner, const std::vector<MonitorInfo>& mons,
     labels.push_back(std::move(lab));
   }
   bool ok = false;
-  int choice = -1;
+  int choice = primary;
   MistWebDialog dlg;
   dlg.owner = owner;
   dlg.user_data_subdir = L"webview2-rec-mon";
@@ -680,7 +689,9 @@ bool PickRecordMonitor(HWND owner, const std::vector<MonitorInfo>& mons,
   dlg.build_state = [&]() {
     std::wstring json =
         L"{\"type\":\"state\",\"title\":\"录屏\",\"hint\":\"选择录制目标\","
-        L"\"open_label\":\"开始\",\"allow_new\":false,\"sel\":0,\"items\":[";
+        L"\"open_label\":\"开始\",\"allow_new\":false,\"sel\":";
+    json += std::to_wstring(primary);
+    json += L",\"items\":[";
     for (size_t i = 0; i < labels.size(); ++i) {
       if (i) {
         json += L',';
@@ -705,7 +716,7 @@ bool PickRecordMonitor(HWND owner, const std::vector<MonitorInfo>& mons,
     if (id == L"open") {
       const int index = MistJsonIntField(json, L"index", -1);
       if (index >= 0 && index < static_cast<int>(labels.size())) {
-        choice = index - 1;
+        choice = index;
         ok = true;
         return true;
       }
@@ -716,7 +727,7 @@ bool PickRecordMonitor(HWND owner, const std::vector<MonitorInfo>& mons,
     }
     return false;
   };
-  MistWebDialogRun(&dlg, L"录屏", 480, 400);
+  MistWebDialogRun(&dlg, L"录屏", 480, 360);
   if (!ok) {
     return false;
   }
@@ -1212,51 +1223,230 @@ bool RecoverDeadRecord(const std::wstring& exe, const std::wstring& out_dir,
   }
   ClearRecordState();
   LogLine(L"[record] recovered interrupted recording → %s", final.c_str());
+  // Startup / crash recovery: toast only — never the keep/discard dialog
+  // (that dialog is only for an intentional stop in this session).
   ShowToast(L"已恢复上次录制：" + final);
   return true;
 }
 
-void PromptKeepDiscardRename(const std::wstring& saved) {
+std::wstring SanitizeRecordStem(std::wstring stem) {
+  // Strip path / reserved characters so rename stays inside the record folder.
+  for (wchar_t& ch : stem) {
+    if (ch < 32 || wcschr(L"<>:\"/\\|?*", ch)) {
+      ch = L'_';
+    }
+  }
+  while (!stem.empty() && (stem.back() == L' ' || stem.back() == L'.')) {
+    stem.pop_back();
+  }
+  size_t i = 0;
+  while (i < stem.size() && stem[i] == L' ') {
+    ++i;
+  }
+  if (i) {
+    stem.erase(0, i);
+  }
+  return stem;
+}
+
+bool ApplyRecordKeepName(std::wstring* path, const std::wstring& stem_in) {
+  if (!path || path->empty()) {
+    return false;
+  }
+  const std::wstring stem = SanitizeRecordStem(stem_in);
+  if (stem.empty()) {
+    return false;
+  }
+  const size_t slash = path->find_last_of(L'\\');
+  const size_t dot = path->find_last_of(L'.');
+  const std::wstring dir =
+      (slash == std::wstring::npos) ? L"" : path->substr(0, slash + 1);
+  const std::wstring ext =
+      (dot != std::wstring::npos && (slash == std::wstring::npos || dot > slash))
+          ? path->substr(dot)
+          : L".mp4";
+  const std::wstring dest = dir + stem + ext;
+  if (_wcsicmp(dest.c_str(), path->c_str()) == 0) {
+    return true;
+  }
+  DeleteFileW(dest.c_str());
+  if (!MoveFileW(path->c_str(), dest.c_str())) {
+    MistAlert(nullptr, L"录屏", L"重命名失败，已保留原文件名。",
+              MistMsgTone::Warn);
+    return true;  // keep original path
+  }
+  *path = dest;
+  LogLine(L"[record] renamed to %s", dest.c_str());
+  return true;
+}
+
+void RevealRecordFile(const std::wstring& path) {
+  if (path.empty()) {
+    return;
+  }
+  ShellExecuteW(nullptr, L"open", L"explorer.exe",
+                (L"/select,\"" + path + L"\"").c_str(), nullptr, SW_SHOWNORMAL);
+}
+
+constexpr wchar_t kRecDoneClass[] = L"DeskTidyNativeRecDone";
+constexpr UINT kMsgRecDonePrompt = WM_APP + 1;
+std::wstring g_pending_done_path;
+HWND g_done_hwnd = nullptr;
+bool g_done_class_reg = false;
+bool g_done_prompt_open = false;
+
+void RunKeepDiscardRenameDialog(std::wstring saved) {
   const ULONGLONG size = FileSizeOf(saved);
   if (size == 0) {
     LogLineA("[record] output empty, discarding");
     DeleteFileW(saved.c_str());
-    MessageBoxW(nullptr, L"录屏未能保存。（文件为空或未生成，可再试一次）",
-                L"录屏", MB_OK | MB_ICONWARNING);
+    MistAlert(nullptr, L"录屏", L"录屏未能保存。（文件为空或未生成，可再试一次）",
+              MistMsgTone::Warn);
     return;
   }
-  const int choice = MessageBoxW(
-      nullptr,
-      (L"录屏已保存：\n" + saved + L"\n\n是 = 保留\n否 = 丢弃\n取消 = 重命名")
-          .c_str(),
-      L"录屏", MB_YESNOCANCEL | MB_ICONINFORMATION);
-  if (choice == IDNO) {
+
+  const size_t slash = saved.find_last_of(L'\\');
+  const size_t dot = saved.find_last_of(L'.');
+  const std::wstring folder =
+      (slash == std::wstring::npos) ? saved : saved.substr(0, slash);
+  std::wstring stem =
+      (slash == std::wstring::npos) ? saved : saved.substr(slash + 1);
+  std::wstring ext = L".mp4";
+  if (dot != std::wstring::npos && (slash == std::wstring::npos || dot > slash)) {
+    ext = saved.substr(dot);
+    stem = saved.substr(slash == std::wstring::npos ? 0 : slash + 1,
+                        dot - (slash == std::wstring::npos ? 0 : slash + 1));
+  }
+
+  enum class Choice { Keep, Discard };
+  Choice choice = Choice::Keep;
+  std::wstring keep_stem = stem;
+  bool answered = false;
+  bool mist_attempted = false;
+
+  MistWebDialog dlg;
+  dlg.owner = nullptr;
+  dlg.frameless = true;
+  dlg.user_data_subdir = L"webview2-rec-done";
+  dlg.html_path = MistFindAssetHtml(L"dialogs\\record_done.html");
+  if (!dlg.html_path.empty()) {
+    mist_attempted = true;
+    dlg.build_state = [&]() {
+      std::wstring json =
+          L"{\"type\":\"state\",\"title\":\"录屏已保存\",\"hint\":"
+          L"\"可修改文件名后保留；丢弃将删除本次录像。关闭窗口也会保留。\","
+          L"\"folder\":\"";
+      json += MistJsonEscape(folder);
+      json += L"\",\"value\":\"";
+      json += MistJsonEscape(stem);
+      json += L"\",\"ext\":\"";
+      json += MistJsonEscape(ext);
+      json += L"\"}";
+      return json;
+    };
+    dlg.on_message = [&](const std::wstring& json) -> bool {
+      const std::wstring type = MistJsonStringField(json, L"type");
+      if (type != L"action") {
+        return false;
+      }
+      const std::wstring id = MistJsonStringField(json, L"id");
+      if (id == L"ready") {
+        MistWebDialogPushState(&dlg);
+        return false;
+      }
+      if (id == L"keep") {
+        keep_stem = MistJsonStringField(json, L"value");
+        choice = Choice::Keep;
+        answered = true;
+        return true;
+      }
+      if (id == L"discard") {
+        choice = Choice::Discard;
+        answered = true;
+        return true;
+      }
+      return false;
+    };
+    MistWebDialogRun(&dlg, L"录屏", 480, 300);
+  }
+
+  if (!answered && mist_attempted) {
+    // Host chrome closed without a button — same as Esc：保留。
+    choice = Choice::Keep;
+    keep_stem = stem;
+    answered = true;
+  }
+
+  if (!answered) {
+    // Mist/WebView2 unavailable — keep quietly (no Yes/No MessageBox; that
+    // legend UI is what we removed). Soft toast + reveal matches update UX.
+    LogLineA("[record] mist done-dialog unavailable — keep + toast");
+    choice = Choice::Keep;
+    keep_stem = stem;
+    ShowToast(L"录屏已保存：" + saved);
+  }
+
+  if (choice == Choice::Discard) {
     DeleteFileW(saved.c_str());
     LogLineA("[record] user discarded output");
+    ShowToast(L"已丢弃本次录屏");
     return;
   }
-  if (choice == IDCANCEL) {
-    std::wstring stem = PromptText(nullptr, L"重命名", L"新文件名（不含扩展名）",
-                                   L"DeskTidy_recording");
-    if (stem.empty()) {
-      return;
+  ApplyRecordKeepName(&saved, keep_stem.empty() ? stem : keep_stem);
+  RevealRecordFile(saved);
+}
+
+LRESULT CALLBACK RecDoneWndProc(HWND hwnd, UINT msg, WPARAM wparam,
+                                LPARAM lparam) {
+  if (msg == kMsgRecDonePrompt) {
+    if (g_done_prompt_open) {
+      return 0;
     }
-    std::wstring dest = saved;
-    const size_t dot = dest.find_last_of(L'.');
-    std::wstring ext = (dot != std::wstring::npos) ? dest.substr(dot) : L".mp4";
-    const size_t slash = dest.find_last_of(L'\\');
-    dest = dest.substr(0, slash + 1) + stem + ext;
-    if (_wcsicmp(dest.c_str(), saved.c_str()) != 0) {
-      DeleteFileW(dest.c_str());
-      if (!MoveFileW(saved.c_str(), dest.c_str())) {
-        MessageBoxW(nullptr, L"重命名失败。", L"录屏", MB_OK | MB_ICONWARNING);
-        return;
-      }
-      LogLine(L"[record] renamed to %s", dest.c_str());
+    std::wstring path = std::move(g_pending_done_path);
+    g_pending_done_path.clear();
+    if (path.empty()) {
+      return 0;
     }
+    g_done_prompt_open = true;
+    RunKeepDiscardRenameDialog(std::move(path));
+    g_done_prompt_open = false;
+    return 0;
   }
-  ShellExecuteW(nullptr, L"open", L"explorer.exe",
-                (L"/select,\"" + saved + L"\"").c_str(), nullptr, SW_SHOWNORMAL);
+  return DefWindowProcW(hwnd, msg, wparam, lparam);
+}
+
+void EnsureRecDoneHwnd() {
+  if (g_done_hwnd) {
+    return;
+  }
+  HINSTANCE inst = GetModuleHandleW(nullptr);
+  if (!g_done_class_reg) {
+    WNDCLASSEXW wc{};
+    wc.cbSize = sizeof(wc);
+    wc.lpfnWndProc = RecDoneWndProc;
+    wc.hInstance = inst;
+    wc.lpszClassName = kRecDoneClass;
+    RegisterClassExW(&wc);
+    g_done_class_reg = true;
+  }
+  g_done_hwnd = CreateWindowExW(0, kRecDoneClass, L"", 0, 0, 0, 0, 0,
+                                HWND_MESSAGE, nullptr, inst, nullptr);
+}
+
+// Defer off hotkey / pet-timer stacks so WebView2 mist dialog can create cleanly
+// (nested pumps from IsScreenRecording / ToggleScreenRecord used to strand the
+// old Yes/No/Cancel MessageBox on the UI thread).
+void PromptKeepDiscardRename(const std::wstring& saved_in) {
+  if (saved_in.empty()) {
+    return;
+  }
+  EnsureRecDoneHwnd();
+  if (!g_done_hwnd) {
+    RunKeepDiscardRenameDialog(saved_in);
+    return;
+  }
+  g_pending_done_path = saved_in;
+  PostMessageW(g_done_hwnd, kMsgRecDonePrompt, 0, 0);
 }
 
 bool StartRecording(HWND owner) {
@@ -1594,6 +1784,17 @@ void ReapScreenRecordOnExit() {
 }
 
 bool ToggleScreenRecord(HWND owner) {
+  // MistWebDialogRun pumps the thread queue; WM_HOTKEY / relay can re-enter
+  // here and open a second「选择录制目标」dialog (F4 / Ctrl+Alt+3 double UI).
+  static bool busy = false;
+  if (busy) {
+    return false;
+  }
+  busy = true;
+  struct BusyGuard {
+    ~BusyGuard() { busy = false; }
+  } guard;
+
   AdoptOrphanScreenRecord();
   if (IsScreenRecording()) {
     StopScreenRecord();

@@ -2,6 +2,7 @@
 
 #include <Windows.h>
 
+#include <atomic>
 #include <functional>
 #include <string>
 #include <vector>
@@ -17,12 +18,11 @@ class SearchWindow {
     bool desktop = true;
     bool documents = true;
     bool downloads = true;
-    // Market default: Everything-style whole-disk search.
-    bool all_drives = true;
+    // Settings flag only; disk chips stay empty until the user picks them.
+    // Empty chips → Desktop/Documents/Downloads (never auto-check C:).
+    bool all_drives = false;
     int max_results = 50;
     int max_depth = 12;
-    // U1 — whether to also search folders currently open in Explorer
-    // (partitions / portals); hidden files; fd worker thread count.
     bool include_open_folders = true;
     bool include_hidden = false;
     int threads = 2;
@@ -35,6 +35,7 @@ class SearchWindow {
     if (options_.threads > 64) {
       options_.threads = 64;
     }
+    // Do not auto-select drive chips (esp. C:) from prefs — user picks explicitly.
   }
   void SetOnPathReplaced(
       std::function<void(const std::wstring&, const std::wstring&)> fn) {
@@ -48,6 +49,8 @@ class SearchWindow {
   }
   bool AllDrives() const { return options_.all_drives; }
 
+  static std::vector<std::wstring> EnumFixedDriveLetters();
+
  private:
   static LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
   LRESULT HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam);
@@ -56,6 +59,8 @@ class SearchWindow {
   void ResizeWebView();
   void NavigateHome();
   void PushState(const std::wstring& status = {});
+  void PushProgress(int pct, const std::wstring& status,
+                    const std::vector<std::wstring>* live_items = nullptr);
   void OnWebMessage(const std::wstring& json);
   void RunSearch(const std::wstring& needle);
   void OpenAt(int index);
@@ -63,6 +68,8 @@ class SearchWindow {
   void ContextAt(int index, int screen_x, int screen_y);
   void ParseTypesFromJson(const std::wstring& json);
   std::vector<std::wstring> ResolvedExtensions() const;
+  std::vector<std::wstring> BuildRoots() const;
+  void NotifyAllDrivesPref();
 
   HWND hwnd_ = nullptr;
   HWND host_ = nullptr;
@@ -75,9 +82,13 @@ class SearchWindow {
   POINT win_origin_{};
   std::wstring query_;
   std::vector<std::wstring> results_;
-  // Session type chips: word/excel/ppt/pdf/md/image/video. Empty = any type.
   std::vector<std::wstring> type_filters_;
+  // Drive letters without colon, e.g. L"C". Empty = user folders only.
+  std::vector<std::wstring> selected_drives_;
   Options options_;
+  std::atomic<unsigned> search_gen_{0};
+  bool searching_ = false;
+  int progress_pct_ = 0;
   std::function<void(const std::wstring&, const std::wstring&)> on_path_replaced_;
   std::function<void(const std::wstring&)> on_removed_;
   std::function<void(bool)> on_all_drives_;

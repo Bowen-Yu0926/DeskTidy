@@ -751,7 +751,10 @@ bool LoadSnapshot(const std::wstring& path, AppState* out) {
   if (!CopyFileW(path.c_str(), LayoutFilePath().c_str(), FALSE)) {
     return false;
   }
-  *out = LoadAppState();
+  // Faithful restore: do NOT inject defaults / HealFenceLayouts / migrate
+  // kinds — that rewrote「其他」and resized fences away from the snapshot.
+  // Profiles for the current display fingerprint still apply inside the load.
+  *out = LoadAppStateFromPath(LayoutFilePath(), /*inject_defaults=*/false);
   // Restore pinned content distribution from the sidecar when present.
   PinMap pins;
   if (LoadPinsFromPath(PinsSidecarPath(path), &pins)) {
@@ -778,14 +781,18 @@ bool SaveSnapshotWithIcons(const AppState& state, const std::wstring& name) {
 }
 
 bool LoadSnapshotWithIcons(const std::wstring& path, AppState* out) {
-  if (!LoadSnapshot(path, out)) {
+  // Layout + pins only. Shell icon positions must be restored by the host
+  // AFTER fences reload and RefreshDesktopIcons — otherwise icon reflow
+  // immediately stomps the sidecar coordinates (apply looked like a no-op).
+  return LoadSnapshot(path, out);
+}
+
+bool RestoreSnapshotShellIcons(const std::wstring& path) {
+  const auto icons = LoadShellIconsSidecar(path);
+  if (icons.empty()) {
     return false;
   }
-  const auto icons = LoadShellIconsSidecar(path);
-  if (!icons.empty()) {
-    RestoreShellIconPositions(icons);
-  }
-  return true;
+  return RestoreShellIconPositions(icons) > 0;
 }
 
 bool RenameSnapshot(const std::wstring& path, const std::wstring& new_name) {

@@ -20,7 +20,10 @@
 #include <wrl.h>
 
 #include <algorithm>
+#include <atomic>
+#include <memory>
 #include <string>
+#include <thread>
 #include <unordered_set>
 #include <vector>
 
@@ -29,8 +32,17 @@ using Microsoft::WRL::Callback;
 namespace {
 constexpr wchar_t kClass[] = L"DeskTidyNativeSearch";
 constexpr wchar_t kHostClass[] = L"DeskTidyNativeSearchWeb";
-constexpr int kPanelW = 640;
-constexpr int kPanelH = 540;
+constexpr int kPanelW = 680;
+constexpr int kPanelH = 580;
+constexpr UINT kMsgSearchUi = WM_APP + 81;
+
+struct SearchUiMsg {
+  unsigned gen = 0;
+  int pct = 0;
+  bool done = false;
+  std::wstring status;
+  std::vector<std::wstring> items;
+};
 
 struct TypeGroup {
   const wchar_t* id;
@@ -89,9 +101,10 @@ bool ExtAllowed(const std::wstring& name,
   return allowed->count(ExtOfName(name)) > 0;
 }
 
-// Parse JSON string-array field: "types":["word","pdf"]
+// Parse JSON string-array field: "types":["word","pdf"] / "drives":["C","D"]
 std::vector<std::wstring> ParseJsonStringArray(const std::wstring& json,
-                                               const wchar_t* key) {
+                                               const wchar_t* key,
+                                               bool types_only) {
   std::vector<std::wstring> out;
   if (!key) {
     return out;
@@ -123,7 +136,7 @@ std::vector<std::wstring> ParseJsonStringArray(const std::wstring& json,
       }
       val.push_back(json[q2++]);
     }
-    if (!val.empty() && IsKnownTypeId(val)) {
+    if (!val.empty() && (!types_only || IsKnownTypeId(val))) {
       out.push_back(val);
     }
     i = q2 + 1;
@@ -309,7 +322,110 @@ std::vector<std::wstring> OpenExplorerFolders() {
   return out;
 }
 
+std::vector<std::wstring> FdSearchRoots(
+    const std::wstring& fd, const std::wstring& needle,
+    const std::vector<std::wstring>& roots, int max_results, int max_depth,
+    int threads, bool include_hidden,
+    const std::vector<std::wstring>& exts) {
+  std::vector<std::wstring> hits;
+  if (fd.empty() || roots.empty() || needle.empty()) {
+    return hits;
+  }
+  std::wstring cmd = L"\"" + fd + L"\" -i -a --max-results " +
+                     std::to_wstring(max_results) + L" --max-depth " +
+                     std::to_wstring(max_depth) + L" --threads " +
+                     std::to_wstring(threads);
+  if (include_hidden) {
+    cmd += L" --hidden --no-ignore-vcs";
+  }
+  for (const auto& e : exts) {
+    cmd += L" -e ";
+    cmd += e;
+  }
+  cmd += L" ";
+  cmd += QuoteCmdArg(needle);
+  for (const auto& root : roots) {
+    std::wstring path = root;
+    if (IsDriveRootPath(path)) {
+      path[2] = L'/';
+    }
+    cmd += L" ";
+    cmd += QuoteCmdArg(path);
+  }
+  SECURITY_ATTRIBUTES sa{sizeof(sa), nullptr, TRUE};
+  HANDLE rd = nullptr, wr = nullptr;
+  if (!CreatePipe(&rd, &wr, &sa, 0)) {
+    return hits;
+  }
+  SetHandleInformation(rd, HANDLE_FLAG_INHERIT, 0);
+  STARTUPINFOW si{};
+  si.cb = sizeof(si);
+  si.dwFlags = STARTF_USESTDHANDLES;
+  si.hStdOutput = wr;
+  si.hStdError = wr;
+  PROCESS_INFORMATION pi{};
+  std::vector<wchar_t> buf(cmd.begin(), cmd.end());
+  buf.push_back(L'\0');
+  if (!CreateProcessW(nullptr, buf.data(), nullptr, nullptr, TRUE,
+                      CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
+    CloseHandle(wr);
+    CloseHandle(rd);
+    return hits;
+  }
+  CloseHandle(wr);
+  CloseHandle(pi.hThread);
+  std::string utf8;
+  char chunk[4096];
+  DWORD n = 0;
+  while (ReadFile(rd, chunk, sizeof(chunk), &n, nullptr) && n) {
+    utf8.append(chunk, chunk + n);
+  }
+  WaitForSingleObject(pi.hProcess, 20000);
+  CloseHandle(pi.hProcess);
+  CloseHandle(rd);
+  size_t pos = 0;
+  while (pos < utf8.size()) {
+    size_t eol = utf8.find('\n', pos);
+    if (eol == std::string::npos) {
+      eol = utf8.size();
+    }
+    std::string line = utf8.substr(pos, eol - pos);
+    if (!line.empty() && line.back() == '\r') {
+      line.pop_back();
+    }
+    if (!line.empty() && line.rfind("[fd ", 0) != 0 &&
+        line.rfind("error:", 0) != 0) {
+      const int wn =
+          MultiByteToWideChar(CP_UTF8, 0, line.c_str(), -1, nullptr, 0);
+      std::wstring wide(wn > 0 ? wn - 1 : 0, L'\0');
+      if (wn > 1) {
+        MultiByteToWideChar(CP_UTF8, 0, line.c_str(), -1, wide.data(), wn);
+      }
+      hits.push_back(std::move(wide));
+    }
+    pos = eol + 1;
+  }
+  return hits;
+}
+
 }  // namespace
+
+std::vector<std::wstring> SearchWindow::EnumFixedDriveLetters() {
+  std::vector<std::wstring> out;
+  const DWORD mask = GetLogicalDrives();
+  for (int i = 0; i < 26; ++i) {
+    if ((mask & (1u << i)) == 0) {
+      continue;
+    }
+    const wchar_t letter = static_cast<wchar_t>(L'A' + i);
+    const std::wstring root = std::wstring(1, letter) + L":\\";
+    const UINT type = GetDriveTypeW(root.c_str());
+    if (type == DRIVE_FIXED || type == DRIVE_REMOVABLE) {
+      out.push_back(std::wstring(1, letter));
+    }
+  }
+  return out;
+}
 
 bool SearchWindow::Create(HINSTANCE instance) {
   WNDCLASSEXW wc{};
@@ -482,7 +598,7 @@ void SearchWindow::NavigateHome() {
 }
 
 void SearchWindow::ParseTypesFromJson(const std::wstring& json) {
-  type_filters_ = ParseJsonStringArray(json, L"types");
+  type_filters_ = ParseJsonStringArray(json, L"types", /*types_only=*/true);
 }
 
 std::vector<std::wstring> SearchWindow::ResolvedExtensions() const {
@@ -508,13 +624,93 @@ std::vector<std::wstring> SearchWindow::ResolvedExtensions() const {
   return out;
 }
 
+void SearchWindow::NotifyAllDrivesPref() {
+  const auto all = EnumFixedDriveLetters();
+  bool every = !all.empty() && selected_drives_.size() == all.size();
+  if (every) {
+    for (const auto& a : all) {
+      bool found = false;
+      for (const auto& s : selected_drives_) {
+        if (_wcsicmp(a.c_str(), s.c_str()) == 0) {
+          found = true;
+          break;
+        }
+      }
+      if (!found) {
+        every = false;
+        break;
+      }
+    }
+  }
+  options_.all_drives = every;
+  if (on_all_drives_) {
+    on_all_drives_(options_.all_drives);
+  }
+}
+
+void SearchWindow::PushProgress(int pct, const std::wstring& status,
+                                const std::vector<std::wstring>* live_items) {
+  if (!webview_ || !web_ready_) {
+    return;
+  }
+  progress_pct_ = pct;
+  std::wstring json = L"{\"type\":\"progress\",\"pct\":";
+  json += std::to_wstring(pct);
+  json += L",\"status\":\"";
+  json += MistJsonEscape(status);
+  json += L"\"";
+  if (live_items) {
+    json += L",\"items\":[";
+    for (size_t i = 0; i < live_items->size(); ++i) {
+      if (i) {
+        json += L',';
+      }
+      json += L'"';
+      json += MistJsonEscape((*live_items)[i]);
+      json += L'"';
+    }
+    json += L']';
+  }
+  json += L'}';
+  auto* web = static_cast<ICoreWebView2*>(webview_);
+  web->PostWebMessageAsString(json.c_str());
+  std::wstring script =
+      L"(function(){try{var m=" + json +
+      L";if(typeof window.applyState==='function'){window.applyState(m);}"
+      L"}catch(e){}})();";
+  web->ExecuteScript(script.c_str(), nullptr);
+}
+
 void SearchWindow::PushState(const std::wstring& status) {
   if (!webview_ || !web_ready_) {
     return;
   }
-  std::wstring json = L"{\"type\":\"state\",\"all_drives\":";
+  const auto drives = EnumFixedDriveLetters();
+  std::wstring json = L"{\"type\":\"state\",\"searching\":";
+  json += searching_ ? L"true" : L"false";
+  json += L",\"progress\":";
+  json += std::to_wstring(progress_pct_);
+  json += L",\"all_drives\":";
   json += options_.all_drives ? L"true" : L"false";
-  json += L",\"types\":[";
+  json += L",\"drives\":[";
+  for (size_t i = 0; i < drives.size(); ++i) {
+    if (i) {
+      json += L',';
+    }
+    json += L'"';
+    json += MistJsonEscape(drives[i]);
+    json += L'"';
+  }
+  json += L"],\"selected_drives\":[";
+  for (size_t i = 0; i < selected_drives_.size(); ++i) {
+    if (i) {
+      json += L',';
+    }
+    json += L'"';
+    json += MistJsonEscape(selected_drives_[i]);
+    json += L'"';
+  }
+  json += L"],\"types\":[";
   for (size_t i = 0; i < type_filters_.size(); ++i) {
     if (i) {
       json += L',';
@@ -565,25 +761,45 @@ void SearchWindow::OnWebMessage(const std::wstring& json) {
     if (query_.empty()) {
       query_ = MistJsonStringField(json, L"query");
     }
-    // JSON bool may not parse as string — use presence of true in raw
-    if (json.find(L"\"all_drives\":true") != std::wstring::npos) {
-      options_.all_drives = true;
-    } else if (json.find(L"\"all_drives\":false") != std::wstring::npos) {
-      options_.all_drives = false;
+    if (json.find(L"\"drives\"") != std::wstring::npos) {
+      selected_drives_ = ParseJsonStringArray(json, L"drives", false);
+      for (auto& d : selected_drives_) {
+        if (d.size() > 1 && d[1] == L':') {
+          d.resize(1);
+        }
+        if (!d.empty() && d[0] >= L'a' && d[0] <= L'z') {
+          d[0] = static_cast<wchar_t>(d[0] - L'a' + L'A');
+        }
+      }
+      NotifyAllDrivesPref();
     }
     if (json.find(L"\"types\"") != std::wstring::npos) {
       ParseTypesFromJson(json);
     }
-    if (on_all_drives_) {
-      on_all_drives_(options_.all_drives);
-    }
     RunSearch(query_);
+  } else if (id == L"drives") {
+    selected_drives_ = ParseJsonStringArray(json, L"drives", false);
+    for (auto& d : selected_drives_) {
+      if (d.size() > 1 && d[1] == L':') {
+        d.resize(1);
+      }
+      if (!d.empty() && d[0] >= L'a' && d[0] <= L'z') {
+        d[0] = static_cast<wchar_t>(d[0] - L'a' + L'A');
+      }
+    }
+    NotifyAllDrivesPref();
   } else if (id == L"all_drives") {
     options_.all_drives =
         json.find(L"\"value\":true") != std::wstring::npos;
+    if (options_.all_drives) {
+      selected_drives_ = EnumFixedDriveLetters();
+    } else {
+      selected_drives_.clear();
+    }
     if (on_all_drives_) {
       on_all_drives_(options_.all_drives);
     }
+    PushState();
   } else if (id == L"types") {
     ParseTypesFromJson(json);
   } else if (id == L"open") {
@@ -681,6 +897,9 @@ void SearchWindow::Show() {
   if (!web_available_) {
     CreateWebView();
   }
+  // Fresh open: no drive chips selected (avoid sticky C: from prior session /
+  // settings "search all drives").
+  selected_drives_.clear();
   ShowWindow(hwnd_, SW_SHOW);
   SetWindowPos(hwnd_, HWND_TOPMOST, 0, 0, 0, 0,
                SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
@@ -694,25 +913,17 @@ void SearchWindow::Hide() {
   }
 }
 
-void SearchWindow::RunSearch(const std::wstring& needle) {
-  results_.clear();
-  if (needle.empty()) {
-    PushState(Tr("search_hint"));
-    return;
-  }
-  PushState(L"搜索中…");
-
+std::vector<std::wstring> SearchWindow::BuildRoots() const {
   std::vector<std::wstring> roots;
-  if (options_.all_drives) {
-    const DWORD mask = GetLogicalDrives();
-    for (int i = 0; i < 26; ++i) {
-      if ((mask & (1u << i)) == 0) {
+  if (!selected_drives_.empty()) {
+    for (const auto& letter : selected_drives_) {
+      if (letter.empty()) {
         continue;
       }
-      const wchar_t letter = static_cast<wchar_t>(L'A' + i);
-      const std::wstring root = std::wstring(1, letter) + L":\\";
+      const std::wstring root = std::wstring(1, letter[0]) + L":\\";
       const UINT type = GetDriveTypeW(root.c_str());
-      if (type == DRIVE_FIXED || type == DRIVE_REMOVABLE) {
+      if (type == DRIVE_FIXED || type == DRIVE_REMOVABLE ||
+          type == DRIVE_REMOTE) {
         roots.push_back(root);
       }
     }
@@ -735,139 +946,130 @@ void SearchWindow::RunSearch(const std::wstring& needle) {
         roots.push_back(p);
       }
     }
-  }
-  if (!options_.all_drives && options_.include_open_folders) {
-    for (const auto& p : OpenExplorerFolders()) {
-      bool dup = false;
-      for (const auto& r : roots) {
-        if (_wcsicmp(r.c_str(), p.c_str()) == 0) {
-          dup = true;
-          break;
+    if (options_.include_open_folders) {
+      for (const auto& p : OpenExplorerFolders()) {
+        bool dup = false;
+        for (const auto& r : roots) {
+          if (_wcsicmp(r.c_str(), p.c_str()) == 0) {
+            dup = true;
+            break;
+          }
         }
-      }
-      if (!dup) {
-        roots.push_back(p);
+        if (!dup) {
+          roots.push_back(p);
+        }
       }
     }
   }
-
   if (roots.empty()) {
     const std::wstring p = KnownFolder(FOLDERID_Desktop);
     if (!p.empty()) {
       roots.push_back(p);
     }
   }
+  return roots;
+}
 
+void SearchWindow::RunSearch(const std::wstring& needle) {
+  results_.clear();
+  if (needle.empty()) {
+    searching_ = false;
+    progress_pct_ = 0;
+    PushState(Tr("search_hint"));
+    return;
+  }
+  const unsigned gen = ++search_gen_;
+  searching_ = true;
+  progress_pct_ = 0;
+  PushState(L"搜索中…");
+  PushProgress(0, L"准备搜索…");
+
+  const auto roots = BuildRoots();
   const int max_results =
       options_.max_results > 0 ? options_.max_results : 50;
   const int max_depth = options_.max_depth > 0 ? options_.max_depth : 12;
   const int threads = options_.threads < 1 ? 1
                       : (options_.threads > 64 ? 64 : options_.threads);
-
   const std::vector<std::wstring> exts = ResolvedExtensions();
-  std::unordered_set<std::wstring> allowed;
-  for (const auto& e : exts) {
-    allowed.insert(e);
-  }
-  const std::unordered_set<std::wstring>* allowed_ptr =
-      allowed.empty() ? nullptr : &allowed;
-
+  const bool include_hidden = options_.include_hidden;
   const std::wstring fd = FindFdExe();
-  if (!fd.empty() && !roots.empty()) {
-    std::wstring cmd = L"\"" + fd + L"\" -i -a --max-results " +
-                       std::to_wstring(max_results) + L" --max-depth " +
-                       std::to_wstring(max_depth) + L" --threads " +
-                       std::to_wstring(threads);
-    if (options_.include_hidden) {
-      cmd += L" --hidden --no-ignore-vcs";
-    }
-    // fd -e: restrict by extension (Everything-style type filters).
+  HWND hwnd = hwnd_;
+
+  std::thread([this, hwnd, gen, needle, roots, max_results, max_depth, threads,
+               exts, include_hidden, fd]() {
+    std::vector<std::wstring> hits;
+    hits.reserve(static_cast<size_t>(max_results));
+    std::unordered_set<std::wstring> allowed;
     for (const auto& e : exts) {
-      cmd += L" -e ";
-      cmd += e;
+      allowed.insert(e);
     }
-    cmd += L" ";
-    cmd += QuoteCmdArg(needle);
-    for (const auto& root : roots) {
-      // Prefer forward slash for drive roots so quoting stays unambiguous.
-      std::wstring path = root;
-      if (IsDriveRootPath(path)) {
-        path[2] = L'/';
-      }
-      cmd += L" ";
-      cmd += QuoteCmdArg(path);
-    }
-    SECURITY_ATTRIBUTES sa{sizeof(sa), nullptr, TRUE};
-    HANDLE rd = nullptr, wr = nullptr;
-    if (CreatePipe(&rd, &wr, &sa, 0)) {
-      SetHandleInformation(rd, HANDLE_FLAG_INHERIT, 0);
-      STARTUPINFOW si{};
-      si.cb = sizeof(si);
-      si.dwFlags = STARTF_USESTDHANDLES;
-      si.hStdOutput = wr;
-      si.hStdError = wr;
-      PROCESS_INFORMATION pi{};
-      std::vector<wchar_t> buf(cmd.begin(), cmd.end());
-      buf.push_back(L'\0');
-      if (CreateProcessW(nullptr, buf.data(), nullptr, nullptr, TRUE,
-                         CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
-        CloseHandle(wr);
-        wr = nullptr;
-        CloseHandle(pi.hThread);
-        std::string utf8;
-        char chunk[4096];
-        DWORD n = 0;
-        while (ReadFile(rd, chunk, sizeof(chunk), &n, nullptr) && n) {
-          utf8.append(chunk, chunk + n);
-        }
-        WaitForSingleObject(pi.hProcess, 15000);
-        CloseHandle(pi.hProcess);
-        size_t pos = 0;
-        while (pos < utf8.size()) {
-          size_t eol = utf8.find('\n', pos);
-          if (eol == std::string::npos) {
-            eol = utf8.size();
-          }
-          std::string line = utf8.substr(pos, eol - pos);
-          if (!line.empty() && line.back() == '\r') {
-            line.pop_back();
-          }
-          if (!line.empty()) {
-            // stderr is merged — skip fd diagnostics, keep only hit paths.
-            if (line.rfind("[fd ", 0) == 0 || line.rfind("error:", 0) == 0) {
-              pos = eol + 1;
-              continue;
-            }
-            const int wn =
-                MultiByteToWideChar(CP_UTF8, 0, line.c_str(), -1, nullptr, 0);
-            std::wstring wide(wn > 0 ? wn - 1 : 0, L'\0');
-            if (wn > 1) {
-              MultiByteToWideChar(CP_UTF8, 0, line.c_str(), -1, wide.data(), wn);
-            }
-            results_.push_back(wide);
-          }
-          pos = eol + 1;
-        }
-        CloseHandle(rd);
-        PushState();
+    const std::unordered_set<std::wstring>* allowed_ptr =
+        allowed.empty() ? nullptr : &allowed;
+
+    const int n = static_cast<int>(roots.size());
+    for (int i = 0; i < n; ++i) {
+      if (search_gen_.load() != gen) {
         return;
       }
-      if (wr) {
-        CloseHandle(wr);
+      const std::wstring& root = roots[static_cast<size_t>(i)];
+      std::wstring label = root;
+      if (IsDriveRootPath(root)) {
+        label = std::wstring(1, root[0]) + L":";
+      } else {
+        const size_t slash = root.find_last_of(L"\\/");
+        if (slash != std::wstring::npos && slash + 1 < root.size()) {
+          label = root.substr(slash + 1);
+        }
       }
-      CloseHandle(rd);
-    }
-  }
+      const int pct = static_cast<int>((i * 100) / (std::max)(n, 1));
+      auto* prog = new SearchUiMsg;
+      prog->gen = gen;
+      prog->pct = pct;
+      prog->done = false;
+      prog->status = L"正在搜索 " + label + L"…";
+      prog->items = hits;
+      if (!PostMessageW(hwnd, kMsgSearchUi, 0,
+                        reinterpret_cast<LPARAM>(prog))) {
+        delete prog;
+        return;
+      }
 
-  int budget = max_results;
-  for (const auto& root : roots) {
-    if (budget <= 0) {
-      break;
+      const int remain =
+          max_results - static_cast<int>(hits.size());
+      if (remain <= 0) {
+        break;
+      }
+      std::vector<std::wstring> batch;
+      if (!fd.empty()) {
+        batch = FdSearchRoots(fd, needle, {root}, remain, max_depth, threads,
+                              include_hidden, exts);
+      }
+      if (batch.empty()) {
+        int budget = remain;
+        SearchRecursive(root, needle, &batch, &budget, 0, max_depth,
+                        include_hidden, allowed_ptr);
+      }
+      for (auto& p : batch) {
+        if (hits.size() >= static_cast<size_t>(max_results)) {
+          break;
+        }
+        hits.push_back(std::move(p));
+      }
     }
-    SearchRecursive(root, needle, &results_, &budget, 0, max_depth,
-                    options_.include_hidden, allowed_ptr);
-  }
-  PushState();
+
+    if (search_gen_.load() != gen) {
+      return;
+    }
+    auto* done = new SearchUiMsg;
+    done->gen = gen;
+    done->pct = 100;
+    done->done = true;
+    done->status = hits.empty() ? L"无结果" : (std::to_wstring(hits.size()) + L" 项");
+    done->items = std::move(hits);
+    if (!PostMessageW(hwnd, kMsgSearchUi, 0, reinterpret_cast<LPARAM>(done))) {
+      delete done;
+    }
+  }).detach();
 }
 
 LRESULT CALLBACK SearchWindow::WndProc(HWND hwnd, UINT msg, WPARAM wparam,
@@ -890,6 +1092,26 @@ LRESULT CALLBACK SearchWindow::WndProc(HWND hwnd, UINT msg, WPARAM wparam,
 
 LRESULT SearchWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
   switch (msg) {
+    case kMsgSearchUi: {
+      auto* m = reinterpret_cast<SearchUiMsg*>(lparam);
+      if (!m) {
+        return 0;
+      }
+      std::unique_ptr<SearchUiMsg> own(m);
+      if (own->gen != search_gen_.load()) {
+        return 0;
+      }
+      if (own->done) {
+        results_ = std::move(own->items);
+        searching_ = false;
+        progress_pct_ = 100;
+        PushState(own->status);
+      } else {
+        progress_pct_ = own->pct;
+        PushProgress(own->pct, own->status, &own->items);
+      }
+      return 0;
+    }
     case WM_SIZE:
       ResizeWebView();
       return 0;
@@ -903,6 +1125,7 @@ LRESULT SearchWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
       Hide();
       return 0;
     case WM_DESTROY:
+      ++search_gen_;
       DestroyWebView();
       hwnd_ = nullptr;
       return 0;

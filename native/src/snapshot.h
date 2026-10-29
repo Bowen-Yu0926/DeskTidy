@@ -55,9 +55,12 @@ std::vector<SnapshotInfo> ListSnapshots();
 std::wstring SnapshotBrief(const std::wstring& path);
 SnapshotCardData BuildSnapshotCard(const SnapshotInfo& info);
 bool LoadSnapshot(const std::wstring& path, AppState* out);
-// Also capture/restore Explorer icon positions alongside fence layout.
+// Also capture Explorer icon positions alongside fence layout.
 bool SaveSnapshotWithIcons(const AppState& state, const std::wstring& name);
+// Load layout + pins only. Caller must ReloadFencesFromState then
+// RestoreSnapshotShellIcons so RefreshDesktopIcons does not stomp positions.
 bool LoadSnapshotWithIcons(const std::wstring& path, AppState* out);
+bool RestoreSnapshotShellIcons(const std::wstring& path);
 // Rename a snapshot (moves json + icons + pins sidecars). Returns false on
 // invalid name or filesystem error. Name collisions get a numeric suffix.
 bool RenameSnapshot(const std::wstring& path, const std::wstring& new_name);

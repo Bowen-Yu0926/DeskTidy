@@ -333,6 +333,12 @@ void MigrateLegacySystemFences(std::vector<FenceLayout>* fences) {
       }
       f.page = 0;
       f.pages = {0};
+      // Product default:「其他」不参与一键整理（empty kinds）. A prior bug in
+      // EnsureOrganizeFencesForEmptyPages forced {"file"} onto this fence
+      // whenever page 0 lacked a file zone — clear that mistaken heal.
+      if (f.organize_kinds.size() == 1 && f.organize_kinds[0] == "file") {
+        f.organize_kinds.clear();
+      }
     } else if (f.id == "system_page2" || f.id == "system_docs") {
       f.id = "system_docs";
       if (f.title == L"第二页" || f.title.empty()) {

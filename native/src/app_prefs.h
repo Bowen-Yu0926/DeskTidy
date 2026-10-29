@@ -48,9 +48,9 @@ struct AppPrefs {
   bool search_desktop = true;
   bool search_documents = true;
   bool search_downloads = true;
-  // When true, search fixed drives (Python file_search.search_all_drives).
-  // Default on — market parity with Everything / whole-disk desktop search.
-  bool search_all_drives = true;
+  // When true, search all fixed drives. Default false — pick disks in the
+  // search panel (otherwise Desktop/Documents/Downloads).
+  bool search_all_drives = false;
   int search_max_results = 50;
   int search_max_depth = 12;
   // U1 file_search.include_open_folders / include_hidden / threads (Python

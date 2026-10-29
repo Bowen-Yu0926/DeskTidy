@@ -60,6 +60,7 @@ struct Ctx {
   std::vector<SnapshotInfo> list;
   std::vector<std::wstring> previews;
   AppState* applied = nullptr;
+  std::wstring* applied_path = nullptr;
   bool restored = false;
   int sel = 0;
 };
@@ -100,7 +101,8 @@ std::wstring BuildState(Ctx* ctx) {
 
 }  // namespace
 
-bool ManageSnapshotsDialog(HWND owner, AppState* applied) {
+bool ManageSnapshotsDialog(HWND owner, AppState* applied,
+                           std::wstring* applied_path) {
   if (!applied) {
     return false;
   }
@@ -114,6 +116,7 @@ bool ManageSnapshotsDialog(HWND owner, AppState* applied) {
   Ctx ctx;
   ctx.list = std::move(list);
   ctx.applied = applied;
+  ctx.applied_path = applied_path;
   ctx.sel = 0;
 
   MistWebDialog dlg;
@@ -157,6 +160,9 @@ bool ManageSnapshotsDialog(HWND owner, AppState* applied) {
         MessageBoxW(parent, Tr("snap_read_fail").c_str(),
                     Tr("snap_title").c_str(), MB_OK | MB_ICONWARNING);
         return false;
+      }
+      if (ctx.applied_path) {
+        *ctx.applied_path = item.path;
       }
       ctx.restored = true;
       return true;

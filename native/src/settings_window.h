@@ -80,7 +80,7 @@ class SettingsWindow {
     bool search_desktop = true;
     bool search_documents = true;
     bool search_downloads = true;
-    bool search_all_drives = true;
+    bool search_all_drives = false;
     int search_max_results = 50;
     int search_max_depth = 12;
     // U1 file_search.include_open_folders / include_hidden / threads.
