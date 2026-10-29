@@ -55,7 +55,7 @@ Name: "chinesesimplified"; MessagesFile: "languages\ChineseSimplified.isl"
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: checkedonce
 Name: "desknote"; Description: "创建 DeskNote 快捷方式（桌面 + 开始菜单）"; GroupDescription: "{cm:AdditionalIcons}"; Flags: checkedonce
-Name: "startup"; Description: "开机自动启动 {#MyAppName}"; GroupDescription: "启动选项:"; Flags: checked
+Name: "startup"; Description: "开机自动启动 {#MyAppName}"; GroupDescription: "启动选项:"; Flags: checkedonce
 
 [Files]
 ; Native binaries + runtime assets (exclude per-user folders recreated at runtime).
