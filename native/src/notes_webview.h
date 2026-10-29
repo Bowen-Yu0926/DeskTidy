@@ -44,8 +44,10 @@ class NotesWebView {
 
   // Invoked with the document scroll ratio (0..1) whenever the page scrolls.
   std::function<void(double)> on_scroll;
-  // WYSIWYG document changed (Toast `changed` message).
+  // WYSIWYG document changed (Toast `changed` message with markdown).
   std::function<void()> on_changed;
+  // Immediate dirty signal (no markdown body) — debounce window safe.
+  std::function<void()> on_dirty;
   // Page booted empty / resized and wants the host to re-push markdown.
   std::function<void()> on_need_content;
 
@@ -62,6 +64,7 @@ class NotesWebView {
   bool available_ = false;
   bool ready_ = false;
   bool got_md_ = false;
+  bool pulling_md_ = false;  // Ignore late `changed` completing PullMarkdown.
   std::wstring theme_ = L"light";
   std::wstring pending_md_;
   std::wstring pending_set_;
@@ -72,4 +75,5 @@ class NotesWebView {
   bool print_ok_ = false;
   void* controller_ = nullptr;  // ICoreWebView2Controller*
   void* webview_ = nullptr;     // ICoreWebView2*
+  int last_ww_height_ = -1;     // Skip redundant Toast setHeight scripts.
 };

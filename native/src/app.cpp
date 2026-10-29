@@ -52,6 +52,7 @@
 #include <gdiplus.h>
 
 #include <algorithm>
+#include <ctime>
 #include <fstream>
 #include <functional>
 #include <memory>
@@ -1151,7 +1152,13 @@ bool App::Init(HINSTANCE instance) {
     SavePins(pins_);
     RebuildPublicItems();
   });
-  public_host_.SetOnRefresh([this]() { RebuildPublicItems(); });
+  // Same path as fence refresh: drop scan TTL cache then rebuild fences + floats.
+  // RebuildPublicItems alone kept a warm ScanDesktopItems cache and skipped
+  // portal fences — paste/new via shell menu looked like a no-op until 刷新.
+  public_host_.SetOnRefresh([this]() {
+    InvalidateDesktopScanCache();
+    RefreshDesktopIcons();
+  });
   public_host_.SetOnPaste([this]() { OnDesktopPaste(); });
   public_host_.SetOnPathsDropped(
       [this](const std::vector<std::wstring>& paths) { OnDesktopDropPaths(paths); });
@@ -3522,6 +3529,26 @@ void App::MaybeStartupUpdateCheck() {
   StartUpdateCheckAsync(message_hwnd_, /*force=*/false, /*interactive=*/false);
 }
 
+void App::PromptAvailableUpdate(const std::wstring& latest,
+                                const std::wstring& current,
+                                const std::wstring& html_url) {
+  const std::wstring msg = L"发现新版本 " + latest + L"（当前 " + current +
+                           L"）。\n\n是：下载并静默安装\n否：打开发布页\n取消：稍后";
+  const int answer = MessageBoxW(message_hwnd_, msg.c_str(), L"检查更新",
+                                 MB_YESNOCANCEL | MB_ICONQUESTION);
+  if (answer == IDNO) {
+    ShellExecuteW(nullptr, L"open",
+                  html_url.empty()
+                      ? L"https://github.com/Bowen-Yu0926/DeskTidy-Releases/releases/latest"
+                      : html_url.c_str(),
+                  nullptr, nullptr, SW_SHOWNORMAL);
+  } else if (answer == IDYES) {
+    update_progress_last_pct_ = -1;
+    UpdateToastText(L"正在下载更新…", 5000);
+    StartUpdateInstallAsync(message_hwnd_);
+  }
+}
+
 void App::OnUpdateCheckDone(UpdateCheckResult* r) {
   if (!r) {
     return;
@@ -3543,25 +3570,30 @@ void App::OnUpdateCheckDone(UpdateCheckResult* r) {
     return;
   }
   const std::wstring tag = L"v" + r->latest;
-  if (!r->interactive && prefs_.update_notified_tag == tag) {
-    return;  // already notified this tag this session
-  }
-  const std::wstring msg = L"发现新版本 " + r->latest + L"（当前 " + r->current +
-                           L"）。\n\n是：下载并静默安装\n否：打开发布页\n取消：稍后";
-  const int answer = MessageBoxW(message_hwnd_, msg.c_str(), L"检查更新",
-                                 MB_YESNOCANCEL | MB_ICONQUESTION);
-  if (answer == IDNO) {
-    ShellExecuteW(nullptr, L"open",
-                  r->html_url.empty()
-                      ? L"https://github.com/Bowen-Yu0926/DeskTidy-Releases/releases/latest"
-                      : r->html_url.c_str(),
-                  nullptr, nullptr, SW_SHOWNORMAL);
-  } else if (answer == IDYES) {
-    ShowToast(L"正在下载更新…");
-    StartUpdateInstallAsync(message_hwnd_);
+  const long long now =
+      static_cast<long long>(std::time(nullptr));
+  constexpr long long kDay = 24LL * 3600LL;
+  if (!r->interactive && prefs_.update_notified_tag == tag &&
+      prefs_.update_notified_at > 0 &&
+      now - prefs_.update_notified_at < kDay) {
+    return;  // same tag already soft-reminded within 24h
   }
   prefs_.update_notified_tag = tag;
+  prefs_.update_notified_at = now;
   SaveAppPrefs(prefs_);
+
+  if (r->interactive) {
+    PromptAvailableUpdate(r->latest, r->current, r->html_url);
+    return;
+  }
+  // Startup: non-modal soft tip (VS Code / Discord style). Click → confirm.
+  const std::wstring latest = r->latest;
+  const std::wstring current = r->current;
+  const std::wstring html = r->html_url;
+  ShowActionToast(L"发现新版本 " + latest + L" — 点击更新",
+                  [this, latest, current, html]() {
+                    PromptAvailableUpdate(latest, current, html);
+                  });
 }
 
 void App::OnUpdateInstallDone(UpdateInstallResult* r) {
@@ -3572,6 +3604,7 @@ void App::OnUpdateInstallDone(UpdateInstallResult* r) {
   LogLine(L"[update] install done ok=%d verify=%d digest=%d path=%s err=%s",
           r->ok, r->verify_ok, r->has_checksum, r->path.c_str(),
           r->error.c_str());
+  update_progress_last_pct_ = -1;
   if (!r->ok) {
     std::wstring msg = r->error.empty() ? L"更新安装失败" : r->error;
     if (!r->path.empty()) {
@@ -3580,6 +3613,7 @@ void App::OnUpdateInstallDone(UpdateInstallResult* r) {
     ShowToast(msg);
     return;
   }
+  UpdateToastText(L"下载完成，准备安装…", 3000);
   const int answer = MessageBoxW(
       message_hwnd_,
       L"安装包已下载并通过校验。\n\n点击「是」将关闭 DeskTidy 并开始静默安装。"
@@ -3598,7 +3632,19 @@ void App::OnUpdateInstallDone(UpdateInstallResult* r) {
 }
 
 void App::OnUpdateProgress(int pct) {
-  ShowToast(L"正在下载 " + std::to_wstring(pct) + L"%");
+  if (pct < 0) {
+    pct = 0;
+  }
+  if (pct > 100) {
+    pct = 100;
+  }
+  // Skip tiny wobbles; still paint every 5% and always 100.
+  if (pct < 100 && update_progress_last_pct_ >= 0 &&
+      pct - update_progress_last_pct_ < 5) {
+    return;
+  }
+  update_progress_last_pct_ = pct;
+  UpdateToastText(L"正在下载 " + std::to_wstring(pct) + L"%", 6000);
 }
 
 void App::ApplyChromeTheme() {

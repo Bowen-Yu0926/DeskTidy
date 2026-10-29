@@ -51,6 +51,12 @@
   var editor = null;
   var suppress = false;
   var paddingExit = false;
+  var latestMd = "";
+  var mdDirty = false;
+  var changePostTimer = null;
+  var exitSlotTimer = null;
+  var CHANGE_POST_MS = 150;
+  var EXIT_SLOT_MS = 100;
 
   // Offline zh-CN tooltips / dialogs (Toast defaults are English).
   if (toastui && toastui.Editor && typeof toastui.Editor.setLanguage === "function") {
@@ -128,6 +134,14 @@
     return false;
   }
 
+  function scheduleTrailingExitSlot() {
+    if (exitSlotTimer) return;
+    exitSlotTimer = setTimeout(function () {
+      exitSlotTimer = null;
+      ensureTrailingExitSlot();
+    }, EXIT_SLOT_MS);
+  }
+
   function ensureTrailingExitSlot() {
     if (!editor || suppress || paddingExit) return;
     var root = document.querySelector(
@@ -153,9 +167,11 @@
     }
     try {
       var md = editor.getMarkdown() || "";
+      latestMd = md;
       if (/\n\n\s*$/.test(md)) return;
       suppress = true;
       editor.setMarkdown(md.replace(/\s*$/, "") + "\n\n", false);
+      latestMd = md.replace(/\s*$/, "") + "\n\n";
     } catch (e2) {
     } finally {
       setTimeout(function () {
@@ -165,9 +181,45 @@
     }
   }
 
+  function refreshLatestMd() {
+    if (editor) {
+      latestMd = editor.getMarkdown() || "";
+    }
+    mdDirty = false;
+  }
+
+  function flushChangePost() {
+    if (changePostTimer) {
+      clearTimeout(changePostTimer);
+      changePostTimer = null;
+    }
+    if (mdDirty) {
+      refreshLatestMd();
+    }
+    post({ type: "changed", md: latestMd });
+  }
+
+  function scheduleChangePost() {
+    if (changePostTimer) return;
+    changePostTimer = setTimeout(function () {
+      changePostTimer = null;
+      if (mdDirty) {
+        refreshLatestMd();
+      }
+      post({ type: "changed", md: latestMd });
+    }, CHANGE_POST_MS);
+  }
+
+  function signalDirty() {
+    // Immediate — no getMarkdown. Host marks dirty so tab switch / soft Save
+    // still pull within the 150ms debounce window.
+    post({ type: "dirty" });
+  }
+
   function boot(md, theme) {
     var el = document.getElementById("editor");
     el.innerHTML = "";
+    latestMd = md || "";
     var dark = String(theme || "").toLowerCase().indexOf("dark") >= 0;
     document.body.classList.toggle("theme-dark", dark);
     var h = Math.max(120, window.innerHeight || el.clientHeight || 480);
@@ -184,9 +236,12 @@
     });
     editor.on("change", function () {
       if (suppress) return;
-      // Pad after table/code insert so the caret can leave the block (parity: Typora).
-      setTimeout(ensureTrailingExitSlot, 0);
-      post({ type: "changed", md: editor.getMarkdown() });
+      mdDirty = true;
+      signalDirty();
+      // Defer getMarkdown (full serialize) + host cache sync.
+      scheduleChangePost();
+      // Coalesce table/code exit-slot checks — avoid per-keystroke DOM work.
+      scheduleTrailingExitSlot();
     });
     // Host may finish resizing right after boot — keep WW pane filled.
     setTimeout(function () {
@@ -208,6 +263,12 @@
   }
 
   window.__desknoteWysiwygSet = function (md, theme) {
+    latestMd = md || "";
+    mdDirty = false;
+    if (changePostTimer) {
+      clearTimeout(changePostTimer);
+      changePostTimer = null;
+    }
     if (!editor) {
       boot(md || "", theme || "");
       return;
@@ -226,7 +287,15 @@
   };
 
   window.__desknoteWysiwygGet = function () {
-    return editor ? editor.getMarkdown() : "";
+    // Pull path only — do NOT post "changed" (races PullMarkdown's got_md_).
+    if (mdDirty || editor) {
+      refreshLatestMd();
+    }
+    if (changePostTimer) {
+      clearTimeout(changePostTimer);
+      changePostTimer = null;
+    }
+    return latestMd;
   };
 
   window.__desknoteWysiwygResize = function (h) {

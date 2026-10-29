@@ -1,0 +1,24 @@
+---
+description: 为重链/占锁杀掉 DeskTidy/DeskNote 进程后必须立刻重启
+alwaysApply: true
+---
+
+# 杀进程后重启（强制）
+
+为了重新链接、换新二进制、解除文件占用而 `Stop-Process` / 结束 `desktidy_native`、`deskNote`（或同目录相关 exe）时：**同一次操作里必须帮用户把程序再拉起来**，不要只杀不启、也不要等用户自己点。
+
+## 必须遵守
+
+1. **先杀再编/再链，编完马上启**  
+   典型顺序：结束占用进程 → 完成 build/copy → `Start-Process` 启动刚编好的 exe（工作目录用 `native/build/Release` 或实际产物目录）。
+
+2. **启哪个就起哪个**  
+   - 杀了 `desktidy_native` → 启动 `native/build/Release/desktidy_native.exe`  
+   - 杀了 `deskNote` → 启动 `native/build/Release/deskNote.exe`  
+   - 两个都杀了 → 两个都启（DeskTidy 优先，除非用户只在测便签）。
+
+3. **确认在跑**  
+   启动后用 `Get-Process`（或等价方式）确认进程起来了；失败就报路径/错误，不要默默跳过。
+
+4. **不要无故杀常驻进程**  
+   仅在确有占用（LNK1104 等）或用户明确要求时结束进程；杀完仍适用本规则重启。

@@ -94,6 +94,10 @@ class App {
   void OnUpdateCheckDone(UpdateCheckResult* r);
   void OnUpdateInstallDone(UpdateInstallResult* r);
   void OnUpdateProgress(int pct);
+  // Shared Yes/No/Cancel offer after a soft toast click or manual check.
+  void PromptAvailableUpdate(const std::wstring& latest,
+                             const std::wstring& current,
+                             const std::wstring& html_url);
   // quiet: no toast/dialog. reassign: recompute targets for already-pinned
   // items too (only pins whose target changed are written).
   void OrganizeVirtual(bool quiet = false, bool reassign = false);
@@ -270,6 +274,7 @@ class App {
   UINT pet_tick_ms_ = 50;
   UINT_PTR watch_timer_ = 0;
   UINT_PTR update_timer_ = 0;
+  int update_progress_last_pct_ = -1;
   UINT_PTR vault_timer_ = 0;
   UINT_PTR open_settings_vault_timer_ = 0;
   UINT_PTR display_change_timer_ = 0;

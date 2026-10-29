@@ -199,6 +199,8 @@ class NotesWindow {
   // out_zone: 0=body 1=pin 2=close 3=new(+); returns tab index or -1.
   int HitTestTabBar(POINT client, int* out_zone) const;
   void PersistTabs();
+  // Coalesce rapid SwitchToTab disk writes (Notepad++ / VS Code style).
+  void SchedulePersistTabs();
   void LoadTabSession();
   std::wstring TabLabel(const std::wstring& path) const;
   void AdoptPath(const std::wstring& path);
@@ -299,4 +301,25 @@ class NotesWindow {
   RECT tab_new_btn_rect_{};
   int tab_hover_index_ = -1;  // -1 none; -2 = new button
   int tab_hover_zone_ = 0;    // 0 body, 1 pin, 2 close, 3 new
+  bool tab_chips_dirty_ = true;
+  // Status-bar word-count cache (avoid O(n) scan every 400ms timer).
+  size_t status_stats_hash_ = 0;
+  size_t status_stats_len_ = 0;
+  int status_chars_ = 0;
+  int status_words_ = 0;
+  // LayoutClient early-out when client chrome geometry is unchanged.
+  int layout_w_ = -1;
+  int layout_h_ = -1;
+  int layout_top_ = -1;
+  int layout_bottom_ = -1;
+  int layout_left_ = -1;
+  int layout_right_ = -1;
+  bool layout_wysiwyg_ = false;
+  bool layout_sidebar_ = false;
+  bool layout_outline_ = false;
+  bool layout_preview_ = false;
+  bool layout_toast_ = false;
+  bool layout_focus_ = false;
+  bool layout_looks_md_ = false;
+  bool layout_searching_ = false;
 };

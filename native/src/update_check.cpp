@@ -562,7 +562,8 @@ bool DownloadAsset(const std::wstring& url, const std::wstring& dir,
     done += read;
     if (content_len > 0 && progress_hwnd) {
       const int pct = static_cast<int>(done * 100 / content_len);
-      const int milestone = pct - (pct % 10);
+      // Every 5% (smoother than 10%) without flooding the UI thread.
+      const int milestone = pct - (pct % 5);
       if (milestone != last_milestone) {
         last_milestone = milestone;
         PostMessageW(progress_hwnd, kMsgUpdateProgress,
@@ -578,6 +579,9 @@ bool DownloadAsset(const std::wstring& url, const std::wstring& dir,
     DeleteFileW(tmp_path.c_str());
     *err = L"下载中断";
     return false;
+  }
+  if (progress_hwnd) {
+    PostMessageW(progress_hwnd, kMsgUpdateProgress, 100, 0);
   }
   MoveFileExW(tmp_path.c_str(), final_path.c_str(), MOVEFILE_REPLACE_EXISTING);
   if (out_path) {
@@ -686,17 +690,17 @@ std::wstring NativeProductVersion() {
   DWORD handle = 0;
   const DWORD size = GetFileVersionInfoSizeW(path, &handle);
   if (!size) {
-    return L"4.0.30";
+    return L"4.0.31";
   }
   std::vector<BYTE> buf(size);
   if (!GetFileVersionInfoW(path, 0, size, buf.data())) {
-    return L"4.0.30";
+    return L"4.0.31";
   }
   VS_FIXEDFILEINFO* fi = nullptr;
   UINT len = 0;
   if (!VerQueryValueW(buf.data(), L"\\", reinterpret_cast<void**>(&fi), &len) ||
       !fi) {
-    return L"4.0.30";
+    return L"4.0.31";
   }
   wchar_t ver[64];
   swprintf_s(ver, L"%u.%u.%u", HIWORD(fi->dwFileVersionMS),

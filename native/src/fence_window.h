@@ -360,6 +360,7 @@ class FenceWindow {
   std::vector<int> drag_indices_;
   int drag_insert_ = -1;   // live insert indicator position
   bool drag_left_ = false;  // pointer has left the client area
+  POINT drag_pt_{};         // client cursor while icon_dragging_ (ghost)
   // P1-12: fence-level drop-target highlight (DragEnter on / DragLeave+Drop off).
   bool drop_highlight_ = false;
   // F4 icon zoom.

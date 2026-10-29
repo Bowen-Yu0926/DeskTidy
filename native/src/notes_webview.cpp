@@ -302,11 +302,25 @@ void NotesWebView::OnWebMessage(const std::wstring& json) {
   const std::wstring type = JsonStringField(json, L"type");
   if (type == L"ready" || type == L"previewReady") {
     OnReady();
-  } else if (type == L"md" || type == L"changed") {
-    pending_md_ = JsonStringField(json, L"md");
-    got_md_ = true;
-    if (type == L"changed" && on_changed) {
+  } else if (type == L"dirty") {
+    if (on_dirty) {
+      on_dirty();
+    } else if (on_changed) {
       on_changed();
+    }
+  } else if (type == L"md" || type == L"changed") {
+    if (pulling_md_) {
+      // ExecuteScript callback owns pending_md_ for this pull — ignore late
+      // debounced `changed` bodies that would overwrite a fresher get.
+      if (type == L"changed" && on_changed) {
+        on_changed();
+      }
+    } else {
+      pending_md_ = JsonStringField(json, L"md");
+      got_md_ = true;
+      if (type == L"changed" && on_changed) {
+        on_changed();
+      }
     }
   } else if (type == L"needContent") {
     if (on_need_content) {
@@ -382,6 +396,10 @@ void NotesWebView::Resize() {
   auto* web = static_cast<ICoreWebView2*>(webview_);
   if (web && ready_ && kind_ == Kind::kWysiwyg) {
     const int h = (std::max)(120, static_cast<int>(bounds.bottom - bounds.top));
+    if (h == last_ww_height_) {
+      return;
+    }
+    last_ww_height_ = h;
     wchar_t script[160];
     swprintf_s(script,
                L"try{if(window.__desknoteWysiwygResize)__desknoteWysiwygResize(%d);}"
@@ -576,7 +594,8 @@ std::wstring NotesWebView::PullMarkdown(DWORD timeout_ms) {
     return pending_md_;
   }
   got_md_ = false;
-  // Prefer ExecuteScript — more reliable than postMessage round-trip on close.
+  pulling_md_ = true;
+  // ExecuteScript alone — dual get+postMessage doubled IPC on every Save/tab.
   web->ExecuteScript(
       L"(function(){try{return (window.__desknoteWysiwygGet"
       L"?window.__desknoteWysiwygGet():'');}catch(e){return '';}})()",
@@ -589,7 +608,6 @@ std::wstring NotesWebView::PullMarkdown(DWORD timeout_ms) {
             return S_OK;
           })
           .Get());
-  web->PostWebMessageAsJson(L"{\"type\":\"get\"}");
   const DWORD start = GetTickCount();
   MSG msg{};
   while (!got_md_ && GetTickCount() - start < timeout_ms) {
@@ -599,6 +617,7 @@ std::wstring NotesWebView::PullMarkdown(DWORD timeout_ms) {
     }
     Sleep(5);
   }
+  pulling_md_ = false;
   return pending_md_;
 }
 

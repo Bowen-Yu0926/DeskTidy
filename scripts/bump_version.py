@@ -14,7 +14,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 VERSION_FILE = ROOT / "VERSION"
 ISS_FILE = ROOT / "installer" / "DeskTidy.iss"
+ISS_NATIVE_FILE = ROOT / "installer" / "DeskTidyNative.iss"
 VERSION_PY = ROOT / "src" / "_version.py"
+VERSION_RC = ROOT / "native" / "src" / "version.rc"
 
 
 def parse_version(raw: str) -> tuple[int, int, int]:
@@ -46,18 +48,54 @@ def read_current() -> str:
     return "1.0.0"
 
 
-def sync_iss(version: str) -> None:
-    text = ISS_FILE.read_text(encoding="utf-8")
+def sync_iss(path: Path, version: str) -> None:
+    if not path.exists():
+        return
+    text = path.read_text(encoding="utf-8")
     updated = re.sub(
         r'#define MyAppVersion "[^"]+"',
         f'#define MyAppVersion "{version}"',
         text,
         count=1,
     )
-    ISS_FILE.write_text(updated, encoding="utf-8")
+    path.write_text(updated, encoding="utf-8")
+
+
+def sync_version_rc(version: str) -> None:
+    if not VERSION_RC.exists():
+        return
+    major, minor, patch = parse_version(version)
+    text = VERSION_RC.read_text(encoding="utf-8")
+    text = re.sub(
+        r"FILEVERSION\s+\d+\s*,\s*\d+\s*,\s*\d+\s*,\s*\d+",
+        f"FILEVERSION {major},{minor},{patch},0",
+        text,
+        count=1,
+    )
+    text = re.sub(
+        r"PRODUCTVERSION\s+\d+\s*,\s*\d+\s*,\s*\d+\s*,\s*\d+",
+        f"PRODUCTVERSION {major},{minor},{patch},0",
+        text,
+        count=1,
+    )
+    text = re.sub(
+        r'VALUE "FileVersion", "[^"]*"',
+        f'VALUE "FileVersion", "{version}"',
+        text,
+        count=1,
+    )
+    text = re.sub(
+        r'VALUE "ProductVersion", "[^"]*"',
+        f'VALUE "ProductVersion", "{version}"',
+        text,
+        count=1,
+    )
+    # Fallback strings in update_check.cpp stay as last-resort only; rc is truth.
+    VERSION_RC.write_text(text, encoding="utf-8")
 
 
 def write_runtime_version(version: str) -> None:
+    VERSION_PY.parent.mkdir(parents=True, exist_ok=True)
     VERSION_PY.write_text(f'__version__ = "{version}"\n', encoding="utf-8")
 
 
@@ -76,8 +114,23 @@ def main(argv: list[str] | None = None) -> int:
     major, minor, patch = parse_version(version)
     version = format_version(major, minor, patch)
     VERSION_FILE.write_text(f"{version}\n", encoding="utf-8")
-    sync_iss(version)
+    sync_iss(ISS_FILE, version)
+    sync_iss(ISS_NATIVE_FILE, version)
+    sync_version_rc(version)
     write_runtime_version(version)
+    # Keep update_check.cpp compile-time fallbacks aligned (not 0.0.0).
+    uc = ROOT / "native" / "src" / "update_check.cpp"
+    if uc.exists():
+        ut = uc.read_text(encoding="utf-8")
+
+        def _repl(m: re.Match[str]) -> str:
+            if m.group(1) == "0.0.0":
+                return m.group(0)
+            return f'return L"{version}";'
+
+        ut2 = re.sub(r'return L"(\d+\.\d+\.\d+)";', _repl, ut)
+        if ut2 != ut:
+            uc.write_text(ut2, encoding="utf-8")
     print(version)
     return 0
 

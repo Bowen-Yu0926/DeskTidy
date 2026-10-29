@@ -56,6 +56,32 @@ int ParseIntField(const std::string& json, const char* key, int fallback) {
   return std::stoi(json.substr(p));
 }
 
+long long ParseInt64Field(const std::string& json, const char* key,
+                          long long fallback) {
+  const std::string needle = std::string("\"") + key + "\"";
+  size_t p = json.find(needle);
+  if (p == std::string::npos) {
+    return fallback;
+  }
+  p = json.find(':', p);
+  if (p == std::string::npos) {
+    return fallback;
+  }
+  ++p;
+  while (p < json.size() && (json[p] == ' ' || json[p] == '\t')) {
+    ++p;
+  }
+  if (p >= json.size() ||
+      !(json[p] == '-' || (json[p] >= '0' && json[p] <= '9'))) {
+    return fallback;
+  }
+  try {
+    return std::stoll(json.substr(p));
+  } catch (...) {
+    return fallback;
+  }
+}
+
 std::string ParseStringField(const std::string& json, const char* key) {
   const std::string needle = std::string("\"") + key + "\"";
   size_t p = json.find(needle);
@@ -317,6 +343,8 @@ AppPrefs LoadAppPrefsFromPath(const std::wstring& path) {
   if (!notified.empty()) {
     prefs.update_notified_tag = WidenUtf8(notified);
   }
+  prefs.update_notified_at =
+      ParseInt64Field(json, "update_notified_at", 0);
   // auto_snapshot_on_change removed — ignore if present in older prefs files.
   // Always on; settings toggle removed (parity: shell verbs stay registered).
   prefs.desktop_right_click_menu = true;
@@ -462,7 +490,8 @@ void SaveAppPrefsToPath(const AppPrefs& prefs, const std::wstring& path) {
       << (prefs.check_update_on_startup ? "true" : "false")
       << ",\n  \"update_notified_tag\": \""
       << EscapeJson(NarrowUtf8(prefs.update_notified_tag))
-      << "\",\n  \"desktop_right_click_menu\": "
+      << "\",\n  \"update_notified_at\": " << prefs.update_notified_at
+      << ",\n  \"desktop_right_click_menu\": "
       << (prefs.desktop_right_click_menu ? "true" : "false")
       << ",\n  \"vault_enabled\": "
       << (prefs.vault_enabled ? "true" : "false")

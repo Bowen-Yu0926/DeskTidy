@@ -155,6 +155,8 @@ constexpr UINT_PTR kScrollTimer = 2;
 constexpr UINT_PTR kSidebarSearchTimer = 3;
 constexpr UINT_PTR kOutlineTimer = 4;
 constexpr UINT_PTR kStatusTimer = 5;
+constexpr UINT_PTR kPersistTabsTimer = 6;
+constexpr UINT_PTR kGutterTimer = 7;
 constexpr int kStatusBarH = 26;
 
 // P2-30: follow Windows app light/dark preference for MD preview chrome.
@@ -817,17 +819,31 @@ bool NotesWindow::Create(HINSTANCE instance) {
   }
   DragAcceptFiles(hwnd_, TRUE);
   web_.Create(hwnd_);
+  web_.on_dirty = [this]() {
+    // Immediate (no markdown body) — covers the 150ms changed debounce window.
+    MarkDirty();
+  };
   web_.on_changed = [this]() {
-    // Mirror Toast → RichEdit so Save/close always has bytes even if pull lags.
-    const std::wstring& md = web_.CachedMarkdown();
-    if (edit_ && !md.empty()) {
-      SetWindowTextW(edit_, md.c_str());
-    }
+    // Cache already updated in OnWebMessage. Mirror to RichEdit only on
+    // Save / SyncFromWysiwyg / tab switch — not every keystroke.
     MarkDirty();
   };
   web_.on_need_content = [this]() {
-    // Always re-push (empty notes included) so Toast can boot its UI.
-    web_.SetMarkdown(CurrentPlainText());
+    // Boot race: prefer RichEdit load buffer, then cache. Do not go through
+    // CurrentPlainText() — in WYSIWYG that reads cache and can re-push "".
+    std::wstring md;
+    if (edit_) {
+      const int len = GetWindowTextLengthW(edit_);
+      if (len > 0) {
+        md.assign(static_cast<size_t>(len) + 1, L'\0');
+        GetWindowTextW(edit_, md.data(), len + 1);
+        md.resize(static_cast<size_t>(len));
+      }
+    }
+    if (md.empty()) {
+      md = web_.CachedMarkdown();
+    }
+    web_.SetMarkdown(md);
   };
   {
     const std::wstring theme =
@@ -865,7 +881,8 @@ bool NotesWindow::Create(HINSTANCE instance) {
   RefreshTitle();
   UpdateStatusBar();
   PersistViewSettings();
-  SetTimer(hwnd_, kStatusTimer, 400, nullptr);
+  // Status chrome; word-count is cached so a modest interval is enough.
+  SetTimer(hwnd_, kStatusTimer, 800, nullptr);
   return true;
 }
 
@@ -1103,6 +1120,8 @@ void NotesWindow::Destroy() {
   PersistViewSettings();
   if (hwnd_) {
     KillTimer(hwnd_, kStatusTimer);
+    KillTimer(hwnd_, kPersistTabsTimer);
+    KillTimer(hwnd_, kGutterTimer);
   }
   web_.Destroy();
   preview_web_.Destroy();
@@ -1362,6 +1381,7 @@ void NotesWindow::InsertMdHeading(int level) {
 
 void NotesWindow::RefreshCurrentTabLabel() {
   if (tabs_) {
+    tab_chips_dirty_ = true;
     InvalidateRect(tabs_, nullptr, FALSE);
   }
 }
@@ -1799,6 +1819,7 @@ void GpAddRoundRect(Gdiplus::GraphicsPath* path, float x, float y, float w,
 void NotesWindow::RelayoutTabChips() {
   tab_chip_rects_.clear();
   tab_new_btn_rect_ = {};
+  tab_chips_dirty_ = false;
   if (!tabs_) {
     return;
   }
@@ -1843,7 +1864,10 @@ void NotesWindow::PaintTabBar(HDC hdc) {
   if (!tabs_ || !hdc) {
     return;
   }
-  RelayoutTabChips();
+  // Measure chips only when labels/count/size change — not every WM_PAINT.
+  if (tab_chips_dirty_ || tab_chip_rects_.size() != tab_paths_.size()) {
+    RelayoutTabChips();
+  }
   RECT rc{};
   GetClientRect(tabs_, &rc);
   const COLORREF desk = toast_ ? RGB(255, 248, 220) : content_bg_;
@@ -2000,7 +2024,18 @@ void NotesWindow::RebuildTabControl() {
   }
 }
 
+void NotesWindow::SchedulePersistTabs() {
+  if (!hwnd_) {
+    PersistTabs();
+    return;
+  }
+  SetTimer(hwnd_, kPersistTabsTimer, 400, nullptr);
+}
+
 void NotesWindow::PersistTabs() {
+  if (hwnd_) {
+    KillTimer(hwnd_, kPersistTabsTimer);
+  }
   const std::wstring file = JoinPath(NativeDataDir(), L"notes_tabs.json");
   std::ofstream out(file, std::ios::binary);
   if (!out) {
@@ -2165,7 +2200,8 @@ void NotesWindow::SwitchToTab(int index, bool save_current) {
     return;
   }
   if (save_current) {
-    Save();
+    // Dirty WYSIWYG: authoritative pull flushes JS debounce into cache.
+    Save(wysiwyg_ && dirty_);
   }
   SyncFromWysiwyg();
   // Remember the outgoing tab's WYSIWYG / wrap / caret / scroll (M8).
@@ -2198,7 +2234,11 @@ void NotesWindow::SwitchToTab(int index, bool save_current) {
   }
   ApplyWysiwygVisibility();
   if (wysiwyg_) {
-    web_.SetMarkdown(CurrentPlainText());
+    const std::wstring plain = CurrentPlainText();
+    // Skip full Toast re-push when host cache already matches loaded text.
+    if (web_.CachedMarkdown() != plain) {
+      web_.SetMarkdown(plain);
+    }
   } else if (edit_) {
     const int vis =
         tab_states_[static_cast<size_t>(tab_index_)].first_visible_line;
@@ -2231,12 +2271,13 @@ void NotesWindow::SwitchToTab(int index, bool save_current) {
   }
   RefreshTitle();
   if (outline_) {
-    RebuildOutline();
+    // Always arm — list may be hidden under WYSIWYG; rebuild before it shows.
+    SetTimer(hwnd_, kOutlineTimer, 120, nullptr);
   }
   if (sidebar_visible_) {
     HighlightSidebarPath(path_);
   }
-  PersistTabs();
+  SchedulePersistTabs();
   UpdateStatusBar();
   UpdateModeStrip();
   SyncMdMenuState();
@@ -2609,9 +2650,7 @@ bool NotesWindow::OfferElevatedSave(const std::wstring& path,
 }
 
 void NotesWindow::UpdateModeStrip() {
-  if (mode_strip_) {
-    ShowWindow(mode_strip_, SW_HIDE);
-  }
+  // Visibility is owned exclusively by LayoutClient (show_mode_chip).
 }
 
 void NotesWindow::ShowPreviewMode() {
@@ -2681,8 +2720,12 @@ void NotesWindow::ShowEditMode() {
 void NotesWindow::Save(bool authoritative_pull) {
   if (wysiwyg_) {
     std::wstring from_toast;
-    if (authoritative_pull && web_.Ready()) {
-      from_toast = web_.PullMarkdown(1500);
+    const bool need_pull =
+        web_.Ready() &&
+        (authoritative_pull || dirty_ || web_.CachedMarkdown().empty());
+    if (need_pull) {
+      // Pull reads live Toast markdown (ExecuteScript get) into cache.
+      from_toast = web_.PullMarkdown(authoritative_pull ? 1500 : 300);
     }
     if (from_toast.empty()) {
       from_toast = web_.CachedMarkdown();
@@ -2705,8 +2748,9 @@ void NotesWindow::Save(bool authoritative_pull) {
   const std::wstring plain = CurrentPlainText();
   // Plain text for md/txt/code/hosts；.rtf 仍走 RTF（对标 Notepad++ 文本保存）。
   if (PathLooksTextish()) {
-    // Never replace an existing note with empty bytes (failed Toast sync).
-    if (plain.empty()) {
+    // Soft saves without a Toast pull must not clobber a non-empty file with
+    // empty bytes. Authoritative pulls (Ctrl+S / close) may legitimately clear.
+    if (plain.empty() && !authoritative_pull) {
       WIN32_FILE_ATTRIBUTE_DATA fad{};
       if (GetFileAttributesExW(path_.c_str(), GetFileExInfoStandard, &fad)) {
         const ULONGLONG sz =
@@ -2715,7 +2759,7 @@ void NotesWindow::Save(bool authoritative_pull) {
           return;
         }
       }
-      if (dirty_ && wysiwyg_ && !authoritative_pull) {
+      if (dirty_ && wysiwyg_) {
         return;
       }
     }
@@ -2765,12 +2809,17 @@ void NotesWindow::Save(bool authoritative_pull) {
 }
 
 void NotesWindow::MarkDirty() {
-  if (!loading_) {
-    dirty_ = true;
-    RefreshTitle();
-    RefreshCurrentTabLabel();
-    UpdateStatusBar();
+  if (loading_) {
+    return;
   }
+  // Already dirty: skip title/tab/status churn on every Toast change post.
+  if (dirty_) {
+    return;
+  }
+  dirty_ = true;
+  RefreshTitle();
+  RefreshCurrentTabLabel();
+  UpdateStatusBar();
 }
 
 void NotesWindow::ToggleWordWrap() {
@@ -2817,7 +2866,11 @@ void NotesWindow::UpdateStatusBar() {
   int chars = 0;
   int words = 0;
   std::wstring scope = L"全文";
-  if (edit_) {
+  std::wstring stats_src;
+  if (wysiwyg_) {
+    // RichEdit is hidden/stale in Toast mode — count from host markdown cache.
+    stats_src = web_.CachedMarkdown();
+  } else if (edit_) {
     CHARRANGE cr{};
     SendMessageW(edit_, EM_EXGETSEL, 0, reinterpret_cast<LPARAM>(&cr));
     const LONG caret = cr.cpMax;
@@ -2825,7 +2878,6 @@ void NotesWindow::UpdateStatusBar() {
     const LONG line_start =
         static_cast<LONG>(SendMessageW(edit_, EM_LINEINDEX, line - 1, 0));
     col = static_cast<int>(caret - line_start) + 1;
-    std::wstring stats_src;
     if (cr.cpMin != cr.cpMax) {
       scope = L"选区";
       const int sel_len = static_cast<int>(cr.cpMax - cr.cpMin);
@@ -2839,7 +2891,19 @@ void NotesWindow::UpdateStatusBar() {
     } else {
       stats_src = CurrentPlainText();
     }
-    CountTextStats(stats_src, &chars, &words);
+  }
+  if (!stats_src.empty() || wysiwyg_ || edit_) {
+    const size_t h = std::hash<std::wstring>{}(stats_src);
+    if (h == status_stats_hash_ && stats_src.size() == status_stats_len_) {
+      chars = status_chars_;
+      words = status_words_;
+    } else {
+      CountTextStats(stats_src, &chars, &words);
+      status_stats_hash_ = h;
+      status_stats_len_ = stats_src.size();
+      status_chars_ = chars;
+      status_words_ = words;
+    }
   }
   const wchar_t* state = dirty_ ? L"已修改" : L"已保存";
   const wchar_t* enc = L"UTF-8";
@@ -2867,7 +2931,11 @@ void NotesWindow::UpdateStatusBar() {
              L"%s  ·  %s  ·  %s  |  行 %d, 列 %d  ·  %s %d 字 / %d 词",
              path_part.c_str(), state, enc, line, col, scope.c_str(), chars,
              words);
-  SetWindowTextW(status_, line_buf);
+  wchar_t prev[640] = {};
+  GetWindowTextW(status_, prev, 640);
+  if (wcscmp(prev, line_buf) != 0) {
+    SetWindowTextW(status_, line_buf);
+  }
 }
 
 int NotesWindow::TabIndexFromPoint(POINT client) const {
@@ -3250,6 +3318,11 @@ std::wstring NotesWindow::EditTextCpAligned() const {
 }
 
 std::wstring NotesWindow::CurrentPlainText() const {
+  // Toast is the live surface in WYSIWYG — RichEdit is only mirrored on
+  // Save/Sync and stays stale across debounced keystrokes.
+  if (wysiwyg_ && web_.Ready()) {
+    return web_.CachedMarkdown();
+  }
   if (!edit_) {
     return {};
   }
@@ -3483,19 +3556,33 @@ void NotesWindow::SyncFromWysiwyg() {
   if (!wysiwyg_) {
     return;
   }
-  MSG msg{};
-  for (int i = 0; i < 64; ++i) {
-    if (!PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
-      break;
-    }
-    TranslateMessage(&msg);
-    DispatchMessageW(&msg);
-  }
   std::wstring md = web_.CachedMarkdown();
+  // Prefer cache (updated by debounced changed / PullMarkdown). Only pump+pull
+  // when the cache is empty so tab switches stay snappy.
   if (md.empty() && web_.Ready()) {
-    md = web_.PullMarkdown(250);
+    MSG msg{};
+    for (int i = 0; i < 64; ++i) {
+      if (!PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
+        break;
+      }
+      TranslateMessage(&msg);
+      DispatchMessageW(&msg);
+    }
+    md = web_.CachedMarkdown();
+    if (md.empty()) {
+      md = web_.PullMarkdown(250);
+    }
   }
-  if (edit_ && !md.empty()) {
+  if (!edit_ || md.empty()) {
+    return;
+  }
+  // Compare against RichEdit — CurrentPlainText() returns the Toast cache
+  // while wysiwyg_ is on, so md == CurrentPlainText() would always skip.
+  const int len = GetWindowTextLengthW(edit_);
+  std::wstring edit_text(static_cast<size_t>(len) + 1, L'\0');
+  GetWindowTextW(edit_, edit_text.data(), len + 1);
+  edit_text.resize(static_cast<size_t>(len));
+  if (md != edit_text) {
     SetWindowTextW(edit_, md.c_str());
   }
 }
@@ -3544,8 +3631,8 @@ void NotesWindow::EnsureMarkdownEditor(bool force_reload) {
   } else {
     web_.Show();
     web_.Resize();
-    LayoutClient();
   }
+  LayoutClient();
   std::wstring md = CurrentPlainText();
   if (md.empty()) {
     md = L"# \n\n";
@@ -3554,7 +3641,10 @@ void NotesWindow::EnsureMarkdownEditor(bool force_reload) {
     }
   }
   if (entering || force_reload) {
-    web_.SetMarkdown(md);
+    // Avoid redundant Toast setMarkdown when content is already on screen.
+    if (entering || web_.CachedMarkdown() != md) {
+      web_.SetMarkdown(md);
+    }
   }
   EnsureTabStates();
   if (tab_index_ >= 0 && tab_index_ < static_cast<int>(tab_states_.size())) {
@@ -3595,7 +3685,7 @@ void NotesWindow::ApplyWysiwygVisibility() {
     web_.Hide();
     ShowWindow(edit_, SW_SHOW);
   }
-  LayoutClient();
+  // Caller owns LayoutClient (SwitchToTab / EnsureMarkdownEditor layout once).
 }
 
 double NotesWindow::EditScrollRatio() {
@@ -3877,6 +3967,32 @@ void NotesWindow::LayoutClient() {
   }
   RECT rc{};
   GetClientRect(hwnd_, &rc);
+  const bool md_preview_flag =
+      preview_ && PathLooksMarkdown() && !wysiwyg_ && !focus_;
+  const bool looks_md = PathLooksMarkdown();
+  wchar_t search_probe[4] = {};
+  if (sidebar_search_) {
+    GetWindowTextW(sidebar_search_, search_probe, 2);
+  }
+  const bool searching = search_probe[0] != 0;
+  // Mode chip / WW host / search results swap — include in fingerprint.
+  if (rc.right == layout_w_ && rc.bottom == layout_h_ &&
+      wysiwyg_ == layout_wysiwyg_ && sidebar_visible_ == layout_sidebar_ &&
+      outline_ == layout_outline_ && md_preview_flag == layout_preview_ &&
+      toast_ == layout_toast_ && focus_ == layout_focus_ &&
+      looks_md == layout_looks_md_ && searching == layout_searching_) {
+    return;
+  }
+  layout_w_ = rc.right;
+  layout_h_ = rc.bottom;
+  layout_wysiwyg_ = wysiwyg_;
+  layout_sidebar_ = sidebar_visible_;
+  layout_outline_ = outline_;
+  layout_preview_ = md_preview_flag;
+  layout_toast_ = toast_;
+  layout_focus_ = focus_;
+  layout_looks_md_ = looks_md;
+  layout_searching_ = searching;
   // Tab strip (+ top-right preview/edit chip for Markdown).
   int top = 0;
   const bool show_mode_chip =
@@ -3931,11 +4047,6 @@ void NotesWindow::LayoutClient() {
     }
     const int body_top = top + chrome_h + 4;
     const int body_h = (std::max)(40, bottom - body_top);
-    wchar_t search_buf[256] = {};
-    if (sidebar_search_) {
-      GetWindowTextW(sidebar_search_, search_buf, 256);
-    }
-    const bool searching = search_buf[0] != 0;
     if (searching && sidebar_results_) {
       MoveWindow(sidebar_results_, 0, body_top, side, body_h, TRUE);
       ShowWindow(sidebar_results_, SW_SHOW);
@@ -5102,7 +5213,7 @@ bool NotesWindow::ConfirmSaveCurrent() {
   const MistMsgResult r = MistMessage(hwnd_, L"便签", msg.c_str(),
                                       MistMsgKind::YesNoCancel, MistMsgTone::Warn);
   if (r == MistMsgResult::Yes) {
-    Save();
+    Save(true);
     return true;
   }
   if (r == MistMsgResult::No) {
@@ -5301,6 +5412,7 @@ void NotesWindow::OpenSidebarResult(int index) {
   if (wysiwyg_) {
     wysiwyg_ = false;
     ApplyWysiwygVisibility();
+    LayoutClient();
   }
   if (preview_ && preview_web_.Host()) {
     preview_web_.Hide();
@@ -5798,7 +5910,6 @@ LRESULT CALLBACK NotesWindow::TabsProc(HWND hwnd, UINT msg, WPARAM wparam,
           SetCursor(LoadCursor(nullptr, IDC_SIZEWE));
         }
         if (self->tab_dragging_) {
-          self->RelayoutTabChips();
           const int to = self->TabIndexFromPoint(pt);
           if (to >= 0 && to != self->tab_drag_from_) {
             self->ReorderTab(self->tab_drag_from_, to);
@@ -5810,7 +5921,6 @@ LRESULT CALLBACK NotesWindow::TabsProc(HWND hwnd, UINT msg, WPARAM wparam,
       }
       TRACKMOUSEEVENT tme{sizeof(tme), TME_LEAVE, hwnd, 0};
       TrackMouseEvent(&tme);
-      self->RelayoutTabChips();
       int zone = 0;
       const int hit = self->HitTestTabBar(pt, &zone);
       const int hover_idx = (zone == 3) ? -2 : hit;
@@ -6241,7 +6351,10 @@ LRESULT NotesWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
         return FALSE;  // We rebuild the tree ourselves.
       }
       if (hdr && hdr->hwndFrom == edit_ && hdr->code == EN_SELCHANGE) {
-        UpdateStatusBar();
+        // Word-count is timer/cached; avoid O(n) on every caret move.
+        if (!wysiwyg_) {
+          SetTimer(hwnd_, kStatusTimer, 120, nullptr);
+        }
         return 0;
       }
       break;
@@ -6519,7 +6632,7 @@ LRESULT NotesWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
       }
       if (LOWORD(wparam) == kEditId && HIWORD(wparam) == EN_CHANGE) {
         MarkDirty();
-        RefreshGutter();
+        SetTimer(hwnd_, kGutterTimer, 60, nullptr);
         if (preview_) {
           SchedulePreviewRefresh();
         }
@@ -6531,10 +6644,10 @@ LRESULT NotesWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
       }
       if (LOWORD(wparam) == kEditId &&
           (HIWORD(wparam) == EN_VSCROLL || HIWORD(wparam) == EN_SELCHANGE)) {
-        if (HIWORD(wparam) == EN_SELCHANGE) {
-          UpdateStatusBar();
+        if (HIWORD(wparam) == EN_SELCHANGE && !wysiwyg_) {
+          SetTimer(hwnd_, kStatusTimer, 120, nullptr);
         }
-        RefreshGutter();
+        SetTimer(hwnd_, kGutterTimer, 60, nullptr);
         if (preview_ && !syncing_scroll_) {
           SetTimer(hwnd_, kScrollTimer, 60, nullptr);
         }
@@ -6700,6 +6813,17 @@ LRESULT NotesWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
       }
       if (wparam == kStatusTimer) {
         UpdateStatusBar();
+        // Keep periodic refresh at the steadier cadence.
+        SetTimer(hwnd_, kStatusTimer, 800, nullptr);
+        return 0;
+      }
+      if (wparam == kPersistTabsTimer) {
+        PersistTabs();
+        return 0;
+      }
+      if (wparam == kGutterTimer) {
+        KillTimer(hwnd_, kGutterTimer);
+        RefreshGutter();
         return 0;
       }
       return 0;

@@ -294,11 +294,11 @@ int TrackCommon(HWND owner, POINT screen, IContextMenu* pcm, UINT cmf_flags,
   } else if (cmd >= static_cast<int>(kShellIdFirst)) {
     const UINT offset = static_cast<UINT>(cmd - kShellIdFirst);
     const std::wstring verb = CanonicalVerb(pcm, offset);
-    if (on_verb) {
-      on_verb(verb);
-    }
     // CMF_CANRENAME: the host must present rename UI — never InvokeCommand.
     if (can_rename && verb == L"rename") {
+      if (on_verb) {
+        on_verb(verb);
+      }
       LogLine(L"[menu] shell verb=rename (host handles inline rename)");
       result = 0;
     } else {
@@ -313,6 +313,11 @@ int TrackCommon(HWND owner, POINT screen, IContextMenu* pcm, UINT cmf_flags,
       info.nShow = SW_SHOWNORMAL;
       pcm->InvokeCommand(&info);
       LogLine(L"[menu] shell verb=%s invoked", verb.c_str());
+      // After InvokeCommand: paste/newfolder/undo land files first; refreshing
+      // beforehand left fences empty until a manual 刷新 (Fences parity).
+      if (on_verb) {
+        on_verb(verb);
+      }
       result = 0;
     }
   }

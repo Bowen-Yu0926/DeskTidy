@@ -8,7 +8,7 @@ echo.
 
 cd /d "%~dp0.."
 
-echo [1/3] Building desktidy_native.exe ...
+echo [1/3] Building desktidy_native.exe + deskNote.exe ...
 call native\build.bat
 if errorlevel 1 (
   echo Native build failed.
@@ -17,9 +17,9 @@ if errorlevel 1 (
 
 set "APP_VERSION="
 if exist VERSION (
-  set /p APP_VERSION=<VERSION
+    set /p APP_VERSION=<VERSION
 )
-if "!APP_VERSION!"=="" set "APP_VERSION=4.0.30"
+if "!APP_VERSION!"=="" set "APP_VERSION=4.0.31"
 echo Version: !APP_VERSION!
 
 echo.
@@ -44,15 +44,14 @@ if "%ISCC%"=="" (
 echo Found: %ISCC%
 
 echo.
-echo [3/3] Compiling installer\DeskTidyNative.iss ...
+echo [3/3] Compiling installer\DeskTidy.iss ...
 if not exist dist mkdir dist
-"%ISCC%" /DMyAppVersion=!APP_VERSION! installer\DeskTidyNative.iss
+"%ISCC%" /DMyAppVersion=!APP_VERSION! installer\DeskTidy.iss
 if errorlevel 1 (
   echo Installer compile failed.
   exit /b 1
 )
 
 echo.
-echo Built: dist\DeskTidyNative_Setup_!APP_VERSION!.exe
-echo Python DeskTidy.exe is unchanged; this package is native-only cutover track.
+echo Built: dist\DeskTidy_Setup_!APP_VERSION!.exe
 exit /b 0

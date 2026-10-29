@@ -73,6 +73,8 @@ struct AppPrefs {
   // Default false — never UAC on every cold start (market: normal-priv always-on).
   bool elevate_hotkey_helper = false;
   std::wstring update_notified_tag;
+  // Unix seconds when update_notified_tag was last soft-reminded (24h dedupe).
+  long long update_notified_at = 0;
   // Desktop background cascade menu (Python desktop_right_click_menu).
   bool desktop_right_click_menu = true;
   // Account vault (Python account_vault).

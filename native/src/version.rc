@@ -4,8 +4,8 @@
 LANGUAGE 0x09, 0x01
 
 VS_VERSION_INFO VERSIONINFO
- FILEVERSION 4,0,30,0
- PRODUCTVERSION 4,0,30,0
+ FILEVERSION 4,0,31,0
+ PRODUCTVERSION 4,0,31,0
  FILEFLAGSMASK 0x3fL
  FILEFLAGS 0x0L
  FILEOS VOS_NT_WINDOWS32
@@ -18,12 +18,12 @@ BEGIN
         BEGIN
             VALUE "CompanyName", "DeskTidy"
             VALUE "FileDescription", "DeskTidy Native"
-            VALUE "FileVersion", "4.0.30"
+            VALUE "FileVersion", "4.0.31"
             VALUE "InternalName", "desktidy_native"
             VALUE "LegalCopyright", "DeskTidy"
             VALUE "OriginalFilename", "desktidy_native.exe"
             VALUE "ProductName", "DeskTidy Native"
-            VALUE "ProductVersion", "4.0.30"
+            VALUE "ProductVersion", "4.0.31"
         END
     END
     BLOCK "VarFileInfo"

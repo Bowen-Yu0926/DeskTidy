@@ -1724,16 +1724,25 @@ void FenceWindow::StartManualIconDrag(int index) {
   icon_dragging_ = true;
   drag_insert_ = -1;
   drag_left_ = false;
+  drag_pt_ = {};
+  {
+    POINT cur{};
+    if (GetCursorPos(&cur) && ScreenToClient(hwnd_, &cur)) {
+      drag_pt_ = cur;
+    }
+  }
   SetCapture(hwnd_);
   UpdateHoverTip(-1);
   LogLine(L"[fence] manual drag start: %d items from %s",
           static_cast<int>(drag_paths_.size()), title_.c_str());
+  PresentLayered();
 }
 
 void FenceWindow::UpdateManualIconDrag(int x, int y) {
   if (!icon_dragging_) {
     return;
   }
+  drag_pt_ = {x, y};
   RECT rc{};
   GetClientRect(hwnd_, &rc);
   const bool outside = x < 0 || y < 0 || x >= rc.right || y >= rc.bottom;
@@ -3319,13 +3328,26 @@ void FenceWindow::Paint(HDC hdc) {
       return;
     }
     const bool is_cut = ClipboardPathIsCut(cell.item.path);
+    bool is_drag_src = false;
+    if (icon_dragging_) {
+      for (int di : drag_indices_) {
+        if (di == static_cast<int>(i)) {
+          is_drag_src = true;
+          break;
+        }
+      }
+    }
     const bool is_hover =
         !is_sel && tip_index_ >= 0 &&
         static_cast<size_t>(tip_index_) == i;
-    const BYTE icon_op = is_cut ? kCutOpacity : 255;
+    // Source cells stay as faint placeholders while the cursor ghost moves
+    // (Explorer / Fences-style; same opacity as cut ghost).
+    const BYTE icon_op =
+        (is_cut || is_drag_src) ? kCutOpacity : 255;
     Gdiplus::SolidBrush name_brush(
-        Gdiplus::Color(is_cut ? kCutOpacity : 255, GetRValue(caption_color_),
-                       GetGValue(caption_color_), GetBValue(caption_color_)));
+        Gdiplus::Color((is_cut || is_drag_src) ? kCutOpacity : 255,
+                       GetRValue(caption_color_), GetGValue(caption_color_),
+                       GetBValue(caption_color_)));
     if (list) {
       if (is_sel) {
         PaintSelectionChrome(g, b.left + 2, b.top + 1, b.right - 2,
@@ -3441,24 +3463,58 @@ void FenceWindow::Paint(HDC hdc) {
     }
   }
 
-  // F2: live insert indicator during manual icon drag.
+  // F2: insert bar ≈ icon length (not full fence / full cell).
   if (icon_dragging_ && !drag_left_ && drag_insert_ >= 0) {
     const int insert = (std::min)(drag_insert_, static_cast<int>(cells_.size()));
     Gdiplus::Pen pen(Gdiplus::Color(235, GetRValue(accent_), GetGValue(accent_),
                                     GetBValue(accent_)),
                      2.0f);
+    const RECT* ref = nullptr;
+    if (insert < static_cast<int>(cells_.size())) {
+      ref = &cells_[static_cast<size_t>(insert)].bounds;
+    } else if (!cells_.empty()) {
+      ref = &cells_.back().bounds;
+    }
+    const int bar = icon + S(hwnd_, 8);
     if (view_mode_ == "list") {
-      const int y = insert < static_cast<int>(cells_.size())
-                        ? cells_[static_cast<size_t>(insert)].bounds.top
-                        : (cells_.empty() ? header + pad
-                                          : cells_.back().bounds.bottom);
-      g.DrawLine(&pen, rc.left + pad, y, rc.right - pad, y);
+      const int y = ref ? (insert < static_cast<int>(cells_.size()) ? ref->top
+                                                                   : ref->bottom)
+                        : (header + pad);
+      int mid_x = ref ? (ref->left + ref->right) / 2
+                      : (rc.left + pad + cell_w / 2);
+      if (drag_pt_.x > 0) {
+        mid_x = drag_pt_.x;
+      }
+      g.DrawLine(&pen, mid_x - bar / 2, y, mid_x + bar / 2, y);
     } else {
-      const int x = insert < static_cast<int>(cells_.size())
-                        ? cells_[static_cast<size_t>(insert)].bounds.left
-                        : (cells_.empty() ? rc.left + pad
-                                          : cells_.back().bounds.right);
-      g.DrawLine(&pen, x, header + pad, x, rc.bottom - pad);
+      const int x = ref ? (insert < static_cast<int>(cells_.size()) ? ref->left
+                                                                   : ref->right)
+                        : (rc.left + pad);
+      int mid_y = ref ? (ref->top + 4 + icon / 2)
+                      : (header + pad + icon / 2);
+      if (drag_pt_.y > header) {
+        mid_y = drag_pt_.y;
+      }
+      g.DrawLine(&pen, x, mid_y - bar / 2, x, mid_y + bar / 2);
+    }
+  }
+
+  // Fences-style drag ghost: translucent icon(s) under the cursor.
+  if (icon_dragging_ && !drag_left_ && !drag_indices_.empty()) {
+    constexpr BYTE kGhostOp = 160;
+    const int stack = (std::min)(3, static_cast<int>(drag_indices_.size()));
+    for (int s = stack - 1; s >= 0; --s) {
+      const int di = drag_indices_[static_cast<size_t>(s)];
+      if (di < 0 || di >= static_cast<int>(cells_.size())) {
+        continue;
+      }
+      HICON ic = cells_[static_cast<size_t>(di)].icon;
+      if (!ic) {
+        continue;
+      }
+      const int ox = drag_pt_.x - icon / 2 + s * S(hwnd_, 4);
+      const int oy = drag_pt_.y - icon / 2 + s * S(hwnd_, 4);
+      DrawIconSharp(g, ic, ox, oy, icon, kGhostOp);
     }
   }
 

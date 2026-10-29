@@ -14,10 +14,9 @@ struct ShellMenuExtra {
 };
 
 // Fired with the canonical verb name (e.g. "rename", "refresh", "undo",
-// "newfolder", "paste") right after the user picks a shell item. Lets the
-// caller react: re-scan on "refresh", present inline rename on "rename", pin
-// newly landed desktop files after "newfolder"/"paste", etc. Not fired for
-// DeskTidy extras or cancel.
+// "newfolder", "paste"). For host-handled rename: when the user picks it
+// (no InvokeCommand). For other verbs: after InvokeCommand returns so
+// paste/newfolder/undo re-scan sees landed files. Not fired for extras/cancel.
 using ShellVerbFn = std::function<void(const std::wstring& verb)>;
 // Fired immediately before InvokeCommand runs (not for extras, rename or
 // cancel) so callers can snapshot the folder before the shell mutates it.
