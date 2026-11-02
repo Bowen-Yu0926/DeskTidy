@@ -1,5 +1,6 @@
 #include "hotkey_store.h"
 
+#include "display_geom.h"
 #include "i18n.h"
 #include "paths_util.h"
 #include "prompt_text.h"
@@ -110,20 +111,29 @@ bool CaptureChord(HWND owner, UINT* mods, UINT* vk) {
   RegisterClassExW(&wc);
 
   CapState st{};
+  POINT cursor{};
+  GetCursorPos(&cursor);
+  int dlg_w = 320;
+  int dlg_h = 120;
+  ScaleDialogSizeForPoint(cursor, &dlg_w, &dlg_h);
+  const int pad = ScalePxForDpi(20, DpiAtPoint(cursor));
+  const int label_h = ScalePxForDpi(24, DpiAtPoint(cursor));
   HWND hwnd = CreateWindowExW(
       WS_EX_TOPMOST | WS_EX_DLGMODALFRAME, kCaptureClass,
       Tr("hk_capture_title").c_str(), WS_POPUP | WS_CAPTION | WS_SYSMENU, 0, 0,
-      320, 120, owner, nullptr, GetModuleHandleW(nullptr), nullptr);
+      dlg_w, dlg_h, owner, nullptr, GetModuleHandleW(nullptr), nullptr);
   if (!hwnd) {
     return false;
   }
   SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(&st));
   CreateWindowW(L"STATIC", Tr("hk_capture_hint").c_str(),
-                WS_CHILD | WS_VISIBLE, 20, 30, 280, 24, hwnd, nullptr,
+                WS_CHILD | WS_VISIBLE, pad, ScalePxForDpi(30, DpiAtPoint(cursor)),
+                dlg_w - pad * 2, label_h, hwnd, nullptr,
                 GetModuleHandleW(nullptr), nullptr);
-  const int sw = GetSystemMetrics(SM_CXSCREEN);
-  const int sh = GetSystemMetrics(SM_CYSCREEN);
-  SetWindowPos(hwnd, nullptr, (sw - 320) / 2, (sh - 120) / 2, 320, 120,
+  const RECT work = WorkAreaAtPoint(cursor);
+  SetWindowPos(hwnd, nullptr,
+               work.left + ((work.right - work.left) - dlg_w) / 2,
+               work.top + ((work.bottom - work.top) - dlg_h) / 3, dlg_w, dlg_h,
                SWP_NOZORDER);
   ShowWindow(hwnd, SW_SHOW);
   SetForegroundWindow(hwnd);

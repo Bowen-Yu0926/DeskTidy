@@ -30,10 +30,27 @@ std::wstring TitleForFence(
   return WidenUtf8(id);
 }
 
+bool IsMisplacedSystemPin(const DesktopItem& it, const std::string& fence_id) {
+  const std::string kind = OrganizeKindOfItem(it);
+  if (kind == "file") {
+    return fence_id == "system_software" || fence_id == "system_software_side" ||
+           fence_id == "system_common";
+  }
+  if (kind == "icon") {
+    return fence_id == "system_docs";
+  }
+  return false;
+}
+
 bool ShouldSkipVirtual(const DesktopItem& it, const PinMap& pins,
                        const std::vector<std::wstring>& wl, bool reassign) {
-  if (!reassign && FindPin(pins, it.path)) {
-    return true;
+  if (!reassign) {
+    const std::string* pin = FindPin(pins, it.path);
+    // Already pinned: keep manual placements, but allow 一键整理 to correct
+    // files stuck on「其他/常用」and icons stuck on「文档」(two-page model).
+    if (pin && !pin->empty() && !IsMisplacedSystemPin(it, *pin)) {
+      return true;
+    }
   }
   if (IsOrganizeSuppressed(it.path)) {
     return true;
@@ -61,21 +78,21 @@ int OrganizeApplyDefaultPins(PinMap* pins, const std::vector<DesktopItem>& items
     if (ShouldSkipVirtual(it, *pins, wl, reassign)) {
       continue;
     }
-    const std::string prev =
-        reassign ? (FindPin(*pins, it.path) ? *FindPin(*pins, it.path) : "")
-                 : std::string();
+    const std::string* existing = FindPin(*pins, it.path);
+    const std::string prev = existing ? *existing : std::string();
     // P1-4: kinds-aware fence first (Python resolve_organize_target).
     std::string target;
     if (fences && !fences->empty()) {
       target = ResolveFenceByKind(it, *fences, current_page);
     }
     if (target.empty()) {
-      target = ResolveFenceId(it.path, it.is_link, *pins, rules, software_id,
+      // Empty pin map: ResolveFenceId must not echo a stale software-side pin.
+      PinMap no_pins;
+      target = ResolveFenceId(it.path, it.is_link, no_pins, rules, software_id,
                              common_id);
     }
     target = NormalizeOrganizeTarget(std::move(target));
-    // Reassign only rewrites pins whose computed target actually changed.
-    if (reassign && prev == target) {
+    if (!prev.empty() && prev == target) {
       continue;
     }
     SetPin(pins, it.path, target);
@@ -207,6 +224,53 @@ std::string OrganizeKindOfItem(const DesktopItem& item) {
     return "icon";
   }
   return "file";
+}
+
+namespace {
+
+DesktopItem ProbeFromPinKey(const std::wstring& path) {
+  DesktopItem probe;
+  probe.path = path;
+  const size_t slash = path.find_last_of(L"\\/");
+  probe.name =
+      (slash == std::wstring::npos) ? path : path.substr(slash + 1);
+  const std::wstring ext = LowerW(Extension(BaseName(probe.name)));
+  probe.is_link = ext == L".lnk" || ext == L".url";
+  return probe;
+}
+
+bool IsSoftwareSystemFence(const std::string& id) {
+  return id == "system_software" || id == "system_software_side" ||
+         id == "system_common";
+}
+
+}  // namespace
+
+int HealMisplacedSystemPins(PinMap* pins) {
+  // AIGC START
+  // Two-page model: files → 文档 (system_docs); icons → 常用 (system_common).
+  // PPT/docx wrongly left in「其他」after 一键整理 (skips already-pinned) or
+  // old software-side dumps stay stuck until「重新整理」— heal them here.
+  if (!pins) {
+    return 0;
+  }
+  int n = 0;
+  for (auto& kv : *pins) {
+    if (kv.first.find(L"::") != std::wstring::npos) {
+      continue;  // namespace icons stay on 常用
+    }
+    const DesktopItem probe = ProbeFromPinKey(kv.first);
+    const std::string kind = OrganizeKindOfItem(probe);
+    if (kind == "file" && IsSoftwareSystemFence(kv.second)) {
+      kv.second = "system_docs";
+      ++n;
+    } else if (kind == "icon" && kv.second == "system_docs") {
+      kv.second = "system_common";
+      ++n;
+    }
+  }
+  return n;
+  // AIGC END
 }
 
 bool FenceAcceptsItem(const std::vector<std::string>& organize_kinds,

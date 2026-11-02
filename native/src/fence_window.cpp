@@ -25,6 +25,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <iterator>
+#include <unordered_map>
 #include <vector>
 
 #pragma comment(lib, "gdiplus.lib")
@@ -284,14 +285,59 @@ void FenceWindow::TogglePageMembership(int page) {
   }
 }
 
+bool FenceWindow::ResolveLayerSize(int* out_w, int* out_h) const {
+  if (!out_w || !out_h || !hwnd_ || !IsWindow(hwnd_) || IsIconic(hwnd_)) {
+    return false;
+  }
+  RECT wr{};
+  GetWindowRect(hwnd_, &wr);
+  int w = static_cast<int>(wr.right - wr.left);
+  int h = static_cast<int>(wr.bottom - wr.top);
+  const int chrome_min = S(hwnd_, kCollapsedH0);
+  const int owned_h =
+      collapsed_ ? chrome_min : (std::max)(expanded_h_, kFenceExpandedFloor);
+  // Explorer create/copy/attach can report a transient tiny HWND rect.
+  // UpdateLayeredWindow would then permanently shrink/blank the fence
+  // (Fences keep an application-owned size for the layered surface).
+  if (w < 80) {
+    const FencePageGeometry g = GeometryForPage(page_);
+    w = (std::max)(120, g.w > 0 ? g.w : 200);
+  }
+  // Height is application-owned (Fences-class). Trust HWND only while the
+  // user is live-dragging an edge — otherwise shell churn / a bad persist
+  // (display-scale ×10) would stretch the layered frame to full screen.
+  if (collapsed_) {
+    h = chrome_min;
+  } else if (resizing_) {
+    if (h < 100) {
+      h = owned_h;
+    }
+  } else {
+    h = owned_h;
+  }
+  *out_w = (std::max)(1, w);
+  *out_h = (std::max)(1, h);
+  return true;
+}
+
 void FenceWindow::PresentLayered() {
   if (!hwnd_) {
     return;
   }
+  int w = 0;
+  int h = 0;
+  if (!ResolveLayerSize(&w, &h)) {
+    return;
+  }
   RECT wr{};
   GetWindowRect(hwnd_, &wr);
-  const int w = (std::max)(1, static_cast<int>(wr.right - wr.left));
-  const int h = (std::max)(1, static_cast<int>(wr.bottom - wr.top));
+  if ((wr.right - wr.left) != w || (wr.bottom - wr.top) != h) {
+    SetOverlayScreenPos(hwnd_, wr.left, wr.top, w, h,
+                        SWP_NOZORDER | SWP_NOREDRAW);
+  }
+  // Always layout for the exact frame we blit — never paint stale cell bounds
+  // after a desktop watch / organize refresh (blank body,「共 N 项」left).
+  LayoutCellsTo(w, h);
 
   static ULONG_PTR gdi_token = 0;
   if (!gdi_token) {
@@ -405,6 +451,7 @@ void FenceWindow::PresentLayered() {
     hg.DrawPath(&edge, &path);
   }
 
+  GetWindowRect(hwnd_, &wr);
   POINT origin{wr.left, wr.top};
   SIZE size{w, h};
   POINT src{0, 0};
@@ -412,7 +459,7 @@ void FenceWindow::PresentLayered() {
   blend.BlendOp = AC_SRC_OVER;
   blend.SourceConstantAlpha = 255;
   blend.AlphaFormat = AC_SRC_ALPHA;
-  UpdateLayeredWindow(hwnd_, screen, &origin, &size, mem, &src, 0, &blend,
+  UpdateOverlayLayered(hwnd_, screen, &origin, &size, mem, &src, 0, &blend,
                       ULW_ALPHA);
 
   SelectObject(mem, old);
@@ -497,17 +544,31 @@ void FenceWindow::SetPinOrder(std::vector<std::wstring> order) {
 
 void FenceWindow::InsertPinOrder(const std::vector<std::wstring>& paths,
                                  int at) {
-  std::vector<std::wstring> filtered;
-  filtered.reserve(pin_order_.size());
-  for (const auto& p : pin_order_) {
-    bool dropped = false;
+  // Drop index is relative to the current visual cells_ (Fences-class). Splice
+  // against that order — an empty/stale pin_order_ made `at` clamp to 0 and the
+  // icon jump to the front / name-sort tail instead of the drop slot.
+  std::vector<std::wstring> base;
+  if (!cells_.empty()) {
+    base.reserve(cells_.size());
+    for (const auto& c : cells_) {
+      base.push_back(c.item.path);
+    }
+  } else {
+    base = pin_order_;
+  }
+  auto is_dropped = [&](const std::wstring& p) {
+    const std::wstring key = NormalizePinKey(p);
     for (const auto& d : paths) {
-      if (p == d) {
-        dropped = true;
-        break;
+      if (NormalizePinKey(d) == key) {
+        return true;
       }
     }
-    if (!dropped) {
+    return false;
+  };
+  std::vector<std::wstring> filtered;
+  filtered.reserve(base.size() + paths.size());
+  for (const auto& p : base) {
+    if (!is_dropped(p)) {
       filtered.push_back(p);
     }
   }
@@ -522,17 +583,19 @@ void FenceWindow::InsertPinOrder(const std::vector<std::wstring>& paths,
 }
 
 void FenceWindow::RemovePinOrder(const std::vector<std::wstring>& paths) {
+  auto is_dropped = [&](const std::wstring& p) {
+    const std::wstring key = NormalizePinKey(p);
+    for (const auto& d : paths) {
+      if (NormalizePinKey(d) == key) {
+        return true;
+      }
+    }
+    return false;
+  };
   std::vector<std::wstring> filtered;
   filtered.reserve(pin_order_.size());
   for (const auto& p : pin_order_) {
-    bool dropped = false;
-    for (const auto& d : paths) {
-      if (p == d) {
-        dropped = true;
-        break;
-      }
-    }
-    if (!dropped) {
+    if (!is_dropped(p)) {
       filtered.push_back(p);
     }
   }
@@ -562,11 +625,11 @@ void FenceWindow::ApplyPageGeometry(const FencePageGeometry& geo,
   const int w = (std::max)(geo.w, 120);
   const int h = (std::max)(geo.h, 80);
   collapsed_ = geo.collapsed;
-  expanded_h_ = (std::max)(h, 180);
+  expanded_h_ = (std::max)(h, kFenceExpandedFloor);
   if (hwnd_) {
     const int win_h = collapsed_ ? S(hwnd_, kCollapsedH0) : expanded_h_;
-    SetWindowPos(hwnd_, nullptr, geo.x, geo.y, w, win_h,
-                 SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOREDRAW);
+    SetOverlayScreenPos(hwnd_, geo.x, geo.y, w, win_h,
+                        SWP_NOZORDER | SWP_NOREDRAW);
     LayoutCells();
     // Skip expensive layered present for fences that are (or will stay) hidden
     // on this page — page switches used to redraw every fence twice.
@@ -609,10 +672,10 @@ void FenceWindow::ScaleGeometryForDpi(int old_dpi, int new_dpi) {
     }
   }
   ScaleRectForDpi(&x, &y, &w, &h, old_dpi, new_dpi);
-  expanded_h_ = (std::max)(h, 180);
+  expanded_h_ = (std::max)(h, kFenceExpandedFloor);
   if (hwnd_) {
     const int win_h = collapsed_ ? S(hwnd_, kCollapsedH0) : h;
-    SetWindowPos(hwnd_, nullptr, x, y, w, win_h, SWP_NOZORDER | SWP_NOACTIVATE);
+    SetOverlayScreenPos(hwnd_, x, y, w, win_h, SWP_NOZORDER);
   }
   for (auto& kv : page_geometries_) {
     ScaleRectForDpi(&kv.second.x, &kv.second.y, &kv.second.w, &kv.second.h,
@@ -651,7 +714,7 @@ bool FenceWindow::Create(HINSTANCE instance, const FenceLayout& layout) {
   pin_order_ = layout.pin_order;
   icon_zoom_percent_ = (std::min)(160, (std::max)(70, layout.icon_zoom));
   grid_metrics_ = QueryIconGridMetrics();
-  expanded_h_ = (std::max)(layout.h, 180);
+  expanded_h_ = (std::max)(layout.h, kFenceExpandedFloor);
   const int win_h = collapsed_ ? kCollapsedH0 : layout.h;
 
   if (!g_class_registered) {
@@ -701,16 +764,15 @@ void FenceWindow::SetCollapsed(bool collapsed) {
   const int cur_h = rc.bottom - rc.top;
   if (collapsed) {
     if (!collapsed_) {
-      expanded_h_ = (std::max)(cur_h, 180);
+      expanded_h_ = (std::max)(cur_h, kFenceExpandedFloor);
     }
     collapsed_ = true;
-    SetWindowPos(hwnd_, nullptr, rc.left, rc.top, w, S(hwnd_, kCollapsedH0),
-                 SWP_NOZORDER | SWP_NOACTIVATE);
+    SetOverlayScreenPos(hwnd_, rc.left, rc.top, w, S(hwnd_, kCollapsedH0),
+                        SWP_NOZORDER);
   } else {
     collapsed_ = false;
-    const int h = (std::max)(expanded_h_, 180);
-    SetWindowPos(hwnd_, nullptr, rc.left, rc.top, w, h,
-                 SWP_NOZORDER | SWP_NOACTIVATE);
+    const int h = (std::max)(expanded_h_, kFenceExpandedFloor);
+    SetOverlayScreenPos(hwnd_, rc.left, rc.top, w, h, SWP_NOZORDER);
   }
   LayoutCells();
   PresentLayered();
@@ -744,30 +806,41 @@ void FenceWindow::EnsureDropTarget() {
     return;
   }
   drop_target_ =
-      new PathDropTarget([this](const std::vector<std::wstring>& paths) {
-        if (on_paths_dropped_at_) {
-          // F1: derive insertion index from the drop point (cursor is still at
-          // the drop location when PathDropTarget::Drop fires).
-          POINT pt{};
-          GetCursorPos(&pt);
-          ScreenToClient(hwnd_, &pt);
-          const int at = InsertIndexAt(pt.x, pt.y);
-          on_paths_dropped_at_(this, paths, at);
-          return;
-        }
-        if (on_paths_dropped_) {
-          on_paths_dropped_(this, paths);
-        }
-      },
-        [this](const std::wstring& src, const std::vector<std::wstring>& paths,
-               bool commit) -> DWORD {
-          if (on_pin_drop_) {
-            return on_pin_drop_(this, src, paths, commit);
-          }
-          return DROPEFFECT_NONE;
-        });
+      new PathDropTarget(
+          [this](const std::vector<std::wstring>& paths,
+                 DWORD proposed) -> DWORD {
+            if (on_paths_dropped_at_) {
+              // F1: derive insertion index from the drop point (cursor is still
+              // at the drop location when PathDropTarget::Drop fires).
+              POINT pt{};
+              GetCursorPos(&pt);
+              ScreenToClient(hwnd_, &pt);
+              const int at = InsertIndexAt(pt.x, pt.y);
+              return on_paths_dropped_at_(this, paths, at);
+            }
+            if (on_paths_dropped_) {
+              return on_paths_dropped_(this, paths);
+            }
+            return proposed;
+          },
+          [this](const std::wstring& src, const std::vector<std::wstring>& paths,
+                 bool commit) -> DWORD {
+            if (on_pin_drop_) {
+              return on_pin_drop_(this, src, paths, commit);
+            }
+            return DROPEFFECT_NONE;
+          });
   drop_target_->SetHighlightFn(
       [this](bool on) { SetDropHighlight(on); });
+  // AIGC START
+  // Plain fence = virtual pin (COPY so Explorer keeps the source). Portal =
+  // physical import with Explorer volume/modifier rules.
+  drop_target_->SetFileDropSemanticsProvider([this]() {
+    return portal_path_.empty() ? FileDropSemantics::VirtualPin
+                                : FileDropSemantics::Physical;
+  });
+  drop_target_->SetDestDirProvider([this]() { return portal_path_; });
+  // AIGC END
   if (!RegisterPathDropTarget(hwnd_, drop_target_)) {
     drop_target_->Release();
     drop_target_ = nullptr;
@@ -885,15 +958,14 @@ FenceLayout FenceWindow::CurrentLayout() const {
   fl.page_geometries = page_geometries_;
   fl.icon_zoom = icon_zoom_percent_;
   fl.pin_order = pin_order_;
+  // Height always from owned expanded_h_ (collapse chrome is not layout.h).
+  fl.h = (std::max)(expanded_h_, kFenceExpandedFloor);
   if (hwnd_) {
     RECT rc{};
     GetWindowRect(hwnd_, &rc);
     fl.x = rc.left;
     fl.y = rc.top;
     fl.w = rc.right - rc.left;
-    fl.h = collapsed_ ? expanded_h_ : (rc.bottom - rc.top);
-  } else {
-    fl.h = expanded_h_;
   }
   return fl;
 }
@@ -923,10 +995,16 @@ void FenceWindow::Show() {
   }
   if (!IsAttachedToDesktop(hwnd_)) {
     AttachToDesktopLayer();
+  } else if (!IsOverlayAboveDefView(hwnd_)) {
+    // Already owned but buried under DefView / wrong host — soft Raise only.
+    // Healthy Show must not Place+Raise+Present every keepalive tick (flash).
+    RaiseOverlayInDesktopBand(hwnd_);
   }
-  // Do not RaiseOverlay on already-visible fences: band-settle timers used to
-  // Show() every tick → raise/sink fight → desktop flash and settings covered.
-  if (!was_visible) {
+  // Win+D: minimize used to WM_SIZE→PresentLayered a blank layered bitmap;
+  // after restore always relayout + repaint so icons/labels come back
+  // (Fences-class: show-desktop returns chrome AND shortcuts).
+  if (!was_visible || was_iconic) {
+    LayoutCells();
     PresentLayered();
   }
 }
@@ -960,12 +1038,13 @@ void FenceWindow::AttachToDesktopLayer() {
   if (!hwnd_) {
     return;
   }
-  if (IsAttachedToDesktop(hwnd_)) {
-    return;
+  // AIGC START
+  // Fences keepalive: never no-op when already attached — Explorer can bury
+  // an owned overlay under DefView while IsAttachedToDesktop stays true.
+  if (!AttachOverlayToDesktop(hwnd_, true)) {
+    ForceAttachOverlayToDesktop(hwnd_, true);
   }
-  AttachOverlayToDesktop(hwnd_, true);
-  PlaceOverlayInDesktopBand(hwnd_, true);
-  RaiseOverlayInDesktopBand(hwnd_);
+  // AIGC END
 }
 
 void FenceWindow::RefreshLayer() { PresentLayered(); }
@@ -995,17 +1074,42 @@ void FenceWindow::SetViewMode(const std::string& mode) {
 }
 
 void FenceWindow::SetItems(std::vector<DesktopItem> items) {
-  ClearIcons();
+  // Keep HICONs across refresh when the path set is stable (desktop watch /
+  // organize often re-pushes the same pins). Avoid SHGetFileInfo storms.
+  const std::vector<DesktopItem> before = ItemSnapshot();
+  std::unordered_map<std::wstring, HICON> reuse;
+  reuse.reserve(cells_.size());
+  for (auto& c : cells_) {
+    if (c.icon) {
+      reuse.emplace(NormalizePinKey(c.item.path), c.icon);
+      c.icon = nullptr;
+    }
+  }
+  cells_.clear();
   cells_.reserve(items.size());
   const int icon_sz = IconSizePx();
+  bool loaded_any = false;
   for (auto& it : items) {
     Cell cell;
     cell.item = std::move(it);
-    cell.icon = LoadItemIcon(cell.item.path, icon_sz);
+    const std::wstring key = NormalizePinKey(cell.item.path);
+    auto hit = reuse.find(key);
+    if (hit != reuse.end()) {
+      cell.icon = hit->second;
+      reuse.erase(hit);
+    } else {
+      cell.icon = LoadItemIcon(cell.item.path, icon_sz);
+      loaded_any = true;
+    }
     cells_.push_back(std::move(cell));
   }
+  for (auto& kv : reuse) {
+    if (kv.second) {
+      DestroyIcon(kv.second);
+    }
+  }
   // Manual: honor pin_order_ (drop insert / drag reorder). Else name/date/…
-  if (sort_by_ == "manual" && !pin_order_.empty() && cells_.size() > 1) {
+  if (sort_by_ == "manual" && !pin_order_.empty()) {
     std::vector<Cell> ordered;
     ordered.reserve(cells_.size());
     std::vector<char> used(cells_.size(), 0);
@@ -1038,13 +1142,25 @@ void FenceWindow::SetItems(std::vector<DesktopItem> items) {
   } else {
     SortCells();
   }
-  scroll_y_ = 0;
-  selected_.assign(cells_.size(), 0);
-  selection_anchor_ = -1;
-  LayoutCells();
-  if (hwnd_) {
-    PresentLayered();
+  // Same seats: keep scroll + selection. Soft-parked fences may skip the
+  // layered blit (buffer preserved). Visible fences must still Present —
+  // skipping blit while mapped left HWND visible but fully transparent
+  // (「文档」page looked empty after folder→Desktop refresh storms).
+  const bool same_seats =
+      !loaded_any && DesktopItemListsIdentityEqual(before, ItemSnapshot());
+  if (!same_seats) {
+    scroll_y_ = 0;
+    selected_.assign(cells_.size(), 0);
+    selection_anchor_ = -1;
   }
+  LayoutCells();
+  if (!hwnd_) {
+    return;
+  }
+  if (same_seats && !IsWindowVisible(hwnd_)) {
+    return;
+  }
+  PresentLayered();
 }
 
 void FenceWindow::SetSortBy(const std::string& sort_by) {
@@ -1133,18 +1249,70 @@ void FenceWindow::SortCells() {
 }
 
 void FenceWindow::LayoutCells() {
-  if (!hwnd_) {
+  int w = 0;
+  int h = 0;
+  if (!ResolveLayerSize(&w, &h)) {
     return;
   }
-  RECT rc{};
-  GetClientRect(hwnd_, &rc);
+  LayoutCellsTo(w, h);
+}
+
+void FenceWindow::ClampScrollForView(int view_h) {
+  const int max_scroll = (std::max)(0, content_h_ - (std::max)(0, view_h));
+  if (scroll_y_ < 0) {
+    scroll_y_ = 0;
+  }
+  if (scroll_y_ > max_scroll) {
+    scroll_y_ = max_scroll;
+  }
+}
+
+void FenceWindow::ClampScroll() {
+  int w = 0;
+  int h = 0;
+  if (!ResolveLayerSize(&w, &h)) {
+    return;
+  }
+  const int view =
+      (std::max)(0, h - S(hwnd_, kHeaderH0) - S(hwnd_, kPad0));
+  ClampScrollForView(view);
+}
+
+void FenceWindow::LayoutCellsTo(int w, int h) {
+  if (!hwnd_ || w <= 0 || h <= 0) {
+    return;
+  }
+  RECT rc{0, 0, w, h};
   const int pad = S(hwnd_, kPad0);
   const int header = S(hwnd_, kHeaderH0);
   const int inner_l = rc.left + pad;
-  const int inner_t = rc.top + header - scroll_y_;
   const int inner_r = rc.right - pad;
+
+  // Measure → clamp scroll → place (never place then clamp: that left bounds
+  // at the old offset while scroll_y_ shrank, and Paint skipped every cell).
+  int cell_w = 0;
+  int cell_h = 0;
+  int cols = 1;
+  int row_h = 0;
   if (view_mode_ == "list") {
-    const int row_h = S(hwnd_, kListRowH0);
+    row_h = S(hwnd_, kListRowH0);
+    content_h_ = static_cast<int>(cells_.size()) * row_h;
+  } else {
+    cell_w = (std::max)(1, CellWidthPx());
+    cell_h = (std::max)(1, CellHeightPx());
+    cols = (std::max)(1, (inner_r - inner_l) / cell_w);
+    const int rows =
+        cells_.empty()
+            ? 0
+            : static_cast<int>((cells_.size() + static_cast<size_t>(cols) - 1) /
+                               static_cast<size_t>(cols));
+    content_h_ = rows * cell_h;
+  }
+  const int view = (std::max)(0, h - header - pad);
+  ClampScrollForView(view);
+
+  const int inner_t = rc.top + header - scroll_y_;
+  if (view_mode_ == "list") {
     const int width = (std::max)(40, inner_r - inner_l);
     for (size_t i = 0; i < cells_.size(); ++i) {
       RECT& b = cells_[i].bounds;
@@ -1153,11 +1321,7 @@ void FenceWindow::LayoutCells() {
       b.right = b.left + width;
       b.bottom = b.top + row_h;
     }
-    content_h_ = static_cast<int>(cells_.size()) * row_h;
   } else {
-    const int cell_w = CellWidthPx();
-    const int cell_h = CellHeightPx();
-    const int cols = (std::max)(1, (inner_r - inner_l) / cell_w);
     for (size_t i = 0; i < cells_.size(); ++i) {
       const int col = static_cast<int>(i % static_cast<size_t>(cols));
       const int row = static_cast<int>(i / static_cast<size_t>(cols));
@@ -1167,30 +1331,6 @@ void FenceWindow::LayoutCells() {
       b.right = b.left + cell_w;
       b.bottom = b.top + cell_h;
     }
-    const int rows =
-        cells_.empty()
-            ? 0
-            : static_cast<int>((cells_.size() + static_cast<size_t>(cols) - 1) /
-                               static_cast<size_t>(cols));
-    content_h_ = rows * cell_h;
-  }
-  ClampScroll();
-}
-
-void FenceWindow::ClampScroll() {
-  RECT rc{};
-  if (!hwnd_) {
-    return;
-  }
-  GetClientRect(hwnd_, &rc);
-  const int view = (std::max)(
-      0, static_cast<int>(rc.bottom) - S(hwnd_, kHeaderH0) - S(hwnd_, kPad0));
-  const int max_scroll = (std::max)(0, content_h_ - view);
-  if (scroll_y_ < 0) {
-    scroll_y_ = 0;
-  }
-  if (scroll_y_ > max_scroll) {
-    scroll_y_ = max_scroll;
   }
 }
 
@@ -1897,6 +2037,7 @@ void FenceWindow::CommitDragOutPins(std::vector<std::wstring> paths) {
   if (!paths.empty()) {
     const PinDragResult result = ShellDoDragPins(paths, Widen(id_));
     if (result == PinDragResult::Unpinned) {
+      RemovePinOrder(paths);
       POINT drop{};
       GetCursorPos(&drop);
       for (const auto& p : paths) {
@@ -1946,15 +2087,26 @@ void FenceWindow::ShowItemProperties(int index) {
 }
 
 void FenceWindow::ClearSelection() {
+  // AIGC START
+  // Blank-desktop clicks clear every fence; skip Present when nothing was
+  // selected — otherwise each click re-blits layered chrome (visible flash).
+  bool any = false;
+  for (char c : selected_) {
+    if (c) {
+      any = true;
+      break;
+    }
+  }
   if (selected_.size() != cells_.size()) {
     selected_.assign(cells_.size(), 0);
   } else {
     std::fill(selected_.begin(), selected_.end(), static_cast<char>(0));
   }
   selection_anchor_ = -1;
-  if (hwnd_) {
+  if (any && hwnd_ && IsWindowVisible(hwnd_) && !IsIconic(hwnd_)) {
     PresentLayered();
   }
+  // AIGC END
 }
 
 void FenceWindow::SelectOnly(int index) {
@@ -2653,6 +2805,13 @@ LRESULT FenceWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
     HandleFenceHotkey(vk, ctrl, shift);
     return 0;
   }
+  // Desktop chrome ≠ APPWINDOW (Fences / Rainmeter): never minimize with Win+D.
+  if (msg == WM_SYSCOMMAND && FilterDesktopChromeSysCommand(wparam)) {
+    return 0;
+  }
+  if (msg == WM_WINDOWPOSCHANGING) {
+    FilterDesktopChromeWindowPosChanging(reinterpret_cast<WINDOWPOS*>(lparam));
+  }
   switch (msg) {
     case WM_PAINT: {
       PAINTSTRUCT ps{};
@@ -2664,6 +2823,11 @@ LRESULT FenceWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
     case WM_ERASEBKGND:
       return 1;
     case WM_SIZE:
+      // Win+D minimizes overlays: painting the iconic size blanks the layered
+      // buffer (count chrome may survive a later stretch, icons do not).
+      if (wparam == SIZE_MINIMIZED) {
+        return 0;
+      }
       LayoutCells();
       PresentLayered();
       return 0;
@@ -2866,26 +3030,32 @@ LRESULT FenceWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
         if (ev & static_cast<int>(Edge::Bottom)) {
           b += dy;
         }
-        if (r - l < 160) {
+        if (r - l < kFenceMinW) {
           if (ev & static_cast<int>(Edge::Left)) {
-            l = r - 160;
+            l = r - kFenceMinW;
           } else {
-            r = l + 160;
+            r = l + kFenceMinW;
           }
         }
-        if (b - t < 120) {
+        if (b - t < kFenceMinH) {
           if (ev & static_cast<int>(Edge::Top)) {
-            t = b - 120;
+            t = b - kFenceMinH;
           } else {
-            b = t + 120;
+            b = t + kFenceMinH;
           }
         }
         // Live edge snap to monitor work area (Python snap_geometry on resize).
         RECT snapped{l, t, r, b};
         SnapRectToWorkArea(&snapped, 0);
-        SetWindowPos(hwnd_, nullptr, snapped.left, snapped.top,
-                     snapped.right - snapped.left, snapped.bottom - snapped.top,
-                     SWP_NOZORDER | SWP_NOACTIVATE);
+        SetOverlayScreenPos(hwnd_, snapped.left, snapped.top,
+                            snapped.right - snapped.left,
+                            snapped.bottom - snapped.top, SWP_NOZORDER);
+        // Keep owned height in lockstep so PresentLayered does not snap back.
+        if (!collapsed_) {
+          expanded_h_ = (std::max)(
+              kFenceExpandedFloor,
+              static_cast<int>(snapped.bottom - snapped.top));
+        }
         return 0;
       }
       if (rubber_ && (wparam & MK_LBUTTON)) {
@@ -2962,8 +3132,7 @@ LRESULT FenceWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
                 pt.x - drag_offset_.x + w, pt.y - drag_offset_.y + h};
       // Live edge snap while dragging (Python fence_widget mouseMove).
       SnapRectToWorkArea(&next, 0);
-      SetWindowPos(hwnd_, nullptr, next.left, next.top, 0, 0,
-                   SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+      MoveOverlayScreen(hwnd_, next.left, next.top);
       drag_moved_ = true;
       return 0;
     }
@@ -3009,16 +3178,25 @@ LRESULT FenceWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
       if (resizing_) {
         resizing_ = false;
         resize_edge_ = Edge::None;
+        // Commit owned height before Present/persist (ResolveLayerSize uses
+        // expanded_h_ once resizing_ is clear).
+        {
+          RECT rc{};
+          GetWindowRect(hwnd_, &rc);
+          SnapRectToWorkArea(&rc, 0);
+          const int nh = rc.bottom - rc.top;
+          if (!collapsed_ && nh >= kFenceMinH) {
+            expanded_h_ = (std::max)(kFenceExpandedFloor, nh);
+          }
+          SetOverlayScreenPos(hwnd_, rc.left, rc.top, rc.right - rc.left,
+                              collapsed_ ? S(hwnd_, kCollapsedH0) : expanded_h_,
+                              SWP_NOZORDER);
+        }
         AttachToDesktopLayer();
         // Final snap + sibling resolve (same path as drag-end).
         if (on_geometry_moved_) {
           on_geometry_moved_(this);
         } else if (on_moved_) {
-          RECT rc{};
-          GetWindowRect(hwnd_, &rc);
-          SnapRectToWorkArea(&rc, 0);
-          SetWindowPos(hwnd_, nullptr, rc.left, rc.top, rc.right - rc.left,
-                       rc.bottom - rc.top, SWP_NOZORDER | SWP_NOACTIVATE);
           on_moved_(this);
         }
         return 0;
@@ -3076,8 +3254,7 @@ LRESULT FenceWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
             RECT rc{};
             GetWindowRect(hwnd_, &rc);
             SnapRectToWorkArea(&rc, 0);
-            SetWindowPos(hwnd_, nullptr, rc.left, rc.top, 0, 0,
-                         SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+            MoveOverlayScreen(hwnd_, rc.left, rc.top);
             on_moved_(this);
           }
         }
@@ -3141,8 +3318,12 @@ LRESULT FenceWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
 }
 
 void FenceWindow::Paint(HDC hdc) {
-  RECT rc{};
-  GetClientRect(hwnd_, &rc);
+  int lw = 0;
+  int lh = 0;
+  if (!ResolveLayerSize(&lw, &lh)) {
+    return;
+  }
+  RECT rc{0, 0, lw, lh};
 
   const int header = S(hwnd_, kHeaderH0);
   const int pad = S(hwnd_, kPad0);

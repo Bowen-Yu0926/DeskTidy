@@ -5,6 +5,10 @@
 #include <functional>
 #include <string>
 
+// Prefetch the DeskNote WebView2 environment (persistent profile) so the first
+// note open does not pay a full Edge cold start. Safe to call multiple times.
+void NotesWarmWebViewEnv();
+
 // Hosts a WebView2 surface for the notes window. Two kinds are supported:
 //   kWysiwyg — the ToastUI markdown editor (edits markdown in place).
 //   kViewer  — the offline markdown preview (read-only render + PDF export).
@@ -16,6 +20,9 @@ class NotesWebView {
   void Destroy();
   bool Available() const { return available_; }
   bool Ready() const { return ready_; }
+  // True after title chrome painted (chromeReady) or Editor set (contentReady).
+  // Safe to cover RichEdit staging — body Toast may still be loading.
+  bool ContentReady() const { return content_ready_; }
   void Show();
   void Hide();
   void Resize();
@@ -24,12 +31,19 @@ class NotesWebView {
   void SetTheme(const std::wstring& theme) { theme_ = theme; }
   const std::wstring& Theme() const { return theme_; }
 
+  // Fire-and-forget script (Shift+Enter soft break, etc.).
+  void EvalScript(const std::wstring& js);
   // WYSIWYG editor (kWysiwyg).
   void SetMarkdown(const std::wstring& md);
   // Last known markdown (updated by SetMarkdown / Toast `changed`) — no IPC.
   const std::wstring& CachedMarkdown() const { return pending_md_; }
+  // Host-side title compose without a Toast round-trip.
+  void SetCachedMarkdown(const std::wstring& md) { pending_md_ = md; }
   // Round-trip get (slow). Prefer CachedMarkdown when the cache is authoritative.
   std::wstring PullMarkdown(DWORD timeout_ms = 1500);
+  // After a successful Save: clear Toast mdDirty + cancel debounced `changed`
+  // so the tab glyph can flip disc → check (Typora / VS Code).
+  void AckClean();
 
   // Preview viewer (kViewer).
   // `base_dir` is the note's directory, used to resolve relative images.
@@ -50,6 +64,18 @@ class NotesWebView {
   std::function<void()> on_dirty;
   // Page booted empty / resized and wants the host to re-push markdown.
   std::function<void()> on_need_content;
+  // Toast applied a setMarkdown/boot — host may swap from staging RichEdit.
+  std::function<void()> on_content_ready;
+  // Ctrl+F / F3 from WebView (replace Chromium find bar — market note find).
+  std::function<void(bool replace)> on_find;
+  std::function<void(bool down)> on_find_again;
+  // Ctrl+S while focus is in WebView2 (Chromium otherwise eats the accel).
+  std::function<void()> on_save;
+  // Toast toolbar font face/size changed — persist host prefs.
+  std::function<void(const std::wstring& face, int pt)> on_font_prefs;
+  // Explorer file drop onto the WebView surface (AllowExternalDrop → file://
+  // NavigationStarting cancel). Opens note / inserts image in the host.
+  std::function<void(const std::vector<std::wstring>&)> on_external_drop;
 
  private:
   void NavigateHome();
@@ -63,8 +89,14 @@ class NotesWebView {
   Kind kind_ = Kind::kWysiwyg;
   bool available_ = false;
   bool ready_ = false;
+  bool content_ready_ = false;
   bool got_md_ = false;
   bool pulling_md_ = false;  // Ignore late `changed` completing PullMarkdown.
+  // After SetMarkdown, ignore in-flight `changed` bodies from the previous
+  // document until Toast posts contentReady for the new set.
+  bool applying_set_ = false;
+  // After AckClean / Save: drop Toast dirty/changed so the tab check sticks.
+  ULONGLONG quiet_dirty_until_ = 0;
   std::wstring theme_ = L"light";
   std::wstring pending_md_;
   std::wstring pending_set_;

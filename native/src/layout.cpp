@@ -278,11 +278,18 @@ void NormalizePageNames(std::vector<std::wstring>* names) {
 
 std::vector<FenceLayout> DefaultLayouts() {
   // Match Python system_defaults: 工作页「常用」~2/3 +「其他」~1/3；文档页全宽「文档」。
+  // Height = max(design ratio, two-row icon content_min), capped at half work
+  // (display-adaptivity / Fences-class: small logical heights must still fit).
   const RECT work = PrimaryWorkArea();
   const int aw = (std::max)(320, static_cast<int>(work.right - work.left));
   const int ah = (std::max)(240, static_cast<int>(work.bottom - work.top));
   const int gap = (std::max)(4, aw * 4 / 1920);
-  const int row_h = (std::min)(ah / 2, (std::max)(280, ah * 400 / 1032));
+  const IconGridMetrics grid = QueryIconGridMetrics();
+  const int content_min = MinFenceHeightForIconRows(2, &grid);
+  const int row_h =
+      (std::min)(ah / 2, (std::max)(content_min, ah * 400 / 1032));
+  const int docs_h =
+      (std::min)(ah / 2, (std::max)(content_min, ah * 360 / 1032));
   const int left_w = (std::max)(160, (std::min)(aw * 2 / 3, aw - gap - 120));
   const int right_w = (std::max)(120, aw - left_w - gap);
 
@@ -314,7 +321,7 @@ std::vector<FenceLayout> DefaultLayouts() {
   docs.x = work.left;
   docs.y = work.top;
   docs.w = aw;
-  docs.h = (std::min)(ah / 2, (std::max)(280, ah * 360 / 1032));
+  docs.h = docs_h;
   docs.page = 1;
   docs.organize_kinds = {"file"};
   out.push_back(docs);
@@ -536,11 +543,11 @@ AppState LoadAppStateFromPath(const std::wstring& path, bool inject_defaults) {
     int custom_accent = 0;
     FindNumber(obj, "custom_bg", &custom_bg);
     FindNumber(obj, "custom_accent", &custom_accent);
-    if (w < 120) {
-      w = 280;
+    if (w < kFenceMinW) {
+      w = kFenceDefaultW;
     }
-    if (h < 80) {
-      h = 200;
+    if (h < kFenceMinH) {
+      h = (std::max)(kFenceExpandedFloor, MinFenceHeightForIconRows(2));
     }
     FenceLayout fl;
     fl.id = id;
@@ -613,8 +620,8 @@ AppState LoadAppStateFromPath(const std::wstring& path, bool inject_defaults) {
       page2.title = L"第二页";
       page2.x = 80;
       page2.y = 80;
-      page2.w = 360;
-      page2.h = 280;
+      page2.w = kFenceDefaultW + 80;
+      page2.h = (std::max)(kFenceExpandedFloor, MinFenceHeightForIconRows(2));
       page2.page = 1;
       state.fences.push_back(page2);
     }
@@ -735,6 +742,8 @@ AppState LoadAppStateFromPath(const std::wstring& path, bool inject_defaults) {
       }
     }
     if (!any && !last_fp.empty() && last_fp != current) {
+      const IconGridMetrics grid = QueryIconGridMetrics();
+      const int content_min = MinFenceHeightForIconRows(2, &grid);
       for (auto& f : state.fences) {
         const auto* r = find_row(last_fp, f.id);
         if (!r || r->rw < 0) {
@@ -749,14 +758,22 @@ AppState LoadAppStateFromPath(const std::wstring& path, bool inject_defaults) {
         const int wh = (std::max)(1, static_cast<int>(work.bottom - work.top));
         f.x = work.left + r->rx * ww / 10000;
         f.y = work.top + r->ry * wh / 10000;
-        f.w = (std::max)(160, r->rw * ww / 10000);
-        f.h = (std::max)(120, r->rh * wh / 10000);
+        // Cap ratios: rh>10000 means taller than the work area (corrupt persist).
+        const int rw = (std::min)(10000, (std::max)(0, r->rw));
+        const int rh = (std::min)(8500, (std::max)(0, r->rh));
+        f.w = (std::max)(kFenceMinW, rw * ww / 10000);
+        f.h = (std::max)(content_min, rh * wh / 10000);
+        if (f.h > wh) {
+          f.h = wh;
+        }
       }
     }
   }
   // G3: page_geometries is the last user resize on that page. Profiles / fences[]
   // can lag after automatic proportion "heal" wiped top-level sizes — promote
   // home-page overrides so reboot matches what the user left on screen.
+  // Cross-fingerprint: skip absolute promote when page_geo cannot fit the
+  // current work area (would stomp donor ratios with old-machine pixels).
   PromoteHomePageGeometries(&state.fences);
   if (inject_defaults) {
     HealFenceLayouts(&state.fences);
@@ -861,7 +878,15 @@ bool SaveAppState(const AppState& state) {
     int x, y, w, h, rx, ry, rw, rh;
   };
   std::vector<Kept> kept;
-  const std::string current = DisplayFingerprint();
+  const std::string live = DisplayFingerprint();
+  // PersistLayouts passes display_fp_ via last_display_fingerprint. On
+  // WM_DISPLAYCHANGE that is still the OLD topology while live already moved —
+  // write the profile row under the old key so donor restore can find it
+  // (Fences: remember geometry on the outgoing display before switching).
+  std::string profile_fp = state.last_display_fingerprint;
+  if (profile_fp.empty() || FingerprintIsTransient(profile_fp)) {
+    profile_fp = live;
+  }
 
   size_t pos = 0;
   while (!previous.empty()) {
@@ -878,8 +903,9 @@ bool SaveAppState(const AppState& state) {
     std::string fp, id;
     // U3: drop transient / stale fingerprints (Python purge_transient_display_profiles)
     // so plug/unplug intermediates never survive as donor profiles.
-    if (!FindString(obj, "fp", &fp) || fp.empty() || fp == current ||
-        FingerprintIsTransient(fp)) {
+    // Also drop rows we are about to rewrite (profile_fp and live).
+    if (!FindString(obj, "fp", &fp) || fp.empty() || fp == profile_fp ||
+        fp == live || FingerprintIsTransient(fp)) {
       continue;
     }
     if (!FindString(obj, "id", &id)) {
@@ -900,8 +926,7 @@ bool SaveAppState(const AppState& state) {
   }
 
   std::ostringstream out;
-  const std::string fp_out =
-      FingerprintIsTransient(current) ? state.last_display_fingerprint : current;
+  const std::string fp_out = profile_fp;
   out << "{\n"
       << "  \"current_page\":" << state.current_page << ",\n"
       << "  \"dock_visible\":" << (state.dock_visible ? "true" : "false")
@@ -1011,7 +1036,7 @@ bool SaveAppState(const AppState& state) {
   for (const auto& k : kept) {
     write_row(k.fp, k.id, k.x, k.y, k.w, k.h, k.rx, k.ry, k.rw, k.rh);
   }
-  if (!FingerprintIsTransient(current)) {
+  if (!FingerprintIsTransient(profile_fp)) {
     for (const auto& f : state.fences) {
       // U3: ratios are relative to the fence's own monitor work area (Python
       // _target_screen_rect / _ratios_for), not the primary work area. This
@@ -1024,7 +1049,7 @@ bool SaveAppState(const AppState& state) {
       const int ry = (f.y - wa.top) * 10000 / wh;
       const int rw = f.w * 10000 / ww;
       const int rh = f.h * 10000 / wh;
-      write_row(current, f.id, f.x, f.y, f.w, f.h, rx, ry, rw, rh);
+      write_row(profile_fp, f.id, f.x, f.y, f.w, f.h, rx, ry, rw, rh);
     }
   }
   out << "\n  ],\n  \"page_geometries\": [";
@@ -1135,6 +1160,7 @@ void PromoteHomePageGeometries(std::vector<FenceLayout>* fences) {
   if (!fences) {
     return;
   }
+  const RECT virt = VirtualScreenRect();
   for (auto& f : *fences) {
     const auto it = f.page_geometries.find(f.page);
     if (it == f.page_geometries.end()) {
@@ -1142,6 +1168,26 @@ void PromoteHomePageGeometries(std::vector<FenceLayout>* fences) {
     }
     const FencePageGeometry& g = it->second;
     if (g.w < 120 || g.h < 80) {
+      continue;
+    }
+    // Absolute page_geometries are not fingerprint-keyed. After a resolution /
+    // monitor change they can be larger than the current work area or sit off
+    // the virtual desktop — promoting them undoes donor ratio restore (Fences
+    // keeps per-display sizes; never overlay another machine's pixels).
+    POINT mid{g.x + g.w / 2, g.y + g.h / 2};
+    const RECT work = WorkAreaAtPoint(mid);
+    const int ww = (std::max)(1, static_cast<int>(work.right - work.left));
+    const int wh = (std::max)(1, static_cast<int>(work.bottom - work.top));
+    if (g.w > ww + 48 || g.h > wh + 48) {
+      continue;
+    }
+    // Skip only corrupt / off-topology absolutes — keep intentional tall (~80%).
+    if (g.h > wh || g.h * 100 >= wh * 95) {
+      continue;
+    }
+    const RECT rc{g.x, g.y, g.x + g.w, g.y + g.h};
+    if (rc.right < virt.left + 40 || rc.bottom < virt.top + 40 ||
+        rc.left > virt.right - 40 || rc.top > virt.bottom - 40) {
       continue;
     }
     f.x = g.x;
@@ -1197,8 +1243,13 @@ int RestoreSystemFenceProportions(std::vector<FenceLayout>* fences) {
       (std::max)(1, common->w + side->w +
                         (std::max)(0, side->x - (common->x + common->w)));
   const bool skewed = common->w * 100 >= row_w * 78 || side->w * 100 <= row_w * 18;
+  const RECT work = PrimaryWorkArea();
+  const int ah = (std::max)(1, static_cast<int>(work.bottom - work.top));
+  // Full-bleed height from display-scale corruption — same restore as skew.
+  const bool stretched =
+      common->h * 100 >= ah * 75 || side->h * 100 >= ah * 75;
   int changed = 0;
-  if (skewed) {
+  if (skewed || stretched) {
     const FenceLayout before_c = *common;
     const FenceLayout before_s = *side;
     common->x = def_common.x;
@@ -1222,9 +1273,9 @@ int RestoreSystemFenceProportions(std::vector<FenceLayout>* fences) {
   }
   if (docs && def_docs.w > 0) {
     // Full-width docs strip that collapsed too short → restore default height.
-    const RECT work = PrimaryWorkArea();
     const int aw = (std::max)(1, static_cast<int>(work.right - work.left));
-    if (docs->w * 100 >= aw * 90 && docs->h + 40 < def_docs.h) {
+    if ((docs->w * 100 >= aw * 90 && docs->h + 40 < def_docs.h) ||
+        docs->h * 100 >= ah * 75) {
       docs->x = def_docs.x;
       docs->y = def_docs.y;
       docs->w = def_docs.w;
@@ -1243,18 +1294,44 @@ int HealFenceLayouts(std::vector<FenceLayout>* fences) {
   // Do not call RestoreSystemFenceProportions here — that wiped user-resized
   // 常用/其他 rows on every boot (side <18% of row looked "skewed").
   int changed = 0;
-  constexpr int kMinW = 200;
-  constexpr int kMinH = 180;
+  const IconGridMetrics grid = QueryIconGridMetrics();
+  const int content_min = MinFenceHeightForIconRows(2, &grid);
+  const int kMinH = (std::max)(kFenceExpandedFloor, content_min);
   const RECT virt = VirtualScreenRect();
   const RECT primary = PrimaryWorkArea();
+  const auto defaults = DefaultLayouts();
   int cascade = 0;
   for (auto& f : *fences) {
     FenceLayout before = f;
-    if (f.w < kMinW) {
-      f.w = (std::max)(kMinW, 260);
+    if (f.w < kFenceMinW) {
+      f.w = (std::max)(kFenceMinW, kFenceDefaultW);
     }
     if (f.h < kMinH) {
-      f.h = (std::max)(kMinH, 280);
+      f.h = kMinH;
+    }
+    POINT mid{f.x + f.w / 2, f.y + f.h / 2};
+    const RECT work = WorkAreaAtPoint(mid);
+    const int wh = (std::max)(1, static_cast<int>(work.bottom - work.top));
+    // Only heal *corrupt* heights (hotplug ×10 / virtual bleed). Intentional
+    // tall user fences (~80% work) must survive (Fences keeps user size).
+    const bool taller_than_work = f.h > wh;
+    const bool near_full_bleed = f.h * 100 >= wh * 95;
+    const bool absurd_abs = f.h >= 2000 || f.h > wh * 2;
+    if (taller_than_work || near_full_bleed || absurd_abs) {
+      bool restored = false;
+      for (const auto& d : defaults) {
+        if (d.id == f.id && d.h >= kMinH) {
+          f.h = d.h;
+          restored = true;
+          break;
+        }
+      }
+      if (!restored) {
+        f.h = (std::max)(kMinH, wh * 40 / 100);
+      }
+      if (f.y + f.h > work.bottom) {
+        f.y = work.top;
+      }
     }
     RECT rc{f.x, f.y, f.x + f.w, f.y + f.h};
     const bool mostly_off =
@@ -1263,9 +1340,9 @@ int HealFenceLayouts(std::vector<FenceLayout>* fences) {
     if (mostly_off) {
       // Rescue onto the nearest work area (fallback: primary).
       POINT pt{primary.left + 80, primary.top + 80};
-      const RECT work = WorkAreaAtPoint(pt);
-      f.x = work.left + 40 + cascade * 28;
-      f.y = work.top + 40 + cascade * 28;
+      const RECT rescue = WorkAreaAtPoint(pt);
+      f.x = rescue.left + 40 + cascade * 28;
+      f.y = rescue.top + 40 + cascade * 28;
       ++cascade;
       RECT placed{f.x, f.y, f.x + f.w, f.y + f.h};
       ClampRectToWorkArea(&placed);
@@ -1279,6 +1356,14 @@ int HealFenceLayouts(std::vector<FenceLayout>* fences) {
       f.y = rc.top;
       f.w = rc.right - rc.left;
       f.h = rc.bottom - rc.top;
+    }
+    // Keep G3 page overrides from re-promoting corrupt heights on next load.
+    for (auto& kv : f.page_geometries) {
+      if (kv.second.h > f.h &&
+          (kv.second.h > wh || kv.second.h * 100 >= wh * 95 ||
+           kv.second.h >= 2000)) {
+        kv.second.h = f.h;
+      }
     }
     if (f.x != before.x || f.y != before.y || f.w != before.w ||
         f.h != before.h) {
@@ -1328,33 +1413,26 @@ int HealFenceLayouts(std::vector<FenceLayout>* fences) {
 
 bool PrepareDestinationProfileForDisplayChange(const RECT& old_work,
                                                const RECT& new_work) {
+  // Fences-class: size restore is fingerprint profile / donor ratios in
+  // LoadAppState — never unary-scale every fence by primary work delta (that
+  // stretched secondary-monitor fences and ×10'd heights on hotplug stubs).
+  (void)old_work;
+  (void)new_work;
   AppState state = LoadAppState();
   if (state.fences.empty()) {
     return false;
   }
-  const int ow = (std::max)(1, static_cast<int>(old_work.right - old_work.left));
-  const int oh = (std::max)(1, static_cast<int>(old_work.bottom - old_work.top));
-  const int nw = (std::max)(1, static_cast<int>(new_work.right - new_work.left));
-  const int nh = (std::max)(1, static_cast<int>(new_work.bottom - new_work.top));
-  const double sx = static_cast<double>(nw) / static_cast<double>(ow);
-  const double sy = static_cast<double>(nh) / static_cast<double>(oh);
+  const int n = HealFenceLayouts(&state.fences);
+  // Align G3 absolutes with healed top-level so the next promote cannot
+  // resurrect pre-switch pixels.
   for (auto& f : state.fences) {
-    f.x = new_work.left +
-          static_cast<int>((f.x - old_work.left) * sx + 0.5);
-    f.y = new_work.top +
-          static_cast<int>((f.y - old_work.top) * sy + 0.5);
-    f.w = (std::max)(160, static_cast<int>(f.w * sx + 0.5));
-    f.h = (std::max)(120, static_cast<int>(f.h * sy + 0.5));
-    for (auto& kv : f.page_geometries) {
-      kv.second.x = new_work.left +
-                    static_cast<int>((kv.second.x - old_work.left) * sx + 0.5);
-      kv.second.y = new_work.top +
-                    static_cast<int>((kv.second.y - old_work.top) * sy + 0.5);
-      kv.second.w = (std::max)(160, static_cast<int>(kv.second.w * sx + 0.5));
-      kv.second.h = (std::max)(120, static_cast<int>(kv.second.h * sy + 0.5));
-    }
+    SyncPageGeometryFromTopLevel(&f, f.page);
   }
-  HealFenceLayouts(&state.fences);
+  if (n <= 0) {
+    // Still rewrite page_geometries sync even when heal was a no-op.
+    return SaveAppState(state);
+  }
+  LogLine(L"[layout] display converge healed %d fence(s) (no primary scale)", n);
   return SaveAppState(state);
 }
 
@@ -1460,8 +1538,8 @@ void ResolveFenceCollisions(std::vector<LayoutRect>* rects, int min_w, int min_h
   if (!rects || rects->empty()) {
     return;
   }
-  const int mw = min_w > 0 ? min_w : 160;
-  const int mh = min_h > 0 ? min_h : 180;
+  const int mw = min_w > 0 ? min_w : kFenceMinW;
+  const int mh = min_h > 0 ? min_h : kFenceMinH;
 
   for (auto& r : *rects) {
     if (r.w < mw) {

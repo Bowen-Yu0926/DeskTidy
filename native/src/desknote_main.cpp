@@ -5,6 +5,7 @@
 #include "i18n.h"
 #include "log.h"
 #include "mist_msg.h"
+#include "notes_webview.h"
 #include "notes_window.h"
 #include "paths_util.h"
 #include "ui_theme.h"
@@ -188,6 +189,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
 
   LoadLanguage();
   RegisterNoteFileAssociations();
+  // Overlap Edge/WebView2 profile bring-up with window chrome construction.
+  NotesWarmWebViewEnv();
+  MistWarmMessageEnv();
   if (!CreateMsgWindow(instance)) {
     OleUninitialize();
     ReleaseDeskNoteInstanceLock();

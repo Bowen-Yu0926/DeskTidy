@@ -21,8 +21,8 @@ namespace {
 
 constexpr wchar_t kClass[] = L"DeskTidyNativeLayoutEditor";
 constexpr int kHandle = 8;
-constexpr int kMinW = 160;    // R4: runtime min width (was 120)
-constexpr int kMinH = 120;
+constexpr int kMinW = kFenceMinW;
+constexpr int kMinH = kFenceMinH;
 constexpr int kGridPx = 40;   // grid snap pitch
 constexpr int kSnapPx = 24;   // edge snap (Python EDGE_SNAP_THRESHOLD)
 constexpr int kMaxPages = 12; // Python 分页上限
@@ -405,8 +405,8 @@ void AddFence() {
   const int count = static_cast<int>(PageFenceIndices().size());
   fl.x = work.left + 80 + count * 24;
   fl.y = work.top + 60 + count * 24;
-  fl.w = 280;
-  fl.h = 320;
+  fl.w = kFenceDefaultW;
+  fl.h = (std::max)(kFenceDefaultH, MinFenceHeightForIconRows(2));
   fl.page = g_edit_page;
   fl.style_id = "charcoal";
   g_state->fences.push_back(fl);

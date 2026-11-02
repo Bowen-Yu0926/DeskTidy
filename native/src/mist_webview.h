@@ -22,6 +22,9 @@ struct MistWebDialog {
   bool disable_owner = true;
   // Borderless popup — HTML draws the card / close button (DeskNote mist UI).
   bool frameless = false;
+  // Frameless defaults to TOPMOST; DeskNote find should not — TOPMOST dialogs
+  // churn FG and can bury DeskTidy fence overlays under DefView.
+  bool topmost = true;
   // Optional: translate owner accelerators (F3, etc.) while the dialog loop runs.
   HACCEL owner_accel = nullptr;
   std::wstring html_path;

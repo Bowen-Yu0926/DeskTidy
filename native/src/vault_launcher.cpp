@@ -111,7 +111,7 @@ bool PresentLayered(HWND hwnd,
   blend.BlendOp = AC_SRC_OVER;
   blend.SourceConstantAlpha = 255;
   blend.AlphaFormat = AC_SRC_ALPHA;
-  UpdateLayeredWindow(hwnd, screen, &origin, &size, mem, &src, 0, &blend,
+  UpdateOverlayLayered(hwnd, screen, &origin, &size, mem, &src, 0, &blend,
                       ULW_ALPHA);
   SelectObject(mem, old);
   DeleteObject(dib);
@@ -133,8 +133,7 @@ void VaultLauncher::ApplySize() {
   const int sz = BuoySize();
   RECT rc{};
   GetWindowRect(hwnd_, &rc);
-  SetWindowPos(hwnd_, nullptr, rc.left, rc.top, sz, sz,
-               SWP_NOZORDER | SWP_NOACTIVATE);
+  SetOverlayScreenPos(hwnd_, rc.left, rc.top, sz, sz, SWP_NOZORDER);
 }
 
 bool VaultLauncher::Create(HINSTANCE instance) {
@@ -214,8 +213,7 @@ void VaultLauncher::SetPosition(int x, int y) {
     y = work.bottom - sz - 96;
   }
   const POINT p = ClampPos(x, y);
-  SetWindowPos(hwnd_, nullptr, p.x, p.y, 0, 0,
-               SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+  MoveOverlayScreen(hwnd_, p.x, p.y);
   Present();
 }
 
@@ -339,8 +337,7 @@ LRESULT VaultLauncher::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
           ClientToScreen(hwnd_, &screen);
           const POINT p =
               ClampPos(screen.x - drag_offset_.x, screen.y - drag_offset_.y);
-          SetWindowPos(hwnd_, nullptr, p.x, p.y, 0, 0,
-                       SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+          MoveOverlayScreen(hwnd_, p.x, p.y);
           Present();
         }
       }
@@ -376,8 +373,7 @@ LRESULT VaultLauncher::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
       const RECT* suggested = reinterpret_cast<RECT*>(lparam);
       if (suggested) {
         const int sz = BuoySize();
-        SetWindowPos(hwnd_, nullptr, suggested->left, suggested->top, sz, sz,
-                     SWP_NOZORDER | SWP_NOACTIVATE);
+        SetOverlayScreenPos(hwnd_, suggested->left, suggested->top, sz, sz, SWP_NOZORDER);
       } else {
         ApplySize();
       }

@@ -22,6 +22,7 @@
 #include <Richedit.h>
 #include <Shellapi.h>
 #include <ShlObj.h>
+#include <ShObjIdl.h>
 #include <Uxtheme.h>
 #include <windowsx.h>
 #include <gdiplus.h>
@@ -32,6 +33,7 @@
 #pragma comment(lib, "comctl32.lib")
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <cwctype>
@@ -46,6 +48,9 @@
 namespace {
 constexpr wchar_t kClassName[] = L"DeskTidyNativeNotes";
 constexpr int kEditId = 2001;
+constexpr int kTitleEditId = 2012;
+constexpr int kFontFaceId = 2020;
+constexpr int kFontSizeId = 2021;
 constexpr int kMenuSave = 2101;
 constexpr int kMenuSaveAs = 2102;
 constexpr int kMenuBigger = 2103;
@@ -107,7 +112,6 @@ constexpr int kMenuCopyPath = 2158;
 constexpr int kTabCopyPath = 3105;
 constexpr int kTabCloseOthers = 3106;
 constexpr int kTabCloseRight = 3107;
-constexpr int kSideCopyPath = 3008;
 constexpr int kMenuStrike = 2159;
 constexpr int kMenuBullet = 2160;
 constexpr int kMenuQuote = 2161;
@@ -157,6 +161,7 @@ constexpr UINT_PTR kOutlineTimer = 4;
 constexpr UINT_PTR kStatusTimer = 5;
 constexpr UINT_PTR kPersistTabsTimer = 6;
 constexpr UINT_PTR kGutterTimer = 7;
+constexpr UINT_PTR kSyncFilenameTimer = 8;
 constexpr int kStatusBarH = 26;
 
 // P2-30: follow Windows app light/dark preference for MD preview chrome.
@@ -178,6 +183,27 @@ bool SystemAppsUseLightTheme() {
     return true;
   }
   return val != 0;
+}
+
+// "# \n\n" / whitespace only — WW boot seed, not real note content.
+bool LooksLikeEmptyMarkdownSeed(const std::wstring& md) {
+  size_t i = 0;
+  while (i < md.size() &&
+         (md[i] == L' ' || md[i] == L'\t' || md[i] == L'\r' || md[i] == L'\n' ||
+          md[i] == L'\xFEFF')) {
+    ++i;
+  }
+  if (i < md.size() && md[i] == L'#') {
+    ++i;
+    while (i < md.size() && (md[i] == L' ' || md[i] == L'\t')) {
+      ++i;
+    }
+  }
+  while (i < md.size() &&
+         (md[i] == L' ' || md[i] == L'\t' || md[i] == L'\r' || md[i] == L'\n')) {
+    ++i;
+  }
+  return i >= md.size();
 }
 
 void CountTextStats(const std::wstring& text, int* chars, int* words) {
@@ -213,13 +239,10 @@ bool IsImageDropSuffix(const std::wstring& lower) {
 }
 
 // Sidebar context-menu command ids (kept distinct from window menu ids).
-constexpr int kSideOpen = 3001;
 constexpr int kSideRename = 3002;
 constexpr int kSideDelete = 3003;
 constexpr int kSideReveal = 3004;
-constexpr int kSideRefresh = 3005;
 constexpr int kSidePin = 3006;
-constexpr int kSideNew = 3007;
 
 // Suffixes the editor can open (mirrors Python notepad.py NOTE_OPEN_SUFFIXES).
 bool IsOpenableSuffix(const std::wstring& lower) {
@@ -320,19 +343,73 @@ COLORREF ColorFromCssHex(const std::string& hex) {
   return RGB(r, g, b);
 }
 
+bool RecyclePathsViaShellOp(const std::vector<std::wstring>& paths) {
+  std::wstring from;
+  for (const auto& p : paths) {
+    if (p.empty()) {
+      continue;
+    }
+    from.append(p);
+    from.push_back(L'\0');
+  }
+  if (from.empty()) {
+    return false;
+  }
+  from.push_back(L'\0');
+  SHFILEOPSTRUCTW op{};
+  op.hwnd = nullptr;
+  op.wFunc = FO_DELETE;
+  op.pFrom = from.c_str();
+  op.fFlags = FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_SILENT | FOF_NOERRORUI;
+  return SHFileOperationW(&op) == 0 && !op.fAnyOperationsAborted;
+}
+
+bool RecyclePathsQuiet(HWND /*owner*/, const std::vector<std::wstring>& paths) {
+  if (paths.empty()) {
+    return false;
+  }
+  // IFileOperation is Explorer-class and much snappier than SHFileOperation
+  // for recycle-bin deletes (no progress UI / shell copy engine stall).
+  IFileOperation* op = nullptr;
+  HRESULT hr = CoCreateInstance(CLSID_FileOperation, nullptr, CLSCTX_ALL,
+                                IID_PPV_ARGS(&op));
+  if (SUCCEEDED(hr) && op) {
+    op->SetOperationFlags(FOF_ALLOWUNDO | FOF_NO_UI | FOF_NOCONFIRMMKDIR);
+    int queued = 0;
+    for (const auto& p : paths) {
+      if (p.empty()) {
+        continue;
+      }
+      IShellItem* item = nullptr;
+      if (SUCCEEDED(SHCreateItemFromParsingName(p.c_str(), nullptr,
+                                                IID_PPV_ARGS(&item))) &&
+          item) {
+        if (SUCCEEDED(op->DeleteItem(item, nullptr))) {
+          ++queued;
+        }
+        item->Release();
+      }
+    }
+    if (queued > 0) {
+      hr = op->PerformOperations();
+      BOOL aborted = FALSE;
+      op->GetAnyOperationsAborted(&aborted);
+      op->Release();
+      if (SUCCEEDED(hr) && !aborted) {
+        return true;
+      }
+    } else {
+      op->Release();
+    }
+  }
+  return RecyclePathsViaShellOp(paths);
+}
+
 bool RecyclePathQuiet(HWND owner, const std::wstring& path) {
   if (path.empty()) {
     return false;
   }
-  std::wstring from = path;
-  from.push_back(L'\0');
-  from.push_back(L'\0');
-  SHFILEOPSTRUCTW op{};
-  op.hwnd = owner;
-  op.wFunc = FO_DELETE;
-  op.pFrom = from.c_str();
-  op.fFlags = FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_SILENT;
-  return SHFileOperationW(&op) == 0 && !op.fAnyOperationsAborted;
+  return RecyclePathsQuiet(owner, std::vector<std::wstring>{path});
 }
 
 
@@ -527,8 +604,14 @@ bool NotesWindow::Create(HINSTANCE instance) {
   RegisterClassExW(&wc);
 
   const RECT work = PrimaryWorkArea();
-  const int ww = 960;
-  const int wh = 640;
+  POINT mid{(work.left + work.right) / 2, (work.top + work.bottom) / 2};
+  const int dpi = DpiAtPoint(mid);
+  const int max_w = (std::max)(480, static_cast<int>(work.right - work.left) * 92 / 100);
+  const int max_h = (std::max)(360, static_cast<int>(work.bottom - work.top) * 92 / 100);
+  int ww = (std::min)(max_w, ScalePxForDpi(960, dpi));
+  int wh = (std::min)(max_h, ScalePxForDpi(640, dpi));
+  ww = (std::max)((std::min)(640, max_w), ww);
+  wh = (std::max)((std::min)(420, max_h), wh);
   const int x = work.left + (std::max)(0, static_cast<int>(work.right - work.left - ww) / 2);
   const int y = work.top + (std::max)(0, static_cast<int>(work.bottom - work.top - wh) / 2);
   hwnd_ = CreateWindowExW(WS_EX_APPWINDOW, kClassName, L"DeskNote",
@@ -600,13 +683,12 @@ bool NotesWindow::Create(HINSTANCE instance) {
               Tr("edit").c_str());
   HMENU view = CreatePopupMenu();
   AppendMenuW(view, MF_STRING, kMenuEditMode, L"编辑\tCtrl+E");
-  AppendMenuW(view, MF_STRING, kMenuPreviewPane, L"预览\tCtrl+Shift+V");
   AppendMenuW(view, MF_STRING | MF_CHECKED, kMenuSyncScroll, L"同步滚动");
   AppendMenuW(view, MF_SEPARATOR, 0, nullptr);
   AppendMenuW(view, MF_STRING, kMenuBigger, L"放大字体\tCtrl++");
   AppendMenuW(view, MF_STRING, kMenuSmaller, L"缩小字体\tCtrl+-");
   AppendMenuW(view, MF_SEPARATOR, 0, nullptr);
-  AppendMenuW(view, MF_STRING, kMenuOutline, L"大纲\tCtrl+Shift+O");
+  AppendMenuW(view, MF_STRING | MF_CHECKED, kMenuWrap, L"自动换行(&W)");
   AppendMenuW(view, MF_STRING, kMenuSidebar, L"文件树\tCtrl+Shift+E");
   AppendMenuW(view, MF_STRING, kMenuFocus, L"专注模式\tF11");
   AppendMenuW(view, MF_STRING, kMenuTypewriter, Tr("notes_typewriter").c_str());
@@ -614,27 +696,7 @@ bool NotesWindow::Create(HINSTANCE instance) {
   AppendMenuW(view, MF_STRING, kMenuAlwaysOnTop, L"窗口置顶");
   AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(view),
               Tr("view").c_str());
-  HMENU fmt = CreatePopupMenu();
-  AppendMenuW(fmt, MF_STRING | MF_CHECKED, kMenuWrap, L"自动换行(&W)");
-  AppendMenuW(fmt, MF_SEPARATOR, 0, nullptr);
-  AppendMenuW(fmt, MF_STRING, kMenuBold, L"粗体\tCtrl+B");
-  AppendMenuW(fmt, MF_STRING, kMenuItalic, L"斜体\tCtrl+I");
-  AppendMenuW(fmt, MF_STRING, kMenuUnder, L"下划线\tCtrl+U");
-  AppendMenuW(fmt, MF_STRING, kMenuStrike, L"删除线");
-  AppendMenuW(fmt, MF_STRING, kMenuInsertLink, L"插入链接\tCtrl+K");
-  AppendMenuW(fmt, MF_STRING, kMenuInsertCode, L"插入代码块");
-  AppendMenuW(fmt, MF_STRING, kMenuInsertImage, L"插入图片…");
-  AppendMenuW(fmt, MF_SEPARATOR, 0, nullptr);
-  AppendMenuW(fmt, MF_STRING, kMenuHeading1, L"一级标题");
-  AppendMenuW(fmt, MF_STRING, kMenuHeading2, L"二级标题");
-  AppendMenuW(fmt, MF_STRING, kMenuHeading3, L"三级标题");
-  AppendMenuW(fmt, MF_STRING, kMenuBullet, L"无序列表");
-  AppendMenuW(fmt, MF_STRING, kMenuQuote, L"引用");
-  AppendMenuW(fmt, MF_STRING, kMenuHRule, L"水平分割线");
-  AppendMenuW(fmt, MF_SEPARATOR, 0, nullptr);
-  AppendMenuW(fmt, MF_STRING, kMenuDateTime, L"插入日期时间\tCtrl+Shift+D");
-  AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(fmt),
-              Tr("format").c_str());
+  // Format menu removed — toolbar + Ctrl+B/I/U/K (and Shift+Enter soft break).
   HMENU help = CreatePopupMenu();
   AppendMenuW(help, MF_STRING, kMenuHelp, L"DeskNote 使用说明\tF1");
   AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(help), Tr("help").c_str());
@@ -689,25 +751,9 @@ bool NotesWindow::Create(HINSTANCE instance) {
   SetFontSize(font_pt_);
   ApplyWordWrap();
   ApplyChrome();
+  EnsureTitleEdit();
   EnsureGutter();
-  outline_list_ = CreateWindowExW(
-      0, L"LISTBOX", L"",
-      WS_CHILD | WS_VSCROLL | LBS_NOTIFY | LBS_NOINTEGRALHEIGHT, 6, 6, 140, 220,
-      hwnd_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kOutlineId)), instance,
-      nullptr);
-  if (outline_list_) {
-    SetWindowTheme(outline_list_, L"", L"");
-    ShowWindow(outline_list_, SW_HIDE);
-  }
-  outline_strip_ = CreateWindowExW(
-      0, L"BUTTON", L"大\n纲", WS_CHILD | BS_OWNERDRAW, 0, 0, kOutlineStripW,
-      120, hwnd_,
-      reinterpret_cast<HMENU>(static_cast<INT_PTR>(kOutlineStripId)), instance,
-      nullptr);
-  if (outline_strip_) {
-    SetWindowTheme(outline_strip_, L"", L"");
-    ShowWindow(outline_strip_, SW_HIDE);
-  }
+  // Right outline strip/list removed.
   sidebar_search_ = CreateWindowExW(
       0, L"EDIT", L"", WS_CHILD | ES_AUTOHSCROLL, 6, 6, 120, 22, hwnd_,
       reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSidebarSearchId)), instance,
@@ -742,15 +788,7 @@ bool NotesWindow::Create(HINSTANCE instance) {
   if (sidebar_refresh_) {
     SetWindowTheme(sidebar_refresh_, L"", L"");
   }
-  mode_strip_ = CreateWindowExW(
-      0, L"BUTTON", L"预览", WS_CHILD | BS_OWNERDRAW, 0, 0, kModeBtnW,
-      kModeBtnH, hwnd_,
-      reinterpret_cast<HMENU>(static_cast<INT_PTR>(kModeStripId)), instance,
-      nullptr);
-  if (mode_strip_) {
-    SetWindowTheme(mode_strip_, L"", L"");
-    ShowWindow(mode_strip_, SW_HIDE);
-  }
+  // Top-right preview/edit chip removed.
   // Hover invalidate for owner-draw quiet buttons.
   auto hook_btn = [](HWND btn) {
     if (!btn) {
@@ -774,8 +812,6 @@ bool NotesWindow::Create(HINSTANCE instance) {
   };
   hook_btn(sidebar_new_);
   hook_btn(sidebar_refresh_);
-  hook_btn(mode_strip_);
-  hook_btn(outline_strip_);
   sidebar_results_ = CreateWindowExW(
       0, L"LISTBOX", L"",
       WS_CHILD | WS_VSCROLL | LBS_NOTIFY | LBS_NOINTEGRALHEIGHT, 6, 30, 150, 200,
@@ -818,7 +854,20 @@ bool NotesWindow::Create(HINSTANCE instance) {
         reinterpret_cast<LONG_PTR>(NotesWindow::StatusProc)));
   }
   DragAcceptFiles(hwnd_, TRUE);
+  NotesWarmWebViewEnv();
   web_.Create(hwnd_);
+  MistWarmMessageEnv();  // Prefetch mist confirm card (delete / alerts).
+  EnsureDropTarget();
+  RegisterDropOnHwnd(edit_);
+  RegisterDropOnHwnd(tabs_);
+  RegisterDropOnHwnd(sidebar_);
+  // WebView surface: AllowExternalDrop + NavigationStarting; host margins OLE.
+  RegisterDropOnSubtree(web_.Host());
+  auto on_drop = [this](const std::vector<std::wstring>& paths) {
+    HandleDroppedPaths(paths);
+  };
+  web_.on_external_drop = on_drop;
+  preview_web_.on_external_drop = on_drop;
   web_.on_dirty = [this]() {
     // Immediate (no markdown body) — covers the 150ms changed debounce window.
     MarkDirty();
@@ -827,7 +876,58 @@ bool NotesWindow::Create(HINSTANCE instance) {
     // Cache already updated in OnWebMessage. Mirror to RichEdit only on
     // Save / SyncFromWysiwyg / tab switch — not every keystroke.
     MarkDirty();
+    SyncCurrentTabTitleHint();
   };
+  web_.on_save = [this]() { Save(true); };
+  web_.on_font_prefs = [this](const std::wstring& face, int pt) {
+    // Toolbar owns the live style; only persist host prefs (avoid re-Eval loop).
+    std::wstring next = face;
+    if (_wcsicmp(next.c_str(), L"SimSun") == 0 || next == L"宋体") {
+      next = L"SimSun";
+    } else {
+      next = L"Microsoft YaHei";
+    }
+    bool changed = false;
+    if (_wcsicmp(font_face_.c_str(), next.c_str()) != 0) {
+      font_face_ = std::move(next);
+      changed = true;
+    }
+    if (pt >= 8 && pt <= 48 && font_pt_ != pt) {
+      font_pt_ = pt;
+      changed = true;
+    }
+    if (changed) {
+      if (font_) {
+        DeleteObject(font_);
+        font_ = nullptr;
+      }
+      HDC hdc = GetDC(nullptr);
+      const int height = -MulDiv(font_pt_, GetDeviceCaps(hdc, LOGPIXELSY), 72);
+      ReleaseDC(nullptr, hdc);
+      font_ = CreateFontW(height, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+                          DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
+                          CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+                          VARIABLE_PITCH | FF_SWISS, font_face_.c_str());
+      if (edit_) {
+        SendMessageW(edit_, WM_SETFONT, reinterpret_cast<WPARAM>(font_), TRUE);
+      }
+      SyncFontControls();
+      PersistViewSettings();
+    }
+  };
+  web_.on_content_ready = [this]() {
+    // WebView2 + Toast cold-start can take seconds — keep RichEdit staging
+    // until the first painted set, then reveal WYSIWYG (Typora-class open).
+    if (!wysiwyg_ || toast_) {
+      return;
+    }
+    layout_w_ = -1;  // bust LayoutClient early-out (wysiwyg_ already true)
+    ApplyWysiwygVisibility();
+    LayoutClient();
+    PushEditorFontToWeb();
+  };
+  web_.on_find = [this](bool replace) { ShowFind(replace); };
+  web_.on_find_again = [this](bool down) { FindAgain(down); };
   web_.on_need_content = [this]() {
     // Boot race: prefer RichEdit load buffer, then cache. Do not go through
     // CurrentPlainText() — in WYSIWYG that reads cache and can re-push "".
@@ -843,7 +943,13 @@ bool NotesWindow::Create(HINSTANCE instance) {
     if (md.empty()) {
       md = web_.CachedMarkdown();
     }
-    web_.SetMarkdown(md);
+    // Body-only staging → rejoin native title before pushing Toast.
+    if (!md.empty()) {
+      md = ComposeMarkdownWithNativeTitle(md);
+    }
+    if (!LooksLikeEmptyMarkdownSeed(md) || web_.CachedMarkdown().empty()) {
+      web_.SetMarkdown(md);
+    }
   };
   {
     const std::wstring theme =
@@ -853,7 +959,9 @@ bool NotesWindow::Create(HINSTANCE instance) {
   }
   LoadTabSession();
   LoadViewSettings();
+  EnsureFontControls();
   ApplyEditorFont();
+  SyncFontControls();
   ApplyUiFonts();
   if (tab_paths_.empty()) {
     tab_paths_.push_back(path_);
@@ -867,9 +975,7 @@ bool NotesWindow::Create(HINSTANCE instance) {
   if (sidebar_visible_) {
     RebuildSidebar();
   }
-  if (outline_) {
-    RebuildOutline();
-  }
+  outline_ = false;
   preview_ = false;
   if (always_on_top_ && !toast_) {
     CheckMenuItem(menu_, kMenuAlwaysOnTop, MF_BYCOMMAND | MF_CHECKED);
@@ -894,11 +1000,124 @@ void NotesWindow::SetFontSize(int pt) {
     pt = 48;
   }
   if (font_pt_ == pt) {
+    SyncFontControls();
     return;
   }
   font_pt_ = pt;
   ApplyEditorFont();
+  SyncFontControls();
   PersistViewSettings();
+}
+
+void NotesWindow::SetFontFace(const std::wstring& face) {
+  std::wstring next = face;
+  if (_wcsicmp(next.c_str(), L"SimSun") == 0 ||
+      next == L"宋体") {
+    next = L"SimSun";
+  } else {
+    next = L"Microsoft YaHei";
+  }
+  if (_wcsicmp(font_face_.c_str(), next.c_str()) == 0) {
+    SyncFontControls();
+    return;
+  }
+  font_face_ = std::move(next);
+  ApplyEditorFont();
+  SyncFontControls();
+  PersistViewSettings();
+}
+
+void NotesWindow::EnsureFontControls() {
+  if (!hwnd_ || (font_face_combo_ && font_size_combo_)) {
+    return;
+  }
+  HINSTANCE inst = GetModuleHandleW(nullptr);
+  if (!font_face_combo_) {
+    font_face_combo_ = CreateWindowExW(
+        0, L"COMBOBOX", L"",
+        WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | CBS_DROPDOWNLIST |
+            CBS_HASSTRINGS | WS_VSCROLL,
+        0, 0, 120, 200, hwnd_,
+        reinterpret_cast<HMENU>(static_cast<INT_PTR>(kFontFaceId)), inst,
+        nullptr);
+    if (font_face_combo_) {
+      SendMessageW(font_face_combo_, CB_ADDSTRING, 0,
+                   reinterpret_cast<LPARAM>(L"微软雅黑"));
+      SendMessageW(font_face_combo_, CB_ADDSTRING, 0,
+                   reinterpret_cast<LPARAM>(L"宋体"));
+    }
+  }
+  if (!font_size_combo_) {
+    font_size_combo_ = CreateWindowExW(
+        0, L"COMBOBOX", L"",
+        WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | CBS_DROPDOWNLIST |
+            CBS_HASSTRINGS | WS_VSCROLL,
+        0, 0, 64, 280, hwnd_,
+        reinterpret_cast<HMENU>(static_cast<INT_PTR>(kFontSizeId)), inst,
+        nullptr);
+    if (font_size_combo_) {
+      static const int kPts[] = {10, 11, 12, 14, 16, 18, 20, 22, 24, 28, 32};
+      for (int pt : kPts) {
+        wchar_t buf[8];
+        swprintf_s(buf, L"%d", pt);
+        SendMessageW(font_size_combo_, CB_ADDSTRING, 0,
+                     reinterpret_cast<LPARAM>(buf));
+      }
+    }
+  }
+  if (ui_font_) {
+    const WPARAM font = reinterpret_cast<WPARAM>(ui_font_);
+    if (font_face_combo_) {
+      SendMessageW(font_face_combo_, WM_SETFONT, font, TRUE);
+    }
+    if (font_size_combo_) {
+      SendMessageW(font_size_combo_, WM_SETFONT, font, TRUE);
+    }
+  }
+  SyncFontControls();
+}
+
+void NotesWindow::SyncFontControls() {
+  if (font_face_combo_) {
+    const int want =
+        (_wcsicmp(font_face_.c_str(), L"SimSun") == 0) ? 1 : 0;
+    if (SendMessageW(font_face_combo_, CB_GETCURSEL, 0, 0) != want) {
+      SendMessageW(font_face_combo_, CB_SETCURSEL, want, 0);
+    }
+  }
+  if (font_size_combo_) {
+    wchar_t buf[8];
+    swprintf_s(buf, L"%d", font_pt_);
+    const int idx = static_cast<int>(
+        SendMessageW(font_size_combo_, CB_FINDSTRINGEXACT, static_cast<WPARAM>(-1),
+                     reinterpret_cast<LPARAM>(buf)));
+    if (idx != CB_ERR) {
+      if (SendMessageW(font_size_combo_, CB_GETCURSEL, 0, 0) != idx) {
+        SendMessageW(font_size_combo_, CB_SETCURSEL, idx, 0);
+      }
+    } else {
+      // Odd size from Ctrl+/- — show nearest by inserting temporarily unused.
+      SendMessageW(font_size_combo_, CB_SETCURSEL,
+                   static_cast<WPARAM>(-1), 0);
+      SetWindowTextW(font_size_combo_, buf);
+    }
+  }
+}
+
+void NotesWindow::PushEditorFontToWeb() {
+  if (!web_.Ready()) {
+    return;
+  }
+  const wchar_t* face = font_face_.c_str();
+  if (!face || !*face) {
+    face = L"Microsoft YaHei";
+  }
+  wchar_t script[384];
+  swprintf_s(script,
+             L"try{if(window.__desknoteSetEditorFont)"
+             L"__desknoteSetEditorFont(\"%s\",%d);}catch(e){}",
+             face, font_pt_);
+  web_.EvalScript(script);
 }
 
 void NotesWindow::ApplyEditorFont() {
@@ -908,26 +1127,38 @@ void NotesWindow::ApplyEditorFont() {
   }
   HDC hdc = GetDC(nullptr);
   const int height = -MulDiv(font_pt_, GetDeviceCaps(hdc, LOGPIXELSY), 72);
-  bool has_consolas = false;
-  LOGFONTW probe{};
-  probe.lfCharSet = DEFAULT_CHARSET;
-  wcsncpy_s(probe.lfFaceName, L"Consolas", _TRUNCATE);
-  EnumFontFamiliesExW(
-      hdc, &probe,
-      [](const LOGFONTW*, const TEXTMETRICW*, DWORD, LPARAM lp) -> int {
-        *reinterpret_cast<bool*>(lp) = true;
-        return 0;
-      },
-      reinterpret_cast<LPARAM>(&has_consolas), 0);
   ReleaseDC(nullptr, hdc);
-  // Writing surface: Consolas 12pt (Cascadia Mono fallback).
-  const wchar_t* face = has_consolas ? L"Consolas" : L"Cascadia Mono";
+  // Chinese writing surface: 微软雅黑 / 宋体 (Typora-class body fonts).
+  const wchar_t* face = font_face_.c_str();
+  if (!face || !*face) {
+    face = L"Microsoft YaHei";
+  }
   font_ = CreateFontW(height, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
                       DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                      CLEARTYPE_QUALITY, FIXED_PITCH | FF_MODERN, face);
-  if (edit_) {
+                      CLEARTYPE_QUALITY, VARIABLE_PITCH | FF_SWISS, face);
+  // RichEdit: Word-class — restyle selection only; bare caret updates typing
+  // defaults. Never WM_SETFONT here (that rewrote the whole buffer).
+  if (edit_ && !wysiwyg_) {
+    CHARFORMAT2W cf{};
+    cf.cbSize = sizeof(cf);
+    cf.dwMask = CFM_FACE | CFM_SIZE | CFM_CHARSET;
+    cf.yHeight = font_pt_ * 20;  // twips
+    cf.bCharSet = DEFAULT_CHARSET;
+    wcsncpy_s(cf.szFaceName, face, _TRUNCATE);
+    CHARRANGE cr{};
+    SendMessageW(edit_, EM_EXGETSEL, 0, reinterpret_cast<LPARAM>(&cr));
+    const WPARAM how = (cr.cpMin != cr.cpMax)
+                           ? SCF_SELECTION
+                           : (SCF_SELECTION | SCF_DEFAULT);
+    SendMessageW(edit_, EM_SETCHARFORMAT, how,
+                 reinterpret_cast<LPARAM>(&cf));
+  } else if (edit_ && font_ && !IsWindowVisible(edit_)) {
+    // Staging surface before WW paints — seed control default once.
     SendMessageW(edit_, WM_SETFONT, reinterpret_cast<WPARAM>(font_), TRUE);
   }
+  // WW: host only restores the soft document default; toolbar applies marks
+  // to the current selection inside the page.
+  PushEditorFontToWeb();
 }
 
 void NotesWindow::ApplyUiFonts() {
@@ -1003,6 +1234,13 @@ void NotesWindow::ApplyUiFonts() {
   if (mode_strip_) {
     SendMessageW(mode_strip_, WM_SETFONT, font, TRUE);
   }
+  if (font_face_combo_) {
+    SendMessageW(font_face_combo_, WM_SETFONT, font, TRUE);
+  }
+  if (font_size_combo_) {
+    SendMessageW(font_size_combo_, WM_SETFONT, font, TRUE);
+  }
+  ApplyTitleFont();
 }
 
 void NotesWindow::ApplyChrome() {
@@ -1123,6 +1361,28 @@ void NotesWindow::Destroy() {
     KillTimer(hwnd_, kPersistTabsTimer);
     KillTimer(hwnd_, kGutterTimer);
   }
+  if (web_.Host()) {
+    RevokeDropOnSubtree(web_.Host());
+  }
+  if (preview_web_.Host()) {
+    RevokeDropOnSubtree(preview_web_.Host());
+  }
+  if (edit_) {
+    RevokePathDropTarget(edit_);
+  }
+  if (tabs_) {
+    RevokePathDropTarget(tabs_);
+  }
+  if (sidebar_) {
+    RevokePathDropTarget(sidebar_);
+  }
+  if (hwnd_) {
+    RevokePathDropTarget(hwnd_);
+  }
+  if (drop_target_) {
+    drop_target_->Release();
+    drop_target_ = nullptr;
+  }
   web_.Destroy();
   preview_web_.Destroy();
   if (font_) {
@@ -1136,6 +1396,10 @@ void NotesWindow::Destroy() {
   if (ui_font_bold_) {
     DeleteObject(ui_font_bold_);
     ui_font_bold_ = nullptr;
+  }
+  if (title_font_) {
+    DeleteObject(title_font_);
+    title_font_ = nullptr;
   }
   if (accel_) {
     DestroyAcceleratorTable(accel_);
@@ -1184,8 +1448,6 @@ void NotesWindow::BuildAccelerators() {
       {FVIRTKEY | FCONTROL, 'B', static_cast<WORD>(kMenuBold)},
       {FVIRTKEY | FCONTROL, 'I', static_cast<WORD>(kMenuItalic)},
       {FVIRTKEY | FCONTROL, 'U', static_cast<WORD>(kMenuUnder)},
-      {FVIRTKEY | FCONTROL | FSHIFT, 'V', static_cast<WORD>(kMenuPreviewPane)},
-      {FVIRTKEY | FCONTROL | FSHIFT, 'O', static_cast<WORD>(kMenuOutline)},
       {FVIRTKEY | FCONTROL | FSHIFT, 'E', static_cast<WORD>(kMenuSidebar)},
       {FVIRTKEY | FCONTROL | FSHIFT, 'F', static_cast<WORD>(kMenuSearchLib)},
       {FVIRTKEY | FCONTROL, 'G', static_cast<WORD>(kMenuGotoLine)},
@@ -1548,18 +1810,6 @@ void NotesWindow::SyncMdMenuState() {
   EnableMenuItem(menu_, kMenuOutline, flag);
   EnableMenuItem(menu_, kMenuSyncScroll, flag);
   EnableMenuItem(menu_, kMenuWysiwyg, flag);
-  EnableMenuItem(menu_, kMenuInsertLink, flag);
-  EnableMenuItem(menu_, kMenuInsertCode, flag);
-  EnableMenuItem(menu_, kMenuInsertImage, flag);
-  EnableMenuItem(menu_, kMenuHeading1, flag);
-  EnableMenuItem(menu_, kMenuHeading2, flag);
-  EnableMenuItem(menu_, kMenuHeading3, flag);
-  EnableMenuItem(menu_, kMenuBold, flag);
-  EnableMenuItem(menu_, kMenuItalic, flag);
-  EnableMenuItem(menu_, kMenuStrike, flag);
-  EnableMenuItem(menu_, kMenuBullet, flag);
-  EnableMenuItem(menu_, kMenuQuote, flag);
-  EnableMenuItem(menu_, kMenuHRule, flag);
 }
 
 void NotesWindow::SetSaveEncoding(TextFileEncoding enc) {
@@ -1602,6 +1852,10 @@ void NotesWindow::PersistViewSettings() {
   if (!out) {
     return;
   }
+  const char* face_json = "Microsoft YaHei";
+  if (_wcsicmp(font_face_.c_str(), L"SimSun") == 0) {
+    face_json = "SimSun";
+  }
   out << "{\n"
       << "  \"sidebar\": " << (sidebar_visible_ ? "true" : "false") << ",\n"
       << "  \"outline\": " << (outline_ ? "true" : "false") << ",\n"
@@ -1610,7 +1864,8 @@ void NotesWindow::PersistViewSettings() {
       << "  \"typewriter\": " << (typewriter_ ? "true" : "false") << ",\n"
       << "  \"preview\": " << (preview_ ? "true" : "false") << ",\n"
       << "  \"always_on_top\": " << (always_on_top_ ? "true" : "false") << ",\n"
-      << "  \"font_pt\": " << font_pt_ << "\n"
+      << "  \"font_pt\": " << font_pt_ << ",\n"
+      << "  \"font_face\": \"" << face_json << "\"\n"
       << "}\n";
 }
 
@@ -1648,6 +1903,9 @@ void NotesWindow::LoadViewSettings() {
   flag("typewriter", &typewriter_);
   flag("preview", &preview_);
   flag("always_on_top", &always_on_top_);
+  // Right-side preview / outline chrome removed — never restore those modes.
+  outline_ = false;
+  preview_ = false;
   {
     const std::string needle = "\"font_pt\"";
     const size_t pos = json.find(needle);
@@ -1657,6 +1915,26 @@ void NotesWindow::LoadViewSettings() {
         const int pt = atoi(json.c_str() + colon + 1);
         if (pt >= 8 && pt <= 48) {
           font_pt_ = pt;
+        }
+      }
+    }
+  }
+  {
+    const std::string needle = "\"font_face\"";
+    const size_t pos = json.find(needle);
+    if (pos != std::string::npos) {
+      const size_t colon = json.find(':', pos + needle.size());
+      const size_t q1 = colon == std::string::npos
+                            ? std::string::npos
+                            : json.find('"', colon + 1);
+      const size_t q2 =
+          q1 == std::string::npos ? std::string::npos : json.find('"', q1 + 1);
+      if (q1 != std::string::npos && q2 != std::string::npos && q2 > q1) {
+        const std::string face = json.substr(q1 + 1, q2 - q1 - 1);
+        if (face == "SimSun") {
+          font_face_ = L"SimSun";
+        } else {
+          font_face_ = L"Microsoft YaHei";
         }
       }
     }
@@ -1731,6 +2009,88 @@ void NotesWindow::OpenPaths(const std::vector<std::wstring>& paths) {
   }
 }
 
+void NotesWindow::HandleDroppedPaths(const std::vector<std::wstring>& paths) {
+  std::vector<std::wstring> notes;
+  for (const auto& p : paths) {
+    if (p.empty()) {
+      continue;
+    }
+    const DWORD attr = GetFileAttributesW(p.c_str());
+    if (attr == INVALID_FILE_ATTRIBUTES || (attr & FILE_ATTRIBUTE_DIRECTORY)) {
+      continue;
+    }
+    const std::wstring lower = LowerSuffix(p);
+    if (IsImageDropSuffix(lower)) {
+      InsertImageFile(p);
+    } else if (IsOpenablePath(p)) {
+      notes.push_back(p);
+    }
+  }
+  if (!notes.empty()) {
+    OpenPaths(notes);
+  }
+}
+
+void NotesWindow::RegisterDropOnHwnd(HWND hwnd) {
+  if (!hwnd || !drop_target_) {
+    return;
+  }
+  // Same IDropTarget on chrome + WebView host (SetWindow only for highlight).
+  const HRESULT hr = RegisterDragDrop(hwnd, drop_target_);
+  if (FAILED(hr) && hr != DRAGDROP_E_ALREADYREGISTERED) {
+    return;
+  }
+  DragAcceptFiles(hwnd, TRUE);
+}
+
+void NotesWindow::RegisterDropOnSubtree(HWND root) {
+  if (!root || !drop_target_) {
+    return;
+  }
+  RegisterDropOnHwnd(root);
+  EnumChildWindows(
+      root,
+      [](HWND child, LPARAM lp) -> BOOL {
+        reinterpret_cast<NotesWindow*>(lp)->RegisterDropOnHwnd(child);
+        return TRUE;
+      },
+      reinterpret_cast<LPARAM>(this));
+}
+
+void NotesWindow::RevokeDropOnSubtree(HWND root) {
+  if (!root) {
+    return;
+  }
+  EnumChildWindows(
+      root,
+      [](HWND child, LPARAM) -> BOOL {
+        RevokePathDropTarget(child);
+        return TRUE;
+      },
+      0);
+  RevokePathDropTarget(root);
+}
+
+void NotesWindow::EnsureDropTarget() {
+  if (!hwnd_ || drop_target_) {
+    return;
+  }
+  drop_target_ =
+      new PathDropTarget([this](const std::vector<std::wstring>& paths,
+                                DWORD proposed) -> DWORD {
+        HandleDroppedPaths(paths);
+        return proposed;
+      });
+  // AIGC START
+  // Opening/attaching must not MOVE the source out of Explorer.
+  drop_target_->SetFileDropSemantics(FileDropSemantics::VirtualPin);
+  // AIGC END
+  if (!RegisterPathDropTarget(hwnd_, drop_target_)) {
+    drop_target_->Release();
+    drop_target_ = nullptr;
+  }
+}
+
 void NotesWindow::OpenOrActivatePath(const std::wstring& path) {
   if (path.empty()) {
     return;
@@ -1749,6 +2109,15 @@ void NotesWindow::OpenOrActivatePath(const std::wstring& path) {
   Save();
   tab_paths_.push_back(norm);
   EnsureTabStates();
+  // Opened .md defaults to editable preview (matches Typora / DeskNote product).
+  {
+    const bool md =
+        (norm.size() >= 3 &&
+         _wcsicmp(norm.c_str() + norm.size() - 3, L".md") == 0) ||
+        (norm.size() >= 9 &&
+         _wcsicmp(norm.c_str() + norm.size() - 9, L".markdown") == 0);
+    tab_states_.back().wysiwyg = md;
+  }
   RebuildTabControl();
   SwitchToTab(static_cast<int>(tab_paths_.size()) - 1, false);
   if (sidebar_visible_) {
@@ -1777,27 +2146,371 @@ std::wstring NotesWindow::NormalizePathKey(const std::wstring& path) {
   return buf;
 }
 
-std::wstring NotesWindow::TabLabel(const std::wstring& path) const {
+namespace {
+std::wstring TrimWsLocal(std::wstring s) {
+  while (!s.empty() && iswspace(s.front())) {
+    s.erase(s.begin());
+  }
+  while (!s.empty() && iswspace(s.back())) {
+    s.pop_back();
+  }
+  return s;
+}
+
+// English drafts (untitled.md / Untitled-1.md) → 未命名… (Typora CN / product).
+std::wstring LocalizeUntitledStem(const std::wstring& stem) {
+  if (stem.size() < 8 || _wcsnicmp(stem.c_str(), L"untitled", 8) != 0) {
+    return stem;
+  }
+  const wchar_t* rest = stem.c_str() + 8;
+  if (*rest == L'\0') {
+    return L"未命名";
+  }
+  if (*rest == L'_' || *rest == L'-' || *rest == L' ') {
+    return std::wstring(L"未命名") + rest;
+  }
+  return stem;
+}
+
+bool PathIsEnglishUntitledNote(const std::wstring& path) {
   const size_t slash = path.find_last_of(L"\\/");
-  std::wstring name =
+  std::wstring base =
       slash == std::wstring::npos ? path : path.substr(slash + 1);
-  if (name.empty()) {
-    name = L"未命名";
-  }
-  // Prefer stem for cleaner tabs (notes.md → notes).
-  const size_t dot = name.find_last_of(L'.');
+  const size_t dot = base.find_last_of(L'.');
   if (dot != std::wstring::npos && dot > 0) {
-    name = name.substr(0, dot);
+    base = base.substr(0, dot);
   }
-  if (name.size() > 22) {
-    name = name.substr(0, 20) + L"…";
+  return LocalizeUntitledStem(base) != base;
+}
+
+// Split leading ATX heading ↔ title / body (mirrors wysiwyg_native.html).
+struct MdTitleBody {
+  std::wstring title;
+  std::wstring body;
+  bool emit_title_line = false;
+};
+
+MdTitleBody SplitMarkdownTitleBody(const std::wstring& md_in) {
+  MdTitleBody out;
+  std::wstring raw = md_in;
+  if (!raw.empty() && raw[0] == L'\xFEFF') {
+    raw.erase(raw.begin());
   }
-  if (dirty_ && !path_.empty() &&
-      _wcsicmp(NormalizePathKey(path).c_str(),
-               NormalizePathKey(path_).c_str()) == 0) {
-    name += L" ·";
+  std::wstring prefix;
+  if (raw.size() >= 4 && raw.compare(0, 4, L"---\n") == 0) {
+    const size_t fm_end = raw.find(L"\n---", 4);
+    if (fm_end != std::wstring::npos) {
+      const size_t after = raw.find(L'\n', fm_end + 4);
+      if (after != std::wstring::npos) {
+        prefix = raw.substr(0, after + 1);
+        raw = raw.substr(after + 1);
+        while (!raw.empty() && (raw[0] == L'\n' || raw[0] == L'\r')) {
+          raw.erase(raw.begin());
+        }
+      }
+    }
+  } else if (raw.size() >= 5 && raw.compare(0, 5, L"---\r\n") == 0) {
+    const size_t fm_end = raw.find(L"\n---", 5);
+    if (fm_end != std::wstring::npos) {
+      const size_t after = raw.find(L'\n', fm_end + 4);
+      if (after != std::wstring::npos) {
+        prefix = raw.substr(0, after + 1);
+        raw = raw.substr(after + 1);
+        while (!raw.empty() && (raw[0] == L'\n' || raw[0] == L'\r')) {
+          raw.erase(raw.begin());
+        }
+      }
+    }
+  }
+  // # title\nbody… (RichEdit often uses \r or \r\n — accept both.)
+  size_t i = 0;
+  while (i < raw.size() && raw[i] == L'#') {
+    ++i;
+  }
+  if (i >= 1 && i <= 6 && i < raw.size() &&
+      (raw[i] == L' ' || raw[i] == L'\t')) {
+    size_t line_end = raw.find_first_of(L"\r\n", i);
+    std::wstring title_line;
+    std::wstring rest;
+    if (line_end == std::wstring::npos) {
+      title_line = raw.substr(i + 1);
+      rest.clear();
+    } else {
+      title_line = raw.substr(i + 1, line_end - (i + 1));
+      rest = raw.substr(line_end);
+      while (!rest.empty() && (rest[0] == L'\n' || rest[0] == L'\r')) {
+        rest.erase(rest.begin());
+      }
+    }
+    while (!title_line.empty() &&
+           (title_line.back() == L' ' || title_line.back() == L'\t' ||
+            title_line.back() == L'#')) {
+      if (title_line.back() == L'#') {
+        // trim trailing " ###"
+        title_line.pop_back();
+        while (!title_line.empty() &&
+               (title_line.back() == L' ' || title_line.back() == L'\t')) {
+          title_line.pop_back();
+        }
+        break;
+      }
+      title_line.pop_back();
+    }
+    out.emit_title_line = true;
+    out.title = TrimWsLocal(title_line);
+    out.body = prefix + rest;
+    return out;
+  }
+  out.emit_title_line = false;
+  out.title.clear();
+  out.body = prefix + raw;
+  return out;
+}
+
+std::wstring JoinMarkdownTitleBody(const std::wstring& title,
+                                   const std::wstring& body,
+                                   bool emit_title_line) {
+  std::wstring t = TrimWsLocal(title);
+  for (auto& ch : t) {
+    if (ch == L'\r' || ch == L'\n') {
+      ch = L' ';
+    }
+  }
+  std::wstring b = body;
+  while (!b.empty() && (b[0] == L'\n' || b[0] == L'\r')) {
+    b.erase(b.begin());
+  }
+  if (t.empty() && !emit_title_line) {
+    return b;
+  }
+  return L"# " + t + L"\n\n" + b;
+}
+
+// First ATX heading (# … ######); empty heading text → empty (use filename).
+std::wstring ExtractMarkdownTitle(const std::wstring& md) {
+  size_t pos = 0;
+  const size_t n = md.size();
+  if (n > 0 && md[0] == L'\xFEFF') {
+    pos = 1;
+  }
+  auto read_line = [&](std::wstring* out) -> bool {
+    if (pos >= n) {
+      return false;
+    }
+    const size_t start = pos;
+    while (pos < n && md[pos] != L'\n') {
+      ++pos;
+    }
+    *out = md.substr(start, pos - start);
+    if (!out->empty() && out->back() == L'\r') {
+      out->pop_back();
+    }
+    if (pos < n) {
+      ++pos;
+    }
+    return true;
+  };
+
+  std::wstring line;
+  const size_t save = pos;
+  if (!read_line(&line)) {
+    return L"";
+  }
+  if (TrimWsLocal(line) == L"---") {
+    while (read_line(&line)) {
+      if (TrimWsLocal(line) == L"---") {
+        break;
+      }
+    }
+  } else {
+    pos = save;
+  }
+
+  while (read_line(&line)) {
+    const std::wstring t = TrimWsLocal(line);
+    if (t.empty()) {
+      continue;
+    }
+    size_t hashes = 0;
+    while (hashes < t.size() && t[hashes] == L'#') {
+      ++hashes;
+    }
+    if (hashes >= 1 && hashes <= 6 && hashes < t.size() &&
+        (t[hashes] == L' ' || t[hashes] == L'\t')) {
+      std::wstring title = TrimWsLocal(t.substr(hashes + 1));
+      while (!title.empty() && title.back() == L'#') {
+        title.pop_back();
+      }
+      return TrimWsLocal(title);
+    }
+    break;
+  }
+  return L"";
+}
+
+// Library tree: cheap first-heading peek so closed notes match tab titles.
+std::wstring PeekMarkdownTitleFromDisk(const std::wstring& path) {
+  std::ifstream in(path, std::ios::binary);
+  if (!in) {
+    return {};
+  }
+  std::string raw(4096, '\0');
+  in.read(raw.data(), static_cast<std::streamsize>(raw.size()));
+  const std::streamsize got = in.gcount();
+  if (got <= 0) {
+    return {};
+  }
+  raw.resize(static_cast<size_t>(got));
+  std::wstring wide;
+  TextFileEncoding enc = TextFileEncoding::Utf8;
+  if (!DecodeTextFileBytes(raw, &wide, &enc)) {
+    wide = WidenUtf8(raw);
+  }
+  return ExtractMarkdownTitle(wide);
+}
+}  // namespace
+
+std::wstring NotesWindow::NoteDisplayName(const std::wstring& path,
+                                          bool peek_disk) const {
+  std::wstring name;
+  std::wstring ext;
+  {
+    const size_t slash = path.find_last_of(L"\\/");
+    const std::wstring leaf =
+        slash == std::wstring::npos ? path : path.substr(slash + 1);
+    const size_t dot = leaf.find_last_of(L'.');
+    // VS Code / Explorer: keep type suffix on tabs and the library tree.
+    if (dot != std::wstring::npos && dot > 0 &&
+        dot + 1 < leaf.size()) {
+      ext = leaf.substr(dot);  // includes '.'
+    }
+  }
+  const std::wstring key = NormalizePathKey(path);
+  for (size_t i = 0; i < tab_paths_.size(); ++i) {
+    if (_wcsicmp(NormalizePathKey(tab_paths_[i]).c_str(), key.c_str()) != 0) {
+      continue;
+    }
+    // Only trust the synced title_hint — never Toast cache here. After
+    // delete→seed 未命名, cache still holds the recycled note's H1 and would
+    // paint「测试」on the new draft in the file tree (tab stem stayed 未命名).
+    if (i < tab_states_.size() && !tab_states_[i].title_hint.empty()) {
+      name = tab_states_[i].title_hint;
+    }
+    break;
+  }
+  if (name.empty() && peek_disk && !path.empty()) {
+    name = PeekMarkdownTitleFromDisk(path);
+  }
+  if (name.empty()) {
+    const size_t slash = path.find_last_of(L"\\/");
+    name = slash == std::wstring::npos ? path : path.substr(slash + 1);
+    if (name.empty()) {
+      name = L"未命名";
+    }
+    // Prefer stem (notes.md → notes) then re-attach ext below.
+    const size_t dot = name.find_last_of(L'.');
+    if (dot != std::wstring::npos && dot > 0) {
+      name = name.substr(0, dot);
+    }
+    name = LocalizeUntitledStem(name);
+  }
+  // Leave room for ".md" / ".txt" after ellipsis.
+  const size_t max_base = ext.empty() ? 22u : 18u;
+  if (name.size() > max_base) {
+    name = name.substr(0, max_base > 2 ? max_base - 2 : max_base) + L"…";
+  }
+  if (!ext.empty()) {
+    name += ext;
   }
   return name;
+}
+
+std::wstring NotesWindow::TabLabel(const std::wstring& path) const {
+  // Dirty/saved glyph is painted beside the close plate (VS Code / Chrome
+  // tab disk) — keep the text label clean of " ·".
+  return NoteDisplayName(path, false);
+}
+
+void NotesWindow::SyncCurrentTabTitleHint() {
+  if (loading_) {
+    return;
+  }
+  EnsureTabStates();
+  if (tab_index_ < 0 ||
+      tab_index_ >= static_cast<int>(tab_states_.size())) {
+    return;
+  }
+  std::wstring hint;
+  if (wysiwyg_ && title_edit_) {
+    // Native title is authoritative in WW — parsing body-only RichEdit after
+    // H1 strip was clearing title_hint and left the title field empty on open.
+    hint = NativeTitleText();
+  } else {
+    // Dirty WYSIWYG: Toast cache. Otherwise RichEdit (post-Load).
+    std::wstring md;
+    if (wysiwyg_ && web_.Ready() && dirty_) {
+      md = web_.CachedMarkdown();
+    } else if (edit_) {
+      const int len = GetWindowTextLengthW(edit_);
+      md.assign(static_cast<size_t>(len) + 1, L'\0');
+      GetWindowTextW(edit_, md.data(), len + 1);
+      md.resize(static_cast<size_t>(len));
+    } else if (wysiwyg_) {
+      md = web_.CachedMarkdown();
+    }
+    hint = ExtractMarkdownTitle(md);
+  }
+  auto& st = tab_states_[static_cast<size_t>(tab_index_)];
+  if (st.title_hint == hint) {
+    return;
+  }
+  st.title_hint = std::move(hint);
+  RefreshCurrentTabLabel();
+  RefreshTitle();
+  RefreshSidebarLabelForPath(path_);
+  SchedulePersistTabs();
+  // Debounced — syncing on every keystroke blocked the UI and made the
+  // title field feel late (MoveFile + SHChangeNotify on the UI thread).
+  ScheduleSyncFilenameToTitle();
+}
+
+void NotesWindow::RefreshSidebarLabelForPath(const std::wstring& path) {
+  if (!sidebar_ || !sidebar_visible_ || path.empty()) {
+    return;
+  }
+  const std::wstring key = NormalizePathKey(path);
+  std::function<bool(HTREEITEM)> walk = [&](HTREEITEM item) -> bool {
+    while (item) {
+      TVITEMW ti{};
+      ti.mask = TVIF_HANDLE | TVIF_PARAM;
+      ti.hItem = item;
+      if (TreeView_GetItem(sidebar_, &ti) && ti.lParam > 0) {
+        const size_t idx = static_cast<size_t>(ti.lParam) - 1;
+        if (idx < sidebar_paths_.size() &&
+            _wcsicmp(NormalizePathKey(sidebar_paths_[idx]).c_str(),
+                     key.c_str()) == 0) {
+          std::wstring label = NoteDisplayName(path, false);
+          if (PathIsPinned(path)) {
+            label = L"   " + label;
+          }
+          TVITEMW set{};
+          set.mask = TVIF_HANDLE | TVIF_TEXT;
+          set.hItem = item;
+          set.pszText = label.data();
+          TreeView_SetItem(sidebar_, &set);
+          return true;
+        }
+      }
+      if (HTREEITEM child = TreeView_GetChild(sidebar_, item)) {
+        if (walk(child)) {
+          return true;
+        }
+      }
+      item = TreeView_GetNextSibling(sidebar_, item);
+    }
+    return false;
+  };
+  walk(TreeView_GetRoot(sidebar_));
 }
 
 namespace {
@@ -1813,6 +2526,70 @@ void GpAddRoundRect(Gdiplus::GraphicsPath* path, float x, float y, float w,
   path->AddArc(x + w - d, y + h - d, d, d, 0.f, 90.f);
   path->AddArc(x, y + h - d, d, d, 90.f, 90.f);
   path->CloseFigure();
+}
+
+// Small pushpin (no ★): round head + short neck + needle tip.
+void DrawTabPushPin(Gdiplus::Graphics& g, float cx, float cy, bool pinned,
+                    bool hot) {
+  const BYTE a = 255;
+  Gdiplus::Color ink;
+  if (pinned) {
+    ink = hot ? Gdiplus::Color(a, 51, 65, 85) : Gdiplus::Color(a, 71, 85, 105);
+  } else {
+    ink = hot ? Gdiplus::Color(a, 100, 116, 139)
+              : Gdiplus::Color(a, 168, 174, 184);
+  }
+  Gdiplus::SolidBrush br(ink);
+  Gdiplus::Pen pen(ink, 1.25f);
+  pen.SetLineCap(Gdiplus::LineCapRound, Gdiplus::LineCapRound,
+                 Gdiplus::DashCapRound);
+  pen.SetLineJoin(Gdiplus::LineJoinRound);
+
+  // Tilt ~18° so it reads as a thumbtack, not a bullet.
+  const float ang = -0.32f;
+  const float ca = std::cos(ang);
+  const float sa = std::sin(ang);
+  auto xf = [&](float x, float y) {
+    return Gdiplus::PointF(cx + x * ca - y * sa, cy + x * sa + y * ca);
+  };
+
+  // Head.
+  const float hr = pinned ? 3.6f : 3.3f;
+  const Gdiplus::PointF hc = xf(0.f, -3.2f);
+  if (pinned) {
+    g.FillEllipse(&br, hc.X - hr, hc.Y - hr, hr * 2.f, hr * 2.f);
+  } else {
+    g.DrawEllipse(&pen, hc.X - hr, hc.Y - hr, hr * 2.f, hr * 2.f);
+  }
+  // Collar under the head.
+  const Gdiplus::PointF c0 = xf(-2.4f, -0.2f);
+  const Gdiplus::PointF c1 = xf(2.4f, -0.2f);
+  g.DrawLine(&pen, c0, c1);
+  // Needle.
+  const Gdiplus::PointF n0 = xf(0.f, -0.2f);
+  const Gdiplus::PointF n1 = xf(0.f, 6.2f);
+  g.DrawLine(&pen, n0, n1);
+  if (pinned) {
+    Gdiplus::PointF tip[3] = {xf(-1.8f, 4.2f), xf(1.8f, 4.2f), xf(0.f, 6.4f)};
+    g.FillPolygon(&br, tip, 3);
+  }
+}
+
+// VS Code / Chrome-class tab dirty: filled disc = unsaved; check = saved.
+void DrawTabSaveGlyph(Gdiplus::Graphics& g, float cx, float cy, bool dirty) {
+  if (dirty) {
+    Gdiplus::SolidBrush disc(Gdiplus::Color(255, 71, 85, 105));
+    const float r = 3.4f;
+    g.FillEllipse(&disc, cx - r, cy - r, r * 2.f, r * 2.f);
+    return;
+  }
+  // Saved: small check in muted ink (always visible so both states read).
+  Gdiplus::Pen pen(Gdiplus::Color(255, 34, 160, 107), 1.6f);
+  pen.SetLineCap(Gdiplus::LineCapRound, Gdiplus::LineCapRound,
+                 Gdiplus::DashCapRound);
+  pen.SetLineJoin(Gdiplus::LineJoinRound);
+  g.DrawLine(&pen, cx - 3.2f, cy + 0.4f, cx - 0.6f, cy + 3.0f);
+  g.DrawLine(&pen, cx - 0.6f, cy + 3.0f, cx + 3.6f, cy - 2.8f);
 }
 }  // namespace
 
@@ -1836,22 +2613,23 @@ void NotesWindow::RelayoutTabChips() {
   const int y = (std::max)(6, static_cast<int>((rc.bottom - h) / 2));
   for (size_t i = 0; i < tab_paths_.size(); ++i) {
     const std::wstring label = TabLabel(tab_paths_[i]);
-    const bool pinned = PathIsPinned(tab_paths_[i]);
     SIZE sz{};
     GetTextExtentPoint32W(hdc, label.c_str(), static_cast<int>(label.size()),
                           &sz);
-    // Left pad + optional pin glyph + label + close hit plate (match PaintTabBar).
-    const int lead = pinned ? 28 : 14;
+    // pin | text | save glyph | close
+    const int lead = 30;
+    const int save_w = 16;
     const int close_w = 28;
-    int w = sz.cx + lead + close_w;
-    if (w < 100) {
-      w = 100;
+    const int pad = 8;
+    int w = sz.cx + lead + save_w + close_w + pad;
+    if (w < 136) {
+      w = 136;
     }
-    if (w > 220) {
-      w = 220;
+    if (w > 268) {
+      w = 268;
     }
     tab_chip_rects_.push_back(RECT{x, y, x + w, y + h});
-    x += w + 4;
+    x += w + 8;  // clear gap so idle chips read as separate units
   }
   tab_new_btn_rect_ = RECT{x + 4, y + 2, x + 30, y + h - 2};
   if (old) {
@@ -1870,10 +2648,23 @@ void NotesWindow::PaintTabBar(HDC hdc) {
   }
   RECT rc{};
   GetClientRect(tabs_, &rc);
-  const COLORREF desk = toast_ ? RGB(255, 248, 220) : content_bg_;
+  const int rw = rc.right - rc.left;
+  const int rh = rc.bottom - rc.top;
+  if (rw <= 0 || rh <= 0) {
+    return;
+  }
+  // Double-buffer: GDI FillRect + Gdiplus on the same screen DC flickers on
+  // every hover invalidate.
+  HDC mem = CreateCompatibleDC(hdc);
+  HBITMAP bmp = CreateCompatibleBitmap(hdc, rw, rh);
+  HGDIOBJ old_bmp = SelectObject(mem, bmp);
+  // Cool rail under chips so white idle/active pills separate (Chrome-like).
+  const COLORREF desk = toast_ ? RGB(255, 248, 220) : rail_bg_;
   HBRUSH desk_br = CreateSolidBrush(desk);
-  FillRect(hdc, &rc, desk_br);
+  FillRect(mem, &rc, desk_br);
   DeleteObject(desk_br);
+  HDC screen = hdc;
+  hdc = mem;
 
   // Soft separator — rail gray, not heavy black.
   HPEN pen = CreatePen(PS_SOLID, 1, border_color_);
@@ -1884,6 +2675,7 @@ void NotesWindow::PaintTabBar(HDC hdc) {
   DeleteObject(pen);
 
   SetBkMode(hdc, TRANSPARENT);
+  {
   Gdiplus::Graphics g(hdc);
   g.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
   g.SetTextRenderingHint(Gdiplus::TextRenderingHintClearTypeGridFit);
@@ -1903,37 +2695,64 @@ void NotesWindow::PaintTabBar(HDC hdc) {
     {
       Gdiplus::GraphicsPath path;
       GpAddRoundRect(&path, x + 1.f, y + 1.f, w - 2.f, h - 2.f, 9.f);
+      // Always paint a chip shell — idle used to be bare text and looked fused.
       if (on) {
-        Gdiplus::SolidBrush fill(Gdiplus::Color(255, 236, 238, 242));
+        Gdiplus::SolidBrush fill(Gdiplus::Color(255, 255, 255, 255));
+        g.FillPath(&fill, &path);
+        Gdiplus::Pen ring(Gdiplus::Color(255, 180, 188, 200), 1.25f);
+        g.DrawPath(&ring, &path);
+      } else if (hover) {
+        Gdiplus::SolidBrush fill(Gdiplus::Color(255, 255, 255, 255));
+        g.FillPath(&fill, &path);
+        Gdiplus::Pen ring(Gdiplus::Color(255, 198, 204, 214), 1.f);
+        g.DrawPath(&ring, &path);
+      } else {
+        Gdiplus::SolidBrush fill(Gdiplus::Color(255, 252, 253, 254));
         g.FillPath(&fill, &path);
         Gdiplus::Pen ring(Gdiplus::Color(255, 214, 219, 226), 1.f);
         g.DrawPath(&ring, &path);
-      } else if (hover) {
-        Gdiplus::SolidBrush fill(Gdiplus::Color(255, 245, 246, 248));
-        g.FillPath(&fill, &path);
       }
     }
 
     HFONT use = on && ui_font_bold_ ? ui_font_bold_ : ui_font_;
     HFONT old_f =
         use ? static_cast<HFONT>(SelectObject(hdc, use)) : nullptr;
-    SetTextColor(hdc, on ? text_color_ : muted_color_);
+    // Idle text a touch stronger so labels don't wash into the bar.
+    SetTextColor(hdc, on ? text_color_ : RGB(72, 80, 92));
 
-    int text_left = chip.left + 12;
-    if (pinned) {
-      // ★ matches sidebar pin mark — clearer than a 6px dot at compact widths.
-      RECT pin_rc{chip.left + 8, chip.top, chip.left + 26, chip.bottom};
-      SetTextColor(hdc, RGB(100, 116, 139));
-      DrawTextW(hdc, L"★", -1, &pin_rc,
-                DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-      text_left = chip.left + 26;
-      SetTextColor(hdc, on ? text_color_ : muted_color_);
+    // Thumbtack control (not ★): click = pin / unpin.
+    const bool pin_hot = hover && tab_hover_zone_ == 1;
+    RECT pin_hit{chip.left + 4, chip.top + 3, chip.left + 24, chip.bottom - 3};
+    if (pin_hot) {
+      Gdiplus::GraphicsPath pp;
+      GpAddRoundRect(&pp, static_cast<float>(pin_hit.left),
+                     static_cast<float>(pin_hit.top),
+                     static_cast<float>(pin_hit.right - pin_hit.left),
+                     static_cast<float>(pin_hit.bottom - pin_hit.top), 5.f);
+      Gdiplus::SolidBrush pbg(Gdiplus::Color(255, 220, 225, 232));
+      g.FillPath(&pbg, &pp);
     }
+    DrawTabPushPin(g,
+                   (static_cast<float>(pin_hit.left + pin_hit.right)) * 0.5f,
+                   (static_cast<float>(pin_hit.top + pin_hit.bottom)) * 0.5f +
+                       0.5f,
+                   pinned, pin_hot);
+    SetTextColor(hdc, on ? text_color_ : RGB(72, 80, 92));
+    const int text_left = chip.left + 26;
+    // Save glyph sits left of × (market: dirty disc / saved check).
+    const int save_cx = chip.right - 38;
+    // Active tab only — path compare broke after title→filename rename
+    // (status said 已修改 while glyph stayed on the saved check).
+    const bool tab_dirty = on && dirty_;
 
     std::wstring label = TabLabel(path_s);
-    RECT text_rc{text_left, chip.top, chip.right - 28, chip.bottom};
+    RECT text_rc{text_left, chip.top, save_cx - 6, chip.bottom};
     DrawTextW(hdc, label.c_str(), -1, &text_rc,
               DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+
+    DrawTabSaveGlyph(
+        g, static_cast<float>(save_cx),
+        (static_cast<float>(chip.top + chip.bottom)) * 0.5f, tab_dirty);
 
     // Close always visible (faint); hot plate on hover.
     const bool close_hot = hover && tab_hover_zone_ == 2;
@@ -1977,6 +2796,12 @@ void NotesWindow::PaintTabBar(HDC hdc) {
     RECT tr = nb;
     DrawTextW(hdc, L"+", -1, &tr, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
   }
+  }  // Gdiplus::Graphics scope — flush before BitBlt
+
+  BitBlt(screen, 0, 0, rw, rh, mem, 0, 0, SRCCOPY);
+  SelectObject(mem, old_bmp);
+  DeleteObject(bmp);
+  DeleteDC(mem);
 }
 
 int NotesWindow::HitTestTabBar(POINT client, int* out_zone) const {
@@ -1996,15 +2821,24 @@ int NotesWindow::HitTestTabBar(POINT client, int* out_zone) const {
       continue;
     }
     if (out_zone) {
-      const bool pinned =
-          i < tab_paths_.size() && PathIsPinned(tab_paths_[i]);
-      if (pinned && client.x <= chip.left + 26) {
-        *out_zone = 1;  // pin
-      } else if (client.x >= chip.right - 28) {
-        *out_zone = 2;  // close
-      } else {
-        *out_zone = 0;
+      // Hysteresis on pin/close edges so cursor hotspot changes don't oscillate
+      // zone → Invalidate → flicker while the mouse is still.
+      constexpr int kPinIn = 24;
+      constexpr int kPinOut = 28;
+      constexpr int kCloseIn = 26;
+      constexpr int kCloseOut = 30;
+      int zone = 0;
+      if (tab_hover_index_ == static_cast<int>(i) && tab_hover_zone_ == 1) {
+        zone = (client.x <= chip.left + kPinOut) ? 1 : 0;
+      } else if (tab_hover_index_ == static_cast<int>(i) &&
+                 tab_hover_zone_ == 2) {
+        zone = (client.x >= chip.right - kCloseOut) ? 2 : 0;
+      } else if (client.x <= chip.left + kPinIn) {
+        zone = 1;
+      } else if (client.x >= chip.right - kCloseIn) {
+        zone = 2;
       }
+      *out_zone = zone;
     }
     return static_cast<int>(i);
   }
@@ -2036,14 +2870,24 @@ void NotesWindow::PersistTabs() {
   if (hwnd_) {
     KillTimer(hwnd_, kPersistTabsTimer);
   }
+  EnsureTabStates();
   const std::wstring file = JoinPath(NativeDataDir(), L"notes_tabs.json");
   std::ofstream out(file, std::ios::binary);
   if (!out) {
     return;
   }
+  // Objects carry optional title so cold-start tab chips match last-known heading
+  // (Typora / VS Code: reopen session shows document titles, not only filenames).
   out << "{\n  \"current\": " << tab_index_ << ",\n  \"tabs\": [\n";
   for (size_t i = 0; i < tab_paths_.size(); ++i) {
-    out << "    \"" << EscapeJson(NarrowUtf8(tab_paths_[i])) << "\"";
+    out << "    {\"path\": \"" << EscapeJson(NarrowUtf8(tab_paths_[i]))
+        << "\"";
+    if (i < tab_states_.size()) {
+      // Always emit title (even "") so clearing a heading drops the stale hint.
+      out << ", \"title\": \""
+          << EscapeJson(NarrowUtf8(tab_states_[i].title_hint)) << "\"";
+    }
+    out << "}";
     if (i + 1 < tab_paths_.size()) {
       out << ",";
     }
@@ -2063,6 +2907,7 @@ void NotesWindow::PersistTabs() {
 void NotesWindow::LoadTabSession() {
   tab_paths_.clear();
   pinned_paths_.clear();
+  tab_states_.clear();
   tab_index_ = 0;
   const std::wstring file = JoinPath(NativeDataDir(), L"notes_tabs.json");
   std::ifstream in(file, std::ios::binary);
@@ -2072,6 +2917,23 @@ void NotesWindow::LoadTabSession() {
   std::ostringstream ss;
   ss << in.rdbuf();
   const std::string json = ss.str();
+  auto unescape_json = [](const std::string& raw) {
+    std::string unescaped;
+    for (size_t i = 0; i < raw.size(); ++i) {
+      if (raw[i] == '\\' && i + 1 < raw.size()) {
+        unescaped.push_back(raw[++i]);
+      } else {
+        unescaped.push_back(raw[i]);
+      }
+    }
+    return unescaped;
+  };
+  auto looks_like_path = [](const std::string& unescaped) {
+    return unescaped.size() >= 3 &&
+           ((unescaped[1] == ':' &&
+             (unescaped[2] == '\\' || unescaped[2] == '/')) ||
+            unescaped[0] == '\\');
+  };
   auto collect_paths = [&](const char* key, std::vector<std::wstring>* out) {
     const std::string needle = std::string("\"") + key + "\"";
     const size_t key_pos = json.find(needle);
@@ -2092,25 +2954,86 @@ void NotesWindow::LoadTabSession() {
       if (q2 == std::string::npos) {
         break;
       }
-      const std::string raw = json.substr(q1 + 1, q2 - q1 - 1);
+      const std::string unescaped =
+          unescape_json(json.substr(q1 + 1, q2 - q1 - 1));
       pos = q2 + 1;
-      std::string unescaped;
-      for (size_t i = 0; i < raw.size(); ++i) {
-        if (raw[i] == '\\' && i + 1 < raw.size()) {
-          unescaped.push_back(raw[++i]);
-        } else {
-          unescaped.push_back(raw[i]);
-        }
-      }
-      if (unescaped.size() >= 3 &&
-          ((unescaped[1] == ':' &&
-            (unescaped[2] == '\\' || unescaped[2] == '/')) ||
-           unescaped[0] == '\\')) {
+      if (looks_like_path(unescaped)) {
         out->push_back(WidenUtf8(unescaped));
       }
     }
   };
-  collect_paths("tabs", &tab_paths_);
+  // Tabs: accept legacy string entries or {"path","title"} objects.
+  std::vector<std::wstring> session_titles;
+  {
+    const size_t key_pos = json.find("\"tabs\"");
+    if (key_pos != std::string::npos) {
+      const size_t arr = json.find('[', key_pos);
+      if (arr != std::string::npos) {
+        size_t pos = arr + 1;
+        while (pos < json.size() && json[pos] != ']') {
+          while (pos < json.size() &&
+                 (json[pos] == ' ' || json[pos] == '\n' || json[pos] == '\r' ||
+                  json[pos] == '\t' || json[pos] == ',')) {
+            ++pos;
+          }
+          if (pos >= json.size() || json[pos] == ']') {
+            break;
+          }
+          if (json[pos] == '{') {
+            const size_t end = json.find('}', pos);
+            if (end == std::string::npos) {
+              break;
+            }
+            const std::string obj = json.substr(pos, end - pos + 1);
+            pos = end + 1;
+            std::string path_u8;
+            std::string title_u8;
+            auto field = [&](const char* name, std::string* dest) {
+              const std::string needle = std::string("\"") + name + "\"";
+              const size_t kp = obj.find(needle);
+              if (kp == std::string::npos) {
+                return;
+              }
+              const size_t colon = obj.find(':', kp + needle.size());
+              if (colon == std::string::npos) {
+                return;
+              }
+              const size_t q1 = obj.find('"', colon + 1);
+              if (q1 == std::string::npos) {
+                return;
+              }
+              const size_t q2 = obj.find('"', q1 + 1);
+              if (q2 == std::string::npos) {
+                return;
+              }
+              *dest = unescape_json(obj.substr(q1 + 1, q2 - q1 - 1));
+            };
+            field("path", &path_u8);
+            field("title", &title_u8);
+            if (looks_like_path(path_u8)) {
+              tab_paths_.push_back(WidenUtf8(path_u8));
+              session_titles.push_back(WidenUtf8(title_u8));
+            }
+          } else if (json[pos] == '"') {
+            const size_t q1 = pos;
+            const size_t q2 = json.find('"', q1 + 1);
+            if (q2 == std::string::npos) {
+              break;
+            }
+            const std::string unescaped =
+                unescape_json(json.substr(q1 + 1, q2 - q1 - 1));
+            pos = q2 + 1;
+            if (looks_like_path(unescaped)) {
+              tab_paths_.push_back(WidenUtf8(unescaped));
+              session_titles.push_back(L"");
+            }
+          } else {
+            break;
+          }
+        }
+      }
+    }
+  }
   collect_paths("pinned", &pinned_paths_);
   const size_t cur_key = json.find("\"current\"");
   if (cur_key != std::string::npos) {
@@ -2119,16 +3042,22 @@ void NotesWindow::LoadTabSession() {
       tab_index_ = atoi(json.c_str() + colon + 1);
     }
   }
-  // Drop session paths that no longer exist on disk.
+  // Drop session paths that no longer exist on disk (keep title aligned).
   {
     std::vector<std::wstring> alive;
+    std::vector<std::wstring> alive_titles;
     alive.reserve(tab_paths_.size());
-    for (const auto& p : tab_paths_) {
-      if (GetFileAttributesW(p.c_str()) != INVALID_FILE_ATTRIBUTES) {
-        alive.push_back(p);
+    alive_titles.reserve(tab_paths_.size());
+    for (size_t i = 0; i < tab_paths_.size(); ++i) {
+      if (GetFileAttributesW(tab_paths_[i].c_str()) !=
+          INVALID_FILE_ATTRIBUTES) {
+        alive.push_back(tab_paths_[i]);
+        alive_titles.push_back(i < session_titles.size() ? session_titles[i]
+                                                         : L"");
       }
     }
     tab_paths_ = std::move(alive);
+    session_titles = std::move(alive_titles);
   }
   // Match Python _restore_session: merge recent library notes so files saved
   // outside the last tab list still reopen (capped at NewTab max of 12).
@@ -2184,6 +3113,7 @@ void NotesWindow::LoadTabSession() {
       }
       if (!already(r.path)) {
         tab_paths_.push_back(r.path);
+        session_titles.push_back(L"");
       }
     }
   }
@@ -2193,20 +3123,56 @@ void NotesWindow::LoadTabSession() {
              tab_index_ >= static_cast<int>(tab_paths_.size())) {
     tab_index_ = 0;
   }
+  // Migrate leftover English drafts (untitled.md) → 未命名.md on disk + tabs.
+  HealUntitledDraftsOnDisk();
+  bool healed = false;
+  for (auto& p : tab_paths_) {
+    if (HealEnglishUntitledPath(&p)) {
+      healed = true;
+    }
+  }
+  for (auto& p : pinned_paths_) {
+    if (HealEnglishUntitledPath(&p)) {
+      healed = true;
+    }
+  }
+  EnsureTabStates();
+  for (size_t i = 0; i < tab_states_.size(); ++i) {
+    if (i < session_titles.size() && !session_titles[i].empty()) {
+      tab_states_[i].title_hint = session_titles[i];
+    }
+  }
+  if (healed) {
+    SchedulePersistTabs();
+  }
 }
 
 void NotesWindow::SwitchToTab(int index, bool save_current) {
   if (index < 0 || index >= static_cast<int>(tab_paths_.size())) {
     return;
   }
+  const std::wstring incoming = tab_paths_[static_cast<size_t>(index)];
+  const bool same_path =
+      !path_.empty() &&
+      _wcsicmp(NormalizePathKey(path_).c_str(),
+               NormalizePathKey(incoming).c_str()) == 0;
   if (save_current) {
     // Dirty WYSIWYG: authoritative pull flushes JS debounce into cache.
     Save(wysiwyg_ && dirty_);
+    SyncCurrentTabTitleHint();
+  } else if (!same_path) {
+    // delete→seed / open another file: do NOT SyncFromWysiwyg — that copies
+    // the previous Toast body into RichEdit and lets title sync rename the
+    // new 未命名 draft back to the deleted note's name.
+  } else {
+    SyncFromWysiwyg();
+    SyncCurrentTabTitleHint();
   }
-  SyncFromWysiwyg();
   // Remember the outgoing tab's WYSIWYG / wrap / caret / scroll (M8).
   EnsureTabStates();
-  if (tab_index_ >= 0 && tab_index_ < static_cast<int>(tab_states_.size())) {
+  if (save_current && tab_index_ >= 0 &&
+      tab_index_ < static_cast<int>(tab_states_.size()) &&
+      tab_index_ < static_cast<int>(tab_paths_.size())) {
     tab_states_[static_cast<size_t>(tab_index_)].wysiwyg = wysiwyg_;
     tab_states_[static_cast<size_t>(tab_index_)].wrap = word_wrap_;
     if (edit_) {
@@ -2219,43 +3185,20 @@ void NotesWindow::SwitchToTab(int index, bool save_current) {
     }
   }
   tab_index_ = index;
-  path_ = tab_paths_[static_cast<size_t>(index)];
+  path_ = incoming;
+  HealRetargetPath(&path_);
   if (tabs_) {
     InvalidateRect(tabs_, nullptr, FALSE);
   }
   Load();
   EnsureTabStates();
-  wysiwyg_ = tab_states_[static_cast<size_t>(tab_index_)].wysiwyg;
   word_wrap_ = tab_states_[static_cast<size_t>(tab_index_)].wrap;
   ApplyWordWrap();
   if (menu_) {
     CheckMenuItem(menu_, kMenuWrap,
                   MF_BYCOMMAND | (word_wrap_ ? MF_CHECKED : MF_UNCHECKED));
   }
-  ApplyWysiwygVisibility();
-  if (wysiwyg_) {
-    const std::wstring plain = CurrentPlainText();
-    // Skip full Toast re-push when host cache already matches loaded text.
-    if (web_.CachedMarkdown() != plain) {
-      web_.SetMarkdown(plain);
-    }
-  } else if (edit_) {
-    const int vis =
-        tab_states_[static_cast<size_t>(tab_index_)].first_visible_line;
-    if (vis > 0) {
-      const int cur = static_cast<int>(
-          SendMessageW(edit_, EM_GETFIRSTVISIBLELINE, 0, 0));
-      SendMessageW(edit_, EM_LINESCROLL, 0, vis - cur);
-    }
-    const LONG caret = tab_states_[static_cast<size_t>(tab_index_)].caret;
-    if (caret > 0) {
-      CHARRANGE cr{caret, caret};
-      SendMessageW(edit_, EM_EXSETSEL, 0, reinterpret_cast<LPARAM>(&cr));
-      SendMessageW(edit_, EM_SCROLLCARET, 0, 0);
-    }
-  }
-  // Tab switch / new note: always land in edit (Typora/Obsidian write-first).
-  // Preview is opt-in per document via the right strip — do not inherit it.
+  // Read-only preview pane is opt-in; never inherit across tabs.
   if (preview_) {
     preview_ = false;
     if (menu_) {
@@ -2266,8 +3209,33 @@ void NotesWindow::SwitchToTab(int index, bool save_current) {
     }
     PersistViewSettings();
   }
-  if (!wysiwyg_ && edit_) {
-    ShowWindow(edit_, SW_SHOW);
+  // Markdown → Typora-class editable preview (Toast WYSIWYG). Do not restore
+  // tab_states_.wysiwyg=false from OpenPaths / session defaults — that left a
+  // blank RichEdit stage after 「用 DeskNote 打开」 / 拖入 .md.
+  if (PathLooksMarkdown() && !toast_) {
+    EnsureMarkdownEditor(true);
+    SyncCurrentTabTitleHint();
+  } else {
+    wysiwyg_ = false;
+    tab_states_[static_cast<size_t>(tab_index_)].wysiwyg = false;
+    ApplyWysiwygVisibility();
+    if (edit_) {
+      const int vis =
+          tab_states_[static_cast<size_t>(tab_index_)].first_visible_line;
+      if (vis > 0) {
+        const int cur = static_cast<int>(
+            SendMessageW(edit_, EM_GETFIRSTVISIBLELINE, 0, 0));
+        SendMessageW(edit_, EM_LINESCROLL, 0, vis - cur);
+      }
+      const LONG caret = tab_states_[static_cast<size_t>(tab_index_)].caret;
+      if (caret > 0) {
+        CHARRANGE cr{caret, caret};
+        SendMessageW(edit_, EM_EXSETSEL, 0, reinterpret_cast<LPARAM>(&cr));
+        SendMessageW(edit_, EM_SCROLLCARET, 0, 0);
+      }
+      ShowWindow(edit_, SW_SHOW);
+      SetFocus(edit_);
+    }
   }
   RefreshTitle();
   if (outline_) {
@@ -2283,9 +3251,6 @@ void NotesWindow::SwitchToTab(int index, bool save_current) {
   SyncMdMenuState();
   ApplyViewMenuChecks();
   LayoutClient();
-  if (!wysiwyg_ && edit_ && IsWindowVisible(edit_)) {
-    SetFocus(edit_);
-  }
 }
 
 std::wstring NotesWindow::MakeNewNotePath() {
@@ -2312,6 +3277,467 @@ std::wstring NotesWindow::MakeNewNotePath() {
   return JoinPath(dir, fallback);
 }
 
+void NotesWindow::SeedBlankDraftTab() {
+  const std::wstring path = MakeNewNotePath();
+  {
+    std::ofstream out(path, std::ios::binary);
+    out << u8"# \n\n";
+  }
+  tab_paths_.assign(1, path);
+  tab_states_.assign(1, TabState{});
+  tab_index_ = 0;
+  path_ = path;
+  // New .md draft → editable preview (same as NewTab).
+  tab_states_[0].wysiwyg = PathLooksMarkdown();
+  dirty_ = false;
+  // Drop the recycled note's Toast body immediately so tree/tab/title sync
+  // cannot re-read「测试」and rename this 未命名 draft.
+  if (web_.Available()) {
+    web_.SetMarkdown(L"# \n\n");
+  }
+  if (edit_) {
+    SetWindowTextW(edit_, L"# \n\n");
+  }
+  SetNativeTitleText(L"");
+}
+
+void NotesWindow::ActivateSeededBlankDraft(const std::wstring& removed_path) {
+  dirty_ = false;
+  // SeedBlank already wrote disk + cleared Toast/RichEdit — skip Load and a
+  // second force SetMarkdown (those made delete-last feel multi-second).
+  if (PathLooksMarkdown() && !toast_) {
+    EnsureMarkdownEditor(false);
+  } else {
+    wysiwyg_ = false;
+    ApplyWysiwygVisibility();
+  }
+  tab_chips_dirty_ = true;
+  RebuildTabControl();
+  RefreshTitle();
+  UpdateStatusBar();
+  UpdateModeStrip();
+  SyncMdMenuState();
+  ApplyViewMenuChecks();
+  LayoutClient();
+  if (sidebar_visible_ && sidebar_) {
+    if (!removed_path.empty()) {
+      SidebarRemovePaths({removed_path});
+    }
+    SidebarUpsertFile(path_);
+  }
+  SchedulePersistTabs();
+  if (outline_) {
+    SetTimer(hwnd_, kOutlineTimer, 120, nullptr);
+  }
+}
+
+void NotesWindow::SyncTabsAndSidebar(bool reload_editor, bool rebuild_tree) {
+  tab_chips_dirty_ = true;
+  if (reload_editor) {
+    if (tab_index_ < 0 ||
+        tab_index_ >= static_cast<int>(tab_paths_.size())) {
+      tab_index_ = tab_paths_.empty() ? 0
+                                      : static_cast<int>(tab_paths_.size()) - 1;
+    }
+    if (!tab_paths_.empty()) {
+      SwitchToTab(tab_index_, false);
+    }
+  }
+  RebuildTabControl();
+  if (rebuild_tree && sidebar_visible_) {
+    RebuildSidebar();
+  }
+  SchedulePersistTabs();
+}
+
+bool NotesWindow::HealRetargetPath(std::wstring* path_inout) {
+  if (!path_inout || path_inout->empty()) {
+    return false;
+  }
+  const std::wstring old = *path_inout;
+  if (!HealEnglishUntitledPath(path_inout)) {
+    return false;
+  }
+  RetargetNotePath(old, *path_inout);
+  RefreshSidebarLabelForPath(*path_inout);
+  RefreshCurrentTabLabel();
+  RefreshTitle();
+  if (tabs_) {
+    InvalidateRect(tabs_, nullptr, FALSE);
+  }
+  return true;
+}
+
+namespace {
+std::wstring SanitizeNoteFileStem(const std::wstring& title) {
+  std::wstring s;
+  s.reserve(title.size());
+  for (wchar_t c : title) {
+    if (c < 32) {
+      continue;
+    }
+    if (c == L'\\' || c == L'/' || c == L':' || c == L'*' || c == L'?' ||
+        c == L'"' || c == L'<' || c == L'>' || c == L'|') {
+      c = L'_';
+    }
+    s.push_back(c);
+  }
+  while (!s.empty() && iswspace(s.front())) {
+    s.erase(s.begin());
+  }
+  while (!s.empty() && iswspace(s.back())) {
+    s.pop_back();
+  }
+  // Trim trailing dots/spaces (Windows forbids).
+  while (!s.empty() && (s.back() == L'.' || s.back() == L' ')) {
+    s.pop_back();
+  }
+  if (s.size() > 60) {
+    s.resize(60);
+    while (!s.empty() && (s.back() == L'.' || s.back() == L' ')) {
+      s.pop_back();
+    }
+  }
+  return s;
+}
+
+}  // namespace
+
+void NotesWindow::ScheduleSyncFilenameToTitle() {
+  if (!hwnd_) {
+    SyncFilenameToTitle();
+    return;
+  }
+  SetTimer(hwnd_, kSyncFilenameTimer, 450, nullptr);
+}
+
+bool NotesWindow::SyncFilenameToTitle() {
+  if (hwnd_) {
+    KillTimer(hwnd_, kSyncFilenameTimer);
+  }
+  if (loading_ || path_.empty()) {
+    return false;
+  }
+  EnsureTabStates();
+  if (tab_index_ < 0 ||
+      tab_index_ >= static_cast<int>(tab_states_.size())) {
+    return false;
+  }
+  const std::wstring& hint = tab_states_[static_cast<size_t>(tab_index_)].title_hint;
+  if (hint.empty()) {
+    return false;
+  }
+  const std::wstring want = SanitizeNoteFileStem(hint);
+  if (want.empty()) {
+    return false;
+  }
+  const size_t slash = path_.find_last_of(L"\\/");
+  std::wstring name =
+      slash == std::wstring::npos ? path_ : path_.substr(slash + 1);
+  const size_t dot = name.find_last_of(L'.');
+  const std::wstring stem =
+      (dot == std::wstring::npos || dot == 0) ? name : name.substr(0, dot);
+  if (_wcsicmp(stem.c_str(), want.c_str()) == 0) {
+    return false;
+  }
+  // Typora-class: filename keeps following the title on every edit — not only
+  // the first 未命名→标题 rename (Explorer stayed stale after that).
+  return ApplySidebarRename(path_, want, true);
+}
+
+void NotesWindow::HealUntitledDraftsOnDisk() {
+  auto scan = [this](const std::wstring& dir) {
+    if (dir.empty()) {
+      return;
+    }
+    WIN32_FIND_DATAW fd{};
+    const HANDLE h = FindFirstFileW((dir + L"\\*").c_str(), &fd);
+    if (h == INVALID_HANDLE_VALUE) {
+      return;
+    }
+    do {
+      if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+        continue;
+      }
+      std::wstring full = dir + L"\\" + fd.cFileName;
+      const std::wstring before = full;
+      if (HealEnglishUntitledPath(&full)) {
+        RetargetNotePath(before, full);
+      }
+    } while (FindNextFileW(h, &fd));
+    FindClose(h);
+  };
+  scan(NotesLibraryDir(true));
+  const std::wstring docs = DocumentsDeskTidyNotesDir();
+  if (!docs.empty() &&
+      _wcsicmp(NormalizePathKey(docs).c_str(),
+               NormalizePathKey(NotesLibraryDir(false)).c_str()) != 0) {
+    scan(docs);
+  }
+}
+
+namespace {
+bool TryRenameNoteFile(const std::wstring& src, const std::wstring& dest) {
+  if (src.empty() || dest.empty() ||
+      _wcsicmp(src.c_str(), dest.c_str()) == 0) {
+    return false;
+  }
+  SetFileAttributesW(src.c_str(), FILE_ATTRIBUTE_NORMAL);
+  for (int attempt = 0; attempt < 5; ++attempt) {
+    if (attempt > 0) {
+      Sleep(50u * static_cast<DWORD>(attempt));
+    }
+    if (MoveFileW(src.c_str(), dest.c_str())) {
+      return true;
+    }
+    if (MoveFileExW(src.c_str(), dest.c_str(),
+                    MOVEFILE_COPY_ALLOWED | MOVEFILE_REPLACE_EXISTING |
+                        MOVEFILE_WRITE_THROUGH)) {
+      return true;
+    }
+  }
+  // Shell rename (OneDrive / Explorer locks often honor this when MoveFile fails).
+  {
+    std::vector<wchar_t> from(src.begin(), src.end());
+    from.push_back(L'\0');
+    from.push_back(L'\0');
+    std::vector<wchar_t> to(dest.begin(), dest.end());
+    to.push_back(L'\0');
+    to.push_back(L'\0');
+    SHFILEOPSTRUCTW op{};
+    op.wFunc = FO_RENAME;
+    op.pFrom = from.data();
+    op.pTo = to.data();
+    op.fFlags = FOF_NOCONFIRMATION | FOF_NOERRORUI | FOF_SILENT | FOF_NORECURSION;
+    if (SHFileOperationW(&op) == 0 && !op.fAnyOperationsAborted &&
+        GetFileAttributesW(dest.c_str()) != INVALID_FILE_ATTRIBUTES &&
+        GetFileAttributesW(src.c_str()) == INVALID_FILE_ATTRIBUTES) {
+      return true;
+    }
+  }
+  // Byte-copy then delete source — last resort so Explorer never keeps untitled.md
+  // while the UI already says 未命名.
+  {
+    std::ifstream in(src, std::ios::binary);
+    if (in) {
+      std::string data;
+      in.seekg(0, std::ios::end);
+      const std::streamoff len = in.tellg();
+      in.seekg(0, std::ios::beg);
+      if (len > 0) {
+        data.resize(static_cast<size_t>(len));
+        in.read(data.data(), len);
+      }
+      in.close();
+      std::ofstream out(dest, std::ios::binary | std::ios::trunc);
+      if (out) {
+        if (!data.empty()) {
+          out.write(data.data(), static_cast<std::streamsize>(data.size()));
+        }
+        out.close();
+        if (GetFileAttributesW(dest.c_str()) != INVALID_FILE_ATTRIBUTES) {
+          SetFileAttributesW(src.c_str(), FILE_ATTRIBUTE_NORMAL);
+          if (DeleteFileW(src.c_str())) {
+            return true;
+          }
+          SHFILEOPSTRUCTW del{};
+          std::vector<wchar_t> doomed(src.begin(), src.end());
+          doomed.push_back(L'\0');
+          doomed.push_back(L'\0');
+          del.wFunc = FO_DELETE;
+          del.pFrom = doomed.data();
+          del.fFlags = FOF_NOCONFIRMATION | FOF_NOERRORUI | FOF_SILENT |
+                       FOF_ALLOWUNDO | FOF_NORECURSION;
+          if (SHFileOperationW(&del) == 0 && !del.fAnyOperationsAborted) {
+            return true;
+          }
+          LogLine(L"[notes] renamed via copy but source linger %lu: %s",
+                  GetLastError(), src.c_str());
+          return true;
+        }
+      }
+    }
+  }
+  LogLine(L"[notes] rename failed %lu: %s -> %s", GetLastError(), src.c_str(),
+          dest.c_str());
+  return false;
+}
+
+// Next free 未命名[_NN].ext beside `dir` (same folder as the English draft).
+std::wstring NextLocalizedUntitledPath(const std::wstring& dir,
+                                       const std::wstring& sfx) {
+  std::wstring path = JoinPath(dir, std::wstring(L"未命名") + sfx);
+  if (GetFileAttributesW(path.c_str()) == INVALID_FILE_ATTRIBUTES) {
+    return path;
+  }
+  for (int n = 1; n < 1000; ++n) {
+    wchar_t name[80];
+    swprintf_s(name, L"未命名_%02d", n);
+    path = JoinPath(dir, std::wstring(name) + sfx);
+    if (GetFileAttributesW(path.c_str()) == INVALID_FILE_ATTRIBUTES) {
+      return path;
+    }
+  }
+  SYSTEMTIME st{};
+  GetLocalTime(&st);
+  wchar_t fallback[96];
+  swprintf_s(fallback, L"未命名_%04d%02d%02d_%02d%02d%02d", st.wYear, st.wMonth,
+             st.wDay, st.wHour, st.wMinute, st.wSecond);
+  return JoinPath(dir, std::wstring(fallback) + sfx);
+}
+
+void NotifyShellFileRenamed(const std::wstring& old_path,
+                            const std::wstring& new_path) {
+  if (old_path.empty() || new_path.empty()) {
+    return;
+  }
+  // Flush so an already-open Explorer window drops the stale "untitled.md" row.
+  SHChangeNotify(SHCNE_RENAMEITEM, SHCNF_PATHW | SHCNF_FLUSH, old_path.c_str(),
+                 new_path.c_str());
+  const size_t slash = new_path.find_last_of(L"\\/");
+  if (slash != std::wstring::npos && slash > 0) {
+    const std::wstring dir = new_path.substr(0, slash);
+    SHChangeNotify(SHCNE_UPDATEDIR, SHCNF_PATHW | SHCNF_FLUSH, dir.c_str(),
+                   nullptr);
+  }
+}
+
+bool SelectPathInExplorer(const std::wstring& path) {
+  if (path.empty()) {
+    return false;
+  }
+  PIDLIST_ABSOLUTE pidl = nullptr;
+  if (FAILED(SHParseDisplayName(path.c_str(), nullptr, &pidl, 0, nullptr)) ||
+      !pidl) {
+    return false;
+  }
+  const HRESULT hr = SHOpenFolderAndSelectItems(pidl, 0, nullptr, 0);
+  CoTaskMemFree(pidl);
+  return SUCCEEDED(hr);
+}
+}  // namespace
+
+bool NotesWindow::HealEnglishUntitledPath(std::wstring* path_inout) {
+  if (!path_inout || path_inout->empty() ||
+      !PathIsEnglishUntitledNote(*path_inout)) {
+    return false;
+  }
+  const std::wstring old_path = *path_inout;
+  const std::wstring old_key = NormalizePathKey(old_path);
+  const size_t slash = old_path.find_last_of(L"\\/");
+  const std::wstring base =
+      slash == std::wstring::npos ? old_path : old_path.substr(slash + 1);
+  const size_t dot = base.find_last_of(L'.');
+  const std::wstring stem =
+      (dot == std::wstring::npos || dot == 0) ? base : base.substr(0, dot);
+  const std::wstring sfx =
+      (dot == std::wstring::npos || dot == 0) ? L".md" : base.substr(dot);
+  const std::wstring new_stem = LocalizeUntitledStem(stem);
+  if (new_stem == stem) {
+    return false;
+  }
+  // Same folder as the draft (Documents\DeskTidy\notes, exe\笔记, …) —
+  // do not require NotesLibraryDir: empty notepad_folder still left legacy
+  // untitled.md under 文档\DeskTidy\notes while UI already said 未命名.
+  std::wstring dir =
+      slash == std::wstring::npos ? NotesLibraryDir(true) : old_path.substr(0, slash);
+  std::wstring dest = JoinPath(dir, new_stem + sfx);
+  if (GetFileAttributesW(dest.c_str()) != INVALID_FILE_ATTRIBUTES) {
+    dest = NextLocalizedUntitledPath(dir, sfx);
+  }
+  if (_wcsicmp(NormalizePathKey(dest).c_str(), old_key.c_str()) == 0) {
+    return false;
+  }
+  if (GetFileAttributesW(old_path.c_str()) == INVALID_FILE_ATTRIBUTES) {
+    // Only retarget when dest already exists (prior rename). Never invent a
+    // path and leave untitled.md orphaned on disk.
+    if (GetFileAttributesW(dest.c_str()) != INVALID_FILE_ATTRIBUTES) {
+      *path_inout = dest;
+      return true;
+    }
+    return false;
+  }
+  if (!TryRenameNoteFile(old_path, dest)) {
+    return false;
+  }
+  NotifyShellFileRenamed(old_path, dest);
+  *path_inout = dest;
+  return true;
+}
+
+void NotesWindow::RetargetNotePath(const std::wstring& old_path,
+                                   const std::wstring& new_path) {
+  if (old_path.empty() || new_path.empty()) {
+    return;
+  }
+  const std::wstring old_key = NormalizePathKey(old_path);
+  const std::wstring new_key = NormalizePathKey(new_path);
+  if (_wcsicmp(old_key.c_str(), new_key.c_str()) == 0) {
+    return;
+  }
+  for (auto& t : tab_paths_) {
+    if (_wcsicmp(NormalizePathKey(t).c_str(), old_key.c_str()) == 0) {
+      t = new_path;
+    }
+  }
+  for (auto& p : pinned_paths_) {
+    if (_wcsicmp(NormalizePathKey(p).c_str(), old_key.c_str()) == 0) {
+      p = new_path;
+    }
+  }
+  for (auto& s : sidebar_paths_) {
+    if (!s.empty() &&
+        _wcsicmp(NormalizePathKey(s).c_str(), old_key.c_str()) == 0) {
+      s = new_path;
+    }
+  }
+  if (_wcsicmp(NormalizePathKey(path_).c_str(), old_key.c_str()) == 0) {
+    path_ = new_path;
+  }
+  SchedulePersistTabs();
+}
+
+void NotesWindow::RevealPathInExplorer(std::wstring path) {
+  if (path.empty()) {
+    return;
+  }
+  HealUntitledDraftsOnDisk();
+  HealRetargetPath(&path);
+  // Flush title→filename before selecting so Explorer never stays on 未命名.md.
+  if (!path_.empty() &&
+      _wcsicmp(NormalizePathKey(path).c_str(),
+               NormalizePathKey(path_).c_str()) == 0) {
+    SyncCurrentTabTitleHint();
+    SyncFilenameToTitle();
+    path = path_;
+  }
+  // If still English on disk, force one more heal after flush.
+  if (PathIsEnglishUntitledNote(path)) {
+    Save(true);
+    HealRetargetPath(&path);
+  }
+  // Stale sidebar/tab path may still say untitled while path_ is already 未命名.
+  if (PathIsEnglishUntitledNote(path) && !path_.empty() &&
+      !PathIsEnglishUntitledNote(path_)) {
+    path = path_;
+  }
+  const DWORD attr = GetFileAttributesW(path.c_str());
+  if (attr == INVALID_FILE_ATTRIBUTES) {
+    OpenNotesFolder();
+    return;
+  }
+  // Unicode-safe select; explorer.exe /select often fails on 未命名.md and
+  // leaves a stale untitled.md Explorer window open.
+  if (!SelectPathInExplorer(path)) {
+    const std::wstring arg = L"/select,\"" + path + L"\"";
+    ShellExecuteW(hwnd_, L"open", L"explorer.exe", arg.c_str(), nullptr,
+                  SW_SHOWNORMAL);
+  }
+  if (status_) {
+    SetWindowTextW(status_, L"已在资源管理器中选中");
+  }
+}
+
 void NotesWindow::NewTab() {
   if (tab_paths_.size() >= 12) {
     MistAlert(hwnd_, L"DeskNote", L"最多 12 个标签。", MistMsgTone::Info);
@@ -2325,12 +3751,14 @@ void NotesWindow::NewTab() {
   }
   tab_paths_.push_back(path);
   EnsureTabStates();
-  // New md drafts always start in source edit (not preview / not WYSIWYG).
+  // Fresh draft: blank title seed, no inherited title_hint / caret.
   tab_states_.back() = TabState{};
   tab_states_.back().wrap = word_wrap_;
+  // New .md draft → editable preview (SwitchToTab → EnsureMarkdownEditor).
+  tab_states_.back().wysiwyg = true;
   RebuildTabControl();
   SwitchToTab(static_cast<int>(tab_paths_.size()) - 1, false);
-  ShowEditMode();
+  SyncCurrentTabTitleHint();
   if (sidebar_visible_) {
     RebuildSidebar();
   }
@@ -2343,23 +3771,9 @@ void NotesWindow::CloseTabOnly() {
   }
   EnsureTabStates();
   if (tab_paths_.size() <= 1) {
-    // 关掉最后一个页签时开一份新草稿，避免零页签；原文件已保存仍在库里。
-    const std::wstring path = MakeNewNotePath();
-    {
-      std::ofstream out(path, std::ios::binary);
-      out << u8"# \n\n";
-    }
-    tab_paths_[0] = path;
-    if (!tab_states_.empty()) {
-      tab_states_[0] = TabState{};
-    } else {
-      tab_states_.assign(1, TabState{});
-    }
-    path_ = path;
-    dirty_ = false;
-    RebuildTabControl();
-    SwitchToTab(0, false);
-    PersistTabs();
+    // 关掉最后一个页签：新草稿替换，原文件仍在库里（Notepad++ new 1）。
+    SeedBlankDraftTab();
+    ActivateSeededBlankDraft(L"");  // keep old file row; only add 未命名
     return;
   }
   tab_paths_.erase(tab_paths_.begin() + tab_index_);
@@ -2369,9 +3783,8 @@ void NotesWindow::CloseTabOnly() {
   if (tab_index_ >= static_cast<int>(tab_paths_.size())) {
     tab_index_ = static_cast<int>(tab_paths_.size()) - 1;
   }
-  RebuildTabControl();
-  SwitchToTab(tab_index_, false);
-  PersistTabs();
+  // File stays on disk — only reload editor + chips (no full tree rescan).
+  SyncTabsAndSidebar(true, false);
 }
 
 void NotesWindow::CloseTabOnlyAt(int index) {
@@ -2389,6 +3802,7 @@ void NotesWindow::DeleteAndCloseTabAt(int index, bool ask_confirm) {
     return;
   }
   EnsureTabStates();
+  const bool deleting_current = (index == tab_index_);
   const std::wstring path = tab_paths_[static_cast<size_t>(index)];
   const size_t slash = path.find_last_of(L"\\/");
   const std::wstring name =
@@ -2416,7 +3830,7 @@ void NotesWindow::DeleteAndCloseTabAt(int index, bool ask_confirm) {
     }
   }
   // 删文件即丢弃未保存改动，不再走保存确认。
-  if (index == tab_index_) {
+  if (deleting_current) {
     dirty_ = false;
   }
   tab_paths_.erase(tab_paths_.begin() + index);
@@ -2430,27 +3844,28 @@ void NotesWindow::DeleteAndCloseTabAt(int index, bool ask_confirm) {
     tab_index_ = static_cast<int>(tab_paths_.size()) - 1;
   }
   if (tab_paths_.empty()) {
-    const std::wstring fresh = MakeNewNotePath();
-    {
-      std::ofstream out(fresh, std::ios::binary);
-      out << u8"# \n\n";
-    }
-    tab_paths_.push_back(fresh);
-    tab_states_.assign(1, TabState{});
-    tab_index_ = 0;
-    path_ = fresh;
-    dirty_ = false;
-    RebuildTabControl();
-    SwitchToTab(0, false);
-  } else {
+    // Last tab deleted with the file — seed blank draft; swap one tree row
+    // without Load + HealUntitledDraftsOnDisk full walk.
+    SeedBlankDraftTab();
+    ActivateSeededBlankDraft(path);
+    return;
+  }
+  if (deleting_current) {
     if (tab_index_ < 0) {
       tab_index_ = 0;
     }
-    RebuildTabControl();
-    SwitchToTab(tab_index_, false);
+    // RebuildSidebar reflects the recycle — no separate SidebarRemovePaths.
+    SyncTabsAndSidebar(true, true);
+    return;
   }
-  RebuildSidebar();
-  PersistTabs();
+  // Other tab deleted — keep the live editor; drop one tree row + chips.
+  if (tab_index_ < 0) {
+    tab_index_ = 0;
+  }
+  SidebarRemovePaths({path});
+  tab_chips_dirty_ = true;
+  RebuildTabControl();
+  SchedulePersistTabs();
 }
 
 void NotesWindow::CloseTab() {
@@ -2561,8 +3976,11 @@ void NotesWindow::Load() {
     }
     std::ostringstream ss;
     ss << legacy.rdbuf();
-    SetWindowTextW(edit_, WidenUtf8(ss.str()).c_str());
+    const std::wstring legacy_wide = WidenUtf8(ss.str());
+    SetWindowTextW(edit_, legacy_wide.c_str());
     loading_ = false;
+    ApplyNativeTitleFromMarkdown(legacy_wide);
+    SyncCurrentTabTitleHint();
     UpdateStatusBar();
     RefreshGutter();
     return;
@@ -2588,6 +4006,7 @@ void NotesWindow::Load() {
       text_enc_ = TextFileEncoding::Utf8;
       SetWindowTextW(edit_, wide.c_str());
       loading_ = false;
+      SyncCurrentTabTitleHint();
       UpdateStatusBar();
       RefreshGutter();
       return;
@@ -2597,9 +4016,11 @@ void NotesWindow::Load() {
       wide = L"# \n\n";
     }
     SetWindowTextW(edit_, wide.c_str());
+    ApplyNativeTitleFromMarkdown(wide);
   }
   loading_ = false;
   dirty_ = false;
+  SyncCurrentTabTitleHint();
   UpdateStatusBar();
   RefreshGutter();
 }
@@ -2654,34 +4075,10 @@ void NotesWindow::UpdateModeStrip() {
 }
 
 void NotesWindow::ShowPreviewMode() {
-  if (!PathLooksMarkdown()) {
-    return;
-  }
-  if (wysiwyg_) {
-    ToggleWysiwyg();
-  }
-  if (!preview_web_.Available()) {
-    preview_web_.SetKind(NotesWebView::Kind::kViewer);
-    preview_web_.SetTheme(SystemAppsUseLightTheme() ? L"light" : L"dark");
-    preview_web_.on_scroll = [this](double ratio) { SyncPreviewToEdit(ratio); };
-    if (!preview_web_.Create(hwnd_)) {
-      MistAlert(hwnd_, L"预览", L"无法启动预览（WebView2 不可用）。",
-                MistMsgTone::Warn);
-      return;
-    }
-  }
-  const bool was = preview_;
-  preview_ = true;
-  if (menu_) {
-    CheckMenuItem(menu_, kMenuPreviewPane, MF_BYCOMMAND | MF_CHECKED);
-  }
-  preview_web_.Show();
-  UpdatePreview();
-  UpdateModeStrip();
-  LayoutClient();
-  if (!was) {
-    PersistViewSettings();
-  }
+  // In-window / right-rail preview removed — stay in the source editor.
+  // Optional separate window: File · Markdown 预览窗口…
+  preview_ = false;
+  ShowEditMode();
 }
 
 void NotesWindow::ToggleMdViewMode() {
@@ -2718,14 +4115,19 @@ void NotesWindow::ShowEditMode() {
 }
 
 void NotesWindow::Save(bool authoritative_pull) {
+  // Arm before Pull/SetWindowText — EN_CHANGE + Toast posts during Save must
+  // not keep the tab disc after a successful write (Typora / VS Code).
+  ignore_dirty_until_ = GetTickCount64() + 600;
   if (wysiwyg_) {
     std::wstring from_toast;
+    const bool cache_warm = !web_.CachedMarkdown().empty();
     const bool need_pull =
         web_.Ready() &&
-        (authoritative_pull || dirty_ || web_.CachedMarkdown().empty());
+        (authoritative_pull || dirty_ || !cache_warm);
     if (need_pull) {
-      // Pull reads live Toast markdown (ExecuteScript get) into cache.
-      from_toast = web_.PullMarkdown(authoritative_pull ? 1500 : 300);
+      // Short pull: cache is kept warm by Toast `changed`. Long 1500ms waits
+      // made Ctrl+S feel stuck before the tab could flip to ✓.
+      from_toast = web_.PullMarkdown(cache_warm ? 250 : 500);
     }
     if (from_toast.empty()) {
       from_toast = web_.CachedMarkdown();
@@ -2733,7 +4135,9 @@ void NotesWindow::Save(bool authoritative_pull) {
     if (from_toast.empty()) {
       SyncFromWysiwyg();
     } else if (edit_) {
-      SetWindowTextW(edit_, from_toast.c_str());
+      const std::wstring full = ComposeMarkdownWithNativeTitle(from_toast);
+      web_.SetCachedMarkdown(full);
+      SetWindowTextW(edit_, full.c_str());
     }
   } else {
     SyncFromWysiwyg();
@@ -2745,21 +4149,25 @@ void NotesWindow::Save(bool authoritative_pull) {
     SaveAs();
     return;
   }
+  HealRetargetPath(&path_);
   const std::wstring plain = CurrentPlainText();
   // Plain text for md/txt/code/hosts；.rtf 仍走 RTF（对标 Notepad++ 文本保存）。
   if (PathLooksTextish()) {
-    // Soft saves without a Toast pull must not clobber a non-empty file with
-    // empty bytes. Authoritative pulls (Ctrl+S / close) may legitimately clear.
-    if (plain.empty() && !authoritative_pull) {
+    // Never clobber a real note with the empty WW boot seed ("# \n\n") or "".
+    // (A soft-save race used to wipe 12131.md / similar files this way.)
+    if (LooksLikeEmptyMarkdownSeed(plain)) {
       WIN32_FILE_ATTRIBUTE_DATA fad{};
       if (GetFileAttributesExW(path_.c_str(), GetFileExInfoStandard, &fad)) {
         const ULONGLONG sz =
             (static_cast<ULONGLONG>(fad.nFileSizeHigh) << 32) | fad.nFileSizeLow;
-        if (sz > 0) {
+        if (sz > static_cast<ULONGLONG>(plain.size() * 3 + 4)) {
           return;
         }
       }
-      if (dirty_ && wysiwyg_) {
+      if (!authoritative_pull) {
+        return;
+      }
+      if (dirty_ && wysiwyg_ && !web_.ContentReady()) {
         return;
       }
     }
@@ -2778,9 +4186,19 @@ void NotesWindow::Save(bool authoritative_pull) {
       return;
     }
     dirty_ = false;
+    ignore_dirty_until_ = GetTickCount64() + 600;
+    if (wysiwyg_) {
+      web_.AckClean();
+    }
+    // Flip disc→✓ before title→filename rename (shell notify can hitch ~1s).
     RefreshTitle();
     RefreshCurrentTabLabel();
     UpdateStatusBar();
+    if (tabs_) {
+      UpdateWindow(tabs_);
+    }
+    SyncCurrentTabTitleHint();
+    ScheduleSyncFilenameToTitle();
     return;
   }
   StreamCookie cookie;
@@ -2803,17 +4221,33 @@ void NotesWindow::Save(bool authoritative_pull) {
     return;
   }
   dirty_ = false;
+  ignore_dirty_until_ = GetTickCount64() + 600;
+  if (wysiwyg_) {
+    web_.AckClean();
+  }
   RefreshTitle();
   RefreshCurrentTabLabel();
   UpdateStatusBar();
+  if (tabs_) {
+    UpdateWindow(tabs_);
+  }
+  SyncCurrentTabTitleHint();
+  ScheduleSyncFilenameToTitle();
 }
 
 void NotesWindow::MarkDirty() {
   if (loading_) {
     return;
   }
-  // Already dirty: skip title/tab/status churn on every Toast change post.
+  if (ignore_dirty_until_ != 0 && GetTickCount64() < ignore_dirty_until_) {
+    return;
+  }
+  // Already dirty: skip title/status churn on every Toast change post, but
+  // still poke the tab bar so the save glyph cannot stick on「✓».
   if (dirty_) {
+    if (tabs_) {
+      InvalidateRect(tabs_, nullptr, FALSE);
+    }
     return;
   }
   dirty_ = true;
@@ -3157,6 +4591,37 @@ bool NotesWindow::TryContinueMarkdownList() {
   return true;
 }
 
+void NotesWindow::InsertSoftLineBreak() {
+  // WYSIWYG: Toast maps Shift-Enter→Enter; host steals key and runs JS.
+  if (wysiwyg_ && web_.Available()) {
+    web_.EvalScript(
+        L"try{window.__desknoteSoftBreak&&window.__desknoteSoftBreak()}"
+        L"catch(e){}");
+    MarkDirty();
+    return;
+  }
+  if (!edit_) {
+    return;
+  }
+  CHARRANGE cr{};
+  SendMessageW(edit_, EM_EXGETSEL, 0, reinterpret_cast<LPARAM>(&cr));
+  const LONG line =
+      static_cast<LONG>(SendMessageW(edit_, EM_EXLINEFROMCHAR, 0, cr.cpMin));
+  const LONG line_start =
+      static_cast<LONG>(SendMessageW(edit_, EM_LINEINDEX, line, 0));
+  int col = static_cast<int>(cr.cpMin - line_start);
+  if (col < 0) {
+    col = 0;
+  }
+  // Markdown hard break (two trailing spaces) then pad so caret stays on the
+  // same column on the next line (Typora-class Shift+Enter).
+  std::wstring insert = PathLooksMarkdown() ? L"  \r\n" : L"\r\n";
+  insert.append(static_cast<size_t>(col), L' ');
+  SendMessageW(edit_, EM_REPLACESEL, TRUE,
+               reinterpret_cast<LPARAM>(insert.c_str()));
+  MarkDirty();
+}
+
 void NotesWindow::HandleEditContextMenu(POINT screen_pt) {
   if (!edit_) {
     return;
@@ -3267,30 +4732,40 @@ void NotesWindow::HandleTabContextMenu(int index, POINT screen_pt) {
   } else if (cmd == kTabCloseRight) {
     CloseTabsToTheRight(index);
   } else if (cmd == kTabPin) {
-    TogglePinPath(path);
-    RebuildTabControl();
+    TogglePinPath(path);  // RebuildTabControl inside TogglePinPath
   } else if (cmd == kTabReveal) {
-    const std::wstring arg = L"/select,\"" + path + L"\"";
-    ShellExecuteW(hwnd_, L"open", L"explorer.exe", arg.c_str(), nullptr,
-                  SW_SHOWNORMAL);
+    RevealPathInExplorer(path);
   } else if (cmd == kTabCopyPath) {
-    CopyPathToClipboard(path);
+    std::wstring copy = path;
+    HealRetargetPath(&copy);
+    CopyPathToClipboard(copy);
   } else if (cmd == kTabRename) {
-    std::wstring name = path;
-    const size_t slash = path.find_last_of(L"\\/");
-    if (slash != std::wstring::npos) {
-      name = path.substr(slash + 1);
-    }
-    const size_t dot = name.find_last_of(L'.');
-    const std::wstring stem =
-        dot == std::wstring::npos ? name : name.substr(0, dot);
-    const std::wstring new_stem =
-        PromptText(hwnd_, L"重命名", L"新名称：", stem);
-    if (!new_stem.empty()) {
-      ApplySidebarRename(path, new_stem);
-    }
+    RenameTabAt(index);
   } else if (cmd == kTabDelete) {
     DeleteAndCloseTabAt(index, true);
+  }
+}
+
+void NotesWindow::RenameTabAt(int index) {
+  if (index < 0 || index >= static_cast<int>(tab_paths_.size())) {
+    return;
+  }
+  const std::wstring path = tab_paths_[static_cast<size_t>(index)];
+  if (path.empty()) {
+    return;
+  }
+  std::wstring name = path;
+  const size_t slash = path.find_last_of(L"\\/");
+  if (slash != std::wstring::npos) {
+    name = path.substr(slash + 1);
+  }
+  const size_t dot = name.find_last_of(L'.');
+  const std::wstring stem =
+      dot == std::wstring::npos ? name : name.substr(0, dot);
+  const std::wstring new_stem =
+      PromptText(hwnd_, L"重命名", L"新名称：", stem);
+  if (!new_stem.empty()) {
+    ApplySidebarRename(path, new_stem);
   }
 }
 
@@ -3318,10 +4793,23 @@ std::wstring NotesWindow::EditTextCpAligned() const {
 }
 
 std::wstring NotesWindow::CurrentPlainText() const {
-  // Toast is the live surface in WYSIWYG — RichEdit is only mirrored on
-  // Save/Sync and stays stale across debounced keystrokes.
+  // Toast body + native title compose the on-disk markdown in WYSIWYG.
   if (wysiwyg_ && web_.Ready()) {
-    return web_.CachedMarkdown();
+    std::wstring composed =
+        ComposeMarkdownWithNativeTitle(web_.CachedMarkdown());
+    // Prefer RichEdit when Toast cache is still the empty boot seed.
+    if (LooksLikeEmptyMarkdownSeed(composed) && edit_) {
+      const int len = GetWindowTextLengthW(edit_);
+      if (len > 0) {
+        std::wstring wide(static_cast<size_t>(len) + 1, L'\0');
+        GetWindowTextW(edit_, wide.data(), len + 1);
+        wide.resize(static_cast<size_t>(len));
+        if (!LooksLikeEmptyMarkdownSeed(wide)) {
+          return ComposeMarkdownWithNativeTitle(wide);
+        }
+      }
+    }
+    return composed;
   }
   if (!edit_) {
     return {};
@@ -3330,6 +4818,9 @@ std::wstring NotesWindow::CurrentPlainText() const {
   std::wstring wide(static_cast<size_t>(len) + 1, L'\0');
   GetWindowTextW(edit_, wide.data(), len + 1);
   wide.resize(static_cast<size_t>(len));
+  if (wysiwyg_) {
+    return ComposeMarkdownWithNativeTitle(wide);
+  }
   return wide;
 }
 
@@ -3530,8 +5021,14 @@ void NotesWindow::ToggleToast() {
     SetWindowLongPtrW(hwnd_, GWL_EXSTYLE, ex);
     SetWindowLongPtrW(hwnd_, GWL_STYLE, style);
     SetLayeredWindowAttributes(hwnd_, 0, 245, LWA_ALPHA);
-    SetWindowPos(hwnd_, HWND_TOPMOST, 40, 40, 280, 140,
-                 SWP_FRAMECHANGED | SWP_SHOWWINDOW);
+    {
+      POINT pt{};
+      GetCursorPos(&pt);
+      const int dpi = DpiAtPoint(pt);
+      SetWindowPos(hwnd_, HWND_TOPMOST, ScalePxForDpi(40, dpi),
+                   ScalePxForDpi(40, dpi), ScalePxForDpi(280, dpi),
+                   ScalePxForDpi(140, dpi), SWP_FRAMECHANGED | SWP_SHOWWINDOW);
+    }
     AttachOverlayToDesktop(hwnd_, true);
     PlaceOverlayInDesktopBand(hwnd_, true);
   } else {
@@ -3542,10 +5039,23 @@ void NotesWindow::ToggleToast() {
     SetWindowLongPtrW(hwnd_, GWL_EXSTYLE, ex);
     SetWindowLongPtrW(hwnd_, GWL_STYLE, style);
     DetachOverlayFromDesktop(hwnd_);
-    const int sw = GetSystemMetrics(SM_CXSCREEN);
-    const int sh = GetSystemMetrics(SM_CYSCREEN);
-    SetWindowPos(hwnd_, HWND_NOTOPMOST, (sw - 960) / 2, (sh - 640) / 2, 960,
-                 640, SWP_FRAMECHANGED | SWP_SHOWWINDOW);
+    {
+      const RECT work = PrimaryWorkArea();
+      POINT mid{(work.left + work.right) / 2, (work.top + work.bottom) / 2};
+      const int dpi = DpiAtPoint(mid);
+      const int max_w =
+          (std::max)(480, static_cast<int>(work.right - work.left) * 92 / 100);
+      const int max_h =
+          (std::max)(360, static_cast<int>(work.bottom - work.top) * 92 / 100);
+      int ww = (std::min)(max_w, ScalePxForDpi(960, dpi));
+      int wh = (std::min)(max_h, ScalePxForDpi(640, dpi));
+      const int x =
+          work.left + (std::max)(0, static_cast<int>(work.right - work.left - ww) / 2);
+      const int y =
+          work.top + (std::max)(0, static_cast<int>(work.bottom - work.top - wh) / 2);
+      SetWindowPos(hwnd_, HWND_NOTOPMOST, x, y, ww, wh,
+                   SWP_FRAMECHANGED | SWP_SHOWWINDOW);
+    }
     ShowWindow(hwnd_, SW_MAXIMIZE);
   }
   ApplyChrome();
@@ -3573,17 +5083,21 @@ void NotesWindow::SyncFromWysiwyg() {
       md = web_.PullMarkdown(250);
     }
   }
-  if (!edit_ || md.empty()) {
+  if (md.empty()) {
     return;
   }
-  // Compare against RichEdit — CurrentPlainText() returns the Toast cache
-  // while wysiwyg_ is on, so md == CurrentPlainText() would always skip.
+  // Mirror full document into RichEdit (source of truth when leaving WW).
+  const std::wstring full = ComposeMarkdownWithNativeTitle(md);
+  ApplyNativeTitleFromMarkdown(full);
+  if (!edit_) {
+    return;
+  }
   const int len = GetWindowTextLengthW(edit_);
   std::wstring edit_text(static_cast<size_t>(len) + 1, L'\0');
   GetWindowTextW(edit_, edit_text.data(), len + 1);
   edit_text.resize(static_cast<size_t>(len));
-  if (md != edit_text) {
-    SetWindowTextW(edit_, md.c_str());
+  if (full != edit_text) {
+    SetWindowTextW(edit_, full.c_str());
   }
 }
 
@@ -3625,6 +5139,7 @@ void NotesWindow::EnsureMarkdownEditor(bool force_reload) {
   }
   const bool entering = !wysiwyg_;
   wysiwyg_ = true;
+  EnsureTitleEdit();
   // Layout host first, then push markdown (empty notes still boot Toast).
   if (entering) {
     ApplyWysiwygVisibility();
@@ -3633,18 +5148,40 @@ void NotesWindow::EnsureMarkdownEditor(bool force_reload) {
     web_.Resize();
   }
   LayoutClient();
-  std::wstring md = CurrentPlainText();
+  // RichEdit is authoritative after Load/NewTab. CurrentPlainText() would
+  // return the previous tab's Toast cache once wysiwyg_ is already true —
+  // that leaked the old # title into a freshly opened draft.
+  std::wstring md;
+  if (edit_) {
+    const int len = GetWindowTextLengthW(edit_);
+    md.assign(static_cast<size_t>(len) + 1, L'\0');
+    GetWindowTextW(edit_, md.data(), len + 1);
+    md.resize(static_cast<size_t>(len));
+  }
+  // Staging may already be body-only — rejoin with native title.
+  if (!NativeTitleText().empty() ||
+      (edit_ && !md.empty() && md[0] != L'#')) {
+    md = ComposeMarkdownWithNativeTitle(md);
+  }
   if (md.empty()) {
     md = L"# \n\n";
+  }
+  {
+    const MdTitleBody parts = SplitMarkdownTitleBody(md);
+    ApplyNativeTitleFromMarkdown(md);
     if (edit_) {
-      SetWindowTextW(edit_, md.c_str());
+      SetWindowTextW(edit_, parts.body.c_str());
+    }
+    // Prefer session title_hint when the file has no leading "# …".
+    if (NativeTitleText().empty() && tab_index_ >= 0 &&
+        tab_index_ < static_cast<int>(tab_states_.size()) &&
+        !tab_states_[static_cast<size_t>(tab_index_)].title_hint.empty()) {
+      SetNativeTitleText(
+          tab_states_[static_cast<size_t>(tab_index_)].title_hint);
     }
   }
   if (entering || force_reload) {
-    // Avoid redundant Toast setMarkdown when content is already on screen.
-    if (entering || web_.CachedMarkdown() != md) {
-      web_.SetMarkdown(md);
-    }
+    web_.SetMarkdown(md);
   }
   EnsureTabStates();
   if (tab_index_ >= 0 && tab_index_ < static_cast<int>(tab_states_.size())) {
@@ -3652,6 +5189,10 @@ void NotesWindow::EnsureMarkdownEditor(bool force_reload) {
   }
   UpdateModeStrip();
   RefreshTitle();
+  RaiseTitleEdit();
+  if (title_edit_) {
+    InvalidateRect(title_edit_, nullptr, TRUE);
+  }
 }
 
 void NotesWindow::ToggleWysiwyg() {
@@ -3678,14 +5219,221 @@ void NotesWindow::ApplyWysiwygVisibility() {
     return;
   }
   if (wysiwyg_) {
-    web_.Show();
-    web_.Resize();
-    ShowWindow(edit_, SW_HIDE);
+    EnsureTitleEdit();
+    if (title_edit_) {
+      ShowWindow(title_edit_, SW_SHOW);
+    }
+    // Body: Toast when ready; else RichEdit staging (body-only).
+    if (web_.ContentReady()) {
+      web_.Show();
+      web_.Resize();
+      ShowWindow(edit_, SW_HIDE);
+      if (gutter_) {
+        ShowWindow(gutter_, SW_HIDE);
+      }
+      RaiseTitleEdit();
+    } else {
+      if (web_.Host()) {
+        ShowWindow(web_.Host(), SW_HIDE);
+      }
+      ShowWindow(edit_, SW_SHOW);
+      RaiseTitleEdit();
+    }
   } else {
     web_.Hide();
+    if (title_edit_) {
+      ShowWindow(title_edit_, SW_HIDE);
+    }
     ShowWindow(edit_, SW_SHOW);
   }
   // Caller owns LayoutClient (SwitchToTab / EnsureMarkdownEditor layout once).
+}
+
+void NotesWindow::EnsureTitleEdit() {
+  if (title_edit_ || !hwnd_) {
+    return;
+  }
+  // CLIPSIBLINGS: WebView2 host must not paint over this strip.
+  title_edit_ = CreateWindowExW(
+      0, L"EDIT", L"",
+      WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | ES_AUTOHSCROLL | ES_LEFT,
+      0, 0, 100, 32, hwnd_,
+      reinterpret_cast<HMENU>(static_cast<INT_PTR>(kTitleEditId)),
+      GetModuleHandleW(nullptr), nullptr);
+  if (!title_edit_) {
+    return;
+  }
+  // Cue banner: 「标题」 (Typora placeholder).
+  SendMessageW(title_edit_, EM_SETCUEBANNER, TRUE,
+               reinterpret_cast<LPARAM>(L"标题"));
+  title_edit_proc_ = reinterpret_cast<WNDPROC>(SetWindowLongPtrW(
+      title_edit_, GWLP_WNDPROC,
+      reinterpret_cast<LONG_PTR>(NotesWindow::TitleEditProc)));
+  ApplyTitleFont();
+  ApplyChrome();
+}
+
+void NotesWindow::RaiseTitleEdit() {
+  if (title_edit_ && IsWindowVisible(title_edit_)) {
+    // WebView2 ShowWindow often stacks above prior HWND_TOP siblings.
+    SetWindowPos(title_edit_, HWND_TOP, 0, 0, 0, 0,
+                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+  }
+  if (font_face_combo_ && IsWindowVisible(font_face_combo_)) {
+    SetWindowPos(font_face_combo_, HWND_TOP, 0, 0, 0, 0,
+                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+  }
+  if (font_size_combo_ && IsWindowVisible(font_size_combo_)) {
+    SetWindowPos(font_size_combo_, HWND_TOP, 0, 0, 0, 0,
+                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+  }
+}
+
+void NotesWindow::ApplyTitleFont() {
+  if (!title_edit_) {
+    return;
+  }
+  if (title_font_) {
+    DeleteObject(title_font_);
+    title_font_ = nullptr;
+  }
+  HDC hdc = GetDC(hwnd_ ? hwnd_ : nullptr);
+  const int dpi = hdc ? GetDeviceCaps(hdc, LOGPIXELSY) : 96;
+  if (hdc) {
+    ReleaseDC(hwnd_ ? hwnd_ : nullptr, hdc);
+  }
+  // ~20pt at 96dpi; clamp feel via display-adaptivity (not a poster on 200%).
+  int pt = 20;
+  if (dpi >= 192) {
+    pt = 16;
+  } else if (dpi >= 144) {
+    pt = 18;
+  }
+  const int height = -MulDiv(pt, dpi, 72);
+  title_font_ = CreateFontW(height, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
+                            DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
+                            CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+                            VARIABLE_PITCH | FF_SWISS, L"Segoe UI");
+  if (title_font_) {
+    SendMessageW(title_edit_, WM_SETFONT, reinterpret_cast<WPARAM>(title_font_),
+                 TRUE);
+  }
+}
+
+int NotesWindow::TitleChromeHeight() const {
+  HDC hdc = GetDC(hwnd_ ? hwnd_ : nullptr);
+  const int dpi = hdc ? GetDeviceCaps(hdc, LOGPIXELSY) : 96;
+  if (hdc) {
+    ReleaseDC(hwnd_ ? hwnd_ : nullptr, hdc);
+  }
+  // Title field + vertical padding; floor so HiDPI / small work areas stay tappable.
+  const int pad = MulDiv(18, dpi, 96);
+  int font_px = MulDiv(20, dpi, 72);
+  if (dpi >= 192) {
+    font_px = MulDiv(16, dpi, 72);
+  } else if (dpi >= 144) {
+    font_px = MulDiv(18, dpi, 72);
+  }
+  return (std::max)(MulDiv(48, dpi, 96), font_px + pad);
+}
+
+std::wstring NotesWindow::NativeTitleText() const {
+  if (!title_edit_) {
+    return {};
+  }
+  const int len = GetWindowTextLengthW(title_edit_);
+  std::wstring t(static_cast<size_t>(len) + 1, L'\0');
+  GetWindowTextW(title_edit_, t.data(), len + 1);
+  t.resize(static_cast<size_t>(len));
+  return t;
+}
+
+void NotesWindow::SetNativeTitleText(const std::wstring& title) {
+  EnsureTitleEdit();
+  if (!title_edit_) {
+    return;
+  }
+  title_applying_ = true;
+  SetWindowTextW(title_edit_, title.c_str());
+  title_applying_ = false;
+}
+
+void NotesWindow::ApplyNativeTitleFromMarkdown(const std::wstring& md) {
+  const MdTitleBody parts = SplitMarkdownTitleBody(md);
+  EnsureTabStates();
+  if (!parts.title.empty() || parts.emit_title_line) {
+    // Real ATX title (including empty "# \n\n" draft seed).
+    SetNativeTitleText(parts.title);
+    if (tab_index_ >= 0 &&
+        tab_index_ < static_cast<int>(tab_states_.size())) {
+      tab_states_[static_cast<size_t>(tab_index_)].title_hint = parts.title;
+    }
+    return;
+  }
+  // Body-only file: never wipe session title_hint / filename with "".
+  if (!NativeTitleText().empty()) {
+    return;
+  }
+  std::wstring fallback;
+  if (tab_index_ >= 0 &&
+      tab_index_ < static_cast<int>(tab_states_.size())) {
+    fallback = tab_states_[static_cast<size_t>(tab_index_)].title_hint;
+  }
+  if (fallback.empty() && !path_.empty()) {
+    const size_t slash = path_.find_last_of(L"\\/");
+    fallback =
+        slash == std::wstring::npos ? path_ : path_.substr(slash + 1);
+    const size_t dot = fallback.find_last_of(L'.');
+    if (dot != std::wstring::npos && dot > 0) {
+      fallback = fallback.substr(0, dot);
+    }
+    fallback = LocalizeUntitledStem(fallback);
+  }
+  if (!fallback.empty()) {
+    SetNativeTitleText(fallback);
+    if (tab_index_ >= 0 &&
+        tab_index_ < static_cast<int>(tab_states_.size())) {
+      tab_states_[static_cast<size_t>(tab_index_)].title_hint = fallback;
+    }
+  }
+}
+
+std::wstring NotesWindow::ComposeMarkdownWithNativeTitle(
+    const std::wstring& body_or_full) const {
+  // If body_or_full still has a leading heading, strip it — native title wins.
+  const MdTitleBody parts = SplitMarkdownTitleBody(body_or_full);
+  const std::wstring title = NativeTitleText();
+  // Do NOT force emit solely because wysiwyg_ is on — that invented
+  // "# \n\n" on empty Toast cache and soft-save wiped real notes on disk.
+  const bool emit = !title.empty() || parts.emit_title_line;
+  return JoinMarkdownTitleBody(title, parts.body, emit);
+}
+
+void NotesWindow::PushNativeTitleToWeb() {
+  if (!wysiwyg_) {
+    return;
+  }
+  // Keep host cache coherent immediately (Save / tab label before Toast ack).
+  web_.SetCachedMarkdown(
+      ComposeMarkdownWithNativeTitle(web_.CachedMarkdown()));
+  if (!web_.Ready()) {
+    return;
+  }
+  const std::wstring title = NativeTitleText();
+  std::wstring js =
+      L"try{if(window.__desknoteSetHostTitle)__desknoteSetHostTitle(\"";
+  for (wchar_t c : title) {
+    if (c == L'\\' || c == L'"') {
+      js += L'\\';
+      js += c;
+    } else if (c == L'\n' || c == L'\r') {
+      js += L' ';
+    } else {
+      js += c;
+    }
+  }
+  js += L"\")}catch(e){}";
+  web_.EvalScript(js);
 }
 
 double NotesWindow::EditScrollRatio() {
@@ -3786,33 +5534,12 @@ void NotesWindow::SchedulePreviewRefresh() {
 }
 
 void NotesWindow::TogglePreview() {
-  if (wysiwyg_) {
-    ToggleWysiwyg();  // leave WYSIWYG first
-  }
-  if (!preview_web_.Available()) {
-    preview_web_.SetKind(NotesWebView::Kind::kViewer);
-    preview_web_.SetTheme(SystemAppsUseLightTheme() ? L"light" : L"dark");
-    preview_web_.on_scroll = [this](double ratio) { SyncPreviewToEdit(ratio); };
-    if (!preview_web_.Create(hwnd_)) {
-      MistAlert(hwnd_, L"预览", L"无法启动预览（WebView2 不可用）。",
-                MistMsgTone::Warn);
-      return;
-    }
-  }
-  preview_ = !preview_;
-  if (menu_) {
-    CheckMenuItem(menu_, kMenuPreviewPane,
-                  MF_BYCOMMAND | (preview_ ? MF_CHECKED : MF_UNCHECKED));
-  }
-  if (preview_) {
-    preview_web_.Show();
-    UpdatePreview();
-    SetWindowPos(hwnd_, nullptr, 0, 0, 900, 560,
-                 SWP_NOMOVE | SWP_NOZORDER | SWP_SHOWWINDOW);
-  } else {
+  // Right-side / full-stage preview chrome removed.
+  preview_ = false;
+  if (preview_web_.Host()) {
     preview_web_.Hide();
   }
-  LayoutClient();
+  ShowEditMode();
   PersistViewSettings();
 }
 
@@ -3825,6 +5552,7 @@ void NotesWindow::ExportPdf() {
                 MistMsgTone::Warn);
       return;
     }
+    RegisterDropOnSubtree(preview_web_.Host());
   }
   wchar_t file[MAX_PATH] = L"note.pdf";
   OPENFILENAMEW ofn{};
@@ -3995,14 +5723,8 @@ void NotesWindow::LayoutClient() {
   layout_searching_ = searching;
   // Tab strip (+ top-right preview/edit chip for Markdown).
   int top = 0;
-  const bool show_mode_chip =
-      mode_strip_ && PathLooksMarkdown() && !focus_ && !toast_ && !wysiwyg_;
   if (tabs_ && !toast_) {
-    const int tabs_w =
-        show_mode_chip
-            ? (std::max)(120, static_cast<int>(rc.right) -
-                                  (kModeBtnW + kModeBtnPad * 2))
-            : static_cast<int>(rc.right);
+    const int tabs_w = static_cast<int>(rc.right);
     MoveWindow(tabs_, 0, 0, tabs_w, 48, TRUE);
     ShowWindow(tabs_, SW_SHOW);
     SetWindowPos(tabs_, HWND_TOP, 0, 0, 0, 0,
@@ -4022,7 +5744,6 @@ void NotesWindow::LayoutClient() {
   }
   int left = 0;
   int right = rc.right;
-  const int pane_h = (std::max)(40, bottom - top);
 
   // Left library rail (cool gray) — full height under tabs.
   if (sidebar_visible_ && sidebar_ && !toast_) {
@@ -4084,56 +5805,7 @@ void NotesWindow::LayoutClient() {
     right = static_cast<int>(rc.right) - pad_x;
   }
 
-  // Top-right preview/edit chip (Typora-class); outline stays a right rail.
-  if (show_mode_chip) {
-    const int bx = static_cast<int>(rc.right) - kModeBtnW - kModeBtnPad;
-    const int by = (std::max)(0, (48 - kModeBtnH) / 2);
-    MoveWindow(mode_strip_, bx, by, kModeBtnW, kModeBtnH, TRUE);
-    SetWindowTextW(mode_strip_, preview_ ? L"编辑" : L"预览");
-    SetWindowPos(mode_strip_, HWND_TOP, 0, 0, 0, 0,
-                 SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW | SWP_NOACTIVATE);
-    InvalidateRect(mode_strip_, nullptr, FALSE);
-  } else if (mode_strip_) {
-    ShowWindow(mode_strip_, SW_HIDE);
-  }
-
-  const bool show_outline = outline_strip_ && !wysiwyg_ && !focus_ && !toast_ &&
-                            !preview_;
-  int trail = 0;
-  if (show_outline) {
-    trail += outline_ ? (kOutlineExpandedW + kOutlineStripW) : kOutlineStripW;
-  }
-  right = (std::max)(left + 80, right - trail);
-
-  int x = rc.right;
-  if (show_outline) {
-    if (outline_ && outline_list_) {
-      x -= kOutlineStripW;
-      MoveWindow(outline_strip_, x, top, kOutlineStripW, pane_h, TRUE);
-      SetWindowTextW(outline_strip_, L"‹");
-      InvalidateRect(outline_strip_, nullptr, FALSE);
-      ShowWindow(outline_strip_, SW_SHOW);
-      x -= kOutlineExpandedW;
-      MoveWindow(outline_list_, x, top, kOutlineExpandedW, pane_h, TRUE);
-      ShowWindow(outline_list_, SW_SHOW);
-    } else {
-      if (outline_list_) {
-        ShowWindow(outline_list_, SW_HIDE);
-      }
-      x -= kOutlineStripW;
-      MoveWindow(outline_strip_, x, top, kOutlineStripW, pane_h, TRUE);
-      SetWindowTextW(outline_strip_, L"大\n纲");
-      InvalidateRect(outline_strip_, nullptr, FALSE);
-      ShowWindow(outline_strip_, SW_SHOW);
-    }
-  } else {
-    if (outline_list_) {
-      ShowWindow(outline_list_, SW_HIDE);
-    }
-    if (outline_strip_) {
-      ShowWindow(outline_strip_, SW_HIDE);
-    }
-  }
+  // Right preview chip + outline rail removed — editor uses full width.
 
   const int stage_l = left + (sidebar_visible_ && !toast_ ? 12 : 8);
   const int stage_r = right - 8;
@@ -4144,7 +5816,93 @@ void NotesWindow::LayoutClient() {
 
   const bool md_preview =
       preview_ && PathLooksMarkdown() && !wysiwyg_ && !focus_;
-  if (wysiwyg_) {
+  // Native title is immediate; Toast ContentReady only gates the body surface.
+  const bool wysiwyg_live = wysiwyg_ && web_.ContentReady();
+  const bool show_native_title = wysiwyg_ && PathLooksMarkdown() && !toast_;
+  HDC hdc_pad = GetDC(hwnd_);
+  const int dpi_pad = hdc_pad ? GetDeviceCaps(hdc_pad, LOGPIXELSY) : 96;
+  if (hdc_pad) {
+    ReleaseDC(hwnd_, hdc_pad);
+  }
+  const int title_pad_x = MulDiv(14, dpi_pad, 96);
+  const int font_gap = MulDiv(8, dpi_pad, 96);
+  const int face_w = MulDiv(108, dpi_pad, 96);
+  const int size_w = MulDiv(56, dpi_pad, 96);
+  const int combo_h = MulDiv(24, dpi_pad, 96);
+  // WW: font face/size live in Toast toolbar. Plain RichEdit keeps native combos.
+  const bool show_font_bar = !toast_ && !wysiwyg_;
+  if (show_font_bar) {
+    EnsureFontControls();
+  }
+  int body_t = stage_t;
+  int body_h = stage_h;
+  if (show_native_title) {
+    EnsureTitleEdit();
+    const int title_h = TitleChromeHeight();
+    const int font_tools_w = show_font_bar ? (face_w + font_gap + size_w) : 0;
+    const int title_w =
+        (std::max)(40, stage_w - title_pad_x * 2 - font_tools_w -
+                           (font_tools_w ? font_gap : 0));
+    if (title_edit_) {
+      MoveWindow(title_edit_, stage_l + title_pad_x, stage_t, title_w, title_h,
+                 TRUE);
+      ShowWindow(title_edit_, SW_SHOW);
+    }
+    if (show_font_bar && font_face_combo_ && font_size_combo_) {
+      const int combo_y =
+          stage_t + (std::max)(0, (title_h - combo_h) / 2);
+      const int size_x = stage_l + stage_w - title_pad_x - size_w;
+      const int face_x = size_x - font_gap - face_w;
+      MoveWindow(font_face_combo_, face_x, combo_y, face_w, combo_h + 180,
+                 TRUE);
+      MoveWindow(font_size_combo_, size_x, combo_y, size_w, combo_h + 220,
+                 TRUE);
+      ShowWindow(font_face_combo_, SW_SHOW);
+      ShowWindow(font_size_combo_, SW_SHOW);
+      SetWindowPos(font_face_combo_, HWND_TOP, 0, 0, 0, 0,
+                   SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+      SetWindowPos(font_size_combo_, HWND_TOP, 0, 0, 0, 0,
+                   SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    }
+    // Gap under title for a 1px rule (painted in WM_PAINT).
+    body_t = stage_t + title_h + MulDiv(6, dpi_pad, 96);
+    body_h = (std::max)(40, stage_b - body_t);
+  } else {
+    if (title_edit_) {
+      ShowWindow(title_edit_, SW_HIDE);
+    }
+    // Plain editor: font strip above the body (Word / Notepad++ class).
+    if (show_font_bar && font_face_combo_ && font_size_combo_) {
+      const int bar_h = combo_h + MulDiv(8, dpi_pad, 96);
+      const int combo_y = stage_t + MulDiv(4, dpi_pad, 96);
+      const int size_x = stage_l + stage_w - title_pad_x - size_w;
+      const int face_x = size_x - font_gap - face_w;
+      MoveWindow(font_face_combo_, face_x, combo_y, face_w, combo_h + 180,
+                 TRUE);
+      MoveWindow(font_size_combo_, size_x, combo_y, size_w, combo_h + 220,
+                 TRUE);
+      ShowWindow(font_face_combo_, SW_SHOW);
+      ShowWindow(font_size_combo_, SW_SHOW);
+      body_t = stage_t + bar_h;
+      body_h = (std::max)(40, stage_b - body_t);
+    } else if (font_face_combo_ || font_size_combo_) {
+      if (font_face_combo_) {
+        ShowWindow(font_face_combo_, SW_HIDE);
+      }
+      if (font_size_combo_) {
+        ShowWindow(font_size_combo_, SW_HIDE);
+      }
+    }
+  }
+  if (!show_font_bar) {
+    if (font_face_combo_) {
+      ShowWindow(font_face_combo_, SW_HIDE);
+    }
+    if (font_size_combo_) {
+      ShowWindow(font_size_combo_, SW_HIDE);
+    }
+  }
+  if (wysiwyg_live) {
     if (edit_) {
       ShowWindow(edit_, SW_HIDE);
     }
@@ -4155,9 +5913,33 @@ void NotesWindow::LayoutClient() {
       ShowWindow(gutter_, SW_HIDE);
     }
     if (web_.Host()) {
-      MoveWindow(web_.Host(), stage_l, stage_t, stage_w, stage_h, TRUE);
+      // CLIPSIBLINGS on host so it cannot cover the title strip.
+      SetWindowLongPtrW(web_.Host(), GWL_STYLE,
+                        GetWindowLongPtrW(web_.Host(), GWL_STYLE) |
+                            WS_CLIPSIBLINGS);
+      MoveWindow(web_.Host(), stage_l, body_t, stage_w, body_h, TRUE);
+      ShowWindow(web_.Host(), SW_SHOW);
       web_.Resize();
     }
+    RaiseTitleEdit();
+  } else if (wysiwyg_) {
+    // Body staging only — title already in title_edit_.
+    if (preview_web_.Host()) {
+      preview_web_.Hide();
+    }
+    if (web_.Host()) {
+      MoveWindow(web_.Host(), stage_l, body_t, stage_w, body_h, TRUE);
+      ShowWindow(web_.Host(), SW_HIDE);
+    }
+    if (edit_) {
+      // No gutter for body-only staging (cleaner Typora-like interim).
+      if (gutter_) {
+        ShowWindow(gutter_, SW_HIDE);
+      }
+      ShowWindow(edit_, SW_SHOW);
+      MoveWindow(edit_, stage_l, body_t, stage_w, body_h, TRUE);
+    }
+    RaiseTitleEdit();
   } else if (md_preview) {
     if (edit_) {
       ShowWindow(edit_, SW_HIDE);
@@ -4576,14 +6358,8 @@ void NotesWindow::JumpToOutline() {
 }
 
 void NotesWindow::ToggleOutline() {
-  outline_ = !outline_;
-  if (menu_) {
-    CheckMenuItem(menu_, kMenuOutline,
-                  MF_BYCOMMAND | (outline_ ? MF_CHECKED : MF_UNCHECKED));
-  }
-  if (outline_) {
-    RebuildOutline();
-  }
+  // Right outline rail removed.
+  outline_ = false;
   LayoutClient();
   PersistViewSettings();
 }
@@ -5032,6 +6808,7 @@ void NotesWindow::ShowFind(bool replace) {
   MistWebDialog dlg;
   dlg.owner = hwnd_;
   dlg.frameless = true;
+  dlg.topmost = false;  // Keep DeskTidy desktop band stable (no TOPMOST FG steal).
   dlg.disable_owner = false;  // Modeless-like: keep editor usable (Python).
   dlg.owner_accel = accel_;
   dlg.user_data_subdir = L"webview2-notes-find";
@@ -5256,16 +7033,12 @@ void NotesWindow::ToggleSidebar() {
   PersistViewSettings();
 }
 
-std::wstring NotesWindow::SidebarSelectedPath() {
-  if (!sidebar_) {
-    return {};
-  }
-  HTREEITEM sel = TreeView_GetSelection(sidebar_);
-  if (!sel) {
+std::wstring NotesWindow::SidebarPathFromItem(HTREEITEM item) const {
+  if (!sidebar_ || !item) {
     return {};
   }
   TVITEMW it{};
-  it.hItem = sel;
+  it.hItem = item;
   it.mask = TVIF_PARAM;
   if (!TreeView_GetItem(sidebar_, &it) || it.lParam == 0) {
     return {};
@@ -5275,6 +7048,139 @@ std::wstring NotesWindow::SidebarSelectedPath() {
     return {};
   }
   return sidebar_paths_[idx];
+}
+
+std::wstring NotesWindow::SidebarSelectedPath() {
+  if (!sidebar_multi_.empty()) {
+    return sidebar_multi_.back();
+  }
+  return SidebarPathFromItem(TreeView_GetSelection(sidebar_));
+}
+
+bool NotesWindow::SidebarPathInMulti(const std::wstring& path) const {
+  if (path.empty()) {
+    return false;
+  }
+  const std::wstring key = NormalizePathKey(path);
+  for (const auto& p : sidebar_multi_) {
+    if (_wcsicmp(NormalizePathKey(p).c_str(), key.c_str()) == 0) {
+      return true;
+    }
+  }
+  return false;
+}
+
+void NotesWindow::SidebarClearMultiSelect() {
+  if (sidebar_multi_.empty() && sidebar_anchor_path_.empty()) {
+    return;
+  }
+  sidebar_multi_.clear();
+  sidebar_anchor_path_.clear();
+  if (sidebar_) {
+    InvalidateRect(sidebar_, nullptr, FALSE);
+  }
+}
+
+std::vector<std::wstring> NotesWindow::SidebarSelectedPaths() const {
+  if (!sidebar_multi_.empty()) {
+    return sidebar_multi_;
+  }
+  std::vector<std::wstring> one;
+  // const_cast-free: duplicate GetSelection path
+  if (!sidebar_) {
+    return one;
+  }
+  HTREEITEM sel = TreeView_GetSelection(sidebar_);
+  if (!sel) {
+    return one;
+  }
+  TVITEMW it{};
+  it.hItem = sel;
+  it.mask = TVIF_PARAM;
+  if (!TreeView_GetItem(sidebar_, &it) || it.lParam == 0) {
+    return one;
+  }
+  const size_t idx = static_cast<size_t>(it.lParam) - 1;
+  if (idx < sidebar_paths_.size()) {
+    one.push_back(sidebar_paths_[idx]);
+  }
+  return one;
+}
+
+void NotesWindow::SidebarApplyClickSelect(HTREEITEM item, bool ctrl,
+                                          bool shift) {
+  if (!sidebar_ || !item) {
+    return;
+  }
+  const std::wstring path = SidebarPathFromItem(item);
+  if (path.empty()) {
+    // Folder / root — clear multi, keep default tree focus.
+    SidebarClearMultiSelect();
+    TreeView_SelectItem(sidebar_, item);
+    return;
+  }
+  if (shift && !sidebar_anchor_path_.empty()) {
+    // Range select like Explorer: file items from anchor → click (visible order).
+    std::vector<std::wstring> files;
+    int ia = -1;
+    int ib = -1;
+    for (HTREEITEM cur = TreeView_GetRoot(sidebar_); cur;
+         cur = TreeView_GetNextVisible(sidebar_, cur)) {
+      const std::wstring p = SidebarPathFromItem(cur);
+      if (p.empty()) {
+        continue;
+      }
+      if (_wcsicmp(NormalizePathKey(p).c_str(),
+                   NormalizePathKey(sidebar_anchor_path_).c_str()) == 0) {
+        ia = static_cast<int>(files.size());
+      }
+      if (cur == item) {
+        ib = static_cast<int>(files.size());
+      }
+      files.push_back(p);
+    }
+    if (ib < 0) {
+      ib = ia >= 0 ? ia : 0;
+    }
+    if (ia < 0) {
+      ia = ib;
+    }
+    const int lo = (std::min)(ia, ib);
+    const int hi = (std::max)(ia, ib);
+    sidebar_multi_.clear();
+    for (int i = lo; i <= hi && i < static_cast<int>(files.size()); ++i) {
+      sidebar_multi_.push_back(files[static_cast<size_t>(i)]);
+    }
+    TreeView_SelectItem(sidebar_, item);
+    InvalidateRect(sidebar_, nullptr, FALSE);
+    return;
+  }
+  if (ctrl) {
+    // Toggle membership (Explorer / VS Code library).
+    if (SidebarPathInMulti(path)) {
+      const std::wstring key = NormalizePathKey(path);
+      sidebar_multi_.erase(
+          std::remove_if(sidebar_multi_.begin(), sidebar_multi_.end(),
+                         [&](const std::wstring& p) {
+                           return _wcsicmp(NormalizePathKey(p).c_str(),
+                                           key.c_str()) == 0;
+                         }),
+          sidebar_multi_.end());
+    } else {
+      sidebar_multi_.push_back(path);
+    }
+    if (sidebar_anchor_path_.empty()) {
+      sidebar_anchor_path_ = path;
+    }
+    TreeView_SelectItem(sidebar_, item);
+    InvalidateRect(sidebar_, nullptr, FALSE);
+    return;
+  }
+  sidebar_multi_.clear();
+  sidebar_multi_.push_back(path);
+  sidebar_anchor_path_ = path;
+  TreeView_SelectItem(sidebar_, item);
+  InvalidateRect(sidebar_, nullptr, FALSE);
 }
 
 void NotesWindow::OpenSelectedSidebarItem() {
@@ -5357,6 +7263,7 @@ void NotesWindow::TogglePinPath(const std::wstring& path) {
       PersistTabs();
       ApplyPinnedTabOrder();
       RebuildSidebar();
+      RebuildTabControl();
       return;
     }
   }
@@ -5364,6 +7271,7 @@ void NotesWindow::TogglePinPath(const std::wstring& path) {
   PersistTabs();
   ApplyPinnedTabOrder();
   RebuildSidebar();
+  RebuildTabControl();
 }
 
 void NotesWindow::RunSidebarSearch() {
@@ -5386,10 +7294,7 @@ void NotesWindow::RunSidebarSearch() {
                          prefs.notes_search_max_hits,
                          prefs.notes_search_max_file_bytes);
   for (const auto& hit : sidebar_hits_) {
-    const size_t slash = hit.path.find_last_of(L"\\/");
-    std::wstring label = slash == std::wstring::npos
-                             ? hit.path
-                             : hit.path.substr(slash + 1);
+    std::wstring label = NoteDisplayName(hit.path, true);
     if (hit.line >= 0) {
       label += L"  · 行 " + std::to_wstring(hit.line + 1);
     }
@@ -5427,19 +7332,41 @@ void NotesWindow::RebuildSidebar() {
   if (!sidebar_) {
     return;
   }
+  // Ensure Explorer-visible names match UI before we rebuild labels.
+  HealUntitledDraftsOnDisk();
+  // Freeze paint while wiping/rebuilding — TreeView per-item redraw is the
+  // main hitch after delete / pin / rename (Explorer-class notes rails).
+  SendMessageW(sidebar_, WM_SETREDRAW, FALSE, 0);
   TreeView_DeleteAllItems(sidebar_);
   sidebar_paths_.clear();
+  sidebar_multi_.clear();
+  sidebar_anchor_path_.clear();
   const std::wstring root = NotesLibraryDir(true);
   CreateDirectoryW(root.c_str(), nullptr);
 
-  auto insert = [&](HTREEITEM parent, const std::wstring& full, bool is_dir) {
+  bool sidebar_healed = false;
+  auto retarget_after_heal = [&](const std::wstring& old_path,
+                                 const std::wstring& new_path) {
+    if (old_path.empty() || new_path.empty() ||
+        _wcsicmp(NormalizePathKey(old_path).c_str(),
+                 NormalizePathKey(new_path).c_str()) == 0) {
+      return;
+    }
+    RetargetNotePath(old_path, new_path);
+    sidebar_healed = true;
+  };
+
+  auto insert = [&](HTREEITEM parent, const std::wstring& full, bool is_dir,
+                    const std::wstring& display) {
     TVINSERTSTRUCTW ins{};
     ins.hParent = parent;
     ins.hInsertAfter = TVI_LAST;
     ins.item.mask = TVIF_TEXT | TVIF_PARAM;
-    const size_t slash = full.find_last_of(L"\\/");
-    std::wstring label =
-        slash == std::wstring::npos ? full : full.substr(slash + 1);
+    std::wstring label = display;
+    if (label.empty()) {
+      const size_t slash = full.find_last_of(L"\\/");
+      label = slash == std::wstring::npos ? full : full.substr(slash + 1);
+    }
     ins.item.pszText = label.data();
     ins.item.lParam = 0;
     if (!is_dir) {
@@ -5477,15 +7404,21 @@ void NotesWindow::RebuildSidebar() {
             e.ctime = u.QuadPart;
             entries.push_back(std::move(e));
           } else if (IsOpenablePath(fd.cFileName)) {
-            Entry e{fd.cFileName, dir + L"\\" + fd.cFileName, false, false, 0};
+            std::wstring full = dir + L"\\" + fd.cFileName;
+            const std::wstring old_full = full;
+            if (HealEnglishUntitledPath(&full)) {
+              retarget_after_heal(old_full, full);
+            }
+            // Match window title / tab: document title → localized stem.
+            Entry e{NoteDisplayName(full, true), full, false, false, 0};
             e.pinned = PathIsPinned(e.full);
             ULARGE_INTEGER u{};
             u.LowPart = fd.ftCreationTime.dwLowDateTime;
             u.HighPart = fd.ftCreationTime.dwHighDateTime;
             e.ctime = u.QuadPart;
-            // Pinned files get a ★ prefix in the label.
+            // Lead pad for thumbtack paint (same glyph as tab chips — no ★).
             if (e.pinned) {
-              e.name = L"★ " + e.name;
+              e.name = L"   " + e.name;
             }
             entries.push_back(std::move(e));
           }
@@ -5506,23 +7439,14 @@ void NotesWindow::RebuildSidebar() {
                     return _wcsicmp(a.name.c_str(), b.name.c_str()) < 0;
                   });
         for (const auto& e : entries) {
-          HTREEITEM it = insert(parent, e.full, e.dir);
-          // Re-label pinned files (insert used basename from full path).
-          if (!e.dir && e.pinned && it) {
-            TVITEMW item{};
-            item.mask = TVIF_HANDLE | TVIF_TEXT;
-            item.hItem = it;
-            std::wstring label = e.name;
-            item.pszText = label.data();
-            TreeView_SetItem(sidebar_, &item);
-          }
+          HTREEITEM it = insert(parent, e.full, e.dir, e.name);
           if (e.dir && depth < 2) {
             walk(e.full, it, depth + 1);
           }
         }
       };
 
-  HTREEITEM root_item = insert(TVI_ROOT, root, true);
+  HTREEITEM root_item = insert(TVI_ROOT, root, true, L"");
   if (root_item) {
     // Product label — avoid raw folder name 「笔记」looking like OS Explorer.
     TVITEMW item{};
@@ -5539,9 +7463,147 @@ void NotesWindow::RebuildSidebar() {
   if (root_item) {
     TreeView_EnsureVisible(sidebar_, root_item);
   }
+  SendMessageW(sidebar_, WM_SETREDRAW, TRUE, 0);
+  RedrawWindow(sidebar_, nullptr, nullptr,
+               RDW_ERASE | RDW_FRAME | RDW_INVALIDATE | RDW_ALLCHILDREN);
+  if (sidebar_healed) {
+    SchedulePersistTabs();
+    RebuildTabControl();
+    RefreshTitle();
+  }
   if (!path_.empty()) {
     HighlightSidebarPath(path_);
   }
+}
+
+void NotesWindow::SidebarUpsertFile(const std::wstring& path) {
+  if (!sidebar_ || path.empty()) {
+    return;
+  }
+  const std::wstring key = NormalizePathKey(path);
+  // Already present → refresh label + select (common after close-last).
+  HTREEITEM found = nullptr;
+  std::function<void(HTREEITEM)> walk = [&](HTREEITEM item) {
+    while (item && !found) {
+      TVITEMW ti{};
+      ti.mask = TVIF_HANDLE | TVIF_PARAM;
+      ti.hItem = item;
+      if (TreeView_GetItem(sidebar_, &ti) && ti.lParam > 0) {
+        const size_t idx = static_cast<size_t>(ti.lParam) - 1;
+        if (idx < sidebar_paths_.size() &&
+            _wcsicmp(NormalizePathKey(sidebar_paths_[idx]).c_str(),
+                     key.c_str()) == 0) {
+          found = item;
+          return;
+        }
+      }
+      if (HTREEITEM child = TreeView_GetChild(sidebar_, item)) {
+        walk(child);
+      }
+      item = TreeView_GetNextSibling(sidebar_, item);
+    }
+  };
+  walk(TreeView_GetRoot(sidebar_));
+  std::wstring label = NoteDisplayName(path, false);
+  if (PathIsPinned(path)) {
+    label = L"   " + label;
+  }
+  if (found) {
+    TVITEMW set{};
+    set.mask = TVIF_HANDLE | TVIF_TEXT;
+    set.hItem = found;
+    set.pszText = label.data();
+    TreeView_SetItem(sidebar_, &set);
+    HighlightSidebarPath(path);
+    return;
+  }
+  HTREEITEM root = TreeView_GetRoot(sidebar_);
+  if (!root) {
+    return;
+  }
+  sidebar_paths_.push_back(path);
+  TVINSERTSTRUCTW ins{};
+  ins.hParent = root;
+  ins.hInsertAfter = TVI_FIRST;  // newest draft on top (ctime sort parity)
+  ins.item.mask = TVIF_TEXT | TVIF_PARAM;
+  ins.item.pszText = label.data();
+  ins.item.lParam = static_cast<LPARAM>(sidebar_paths_.size());
+  HTREEITEM it = TreeView_InsertItem(sidebar_, &ins);
+  if (it) {
+    TreeView_Expand(sidebar_, root, TVE_EXPAND);
+    HighlightSidebarPath(path);
+  }
+}
+
+void NotesWindow::SidebarRemovePaths(const std::vector<std::wstring>& paths) {
+  if (!sidebar_ || paths.empty()) {
+    return;
+  }
+  std::vector<std::wstring> keys;
+  keys.reserve(paths.size());
+  for (const auto& p : paths) {
+    if (!p.empty()) {
+      keys.push_back(NormalizePathKey(p));
+    }
+  }
+  if (keys.empty()) {
+    return;
+  }
+  auto matches = [&](const std::wstring& full) {
+    const std::wstring key = NormalizePathKey(full);
+    for (const auto& k : keys) {
+      if (_wcsicmp(key.c_str(), k.c_str()) == 0) {
+        return true;
+      }
+    }
+    return false;
+  };
+  std::vector<HTREEITEM> doomed;
+  std::function<void(HTREEITEM)> walk = [&](HTREEITEM item) {
+    while (item) {
+      const HTREEITEM next = TreeView_GetNextSibling(sidebar_, item);
+      if (HTREEITEM child = TreeView_GetChild(sidebar_, item)) {
+        walk(child);
+      }
+      TVITEMW ti{};
+      ti.mask = TVIF_HANDLE | TVIF_PARAM;
+      ti.hItem = item;
+      if (TreeView_GetItem(sidebar_, &ti) && ti.lParam > 0) {
+        const size_t idx = static_cast<size_t>(ti.lParam) - 1;
+        if (idx < sidebar_paths_.size() && matches(sidebar_paths_[idx])) {
+          doomed.push_back(item);
+        }
+      }
+      item = next;
+    }
+  };
+  walk(TreeView_GetRoot(sidebar_));
+  if (doomed.empty()) {
+    return;
+  }
+  SendMessageW(sidebar_, WM_SETREDRAW, FALSE, 0);
+  for (HTREEITEM it : doomed) {
+    TreeView_DeleteItem(sidebar_, it);
+  }
+  // Keep path slots but clear deleted entries (lParam indices stay valid).
+  for (auto& slot : sidebar_paths_) {
+    if (!slot.empty() && matches(slot)) {
+      slot.clear();
+    }
+  }
+  for (auto it = sidebar_multi_.begin(); it != sidebar_multi_.end();) {
+    if (matches(*it)) {
+      it = sidebar_multi_.erase(it);
+    } else {
+      ++it;
+    }
+  }
+  if (!sidebar_anchor_path_.empty() && matches(sidebar_anchor_path_)) {
+    sidebar_anchor_path_.clear();
+  }
+  SendMessageW(sidebar_, WM_SETREDRAW, TRUE, 0);
+  RedrawWindow(sidebar_, nullptr, nullptr,
+               RDW_ERASE | RDW_FRAME | RDW_INVALIDATE | RDW_ALLCHILDREN);
 }
 
 void NotesWindow::HighlightSidebarPath(const std::wstring& path) {
@@ -5597,7 +7659,8 @@ void NotesWindow::RenameSidebarSelected() {
 }
 
 bool NotesWindow::ApplySidebarRename(const std::wstring& path,
-                                     const std::wstring& new_stem_raw) {
+                                     const std::wstring& new_stem_raw,
+                                     bool quiet) {
   if (path.empty()) {
     return false;
   }
@@ -5624,38 +7687,48 @@ bool NotesWindow::ApplySidebarRename(const std::wstring& path,
                suffix.c_str()) == 0) {
     new_stem.resize(new_stem.size() - suffix.size());
   }
+  // Sanitize like SyncFilenameToTitle (inline rename can paste illegal chars).
+  {
+    std::wstring clean = SanitizeNoteFileStem(new_stem);
+    if (!clean.empty()) {
+      new_stem = std::move(clean);
+    }
+  }
   if (new_stem.empty() || new_stem == stem) {
     return false;
   }
   // Disallow path separators in the stem.
   if (new_stem.find_first_of(L"\\/") != std::wstring::npos) {
-    MistAlert(hwnd_, L"重命名", L"名称不能包含路径分隔符。", MistMsgTone::Warn);
+    if (!quiet) {
+      MistAlert(hwnd_, L"重命名", L"名称不能包含路径分隔符。", MistMsgTone::Warn);
+    }
     return false;
   }
   const std::wstring new_path = dir + L"\\" + new_stem + suffix;
   if (GetFileAttributesW(new_path.c_str()) != INVALID_FILE_ATTRIBUTES) {
-    MistAlert(hwnd_, L"重命名", L"该名称已存在。", MistMsgTone::Warn);
+    if (!quiet) {
+      MistAlert(hwnd_, L"重命名", L"该名称已存在。", MistMsgTone::Warn);
+    }
     return false;
   }
-  if (!MoveFileW(path.c_str(), new_path.c_str())) {
-    MistAlert(hwnd_, L"重命名", L"无法重命名。", MistMsgTone::Warn);
+  if (!TryRenameNoteFile(path, new_path)) {
+    if (!quiet) {
+      MistAlert(hwnd_, L"重命名", L"无法重命名。", MistMsgTone::Warn);
+    }
     return false;
   }
-  for (auto& p : tab_paths_) {
-    if (_wcsicmp(NormalizePathKey(p).c_str(),
-                 NormalizePathKey(path).c_str()) == 0) {
-      p = new_path;
+  NotifyShellFileRenamed(path, new_path);
+  RetargetNotePath(path, new_path);
+  if (quiet) {
+    // Keep focus in title field while typing (no full tree/tab rebuild).
+    RefreshSidebarLabelForPath(new_path);
+    RefreshCurrentTabLabel();
+    RefreshTitle();
+    UpdateStatusBar();
+    if (tabs_) {
+      InvalidateRect(tabs_, nullptr, FALSE);
     }
-  }
-  for (auto& p : pinned_paths_) {
-    if (_wcsicmp(NormalizePathKey(p).c_str(),
-                 NormalizePathKey(path).c_str()) == 0) {
-      p = new_path;
-    }
-  }
-  if (_wcsicmp(NormalizePathKey(path_).c_str(),
-               NormalizePathKey(path).c_str()) == 0) {
-    path_ = new_path;
+    return true;
   }
   RebuildSidebar();
   RebuildTabControl();
@@ -5666,40 +7739,99 @@ bool NotesWindow::ApplySidebarRename(const std::wstring& path,
 }
 
 void NotesWindow::DeleteSidebarSelected() {
-  const std::wstring path = SidebarSelectedPath();
-  if (path.empty()) {
+  std::vector<std::wstring> paths = SidebarSelectedPaths();
+  if (paths.empty()) {
     return;
   }
-  if (!MistConfirm(hwnd_, L"删除", L"删除此文件？将移入回收站。",
-                   MistMsgTone::Danger) ||
-      !RecyclePathQuiet(hwnd_, path)) {
+  // Dedupe (Ctrl toggle can leave duplicates if paths differ only by slash).
+  {
+    std::vector<std::wstring> uniq;
+    for (const auto& p : paths) {
+      bool seen = false;
+      for (const auto& u : uniq) {
+        if (_wcsicmp(NormalizePathKey(u).c_str(),
+                     NormalizePathKey(p).c_str()) == 0) {
+          seen = true;
+          break;
+        }
+      }
+      if (!seen) {
+        uniq.push_back(p);
+      }
+    }
+    paths = std::move(uniq);
+  }
+  std::wstring prompt;
+  if (paths.size() == 1) {
+    prompt = L"删除此文件？将移入回收站。";
+  } else {
+    prompt = L"删除选中的 " + std::to_wstring(paths.size()) +
+             L" 个文件？将移入回收站。";
+  }
+  if (!MistConfirm(hwnd_, L"删除", prompt.c_str(), MistMsgTone::Danger) ||
+      !RecyclePathsQuiet(hwnd_, paths)) {
     return;
   }
-  for (size_t i = 0; i < pinned_paths_.size(); ++i) {
-    if (_wcsicmp(NormalizePathKey(pinned_paths_[i]).c_str(),
-                 NormalizePathKey(path).c_str()) == 0) {
-      pinned_paths_.erase(pinned_paths_.begin() + static_cast<ptrdiff_t>(i));
-      break;
+  const std::wstring cur_key = NormalizePathKey(path_);
+  bool current_gone = false;
+  auto erase_path = [](std::vector<std::wstring>* list, const std::wstring& path) {
+    const std::wstring key = NormalizePathKey(path);
+    for (size_t i = 0; i < list->size(); ++i) {
+      if (_wcsicmp(NormalizePathKey((*list)[i]).c_str(), key.c_str()) == 0) {
+        list->erase(list->begin() + static_cast<ptrdiff_t>(i));
+        return true;
+      }
+    }
+    return false;
+  };
+  for (const auto& path : paths) {
+    const std::wstring key = NormalizePathKey(path);
+    if (!cur_key.empty() && _wcsicmp(key.c_str(), cur_key.c_str()) == 0) {
+      current_gone = true;
+      dirty_ = false;
+    }
+    erase_path(&pinned_paths_, path);
+    for (size_t i = 0; i < tab_paths_.size(); ++i) {
+      if (_wcsicmp(NormalizePathKey(tab_paths_[i]).c_str(), key.c_str()) == 0) {
+        if (i < tab_states_.size()) {
+          tab_states_.erase(tab_states_.begin() + static_cast<ptrdiff_t>(i));
+        }
+        tab_paths_.erase(tab_paths_.begin() + static_cast<ptrdiff_t>(i));
+        if (tab_index_ >= static_cast<int>(i) && tab_index_ > 0) {
+          --tab_index_;
+        }
+        break;
+      }
     }
   }
-  for (size_t i = 0; i < tab_paths_.size(); ++i) {
-    if (_wcsicmp(NormalizePathKey(tab_paths_[i]).c_str(),
-                 NormalizePathKey(path).c_str()) == 0) {
-      tab_paths_.erase(tab_paths_.begin() + static_cast<ptrdiff_t>(i));
-      if (tab_index_ >= static_cast<int>(tab_paths_.size())) {
-        tab_index_ = static_cast<int>(tab_paths_.size()) - 1;
-      }
-      if (tab_paths_.empty()) {
-        tab_paths_.push_back(MakeNewNotePath());
-        tab_index_ = 0;
-      }
-      break;
-    }
+  bool need_switch = current_gone;
+  const bool seeded_blank = tab_paths_.empty();
+  if (seeded_blank) {
+    SeedBlankDraftTab();
+    need_switch = true;
+  } else if (tab_index_ >= static_cast<int>(tab_paths_.size())) {
+    tab_index_ = static_cast<int>(tab_paths_.size()) - 1;
+    need_switch = true;
   }
-  RebuildSidebar();
-  RebuildTabControl();
-  SwitchToTab((std::max)(0, tab_index_), false);
-  PersistTabs();
+  SidebarClearMultiSelect();
+  if (seeded_blank) {
+    ActivateSeededBlankDraft(paths.size() == 1 ? paths.front() : L"");
+    if (paths.size() > 1) {
+      // Multi-delete emptied tabs: drop remaining recycled rows then upsert.
+      SidebarRemovePaths(paths);
+      SidebarUpsertFile(path_);
+    }
+  } else if (need_switch) {
+    SyncTabsAndSidebar(true, true);
+  } else {
+    SidebarRemovePaths(paths);
+    tab_chips_dirty_ = true;
+    RebuildTabControl();
+    if (!path_.empty()) {
+      HighlightSidebarPath(path_);
+    }
+    SchedulePersistTabs();
+  }
 }
 
 void NotesWindow::HandleSidebarContextMenu(const POINT& pt) {
@@ -5711,52 +7843,50 @@ void NotesWindow::HandleSidebarContextMenu(const POINT& pt) {
   ScreenToClient(sidebar_, &ht.pt);
   HTREEITEM hit = TreeView_HitTest(sidebar_, &ht);
   if (hit) {
+    const std::wstring hit_path = SidebarPathFromItem(hit);
+    // Right-click outside the multi-set replaces selection (Explorer-like).
+    if (!hit_path.empty() && !SidebarPathInMulti(hit_path)) {
+      sidebar_multi_.clear();
+      sidebar_multi_.push_back(hit_path);
+      sidebar_anchor_path_ = hit_path;
+    }
     TreeView_SelectItem(sidebar_, hit);
+    InvalidateRect(sidebar_, nullptr, FALSE);
   }
-  const std::wstring path = SidebarSelectedPath();
+  const auto paths = SidebarSelectedPaths();
+  const std::wstring path = paths.empty() ? L"" : paths.front();
   const bool is_file = !path.empty();
+  const bool multi = paths.size() > 1;
 
+  // Keep pin / rename / delete / reveal only — open / new / copy path / refresh
+  // duplicate the sidebar + toolbar (Typora / VS Code file-tree menus).
   HMENU m = CreatePopupMenu();
-  AppendMenuW(m, MF_STRING | (is_file ? MF_ENABLED : MF_GRAYED), kSideOpen,
-              L"打开");
-  AppendMenuW(m, MF_STRING, kSideNew, L"新建 Markdown");
-  if (is_file) {
+  if (is_file && !multi) {
     AppendMenuW(m, MF_STRING, kSidePin,
                 PathIsPinned(path) ? L"取消置顶" : L"置顶");
   }
-  AppendMenuW(m, MF_STRING | (is_file ? MF_ENABLED : MF_GRAYED), kSideRename,
-              L"重命名\tF2");
+  AppendMenuW(m, MF_STRING | (is_file && !multi ? MF_ENABLED : MF_GRAYED),
+              kSideRename, L"重命名\tF2");
+  std::wstring del_label = L"删除\tDelete";
+  if (multi) {
+    del_label = L"删除 " + std::to_wstring(paths.size()) + L" 项\tDelete";
+  }
   AppendMenuW(m, MF_STRING | (is_file ? MF_ENABLED : MF_GRAYED), kSideDelete,
-              L"删除\tDelete");
-  AppendMenuW(m, MF_STRING | (is_file ? MF_ENABLED : MF_GRAYED), kSideReveal,
-              L"在资源管理器中显示");
-  AppendMenuW(m, MF_STRING | (is_file ? MF_ENABLED : MF_GRAYED), kSideCopyPath,
-              L"复制路径");
-  AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
-  AppendMenuW(m, MF_STRING, kSideRefresh, L"刷新");
+              del_label.c_str());
+  AppendMenuW(m, MF_STRING | (is_file && !multi ? MF_ENABLED : MF_GRAYED),
+              kSideReveal, L"在资源管理器中显示");
   const int cmd = TrackPopupMenu(m, TPM_RETURNCMD | TPM_NONOTIFY, pt.x, pt.y, 0,
                                  hwnd_, nullptr);
   DestroyMenu(m);
 
-  if (cmd == kSideOpen) {
-    OpenSelectedSidebarItem();
-  } else if (cmd == kSideNew) {
-    NewTab();
-    RebuildSidebar();
-  } else if (cmd == kSidePin) {
+  if (cmd == kSidePin) {
     TogglePinPath(path);
   } else if (cmd == kSideRename) {
     RenameSidebarSelected();
   } else if (cmd == kSideDelete) {
     DeleteSidebarSelected();
   } else if (cmd == kSideReveal) {
-    const std::wstring arg = L"/select,\"" + path + L"\"";
-    ShellExecuteW(hwnd_, L"open", L"explorer.exe", arg.c_str(), nullptr,
-                  SW_SHOWNORMAL);
-  } else if (cmd == kSideCopyPath && is_file) {
-    CopyPathToClipboard(path);
-  } else if (cmd == kSideRefresh) {
-    RebuildSidebar();
+    RevealPathInExplorer(path);
   }
 }
 
@@ -5764,6 +7894,47 @@ LRESULT CALLBACK NotesWindow::SidebarProc(HWND hwnd, UINT msg, WPARAM wparam,
                                           LPARAM lparam) {
   auto* self = reinterpret_cast<NotesWindow*>(
       GetWindowLongPtrW(GetParent(hwnd), GWLP_USERDATA));
+  if (self && msg == WM_DROPFILES) {
+    return SendMessageW(self->hwnd_, WM_DROPFILES, wparam, lparam);
+  }
+  if (self && msg == WM_LBUTTONDOWN) {
+    const bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+    const bool shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+    if (ctrl || shift) {
+      TVHITTESTINFO ht{};
+      ht.pt.x = GET_X_LPARAM(lparam);
+      ht.pt.y = GET_Y_LPARAM(lparam);
+      HTREEITEM hit = TreeView_HitTest(hwnd, &ht);
+      if (hit && (ht.flags & (TVHT_ONITEM | TVHT_ONITEMLABEL |
+                              TVHT_ONITEMICON | TVHT_ONITEMSTATEICON |
+                              TVHT_ONITEMINDENT | TVHT_ONITEMBUTTON))) {
+        // Still expand/collapse on the +/- glyph without multi-select churn.
+        if (ht.flags & TVHT_ONITEMBUTTON) {
+          /* fall through to default */
+        } else {
+          self->SidebarApplyClickSelect(hit, ctrl, shift);
+          SetFocus(hwnd);
+          return 0;
+        }
+      }
+    } else {
+      TVHITTESTINFO ht{};
+      ht.pt.x = GET_X_LPARAM(lparam);
+      ht.pt.y = GET_Y_LPARAM(lparam);
+      HTREEITEM hit = TreeView_HitTest(hwnd, &ht);
+      if (hit && !(ht.flags & TVHT_ONITEMBUTTON)) {
+        self->SidebarApplyClickSelect(hit, false, false);
+        // Single-click file → switch/open tab (Notepad++ / Typora file tree).
+        // Folders keep expand/collapse via default proc; multi-select skips open.
+        const std::wstring path = self->SidebarPathFromItem(hit);
+        if (!path.empty()) {
+          self->OpenOrActivatePath(path);
+        }
+      } else if (!hit) {
+        self->SidebarClearMultiSelect();
+      }
+    }
+  }
   if (self && msg == WM_KEYDOWN) {
     if (wparam == VK_F2) {
       self->RenameSidebarSelected();
@@ -5771,6 +7942,18 @@ LRESULT CALLBACK NotesWindow::SidebarProc(HWND hwnd, UINT msg, WPARAM wparam,
     }
     if (wparam == VK_DELETE) {
       self->DeleteSidebarSelected();
+      return 0;
+    }
+    if (wparam == 'A' && (GetKeyState(VK_CONTROL) & 0x8000)) {
+      // Ctrl+A — select all files under the library root.
+      self->sidebar_multi_.clear();
+      for (const auto& p : self->sidebar_paths_) {
+        self->sidebar_multi_.push_back(p);
+      }
+      if (!self->sidebar_multi_.empty()) {
+        self->sidebar_anchor_path_ = self->sidebar_multi_.front();
+      }
+      InvalidateRect(hwnd, nullptr, FALSE);
       return 0;
     }
   }
@@ -5856,6 +8039,8 @@ LRESULT CALLBACK NotesWindow::TabsProc(HWND hwnd, UINT msg, WPARAM wparam,
     return DefWindowProcW(hwnd, msg, wparam, lparam);
   }
   switch (msg) {
+    case WM_DROPFILES:
+      return SendMessageW(self->hwnd_, WM_DROPFILES, wparam, lparam);
     case WM_ERASEBKGND:
       return 1;
     case WM_PAINT: {
@@ -5932,6 +8117,17 @@ LRESULT CALLBACK NotesWindow::TabsProc(HWND hwnd, UINT msg, WPARAM wparam,
       }
       return 0;
     }
+    case WM_SETCURSOR:
+      if (LOWORD(lparam) == HTCLIENT) {
+        // Set once here — doing HAND/ARROW in WM_MOUSEMOVE shifts the hotspot
+        // and can bounce hit-test zones forever (tab flicker).
+        const bool hand = self->tab_hover_zone_ == 1 ||
+                          self->tab_hover_zone_ == 2 ||
+                          self->tab_hover_index_ == -2;
+        SetCursor(LoadCursor(nullptr, hand ? IDC_HAND : IDC_ARROW));
+        return TRUE;
+      }
+      break;
     case WM_MOUSELEAVE:
       if (self->tab_hover_index_ != -1 || self->tab_hover_zone_ != 0) {
         self->tab_hover_index_ = -1;
@@ -5961,11 +8157,12 @@ LRESULT CALLBACK NotesWindow::TabsProc(HWND hwnd, UINT msg, WPARAM wparam,
         self->NewTab();
         return 0;
       }
-      // 空白双击新建；页签双击关闭（不删文件，内容已静默保存）。
+      // Empty bar: new tab. Chip body: rename (× / middle-click still close).
+      // Pin/close hit plates: ignore dblclk (single-click already handles them).
       if (hit < 0) {
         self->NewTab();
-      } else {
-        self->CloseTabAt(hit);
+      } else if (zone == 0) {
+        self->RenameTabAt(hit);
       }
       return 0;
     }
@@ -5998,10 +8195,69 @@ LRESULT CALLBACK NotesWindow::TabsProc(HWND hwnd, UINT msg, WPARAM wparam,
   return DefWindowProcW(hwnd, msg, wparam, lparam);
 }
 
+LRESULT CALLBACK NotesWindow::TitleEditProc(HWND hwnd, UINT msg, WPARAM wparam,
+                                            LPARAM lparam) {
+  auto* self = reinterpret_cast<NotesWindow*>(
+      GetWindowLongPtrW(GetParent(hwnd), GWLP_USERDATA));
+  if (self && msg == WM_KEYDOWN &&
+      (wparam == VK_RETURN || wparam == VK_DOWN)) {
+    // Typora: Enter / Down from title → body.
+    if (self->wysiwyg_ && self->web_.ContentReady() && self->web_.Host()) {
+      SetFocus(self->web_.Host());
+      self->web_.EvalScript(
+          L"try{var e=document.querySelector("
+          L"'.toastui-editor-ww-container .ProseMirror');"
+          L"if(e)e.focus()}catch(ex){}");
+    } else if (self->edit_) {
+      SetFocus(self->edit_);
+    }
+    return 0;
+  }
+  // Cue banner is flaky under WebView2 sibling paint — draw placeholder ourselves.
+  if (self && msg == WM_PAINT) {
+    const LRESULT r =
+        self->title_edit_proc_
+            ? CallWindowProcW(self->title_edit_proc_, hwnd, msg, wparam, lparam)
+            : DefWindowProcW(hwnd, msg, wparam, lparam);
+    if (GetWindowTextLengthW(hwnd) == 0 && GetFocus() != hwnd) {
+      HDC hdc = GetDC(hwnd);
+      RECT rc{};
+      GetClientRect(hwnd, &rc);
+      SetBkMode(hdc, TRANSPARENT);
+      SetTextColor(hdc, self->muted_color_);
+      HFONT old = nullptr;
+      if (self->title_font_) {
+        old = static_cast<HFONT>(SelectObject(hdc, self->title_font_));
+      }
+      DrawTextW(hdc, L"标题", -1, &rc,
+                DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+      if (old) {
+        SelectObject(hdc, old);
+      }
+      // Bottom rule so the strip reads as chrome even when empty.
+      HPEN pen = CreatePen(PS_SOLID, 1, self->border_color_);
+      HPEN old_pen = static_cast<HPEN>(SelectObject(hdc, pen));
+      MoveToEx(hdc, 0, rc.bottom - 1, nullptr);
+      LineTo(hdc, rc.right, rc.bottom - 1);
+      SelectObject(hdc, old_pen);
+      DeleteObject(pen);
+      ReleaseDC(hwnd, hdc);
+    }
+    return r;
+  }
+  if (self && self->title_edit_proc_) {
+    return CallWindowProcW(self->title_edit_proc_, hwnd, msg, wparam, lparam);
+  }
+  return DefWindowProcW(hwnd, msg, wparam, lparam);
+}
+
 LRESULT CALLBACK NotesWindow::EditProc(HWND hwnd, UINT msg, WPARAM wparam,
                                         LPARAM lparam) {
   auto* self = reinterpret_cast<NotesWindow*>(
       GetWindowLongPtrW(GetParent(hwnd), GWLP_USERDATA));
+  if (self && msg == WM_DROPFILES) {
+    return SendMessageW(self->hwnd_, WM_DROPFILES, wparam, lparam);
+  }
   if (self && msg == WM_MOUSEWHEEL &&
       (GetKeyState(VK_CONTROL) & 0x8000) != 0) {
     const short delta = GET_WHEEL_DELTA_WPARAM(wparam);
@@ -6034,6 +8290,11 @@ LRESULT CALLBACK NotesWindow::EditProc(HWND hwnd, UINT msg, WPARAM wparam,
   if (self && msg == WM_KEYDOWN) {
     const bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
     const bool shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+    // Shift+Enter: soft break at caret (Typora) — newline without list continue.
+    if (wparam == VK_RETURN && shift && !ctrl) {
+      self->InsertSoftLineBreak();
+      return 0;
+    }
     if (wparam == VK_RETURN && !ctrl && !shift &&
         self->TryContinueMarkdownList()) {
       return 0;
@@ -6104,10 +8365,6 @@ LRESULT CALLBACK NotesWindow::EditProc(HWND hwnd, UINT msg, WPARAM wparam,
       self->CloseTab();
       return 0;
     }
-    if (ctrl && shift && (wparam == 'V' || wparam == 'v')) {
-      self->ShowPreviewMode();
-      return 0;
-    }
     if (ctrl && !shift && (wparam == 'B' || wparam == 'b')) {
       self->ApplyBold();
       return 0;
@@ -6122,10 +8379,6 @@ LRESULT CALLBACK NotesWindow::EditProc(HWND hwnd, UINT msg, WPARAM wparam,
     }
     if (ctrl && !shift && (wparam == 'K' || wparam == 'k')) {
       self->InsertMdLink();
-      return 0;
-    }
-    if (ctrl && shift && (wparam == 'O' || wparam == 'o')) {
-      self->ToggleOutline();
       return 0;
     }
     if (ctrl && shift && (wparam == 'E' || wparam == 'e')) {
@@ -6152,7 +8405,7 @@ LRESULT CALLBACK NotesWindow::EditProc(HWND hwnd, UINT msg, WPARAM wparam,
       if (shift) {
         self->SaveAs();
       } else {
-        self->Save();
+        self->Save(true);
       }
       return 0;
     }
@@ -6274,10 +8527,23 @@ LRESULT NotesWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
           return CDRF_NOTIFYITEMDRAW;
         }
         if (cd->nmcd.dwDrawStage == CDDS_ITEMPREPAINT) {
-          const UINT state = TreeView_GetItemState(
-              sidebar_, reinterpret_cast<HTREEITEM>(cd->nmcd.dwItemSpec),
-              TVIS_SELECTED);
-          if (state & TVIS_SELECTED) {
+          const auto hItem =
+              reinterpret_cast<HTREEITEM>(cd->nmcd.dwItemSpec);
+          const UINT state =
+              TreeView_GetItemState(sidebar_, hItem, TVIS_SELECTED);
+          bool multi_on = false;
+          {
+            TVITEMW ti{};
+            ti.mask = TVIF_HANDLE | TVIF_PARAM;
+            ti.hItem = hItem;
+            if (TreeView_GetItem(sidebar_, &ti) && ti.lParam > 0) {
+              const size_t idx = static_cast<size_t>(ti.lParam) - 1;
+              if (idx < sidebar_paths_.size()) {
+                multi_on = SidebarPathInMulti(sidebar_paths_[idx]);
+              }
+            }
+          }
+          if ((state & TVIS_SELECTED) || multi_on) {
             cd->clrText = text_color_;
             cd->clrTextBk = RGB(226, 230, 236);
           } else if (cd->nmcd.uItemState & CDIS_HOT) {
@@ -6291,14 +8557,34 @@ LRESULT NotesWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
           if (ui_font_) {
             SelectObject(cd->nmcd.hdc, ui_font_);
           }
-          return CDRF_NEWFONT;
+          return CDRF_NEWFONT | CDRF_NOTIFYPOSTPAINT;
+        }
+        if (cd->nmcd.dwDrawStage == CDDS_ITEMPOSTPAINT) {
+          const auto hItem =
+              reinterpret_cast<HTREEITEM>(cd->nmcd.dwItemSpec);
+          TVITEMW ti{};
+          ti.mask = TVIF_HANDLE | TVIF_PARAM;
+          ti.hItem = hItem;
+          if (TreeView_GetItem(sidebar_, &ti) && ti.lParam > 0) {
+            const size_t idx = static_cast<size_t>(ti.lParam) - 1;
+            if (idx < sidebar_paths_.size() &&
+                PathIsPinned(sidebar_paths_[idx])) {
+              RECT tr{};
+              if (TreeView_GetItemRect(sidebar_, hItem, &tr, TRUE)) {
+                Gdiplus::Graphics g(cd->nmcd.hdc);
+                g.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+                DrawTabPushPin(
+                    g, static_cast<float>(tr.left) + 6.f,
+                    static_cast<float>(tr.top + tr.bottom) * 0.5f, true,
+                    false);
+              }
+            }
+          }
+          return CDRF_DODEFAULT;
         }
         return CDRF_DODEFAULT;
       }
-      if (hdr && hdr->idFrom == kSidebarId && hdr->code == NM_DBLCLK) {
-        OpenSelectedSidebarItem();
-        return 0;
-      }
+      // Single-click already opens/switches tabs (SidebarProc) — no NM_DBLCLK.
       if (hdr && hdr->idFrom == kSidebarId &&
           hdr->code == TVN_BEGINLABELEDITW) {
         // Prefill stem only (no ★ / extension) — Python keep_filename_suffix.
@@ -6448,19 +8734,6 @@ LRESULT NotesWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
         case kMenuWysiwyg:
           ToggleWysiwyg();
           return 0;
-        case kMenuPreviewPane:
-          ToggleMdViewMode();
-          return 0;
-        case kModeStripId:
-          if (HIWORD(wparam) == BN_CLICKED) {
-            ToggleMdViewMode();
-          }
-          return 0;
-        case kOutlineStripId:
-          if (HIWORD(wparam) == BN_CLICKED) {
-            ToggleOutline();
-          }
-          return 0;
         case kMenuExportPdf:
           ExportPdf();
           return 0;
@@ -6528,9 +8801,30 @@ LRESULT NotesWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
             SetFontSize(font_pt_ - 1);
           }
           return 0;
-        case kMenuOutline:
-          ToggleOutline();
-          return 0;
+        case kFontFaceId:
+          if (HIWORD(wparam) == CBN_SELCHANGE && font_face_combo_) {
+            const int sel = static_cast<int>(
+                SendMessageW(font_face_combo_, CB_GETCURSEL, 0, 0));
+            SetFontFace(sel == 1 ? L"SimSun" : L"Microsoft YaHei");
+            return 0;
+          }
+          break;
+        case kFontSizeId:
+          if (HIWORD(wparam) == CBN_SELCHANGE && font_size_combo_) {
+            const int sel = static_cast<int>(
+                SendMessageW(font_size_combo_, CB_GETCURSEL, 0, 0));
+            if (sel >= 0) {
+              wchar_t buf[16] = {};
+              SendMessageW(font_size_combo_, CB_GETLBTEXT, sel,
+                           reinterpret_cast<LPARAM>(buf));
+              const int pt = _wtoi(buf);
+              if (pt >= 8) {
+                SetFontSize(pt);
+              }
+            }
+            return 0;
+          }
+          break;
         case kMenuFocus:
           ToggleFocus();
           return 0;
@@ -6630,8 +8924,31 @@ LRESULT NotesWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
         OpenSidebarResult(sel);
         return 0;
       }
+      if (LOWORD(wparam) == kTitleEditId && HIWORD(wparam) == EN_CHANGE) {
+        if (title_applying_ || loading_) {
+          return 0;
+        }
+        MarkDirty();
+        EnsureTabStates();
+        if (tab_index_ >= 0 &&
+            tab_index_ < static_cast<int>(tab_states_.size())) {
+          tab_states_[static_cast<size_t>(tab_index_)].title_hint =
+              NativeTitleText();
+        }
+        RefreshCurrentTabLabel();
+        RefreshTitle();
+        RefreshSidebarLabelForPath(path_);
+        SchedulePersistTabs();
+        ScheduleSyncFilenameToTitle();
+        PushNativeTitleToWeb();
+        return 0;
+      }
       if (LOWORD(wparam) == kEditId && HIWORD(wparam) == EN_CHANGE) {
         MarkDirty();
+        // In WYSIWYG, title lives in title_edit_ — don't re-parse # from body.
+        if (!wysiwyg_) {
+          SyncCurrentTabTitleHint();
+        }
         SetTimer(hwnd_, kGutterTimer, 60, nullptr);
         if (preview_) {
           SchedulePreviewRefresh();
@@ -6657,31 +8974,17 @@ LRESULT NotesWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
     case WM_DROPFILES: {
       HDROP drop = reinterpret_cast<HDROP>(wparam);
       const UINT count = DragQueryFileW(drop, 0xFFFFFFFF, nullptr, 0);
-      std::vector<std::wstring> notes;
+      std::vector<std::wstring> paths;
+      paths.reserve(count);
       for (UINT i = 0; i < count; ++i) {
         const UINT len = DragQueryFileW(drop, i, nullptr, 0);
         std::wstring p(len + 1, L'\0');
         DragQueryFileW(drop, i, p.data(), len + 1);
         p.resize(len);
-        const size_t dot = p.find_last_of(L'.');
-        std::wstring lower =
-            dot == std::wstring::npos ? L"" : p.substr(dot);
-        for (auto& ch : lower) {
-          if (ch >= L'A' && ch <= L'Z') {
-            ch = static_cast<wchar_t>(ch - L'A' + L'a');
-          }
-        }
-        // Image drops: copy into assets/ and insert relative markdown (Python).
-        if (IsImageDropSuffix(lower)) {
-          InsertImageFile(p);
-        } else {
-          notes.push_back(p);
-        }
+        paths.push_back(std::move(p));
       }
       DragFinish(drop);
-      if (!notes.empty()) {
-        OpenPaths(notes);
-      }
+      HandleDroppedPaths(paths);
       return 0;
     }
     case WM_CONTEXTMENU: {
@@ -6757,6 +9060,11 @@ LRESULT NotesWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
         SetBkColor(hdc, RGB(255, 255, 255));
         return reinterpret_cast<LRESULT>(card_brush_ ? card_brush_ : bg_brush_);
       }
+      if (ctl == title_edit_) {
+        SetTextColor(hdc, text_color_);
+        SetBkColor(hdc, toast_ ? RGB(255, 248, 220) : content_bg_);
+        return reinterpret_cast<LRESULT>(bg_brush_ ? bg_brush_ : card_brush_);
+      }
       SetTextColor(hdc, text_color_);
       SetBkColor(hdc, card_bg_);
       return reinterpret_cast<LRESULT>(card_brush_ ? card_brush_ : bg_brush_);
@@ -6819,6 +9127,11 @@ LRESULT NotesWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
       }
       if (wparam == kPersistTabsTimer) {
         PersistTabs();
+        return 0;
+      }
+      if (wparam == kSyncFilenameTimer) {
+        KillTimer(hwnd_, kSyncFilenameTimer);
+        SyncFilenameToTitle();
         return 0;
       }
       if (wparam == kGutterTimer) {

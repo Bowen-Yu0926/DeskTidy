@@ -24,6 +24,7 @@ add_executable(desktidy_native WIN32
   src/layout.cpp
   src/python_layout_sync.cpp
   src/desktop_items.cpp
+  src/desktop_item_identity.cpp
   src/namespace_icons.cpp
   src/brand_mark.cpp
   src/pin_store.cpp
@@ -106,6 +107,7 @@ add_executable(deskNote WIN32
   src/desknote_help.cpp
   src/mist_webview.cpp
   src/mist_msg.cpp
+  src/ole_drag.cpp
   src/paths_util.cpp
   src/prompt_text.cpp
   src/i18n.cpp
@@ -138,10 +140,29 @@ endif()
 add_custom_command(TARGET deskNote POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E make_directory
           $<TARGET_FILE_DIR:desktidy_native>
+  COMMAND ${CMAKE_COMMAND} -E make_directory
+          $<TARGET_FILE_DIR:desktidy_native>/assets/md_preview/vendor
   COMMAND ${CMAKE_COMMAND} -E copy_if_different
           $<TARGET_FILE:deskNote>
           $<TARGET_FILE_DIR:desktidy_native>/deskNote.exe
-  COMMENT "Copy deskNote.exe next to desktidy_native"
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          ${CMAKE_CURRENT_SOURCE_DIR}/assets/md_preview/wysiwyg_native.html
+          $<TARGET_FILE_DIR:desktidy_native>/assets/md_preview/wysiwyg_native.html
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          ${CMAKE_CURRENT_SOURCE_DIR}/assets/md_preview/vendor/toastui-editor.min.js
+          $<TARGET_FILE_DIR:desktidy_native>/assets/md_preview/vendor/toastui-editor.min.js
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          ${CMAKE_CURRENT_SOURCE_DIR}/assets/md_preview/vendor/toastui-editor-all.min.js
+          $<TARGET_FILE_DIR:desktidy_native>/assets/md_preview/vendor/toastui-editor-all.min.js
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          ${CMAKE_CURRENT_SOURCE_DIR}/assets/md_preview/vendor/toastui-editor.min.css
+          $<TARGET_FILE_DIR:desktidy_native>/assets/md_preview/vendor/toastui-editor.min.css
+  COMMAND ${CMAKE_COMMAND} -E make_directory
+          $<TARGET_FILE_DIR:desktidy_native>/assets/dialogs
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          ${CMAKE_CURRENT_SOURCE_DIR}/assets/dialogs/confirm.html
+          $<TARGET_FILE_DIR:desktidy_native>/assets/dialogs/confirm.html
+  COMMENT "Copy deskNote.exe + mist dialog assets next to desktidy_native"
 )
 
 target_include_directories(desktidy_native PRIVATE
@@ -181,6 +202,9 @@ add_custom_command(TARGET desktidy_native POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E copy_if_different
           ${CMAKE_CURRENT_SOURCE_DIR}/assets/md_preview/wysiwyg_native.html
           $<TARGET_FILE_DIR:desktidy_native>/assets/md_preview/wysiwyg_native.html
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          ${CMAKE_CURRENT_SOURCE_DIR}/assets/md_preview/vendor/toastui-editor.min.js
+          $<TARGET_FILE_DIR:desktidy_native>/assets/md_preview/vendor/toastui-editor.min.js
   COMMAND ${CMAKE_COMMAND} -E copy_if_different
           ${CMAKE_CURRENT_SOURCE_DIR}/assets/md_preview/vendor/toastui-editor-all.min.js
           $<TARGET_FILE_DIR:desktidy_native>/assets/md_preview/vendor/toastui-editor-all.min.js
@@ -283,4 +307,15 @@ target_link_libraries(test_layout_geom PRIVATE
   user32 gdi32 shell32 ole32 advapi32)
 if(MSVC)
   target_compile_options(test_layout_geom PRIVATE /W4 /permissive- /utf-8)
+endif()
+
+add_executable(test_desktop_item_identity
+  tests/test_desktop_item_identity.cpp
+  src/desktop_item_identity.cpp
+)
+target_include_directories(test_desktop_item_identity PRIVATE src)
+target_compile_definitions(test_desktop_item_identity PRIVATE
+  UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+if(MSVC)
+  target_compile_options(test_desktop_item_identity PRIVATE /W4 /permissive- /utf-8)
 endif()

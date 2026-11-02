@@ -690,17 +690,17 @@ std::wstring NativeProductVersion() {
   DWORD handle = 0;
   const DWORD size = GetFileVersionInfoSizeW(path, &handle);
   if (!size) {
-    return L"4.0.31";
+    return L"4.0.33";
   }
   std::vector<BYTE> buf(size);
   if (!GetFileVersionInfoW(path, 0, size, buf.data())) {
-    return L"4.0.31";
+    return L"4.0.33";
   }
   VS_FIXEDFILEINFO* fi = nullptr;
   UINT len = 0;
   if (!VerQueryValueW(buf.data(), L"\\", reinterpret_cast<void**>(&fi), &len) ||
       !fi) {
-    return L"4.0.31";
+    return L"4.0.33";
   }
   wchar_t ver[64];
   swprintf_s(ver, L"%u.%u.%u", HIWORD(fi->dwFileVersionMS),
@@ -835,6 +835,8 @@ bool LaunchInstallerSilent(const std::wstring& path, std::wstring* err) {
   sei.fMask = SEE_MASK_NOCLOSEPROCESS;
   sei.lpVerb = L"open";
   sei.lpFile = path.c_str();
+  // /SILENT: skip prompts but KEEP Inno's progress window (market: VS Code /
+  // Discord updater). /VERYSILENT would hide progress entirely.
   sei.lpParameters = L"/SILENT /NORESTART /CLOSEAPPLICATIONS";
   sei.nShow = SW_SHOWNORMAL;
   if (!ShellExecuteExW(&sei)) {
@@ -846,11 +848,16 @@ bool LaunchInstallerSilent(const std::wstring& path, std::wstring* err) {
     DeleteFileW(path.c_str());
     return false;
   }
+  // Wait until the installer UI is up before we quit DeskTidy — otherwise the
+  // progress window may flash behind a dying process or never paint.
   if (sei.hProcess) {
+    WaitForInputIdle(sei.hProcess, 12000);
     CloseHandle(sei.hProcess);
+  } else {
+    Sleep(800);
   }
-  // Installer has its own copy path; remove our download cache entry.
-  DeleteFileW(path.c_str());
+  // Do NOT DeleteFile the Setup exe here: Inno may still be reading it.
+  // Next update download replaces/purges the cache directory.
   return true;
 }
 

@@ -2,9 +2,11 @@
 
 #include "notes_library.h"
 #include "notes_webview.h"
+#include "ole_drag.h"
 #include "paths_util.h"
 
 #include <Windows.h>
+#include <CommCtrl.h>
 
 #include <set>
 #include <string>
@@ -39,10 +41,13 @@ class NotesWindow {
     bool wrap = true;  // Per-tab word wrap (Python page.wrap).
     LONG caret = 0;
     int first_visible_line = 0;  // Restore scroll on tab switch.
+    // First ATX heading text when non-empty → tab chip label (Typora-like).
+    std::wstring title_hint;
   };
 
   static LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
   static LRESULT CALLBACK EditProc(HWND, UINT, WPARAM, LPARAM);
+  static LRESULT CALLBACK TitleEditProc(HWND, UINT, WPARAM, LPARAM);
   static LRESULT CALLBACK TabsProc(HWND, UINT, WPARAM, LPARAM);
   static LRESULT CALLBACK SidebarProc(HWND, UINT, WPARAM, LPARAM);
   static LRESULT CALLBACK StatusProc(HWND, UINT, WPARAM, LPARAM);
@@ -67,9 +72,17 @@ class NotesWindow {
   void UpdateModeStrip();
   void RenameSidebarSelected();
   // Commit inline / modal rename: stem only; keeps original suffix.
+  // quiet: no MistAlert (auto title→filename sync while typing).
   bool ApplySidebarRename(const std::wstring& path,
-                          const std::wstring& new_stem);
+                          const std::wstring& new_stem, bool quiet = false);
   void DeleteSidebarSelected();
+  // Paths in the library multi-select (Ctrl+click); empty → fall back to focus item.
+  std::vector<std::wstring> SidebarSelectedPaths() const;
+  bool SidebarPathInMulti(const std::wstring& path) const;
+  void SidebarClearMultiSelect();
+  // Ctrl toggles; Shift ranges from anchor; plain click replaces selection.
+  void SidebarApplyClickSelect(HTREEITEM item, bool ctrl, bool shift);
+  std::wstring SidebarPathFromItem(HTREEITEM item) const;
   // Access-denied save → UAC relaunch handoff. Returns true when handed off.
   bool OfferElevatedSave(const std::wstring& path, const std::wstring& text);
   void BuildAccelerators();
@@ -91,6 +104,8 @@ class NotesWindow {
   // Copy image path into note assets/; returns false on failure.
   bool InsertImageFile(const std::wstring& src_path);
   void RefreshCurrentTabLabel();
+  // Pull first Markdown heading into tab_states_[current].title_hint + repaint.
+  void SyncCurrentTabTitleHint();
   void ToggleAlwaysOnTop();
   void ToggleSyncScroll();
   void OpenLibrary();
@@ -125,6 +140,10 @@ class NotesWindow {
   void ToggleWysiwyg();
   void SyncFromWysiwyg();
   void SetFontSize(int pt);
+  void SetFontFace(const std::wstring& face);
+  void EnsureFontControls();
+  void SyncFontControls();
+  void PushEditorFontToWeb();
   void InsertTemplate();
   void ShowFind(bool replace);
   void OpenFileDialog();
@@ -132,6 +151,10 @@ class NotesWindow {
   void ShowHelp();
   void ToggleSidebar();
   void RebuildSidebar();
+  // Drop matching file rows from the tree without a full library rescan.
+  void SidebarRemovePaths(const std::vector<std::wstring>& paths);
+  // Insert or refresh one file row under「全部笔记」(no Heal / full walk).
+  void SidebarUpsertFile(const std::wstring& path);
   void HandleSidebarContextMenu(const POINT& pt);
   void OpenSelectedSidebarItem();
   std::wstring SidebarSelectedPath();
@@ -185,13 +208,30 @@ class NotesWindow {
   void InsertDateTime();
   // Enter in a Markdown list: continue marker, or exit empty item.
   bool TryContinueMarkdownList();
+  // Shift+Enter: soft break at caret; next line keeps the same column.
+  void InsertSoftLineBreak();
+  // Typora-class: rename file to match document title.
+  bool SyncFilenameToTitle();
+  void ScheduleSyncFilenameToTitle();
   void HandleEditContextMenu(POINT screen_pt);
   void ActivateNextTab(bool forward);
   void HandleTabContextMenu(int index, POINT screen_pt);
+  // Prompt rename for open tab (right-click or double-click on chip body).
+  void RenameTabAt(int index);
   void ReorderTab(int from, int to);
   // Replace in current tab; when all_tabs, walk every open tab (P2-26).
   int RunReplaceAllTabs(bool match_case, bool whole);
   std::wstring MakeNewNotePath();
+  // Notepad++: never zero tabs — seed 未命名.md and clear title/editor state.
+  void SeedBlankDraftTab();
+  // After SeedBlankDraftTab: chrome/tree only — no Load + full Heal rescan.
+  void ActivateSeededBlankDraft(const std::wstring& removed_path);
+  // Load active tab + rebuild chips; optionally rescan the file tree.
+  void SyncTabsAndSidebar(bool reload_editor, bool rebuild_tree = true);
+  // untitled* → 未命名* on disk + retarget tabs/sidebar/chrome labels.
+  bool HealRetargetPath(std::wstring* path_inout);
+  // Scan library (+ legacy 文档\DeskTidy\notes) and rename leftover untitled*.
+  void HealUntitledDraftsOnDisk();
   void SwitchToTab(int index, bool save_current);
   void RebuildTabControl();
   void RelayoutTabChips();
@@ -202,10 +242,29 @@ class NotesWindow {
   // Coalesce rapid SwitchToTab disk writes (Notepad++ / VS Code style).
   void SchedulePersistTabs();
   void LoadTabSession();
+  // Same stem as window title / tab chip (title_hint → H1 → localized filename).
+  // disk_peek: read first heading from disk when the path is not an open tab.
+  std::wstring NoteDisplayName(const std::wstring& path,
+                               bool disk_peek = false) const;
   std::wstring TabLabel(const std::wstring& path) const;
+  // Repaint one tree row when the active note's title_hint changes.
+  void RefreshSidebarLabelForPath(const std::wstring& path);
   void AdoptPath(const std::wstring& path);
   // Activate existing tab or open in a new tab (Python _activate_or_open_path).
   void OpenOrActivatePath(const std::wstring& path);
+  // untitled.md / Untitled-1.md → 未命名.md on disk (UI + Explorer same name).
+  bool HealEnglishUntitledPath(std::wstring* path_inout);
+  // Update path_ / tabs / pins / sidebar slots after a disk rename.
+  void RetargetNotePath(const std::wstring& old_path,
+                        const std::wstring& new_path);
+  // Heal English untitled then explorer /select (toast on success).
+  void RevealPathInExplorer(std::wstring path);
+  // Explorer-style drop: images → insert; openable notes → OpenPaths.
+  void HandleDroppedPaths(const std::vector<std::wstring>& paths);
+  void EnsureDropTarget();
+  void RegisterDropOnHwnd(HWND hwnd);
+  void RegisterDropOnSubtree(HWND root);
+  void RevokeDropOnSubtree(HWND root);
   // Markdown live preview (M1) + PDF export (M3) + image paste (M2).
   void TogglePreview();
   void UpdatePreview();
@@ -218,6 +277,18 @@ class NotesWindow {
   std::wstring NoteBaseDir() const;
   void EnsureTabStates();
   void ApplyWysiwygVisibility();
+  // Typora-class native title (instant; not waiting on WebView2).
+  void EnsureTitleEdit();
+  void RaiseTitleEdit();
+  void ApplyTitleFont();
+  int TitleChromeHeight() const;
+  std::wstring NativeTitleText() const;
+  void SetNativeTitleText(const std::wstring& title);
+  void ApplyNativeTitleFromMarkdown(const std::wstring& md);
+  // Join native title + body (RichEdit staging or Toast cache body).
+  std::wstring ComposeMarkdownWithNativeTitle(
+      const std::wstring& body_or_full) const;
+  void PushNativeTitleToWeb();
   void ToggleWordWrap();
   void ApplyWordWrap();
   void UpdateStatusBar();
@@ -226,6 +297,7 @@ class NotesWindow {
   HWND hwnd_ = nullptr;
   HWND tabs_ = nullptr;
   HWND edit_ = nullptr;
+  HWND title_edit_ = nullptr;  // WYSIWYG native title (above body)
   HWND gutter_ = nullptr;
   HWND outline_list_ = nullptr;
   HWND outline_strip_ = nullptr;  // Collapse handle (Python CollapsibleMdPane).
@@ -236,10 +308,13 @@ class NotesWindow {
   HWND sidebar_results_ = nullptr;
   HWND status_ = nullptr;
   HWND mode_strip_ = nullptr;  // Top-right 预览/编辑 toggle chip.
+  HWND font_face_combo_ = nullptr;  // 微软雅黑 / 宋体
+  HWND font_size_combo_ = nullptr;
   HMENU menu_ = nullptr;
   HFONT font_ = nullptr;
   HFONT ui_font_ = nullptr;       // Segoe UI — chrome
   HFONT ui_font_bold_ = nullptr;  // active tab / emphasis
+  HFONT title_font_ = nullptr;    // large title field (DPI-aware)
   HBRUSH bg_brush_ = nullptr;
   HBRUSH card_brush_ = nullptr;
   // Clean white stage + cool gray rail（写作产品分区，不要暖色）。
@@ -250,6 +325,8 @@ class NotesWindow {
   COLORREF muted_color_ = RGB(120, 128, 140);
   COLORREF border_color_ = RGB(226, 230, 236);
   int font_pt_ = 12;
+  // Editor body face (Typora-class). Display labels map in SyncFontControls.
+  std::wstring font_face_ = L"Microsoft YaHei";
   HBRUSH rail_brush_ = nullptr;
   std::wstring path_;
   std::string ui_theme_ = "mist";
@@ -257,6 +334,9 @@ class NotesWindow {
   TextFileEncoding text_enc_ = TextFileEncoding::Utf8;
   std::vector<std::wstring> tab_paths_;
   std::vector<std::wstring> sidebar_paths_;
+  // Ctrl/Shift multi-select in the library tree (paths, not HTREEITEM — rebuild-safe).
+  std::vector<std::wstring> sidebar_multi_;
+  std::wstring sidebar_anchor_path_;
   std::vector<std::wstring> pinned_paths_;
   std::vector<NoteSearchHit> sidebar_hits_;
   std::vector<TabState> tab_states_;
@@ -280,6 +360,9 @@ class NotesWindow {
   bool sidebar_visible_ = true;  // Match Python library_sidebar default.
   bool dirty_ = false;
   bool loading_ = false;
+  // Swallow Toast dirty/changed for a beat after Save (debounced posts).
+  ULONGLONG ignore_dirty_until_ = 0;
+  bool title_applying_ = false;  // suppress EN_CHANGE while SetWindowText title
   // Default edit mode — blank preview stage feels broken on new notes.
   bool preview_ = false;
   bool sync_scroll_ = true;
@@ -287,7 +370,9 @@ class NotesWindow {
   bool word_wrap_ = true;
   NotesWebView web_;
   NotesWebView preview_web_;
+  PathDropTarget* drop_target_ = nullptr;
   WNDPROC edit_proc_ = nullptr;
+  WNDPROC title_edit_proc_ = nullptr;
   WNDPROC tabs_proc_ = nullptr;
   WNDPROC sidebar_proc_ = nullptr;
   WNDPROC status_proc_ = nullptr;

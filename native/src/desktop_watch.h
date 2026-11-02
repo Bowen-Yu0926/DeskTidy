@@ -6,7 +6,9 @@
 #include <string>
 #include <vector>
 
-// Cheap poll of user/public desktop folder mtimes.
+// Poll user/public desktop (+ portal extras) for membership changes.
+// Hash names+attrs only (not size/mtime): mid-copy growth must not look like
+// a new desktop change. Folder mtime alone is also unreliable on NTFS/OneDrive.
 class DesktopWatch {
  public:
   void Reset();
@@ -16,10 +18,18 @@ class DesktopWatch {
   bool PollChanged();
 
  private:
-  FILETIME StampFolder(const std::wstring& folder) const;
-  FILETIME user_{};
-  FILETIME public_{};
+  struct FolderStamp {
+    FILETIME write_time{};
+    DWORD entry_count = 0;
+    ULONGLONG content_hash = 0;
+  };
+
+  FolderStamp StampFolder(const std::wstring& folder) const;
+  static bool StampEq(const FolderStamp& a, const FolderStamp& b);
+
+  FolderStamp user_{};
+  FolderStamp public_{};
   std::vector<std::wstring> extra_;
-  std::vector<FILETIME> extra_stamp_;
+  std::vector<FolderStamp> extra_stamp_;
   bool primed_ = false;
 };

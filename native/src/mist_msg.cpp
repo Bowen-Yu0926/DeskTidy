@@ -1,9 +1,20 @@
 #include "mist_msg.h"
 
 #include "mist_webview.h"
+#include "paths_util.h"
 #include "prompt_text.h"
 
+#include <objbase.h>
+#ifndef interface
+#define interface struct
+#endif
+#include <WebView2.h>
+#include <wrl.h>
+
 #include <string>
+
+using Microsoft::WRL::Callback;
+using Microsoft::WRL::ComPtr;
 
 namespace {
 
@@ -75,6 +86,30 @@ MistMsgResult Win32Fallback(HWND owner, const wchar_t* title,
 
 }  // namespace
 
+void MistWarmMessageEnv() {
+  // Fire-and-forget: keep a process-wide env so the first Mist confirm card
+  // does not pay a multi-second WebView2 cold start (Typora/VS Code feel).
+  static bool started = false;
+  if (started) {
+    return;
+  }
+  started = true;
+  static ComPtr<ICoreWebView2Environment> env_keep;
+  const std::wstring udir = JoinPath(NativeDataDir(), L"webview2-mist-msg");
+  CreateDirectoryW(NativeDataDir().c_str(), nullptr);
+  CreateDirectoryW(udir.c_str(), nullptr);
+  CreateCoreWebView2EnvironmentWithOptions(
+      nullptr, udir.c_str(), nullptr,
+      Callback<ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler>(
+          [](HRESULT result, ICoreWebView2Environment* env) -> HRESULT {
+            if (SUCCEEDED(result) && env) {
+              env_keep = env;
+            }
+            return S_OK;
+          })
+          .Get());
+}
+
 MistMsgResult MistMessage(HWND owner, const wchar_t* title,
                           const wchar_t* message, MistMsgKind kind,
                           MistMsgTone tone) {
@@ -90,9 +125,11 @@ MistMsgResult MistMessage(HWND owner, const wchar_t* title,
   MistWebDialog dlg;
   dlg.owner = owner;
   dlg.frameless = true;
+  dlg.topmost = false;  // Keep DeskTidy desktop band stable.
   dlg.user_data_subdir = L"webview2-mist-msg";
   dlg.html_path = html;
   dlg.build_state = [&]() {
+    const bool danger = (tone == MistMsgTone::Danger);
     std::wstring json = L"{\"type\":\"state\",\"mode\":\"";
     json += ModeName(kind);
     json += L"\",\"tone\":\"";
@@ -102,8 +139,18 @@ MistMsgResult MistMessage(HWND owner, const wchar_t* title,
     json += L"\",\"message\":\"";
     json += MistJsonEscape(message ? message : L"");
     json += L"\",\"danger\":";
-    json += (tone == MistMsgTone::Danger) ? L"true" : L"false";
-    json += L"}";
+    json += danger ? L"true" : L"false";
+    json += L",\"yes_label\":\"";
+    if (kind == MistMsgKind::Alert) {
+      json += MistJsonEscape(L"确定");
+    } else if (danger) {
+      json += MistJsonEscape(L"删除");
+    } else {
+      json += MistJsonEscape(L"确定");
+    }
+    json += L"\",\"cancel_label\":\"";
+    json += MistJsonEscape(L"取消");
+    json += L"\"}";
     return json;
   };
   dlg.on_message = [&](const std::wstring& json) -> bool {
@@ -131,7 +178,7 @@ MistMsgResult MistMessage(HWND owner, const wchar_t* title,
     return true;
   };
 
-  MistWebDialogRun(&dlg, title ? title : L"提示", 460, 240);
+  MistWebDialogRun(&dlg, title ? title : L"提示", 440, 260);
   // DestroyWeb clears web_available — do NOT re-check it after Run returns,
   // or every successful Mist click would also open the Win32 MessageBox.
   if (answered) {

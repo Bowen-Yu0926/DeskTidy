@@ -11,6 +11,11 @@ struct DesktopItem {
   bool is_link = false;
 };
 
+// Path (case/slash) + name + is_link — used to skip fence/public icon reloads.
+bool DesktopItemIdentityEqual(const DesktopItem& a, const DesktopItem& b);
+bool DesktopItemListsIdentityEqual(const std::vector<DesktopItem>& a,
+                                   const std::vector<DesktopItem>& b);
+
 // User desktop + Public desktop (.lnk / files / folders). Skips hidden system clutter.
 std::vector<DesktopItem> ScanDesktopItems();
 

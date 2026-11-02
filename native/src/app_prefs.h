@@ -5,7 +5,8 @@
 
 struct AppPrefs {
   bool auto_organize_on_startup = false;
-  bool auto_organize_watch = false;
+  // Fences-class: new Desktop files pin by rules (Explorer icons stay hidden).
+  bool auto_organize_watch = true;
   // 0 = record until toggle/stop; >0 = ffmpeg -t seconds auto-stop.
   int record_seconds = 0;
   // Soft file-size cap in MiB (P2-38). 0 = unlimited; default 2048.

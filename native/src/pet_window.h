@@ -12,7 +12,8 @@
 // Desktop-band pet with optional character/pose packs and light physics.
 class PetWindow {
  public:
-  using TrashFn = std::function<void(const std::vector<std::wstring>&)>;
+  // Return true when paths were recycled (OLE may advertise MOVE).
+  using TrashFn = std::function<bool(const std::vector<std::wstring>&)>;
   using PageFn = std::function<void(int)>;
   using VoidFn = std::function<void()>;
 
@@ -98,6 +99,10 @@ class PetWindow {
   int FrameIntervalMs(const std::wstring& pose) const;
   int ScaledW() const;
   int ScaledH() const;
+  // Ground clearance: DPI-scaled floor + sprite fraction (display-adaptivity).
+  int GroundMarginPx() const;
+  // Bubble-to-head gap so the pointer tip never sits on hair.
+  int PageHeadClearancePx(int pet_h) const;
   void ApplyScaledWindowSize();
   void EnterHappy(DWORD now);
   void EnterSleep(DWORD now);

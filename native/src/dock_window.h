@@ -27,6 +27,8 @@ class DockWindow {
   void SetEdge(const std::wstring& edge);
   void SetOpacity(float opacity);  // 0.4 – 1.0
   void AttachToDesktopLayer();
+  // Re-measure chrome for the dock's current monitor DPI (WM_DPICHANGED).
+  void RelayoutForDpi();
   void SetOnPathReplaced(
       std::function<void(const std::wstring&, const std::wstring&)> fn) {
     on_path_replaced_ = std::move(fn);
@@ -41,6 +43,18 @@ class DockWindow {
     HICON icon = nullptr;
     RECT bounds{};
   };
+  // Design sheet @ 96 DPI; LayoutSlots fills live px for the host monitor.
+  struct Metrics {
+    int btn = 44;
+    int icon = 32;
+    int gap = 8;
+    int mx = 10;
+    int my = 6;
+    int clear = 48;  // bottom edge clearance above work bottom
+    int radius = 16;
+    int glow = 4;
+    int dpi = 96;
+  };
 
   static LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
   LRESULT HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam);
@@ -49,6 +63,9 @@ class DockWindow {
   void LayoutSlots();
   void ApplyVisibility();
   int HitTest(int x, int y) const;
+  Metrics HostMetrics() const;
+  RECT HostWorkArea() const;
+  void RebuildIcons();
 
   void ShowSlotMenu(int index, POINT screen);
   void EnsureTooltip();
@@ -61,6 +78,7 @@ class DockWindow {
   std::wstring edge_ = L"bottom";
   BYTE fill_alpha_ = 217;  // ≈ 0.85
   int hover_index_ = -1;
+  Metrics metrics_{};
   std::vector<Slot> slots_;
   std::function<void(const std::wstring&, const std::wstring&)> on_path_replaced_;
   std::function<void(const std::wstring&)> on_removed_;

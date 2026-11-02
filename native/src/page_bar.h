@@ -107,6 +107,8 @@ class PageBar {
   void ApplyEdgeX();
   int VisibleWidth() const;
   int PeekWidth() const;
+  // Work area of the monitor hosting the bar (Fences-class: not always primary).
+  RECT HostWorkArea() const;
   // Index of first non-page slot (−1 if none); drives the page/tool divider.
   int FirstUtilityIndex() const;
   int SeparatorGap() const;

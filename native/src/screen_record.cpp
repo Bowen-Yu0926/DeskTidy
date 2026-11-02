@@ -1641,6 +1641,8 @@ void PauseScreenRecord(bool pause) {
   }
 }
 
+bool ScreenRecordSessionLive() { return g_proc != nullptr || g_paused; }
+
 bool IsScreenRecording() {
   if (g_paused) {
     return true;

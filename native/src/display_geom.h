@@ -55,3 +55,10 @@ struct IconGridMetrics {
 IconGridMetrics QueryIconGridMetrics();
 // Scale metrics from one DPI to another (ratio round). No-op when equal.
 void ScaleIconGridForDpi(IconGridMetrics* m, int old_dpi, int new_dpi);
+// Minimum fence frame height for `rows` icon rows + header/pad chrome
+// (display-adaptivity: max(ratio, content_min)). Uses Explorer grid metrics.
+int MinFenceHeightForIconRows(int rows, const IconGridMetrics* metrics = nullptr);
+// Design-px → monitor px (96-DPI sheet). dpi<=0 uses SystemDpi().
+int ScalePxForDpi(int px, int dpi = 0);
+// Scale a dialog design size for the monitor under `at`, then clamp to ~90% work.
+void ScaleDialogSizeForPoint(POINT at, int* width, int* height);

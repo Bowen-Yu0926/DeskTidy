@@ -20,16 +20,21 @@
 #include <climits>
 #include <cstring>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #pragma comment(lib, "gdiplus.lib")
 
 namespace {
 constexpr wchar_t kClass[] = L"DeskTidyNativePublic";
-constexpr int kMargin = 20;
-constexpr int kGapX = 0;
-constexpr int kGapY = 6;
-constexpr int kHeaderH = 26;   // P1-9: public-area title bar height.
+constexpr wchar_t kMarqueeClass[] = L"DeskTidyNativeMarquee";
+// Design @96 DPI — Layout() scales with the host monitor.
+constexpr int kMargin0 = 20;
+constexpr int kGapX0 = 0;
+constexpr int kGapY0 = 6;
+// Fences / Explorer loose icons have no host title chrome. A dark header plate
+// used to appear as a「黑影」above unpinned floats (especially near top-left).
+constexpr int kHeaderH = 0;
 constexpr int kExtPublicRefresh = 1;
 constexpr int kDragThreshold = 6;
 bool g_reg = false;
@@ -44,7 +49,7 @@ void EnsureGdiplus() {
 }
 
 // DrawIconEx straight into the 32bpp ULW bitmap leaves alpha at 0 for the
-// glyph pixels, so UpdateLayeredWindow(ULW_ALPHA) made the float icons fully
+// glyph pixels, so UpdateOverlayLayered(ULW_ALPHA) made the float icons fully
 // transparent: only the header plate showed and clicks missed the icons.
 // Compose through a premultiplied GDI+ bitmap (same approach as
 // fence_window's DrawIconSharp, duplicated here to avoid a shared header
@@ -172,10 +177,11 @@ bool PublicHost::Create(HINSTANCE instance) {
   }
   metrics_ = QueryIconGridMetrics();
   const RECT work = PrimaryWorkArea();
+  const int margin = ScalePxForDpi(kMargin0, SystemDpi());
   // Drop NOACTIVATE so Del/F2 work after click (Explorer DefView activates too).
   hwnd_ = CreateWindowExW(
       WS_EX_TOOLWINDOW | WS_EX_LAYERED, kClass, L"Public", WS_POPUP,
-      work.left + kMargin, work.top + kMargin, metrics_.cell_w,
+      work.left + margin, work.top + margin, metrics_.cell_w,
       kHeaderH + metrics_.cell_h, nullptr, nullptr, instance, this);
   if (!hwnd_) {
     return false;
@@ -189,27 +195,64 @@ void PublicHost::EnsureDropTarget() {
   if (!hwnd_ || drop_target_) {
     return;
   }
-  drop_target_ = new PathDropTarget([this](const std::vector<std::wstring>& paths) {
-    if (on_paths_dropped_) {
-      on_paths_dropped_(paths);
-      return;
-    }
-    // Fallback: copy into Desktop then refresh floats.
+  drop_target_ = new PathDropTarget(
+      [this](const std::vector<std::wstring>& paths, DWORD proposed) -> DWORD {
+        if (on_paths_dropped_) {
+          return on_paths_dropped_(paths);
+        }
+        // Fallback: Explorer same-volume MOVE / cross-volume COPY into Desktop.
+        PWSTR desk_raw = nullptr;
+        if (FAILED(SHGetKnownFolderPath(FOLDERID_Desktop, 0, nullptr, &desk_raw)) ||
+            !desk_raw) {
+          return DROPEFFECT_NONE;
+        }
+        const std::wstring desk = desk_raw;
+        CoTaskMemFree(desk_raw);
+        const bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+        const bool shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+        int ok = 0;
+        int moved = 0;
+        for (const auto& src : paths) {
+          bool move = SameVolume(src, desk);
+          if (ctrl) {
+            move = false;
+          }
+          if (shift) {
+            move = true;
+          }
+          std::wstring dest;
+          if (MoveOrCopyFileIntoDir(hwnd_, src, desk, move, &dest)) {
+            ++ok;
+            if (move) {
+              ++moved;
+            }
+          }
+        }
+        if (on_refresh_) {
+          on_refresh_();
+        }
+        if (ok <= 0) {
+          return DROPEFFECT_NONE;
+        }
+        if (moved == ok) {
+          return DROPEFFECT_MOVE;
+        }
+        (void)proposed;
+        return DROPEFFECT_COPY;
+      });
+  // AIGC START
+  drop_target_->SetFileDropSemantics(FileDropSemantics::Physical);
+  drop_target_->SetDestDirProvider([]() -> std::wstring {
     PWSTR desk_raw = nullptr;
     if (FAILED(SHGetKnownFolderPath(FOLDERID_Desktop, 0, nullptr, &desk_raw)) ||
         !desk_raw) {
-      return;
+      return {};
     }
-    const std::wstring desk = desk_raw;
+    std::wstring desk = desk_raw;
     CoTaskMemFree(desk_raw);
-    for (const auto& src : paths) {
-      std::wstring dest;
-      MoveOrCopyFileIntoDir(hwnd_, src, desk, /*move=*/false, &dest);
-    }
-    if (on_refresh_) {
-      on_refresh_();
-    }
+    return desk;
   });
+  // AIGC END
   if (!RegisterPathDropTarget(hwnd_, drop_target_)) {
     drop_target_->Release();
     drop_target_ = nullptr;
@@ -217,12 +260,19 @@ void PublicHost::EnsureDropTarget() {
 }
 
 void PublicHost::Destroy() {
+  HideMarqueeBand();
+  if (marquee_hwnd_ && IsWindow(marquee_hwnd_)) {
+    DestroyWindow(marquee_hwnd_);
+  }
+  marquee_hwnd_ = nullptr;
+  ClearRubberBaseCache();
   for (auto& s : slots_) {
     if (s.icon) {
       DestroyIcon(s.icon);
     }
   }
   slots_.clear();
+  rubber_ = false;
   if (hwnd_) {
     RevokePathDropTarget(hwnd_);
     DestroyWindow(hwnd_);
@@ -237,6 +287,13 @@ void PublicHost::Destroy() {
 void PublicHost::Show() { SetVisible(true); }
 
 void PublicHost::Hide() { SetVisible(false); }
+
+void PublicHost::RefreshLayer() {
+  if (!hwnd_ || !IsWindowVisible(hwnd_) || IsIconic(hwnd_)) {
+    return;
+  }
+  Present();
+}
 
 void PublicHost::ApplyVisibility() {
   if (!hwnd_) {
@@ -272,12 +329,12 @@ void PublicHost::AttachToDesktopLayer() {
   if (!hwnd_) {
     return;
   }
-  if (IsAttachedToDesktop(hwnd_)) {
-    return;
+  // AIGC START
+  // Fences keepalive: re-Raise even when already Progman-owned.
+  if (!AttachOverlayToDesktop(hwnd_, true)) {
+    ForceAttachOverlayToDesktop(hwnd_, true);
   }
-  AttachOverlayToDesktop(hwnd_, true);
-  PlaceOverlayInDesktopBand(hwnd_, true);
-  RaiseOverlayInDesktopBand(hwnd_);
+  // AIGC END
 }
 
 void PublicHost::SetBlockedRects(std::vector<RECT> rects) {
@@ -297,26 +354,61 @@ void PublicHost::SetPlacements(FloatPlacementMap placements) {
 }
 
 void PublicHost::SetItems(std::vector<DesktopItem> items) {
+  std::vector<DesktopItem> before;
+  before.reserve(slots_.size());
+  std::unordered_map<std::wstring, HICON> reuse;
+  reuse.reserve(slots_.size());
   for (auto& s : slots_) {
+    before.push_back(s.item);
     if (s.icon) {
-      DestroyIcon(s.icon);
+      reuse.emplace(NormalizePinKey(s.item.path), s.icon);
+      s.icon = nullptr;
     }
   }
   slots_.clear();
-  selected_.clear();
-  selection_anchor_ = -1;
-  rubber_ = false;
   metrics_ = QueryIconGridMetrics();
   slots_.reserve(items.size());
+  bool loaded_any = false;
   for (auto& item : items) {
     if (GetFileAttributesW(item.path.c_str()) == INVALID_FILE_ATTRIBUTES) {
       continue;
     }
     Slot s;
     s.item = std::move(item);
-    s.icon = LoadItemIcon(s.item.path, metrics_.icon_size);
+    const std::wstring key = NormalizePinKey(s.item.path);
+    auto hit = reuse.find(key);
+    if (hit != reuse.end()) {
+      s.icon = hit->second;
+      reuse.erase(hit);
+    } else {
+      s.icon = LoadItemIcon(s.item.path, metrics_.icon_size);
+      loaded_any = true;
+    }
     slots_.push_back(std::move(s));
   }
+  for (auto& kv : reuse) {
+    if (kv.second) {
+      DestroyIcon(kv.second);
+    }
+  }
+  std::vector<DesktopItem> after;
+  after.reserve(slots_.size());
+  for (const auto& s : slots_) {
+    after.push_back(s.item);
+  }
+  if (!loaded_any && DesktopItemListsIdentityEqual(before, after)) {
+    // Same icons: keep selection, but reflow — blocked fence rects / placements
+    // are applied just before SetItems in RebuildPublicItems.
+    Layout();
+    ApplyVisibility();
+    return;
+  }
+  selected_.clear();
+  selection_anchor_ = -1;
+  rubber_ = false;
+  rubber_additive_ = false;
+  HideMarqueeBand();
+  ClearRubberBaseCache();
   EnsureSelSize();
   Layout();
   ApplyVisibility();
@@ -330,8 +422,7 @@ void PublicHost::Layout() {
   const int cell_w = (std::max)(48, metrics_.cell_w);
   const int cell_h = (std::max)(56, metrics_.cell_h);
   const int icon = (std::max)(16, metrics_.icon_size);
-  const int step_x = cell_w + kGapX;
-  const int step_y = cell_h + kGapY;
+  (void)icon;
 
   auto intersects_blocked = [this](const RECT& slot) {
     for (const RECT& b : blocked_) {
@@ -344,14 +435,26 @@ void PublicHost::Layout() {
   };
 
   // Scan every monitor work area (Fences: icons stay on the screen they land).
+  // Prefer primary first — EnumDisplayMonitors often returns the left secondary
+  // ahead of primary, so unpositioned new floats (AI/save-to-Desktop) used to
+  // land off the main screen while fences stayed on primary (looks「没显示」).
   constexpr size_t kMaxCandidates = 768;
   std::vector<RECT> candidates;
   candidates.reserve((std::min)(kMaxCandidates, slots_.size() * 8 + 32));
-  const auto monitors = EnumMonitors();
+  auto monitors = EnumMonitors();
+  std::stable_partition(monitors.begin(), monitors.end(),
+                        [](const MonitorInfo& m) { return m.primary; });
+  int step_x = cell_w;
+  int step_y = cell_h;
   for (const auto& mon : monitors) {
     const RECT& work = mon.work;
-    int search_bottom = work.bottom - kMargin;
-    int search_right = work.right - kMargin;
+    POINT mid{(work.left + work.right) / 2, (work.top + work.bottom) / 2};
+    const int dpi = DpiAtPoint(mid);
+    const int margin = ScalePxForDpi(kMargin0, dpi);
+    step_x = cell_w + ScalePxForDpi(kGapX0, dpi);
+    step_y = cell_h + ScalePxForDpi(kGapY0, dpi);
+    int search_bottom = work.bottom - margin;
+    int search_right = work.right - margin;
     for (const RECT& b : blocked_) {
       if (b.left >= work.right || b.right <= work.left ||
           b.top >= work.bottom || b.bottom <= work.top) {
@@ -366,8 +469,8 @@ void PublicHost::Layout() {
         (std::min)(search_bottom, static_cast<int>(work.bottom) + step_y * 8);
     search_right =
         (std::min)(search_right, static_cast<int>(work.right) + step_x * 4);
-    for (int x = work.left + kMargin; x + cell_w <= search_right; x += step_x) {
-      for (int y = work.top + kMargin; y + cell_h <= search_bottom;
+    for (int x = work.left + margin; x + cell_w <= search_right; x += step_x) {
+      for (int y = work.top + margin; y + cell_h <= search_bottom;
            y += step_y) {
         const RECT slot{x, y, x + cell_w, y + cell_h};
         if (intersects_blocked(slot)) {
@@ -388,9 +491,10 @@ void PublicHost::Layout() {
   }
   if (candidates.empty()) {
     const RECT work = PrimaryWorkArea();
-    candidates.push_back({work.left + kMargin, work.top + kMargin,
-                          work.left + kMargin + cell_w,
-                          work.top + kMargin + cell_h});
+    const int margin = ScalePxForDpi(kMargin0, SystemDpi());
+    candidates.push_back({work.left + margin, work.top + margin,
+                          work.left + margin + cell_w,
+                          work.top + margin + cell_h});
   }
   while (candidates.size() < slots_.size()) {
     RECT last = candidates.back();
@@ -451,6 +555,9 @@ void PublicHost::Layout() {
     assigned[i] = candidates[next++];
   }
 
+  // AIGC START
+  // Fences-class: host stays a tight icon bbox. Marquee is a separate band
+  // window — never SetWindowPos the icon host during multi-select (flash).
   LONG min_l = LONG_MAX;
   LONG min_t = LONG_MAX;
   LONG max_r = LONG_MIN;
@@ -462,15 +569,16 @@ void PublicHost::Layout() {
     max_r = (std::max)(max_r, sc.right);
     max_b = (std::max)(max_b, sc.bottom);
   }
-  const int origin_x = static_cast<int>(min_l);
-  const int origin_y = static_cast<int>(min_t) - kHeaderH;
+  const int pad = (std::max)(48, cell_w / 2);
+  const RECT host_rc = {
+      static_cast<LONG>(min_l - pad), static_cast<LONG>(min_t - pad),
+      static_cast<LONG>(max_r + pad), static_cast<LONG>(max_b + pad)};
+  const int origin_x = host_rc.left;
+  const int origin_y = host_rc.top;
   const int w =
-      (std::max)(kHeaderH, static_cast<int>(max_r) - origin_x);
-  const int h = (std::max)(kHeaderH + cell_h,
-                           static_cast<int>(max_b) - origin_y);
-  SetWindowPos(hwnd_, nullptr, origin_x, origin_y, w, h,
-               SWP_NOZORDER | SWP_NOACTIVATE);
-
+      (std::max)(cell_w, static_cast<int>(host_rc.right - host_rc.left));
+  const int h =
+      (std::max)(cell_h, static_cast<int>(host_rc.bottom - host_rc.top));
   const int icon_pad = (cell_w - icon) / 2;
   for (size_t i = 0; i < slots_.size(); ++i) {
     const RECT& sc = assigned[i];
@@ -480,6 +588,10 @@ void PublicHost::Layout() {
     slots_[i].icon_rc = {cx + icon_pad, cy + 4, cx + icon_pad + icon,
                          cy + 4 + icon};
   }
+  ClearRubberBaseCache();
+  SetOverlayScreenPos(hwnd_, origin_x, origin_y, w, h,
+                      SWP_NOZORDER | SWP_NOREDRAW);
+  // AIGC END
   Present();
 }
 
@@ -604,12 +716,21 @@ void PublicHost::ShowSlotMenu(int index, POINT screen) {
 }
 
 int PublicHost::HitTest(int x, int y) const {
-  if (y < kHeaderH) {
-    return -1;  // P1-9: header is not an icon slot.
-  }
+  // Fences / Explorer: only glyph + caption are "the icon". Cell padding and
+  // empty host chrome stay blank so rubber-band multi-select can start
+  // (full-cell hit made nearly every pixel an icon — no batch select).
+  const int font_px = 12;
+  const int line_h = font_px + 5;
+  const int label_h = line_h * 2 + 4;
   for (size_t i = 0; i < slots_.size(); ++i) {
     const RECT& b = slots_[i].bounds;
-    if (x >= b.left && x < b.right && y >= b.top && y < b.bottom) {
+    const RECT& ir = slots_[i].icon_rc;
+    const int content_l = (std::min)(ir.left, b.left + 2);
+    const int content_t = (std::min)(ir.top, b.top + 2);
+    const int content_r = (std::max)(ir.right, b.right - 2);
+    const int content_b =
+        (std::min)(b.bottom - 2, ir.bottom + 2 + label_h);
+    if (x >= content_l && x < content_r && y >= content_t && y < content_b) {
       return static_cast<int>(i);
     }
   }
@@ -728,8 +849,11 @@ void PublicHost::SelectIntersecting(RECT client_rc) {
   if (client_rc.top > client_rc.bottom) {
     std::swap(client_rc.top, client_rc.bottom);
   }
-  std::fill(selected_.begin(), selected_.end(), static_cast<char>(0));
-  selection_anchor_ = -1;
+  // Ctrl+rubber keeps prior selection (Explorer / Fences additive marquee).
+  if (!rubber_additive_) {
+    std::fill(selected_.begin(), selected_.end(), static_cast<char>(0));
+    selection_anchor_ = -1;
+  }
   for (size_t i = 0; i < slots_.size(); ++i) {
     const RECT& b = slots_[i].bounds;
     if (b.left < client_rc.right && b.right > client_rc.left &&
@@ -741,6 +865,188 @@ void PublicHost::SelectIntersecting(RECT client_rc) {
     }
   }
 }
+
+// AIGC START
+void PublicHost::ClearRubberBaseCache() {
+  if (rubber_base_dib_) {
+    DeleteObject(rubber_base_dib_);
+    rubber_base_dib_ = nullptr;
+  }
+  rubber_base_bits_ = nullptr;
+  rubber_base_w_ = 0;
+  rubber_base_h_ = 0;
+}
+
+bool PublicHost::SelectionFingerprint(std::vector<char>* out) const {
+  if (!out) {
+    return false;
+  }
+  *out = selected_;
+  return true;
+}
+
+void PublicHost::HideMarqueeBand() {
+  if (marquee_hwnd_ && IsWindow(marquee_hwnd_)) {
+    ShowWindow(marquee_hwnd_, SW_HIDE);
+  }
+}
+
+void PublicHost::PresentMarqueeBand() {
+  if (!hwnd_ || !rubber_) {
+    HideMarqueeBand();
+    return;
+  }
+  RECT r = rubber_rc_;
+  if (r.left > r.right) {
+    std::swap(r.left, r.right);
+  }
+  if (r.top > r.bottom) {
+    std::swap(r.top, r.bottom);
+  }
+  POINT tl{r.left, r.top};
+  POINT br{r.right, r.bottom};
+  ClientToScreen(hwnd_, &tl);
+  ClientToScreen(hwnd_, &br);
+  const int bw = br.x - tl.x;
+  const int bh = br.y - tl.y;
+  if (bw < 2 || bh < 2) {
+    HideMarqueeBand();
+    return;
+  }
+  static bool marquee_class = false;
+  if (!marquee_class) {
+    WNDCLASSEXW wc{};
+    wc.cbSize = sizeof(wc);
+    wc.lpfnWndProc = DefWindowProcW;
+    wc.hInstance = GetModuleHandleW(nullptr);
+    wc.lpszClassName = kMarqueeClass;
+    wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
+    RegisterClassExW(&wc);
+    marquee_class = true;
+  }
+  if (!marquee_hwnd_ || !IsWindow(marquee_hwnd_)) {
+    marquee_hwnd_ = CreateWindowExW(
+        WS_EX_TOOLWINDOW | WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE |
+            WS_EX_TOPMOST,
+        kMarqueeClass, L"", WS_POPUP, tl.x, tl.y, bw, bh, nullptr, nullptr,
+        GetModuleHandleW(nullptr), nullptr);
+    if (!marquee_hwnd_) {
+      return;
+    }
+  }
+  SetWindowPos(marquee_hwnd_, HWND_TOPMOST, tl.x, tl.y, bw, bh,
+               SWP_NOACTIVATE | SWP_SHOWWINDOW | SWP_NOREDRAW);
+  HDC screen = GetDC(nullptr);
+  HDC mem = CreateCompatibleDC(screen);
+  BITMAPINFO bi{};
+  bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+  bi.bmiHeader.biWidth = bw;
+  bi.bmiHeader.biHeight = -bh;
+  bi.bmiHeader.biPlanes = 1;
+  bi.bmiHeader.biBitCount = 32;
+  bi.bmiHeader.biCompression = BI_RGB;
+  void* bits = nullptr;
+  HBITMAP dib = CreateDIBSection(screen, &bi, DIB_RGB_COLORS, &bits, nullptr, 0);
+  if (!dib || !bits) {
+    if (dib) {
+      DeleteObject(dib);
+    }
+    DeleteDC(mem);
+    ReleaseDC(nullptr, screen);
+    return;
+  }
+  HGDIOBJ old = SelectObject(mem, dib);
+  std::memset(bits, 0, static_cast<size_t>(bw) * static_cast<size_t>(bh) * 4);
+  EnsureGdiplus();
+  {
+    Gdiplus::Graphics g(mem);
+    Gdiplus::SolidBrush fill(Gdiplus::Color(40, 0, 120, 215));
+    Gdiplus::Pen pen(Gdiplus::Color(200, 0, 120, 215), 1.f);
+    g.FillRectangle(&fill, 0, 0, bw, bh);
+    g.DrawRectangle(&pen, 0, 0, bw - 1, bh - 1);
+  }
+  POINT origin{tl.x, tl.y};
+  SIZE size{bw, bh};
+  POINT src{0, 0};
+  BLENDFUNCTION blend{};
+  blend.BlendOp = AC_SRC_OVER;
+  blend.SourceConstantAlpha = 255;
+  blend.AlphaFormat = AC_SRC_ALPHA;
+  UpdateOverlayLayered(marquee_hwnd_, screen, &origin, &size, mem, &src, 0,
+                      &blend, ULW_ALPHA);
+  SelectObject(mem, old);
+  DeleteObject(dib);
+  DeleteDC(mem);
+  ReleaseDC(nullptr, screen);
+}
+
+bool PublicHost::EnsureRubberBaseCache(int w, int h) {
+  if (rubber_base_dib_ && rubber_base_w_ == w && rubber_base_h_ == h &&
+      rubber_base_bits_) {
+    return true;
+  }
+  ClearRubberBaseCache();
+  HDC screen = GetDC(nullptr);
+  BITMAPINFO bi{};
+  bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+  bi.bmiHeader.biWidth = w;
+  bi.bmiHeader.biHeight = -h;
+  bi.bmiHeader.biPlanes = 1;
+  bi.bmiHeader.biBitCount = 32;
+  bi.bmiHeader.biCompression = BI_RGB;
+  void* bits = nullptr;
+  HBITMAP dib = CreateDIBSection(screen, &bi, DIB_RGB_COLORS, &bits, nullptr, 0);
+  if (!dib || !bits) {
+    if (dib) {
+      DeleteObject(dib);
+    }
+    ReleaseDC(nullptr, screen);
+    return false;
+  }
+  HDC mem = CreateCompatibleDC(screen);
+  HGDIOBJ old = SelectObject(mem, dib);
+  std::memset(bits, 0, static_cast<size_t>(w) * static_cast<size_t>(h) * 4);
+  // Base = hit plate + icons + captions (no selection / rubber).
+  Paint(mem, /*draw_selection=*/false, /*draw_rubber=*/false);
+  SelectObject(mem, old);
+  DeleteDC(mem);
+  ReleaseDC(nullptr, screen);
+  rubber_base_dib_ = dib;
+  rubber_base_bits_ = bits;
+  rubber_base_w_ = w;
+  rubber_base_h_ = h;
+  return true;
+}
+
+void PublicHost::BeginRubberFromScreen(POINT screen, bool additive) {
+  if (!hwnd_ || !IsWindowVisible(hwnd_) || slots_.empty()) {
+    return;
+  }
+  // Do NOT EnterMarqueeCover on button-down — click-to-deselect on DefView
+  // blank was Expand→Present→Leave→Present and flashed icons. Cover expands
+  // only after the drag passes threshold (same as in-host blank chrome).
+  POINT client = screen;
+  ScreenToClient(hwnd_, &client);
+  if (HitTest(client.x, client.y) >= 0) {
+    return;
+  }
+  SetFocus(hwnd_);
+  drag_from_ = -1;
+  drag_moved_ = false;
+  const bool had_sel = HasSelection();
+  if (!additive) {
+    ClearSelection();
+  }
+  rubber_ = true;
+  rubber_additive_ = additive;
+  rubber_origin_ = client;
+  rubber_rc_ = {client.x, client.y, client.x, client.y};
+  if (had_sel && !additive) {
+    Present();
+  }
+  SetCapture(hwnd_);
+}
+// AIGC END
 
 std::vector<std::wstring> PublicHost::SelectedPaths() const {
   std::vector<std::wstring> paths;
@@ -845,27 +1151,52 @@ void PublicHost::BeginOleDrag() {
   drag_from_ = -1;
   drag_moved_ = false;
   rubber_ = false;
+  rubber_additive_ = false;
+  HideMarqueeBand();
   if (GetCapture() == hwnd_) {
     ReleaseCapture();
   }
-  ShellDoDragFiles(paths);
+  // AIGC START
+  // Fences/Explorer: shell drag the selection. Do not rewrite float geometry
+  // aggressively after DoDragDrop — that stacked multi-select on one point or
+  // erased placements so Refresh looked like「文件消失」.
+  bool dropped = ShellDoDragFiles(paths, /*cancel_desktop_self_drop=*/true);
   POINT pt{};
   GetCursorPos(&pt);
+  HWND under = WindowFromPoint(pt);
+  for (HWND cur = under; cur; cur = GetParent(cur)) {
+    if (cur == hwnd_ || cur == marquee_hwnd_) {
+      // Dropped back on our float chrome — treat as cancel (no-op move).
+      dropped = false;
+      break;
+    }
+  }
+  bool placements_dirty = false;
   for (const auto& p : paths) {
     if (GetFileAttributesW(p.c_str()) == INVALID_FILE_ATTRIBUTES) {
+      EraseFloatPlacement(&placements_, p);
+      placements_dirty = true;
       if (on_removed_) {
         on_removed_(p);
       }
       continue;
     }
-    UpsertFloatPlacement(&placements_, p, current_page_, pt);
+    if (!dropped && paths.size() == 1) {
+      // Single-icon cancel/desktop release: park under cursor (Explorer).
+      UpsertFloatPlacement(&placements_, p, current_page_, pt);
+      placements_dirty = true;
+    }
+    // Multi cancel: keep prior seats. Successful drop while file still exists
+    // (e.g. pinned by a fence): RebuildPublicItems heals via FindPin — do not
+    // EraseFloat here or icons vanish for a frame / forever if heal races.
   }
-  if (on_placements_changed_) {
+  if (placements_dirty && on_placements_changed_) {
     on_placements_changed_(placements_);
   }
   if (on_refresh_) {
     on_refresh_();
   }
+  // AIGC END
 }
 
 LRESULT CALLBACK PublicHost::WndProc(HWND hwnd, UINT msg, WPARAM wparam,
@@ -886,6 +1217,33 @@ LRESULT CALLBACK PublicHost::WndProc(HWND hwnd, UINT msg, WPARAM wparam,
 }
 
 LRESULT PublicHost::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
+  if (msg == WM_SYSCOMMAND && FilterDesktopChromeSysCommand(wparam)) {
+    return 0;
+  }
+  if (msg == WM_WINDOWPOSCHANGING) {
+    FilterDesktopChromeWindowPosChanging(reinterpret_cast<WINDOWPOS*>(lparam));
+  }
+  if (msg == WM_NCHITTEST) {
+    // While capturing / rubber-banding, keep all moves.
+    if (rubber_ || GetCapture() == hwnd_) {
+      return HTCLIENT;
+    }
+    POINT pt{GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
+    POINT client = pt;
+    ScreenToClient(hwnd_, &client);
+    if (HitTest(client.x, client.y) >= 0) {
+      return HTCLIENT;
+    }
+    // Pass clicks through fence frames under our bounding box so partitions
+    // stay clickable (host spans min→max float cells and often overlaps).
+    for (const RECT& b : blocked_) {
+      if (pt.x >= b.left && pt.x < b.right && pt.y >= b.top &&
+          pt.y < b.bottom) {
+        return HTTRANSPARENT;
+      }
+    }
+    return HTCLIENT;
+  }
   switch (msg) {
     case WM_PAINT: {
       PAINTSTRUCT ps{};
@@ -902,9 +1260,11 @@ LRESULT PublicHost::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
       drag_moved_ = false;
       drag_press_ = {x, y};
       rubber_ = false;
+      rubber_additive_ = false;
       const bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
       const bool shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
       if (drag_from_ >= 0) {
+        HideMarqueeBand();
         EnsureSelSize();
         if (shift && selection_anchor_ >= 0) {
           SelectRange(selection_anchor_, drag_from_);
@@ -916,12 +1276,19 @@ LRESULT PublicHost::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
         Present();
         SetCapture(hwnd_);
       } else {
-        // Empty chrome: start rubber-band (Explorer / Fences).
-        ClearSelection();
+        // Explorer/Fences: blank click clears selection; host geometry fixed.
+        const bool had_sel = HasSelection();
+        if (!ctrl) {
+          ClearSelection();
+        }
         rubber_ = true;
+        rubber_additive_ = ctrl;
         rubber_origin_ = {x, y};
         rubber_rc_ = {x, y, x, y};
-        Present();
+        rubber_sel_finger_.clear();
+        if (had_sel && !ctrl) {
+          Present();
+        }
         SetCapture(hwnd_);
       }
       return 0;
@@ -934,7 +1301,12 @@ LRESULT PublicHost::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
       const int y = GET_Y_LPARAM(lparam);
       if (rubber_) {
         rubber_rc_ = {rubber_origin_.x, rubber_origin_.y, x, y};
-        Present();
+        const int bw = std::abs(rubber_rc_.right - rubber_rc_.left);
+        const int bh = std::abs(rubber_rc_.bottom - rubber_rc_.top);
+        if (bw >= kDragThreshold || bh >= kDragThreshold) {
+          SelectIntersecting(rubber_rc_);
+        }
+        PresentRubberFast();
         return 0;
       }
       if (drag_from_ < 0) {
@@ -952,24 +1324,38 @@ LRESULT PublicHost::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
       if (!drag_moved_) {
         return 0;
       }
+      // AIGC START
+      // Fences/Explorer: multi-select → shell drag as soon as threshold is met
+      // (do not wait for "outside host"; glyph padding used to fire OLE early
+      // then wipe placements).
+      int sel_count = 0;
+      for (char c : selected_) {
+        if (c) {
+          ++sel_count;
+        }
+      }
+      if (sel_count > 1) {
+        BeginOleDrag();
+        return 0;
+      }
       const int hit = HitTest(x, y);
       POINT screen{x, y};
       ClientToScreen(hwnd_, &screen);
       RECT wr{};
       GetWindowRect(hwnd_, &wr);
-      const bool outside =
+      const bool outside_host =
           screen.x < wr.left || screen.x >= wr.right || screen.y < wr.top ||
-          screen.y >= wr.bottom ||
-          (hit < 0 && y >= kHeaderH);
-      if (outside) {
+          screen.y >= wr.bottom;
+      if (outside_host || hit < 0) {
         BeginOleDrag();
         return 0;
       }
-      if (hit >= 0 && hit != drag_from_ && SelectedPaths().size() <= 1) {
+      if (hit != drag_from_) {
         ReorderTo(drag_from_, hit);
         drag_from_ = hit;
         SelectOnly(hit);
       }
+      // AIGC END
       return 0;
     }
     case WM_LBUTTONUP: {
@@ -980,16 +1366,33 @@ LRESULT PublicHost::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
       }
       if (rubber_) {
         rubber_rc_ = {rubber_origin_.x, rubber_origin_.y, x, y};
-        SelectIntersecting(rubber_rc_);
+        // Tiny drag = click blank, not a marquee (Explorer threshold).
+        const int bw = std::abs(rubber_rc_.right - rubber_rc_.left);
+        const int bh = std::abs(rubber_rc_.bottom - rubber_rc_.top);
+        const bool real_marquee =
+            bw >= kDragThreshold || bh >= kDragThreshold;
+        if (real_marquee) {
+          SelectIntersecting(rubber_rc_);
+        }
         rubber_ = false;
-        Present();
+        rubber_additive_ = false;
+        HideMarqueeBand();
+        if (real_marquee) {
+          Present();
+        }
         drag_from_ = -1;
         drag_moved_ = false;
         return 0;
       }
       if (!drag_moved_) {
         const int hit = HitTest(x, y);
-        if (hit < 0 && !HasSelection()) {
+        const bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+        const bool shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+        // Explorer: plain click on an already-selected icon collapses to it.
+        if (hit >= 0 && !ctrl && !shift) {
+          SelectOnly(hit);
+          Present();
+        } else if (hit < 0) {
           ClearSelection();
           Present();
         }
@@ -1081,34 +1484,20 @@ bool PublicHost::IsSelected(int index) const {
          selected_[static_cast<size_t>(index)] != 0;
 }
 
-void PublicHost::Paint(HDC hdc) {
+void PublicHost::Paint(HDC hdc, bool draw_selection, bool draw_rubber) {
   const int icon = (std::max)(16, metrics_.icon_size);
-  // P1-9: header/title bar (matches fence chrome, anchors the float area).
-  RECT wr{};
-  GetClientRect(hwnd_, &wr);
   EnsureGdiplus();
   {
     Gdiplus::Graphics g0(hdc);
     g0.Clear(Gdiplus::Color(0, 0, 0, 0));
-    g0.SetTextRenderingHint(Gdiplus::TextRenderingHintAntiAliasGridFit);
-    g0.SetTextContrast(4);
-    // Subtle plate so the title anchors; caption itself uses Explorer glow.
-    Gdiplus::SolidBrush head(Gdiplus::Color(40, 15, 23, 42));
-    g0.FillRectangle(&head, 0, 0, static_cast<int>(wr.right - wr.left),
-                     kHeaderH);
-    Gdiplus::FontFamily hf(L"Microsoft YaHei UI");
-    const Gdiplus::FontFamily* hface =
-        hf.IsAvailable() ? &hf : Gdiplus::FontFamily::GenericSansSerif();
-    Gdiplus::Font hfont(hface, 11.f, Gdiplus::FontStyleBold,
-                        Gdiplus::UnitPixel);
-    Gdiplus::StringFormat hfmt;
-    hfmt.SetAlignment(Gdiplus::StringAlignmentNear);
-    hfmt.SetLineAlignment(Gdiplus::StringAlignmentCenter);
-    hfmt.SetTrimming(Gdiplus::StringTrimmingEllipsisCharacter);
-    Gdiplus::RectF hbox(8.f, 0.f,
-                        static_cast<Gdiplus::REAL>(wr.right - wr.left - 16),
-                        static_cast<Gdiplus::REAL>(kHeaderH));
-    DrawExplorerCaption(g0, title_, hbox, hfont, hfmt);
+    // ULW_ALPHA hit-tests by alpha: fully clear pixels never get mouse input,
+    // so rubber-band multi-select on "blank" could not start. Alpha=1 plate is
+    // invisible but hittable (Explorer/Fences-class loose-icon host).
+    RECT wr{};
+    GetClientRect(hwnd_, &wr);
+    Gdiplus::SolidBrush hit(Gdiplus::Color(1, 0, 0, 0));
+    g0.FillRectangle(&hit, 0, 0, static_cast<int>(wr.right - wr.left),
+                     static_cast<int>(wr.bottom - wr.top));
   }
   // Icons must be composited through GDI+ (see DrawIconAlpha) so the alpha
   // channel survives ULW_ALPHA; plain DrawIconEx left them invisible.
@@ -1116,7 +1505,7 @@ void PublicHost::Paint(HDC hdc) {
     Gdiplus::Graphics gi(hdc);
     for (size_t i = 0; i < slots_.size(); ++i) {
       const auto& s = slots_[i];
-      if (i < selected_.size() && selected_[i]) {
+      if (draw_selection && i < selected_.size() && selected_[i]) {
         Gdiplus::SolidBrush sel(Gdiplus::Color(90, 0, 120, 215));
         gi.FillRectangle(&sel,
                          static_cast<INT>(s.bounds.left),
@@ -1128,7 +1517,7 @@ void PublicHost::Paint(HDC hdc) {
         DrawIconAlpha(gi, s.icon, s.icon_rc.left, s.icon_rc.top, icon);
       }
     }
-    if (rubber_) {
+    if (draw_rubber && rubber_) {
       RECT r = rubber_rc_;
       if (r.left > r.right) {
         std::swap(r.left, r.right);
@@ -1171,10 +1560,132 @@ void PublicHost::Paint(HDC hdc) {
   }
 }
 
+// AIGC START
+void PublicHost::PresentRubberFast() {
+  if (!hwnd_ || !rubber_) {
+    return;
+  }
+  // Fences: rubber band is its own overlay — icon host never moves.
+  PresentMarqueeBand();
+
+  const ULONGLONG now = GetTickCount64();
+  if (rubber_present_ms_ && now - rubber_present_ms_ < 16) {
+    return;
+  }
+  rubber_present_ms_ = now;
+
+  std::vector<char> finger;
+  SelectionFingerprint(&finger);
+  if (finger == rubber_sel_finger_) {
+    return;
+  }
+  rubber_sel_finger_ = std::move(finger);
+
+  RECT wr{};
+  GetWindowRect(hwnd_, &wr);
+  const int w = (std::max)(1, static_cast<int>(wr.right - wr.left));
+  const int h = (std::max)(1, static_cast<int>(wr.bottom - wr.top));
+  if (!EnsureRubberBaseCache(w, h)) {
+    HDC screen = GetDC(nullptr);
+    HDC mem = CreateCompatibleDC(screen);
+    BITMAPINFO bi{};
+    bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    bi.bmiHeader.biWidth = w;
+    bi.bmiHeader.biHeight = -h;
+    bi.bmiHeader.biPlanes = 1;
+    bi.bmiHeader.biBitCount = 32;
+    bi.bmiHeader.biCompression = BI_RGB;
+    void* bits = nullptr;
+    HBITMAP dib =
+        CreateDIBSection(screen, &bi, DIB_RGB_COLORS, &bits, nullptr, 0);
+    if (dib && bits) {
+      HGDIOBJ old = SelectObject(mem, dib);
+      std::memset(bits, 0, static_cast<size_t>(w) * static_cast<size_t>(h) * 4);
+      Paint(mem, true, /*draw_rubber=*/false);
+      POINT origin{wr.left, wr.top};
+      SIZE size{w, h};
+      POINT src{0, 0};
+      BLENDFUNCTION blend{};
+      blend.BlendOp = AC_SRC_OVER;
+      blend.SourceConstantAlpha = 255;
+      blend.AlphaFormat = AC_SRC_ALPHA;
+      UpdateOverlayLayered(hwnd_, screen, &origin, &size, mem, &src, 0, &blend,
+                          ULW_ALPHA);
+      SelectObject(mem, old);
+      DeleteObject(dib);
+    } else if (dib) {
+      DeleteObject(dib);
+    }
+    DeleteDC(mem);
+    ReleaseDC(nullptr, screen);
+    return;
+  }
+
+  HDC screen = GetDC(nullptr);
+  HDC mem = CreateCompatibleDC(screen);
+  BITMAPINFO bi{};
+  bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+  bi.bmiHeader.biWidth = w;
+  bi.bmiHeader.biHeight = -h;
+  bi.bmiHeader.biPlanes = 1;
+  bi.bmiHeader.biBitCount = 32;
+  bi.bmiHeader.biCompression = BI_RGB;
+  void* bits = nullptr;
+  HBITMAP dib = CreateDIBSection(screen, &bi, DIB_RGB_COLORS, &bits, nullptr, 0);
+  if (!dib || !bits) {
+    if (dib) {
+      DeleteObject(dib);
+    }
+    DeleteDC(mem);
+    ReleaseDC(nullptr, screen);
+    return;
+  }
+  const size_t nbytes =
+      static_cast<size_t>(w) * static_cast<size_t>(h) * 4u;
+  std::memcpy(bits, rubber_base_bits_, nbytes);
+  HGDIOBJ old = SelectObject(mem, dib);
+  EnsureGdiplus();
+  {
+    Gdiplus::Graphics gi(mem);
+    for (size_t i = 0; i < slots_.size(); ++i) {
+      if (i >= selected_.size() || !selected_[i]) {
+        continue;
+      }
+      const auto& s = slots_[i];
+      Gdiplus::SolidBrush sel(Gdiplus::Color(90, 0, 120, 215));
+      gi.FillRectangle(&sel, static_cast<INT>(s.bounds.left),
+                       static_cast<INT>(s.bounds.top),
+                       static_cast<INT>(s.bounds.right - s.bounds.left),
+                       static_cast<INT>(s.bounds.bottom - s.bounds.top));
+    }
+  }
+  POINT origin{wr.left, wr.top};
+  SIZE size{w, h};
+  POINT src{0, 0};
+  BLENDFUNCTION blend{};
+  blend.BlendOp = AC_SRC_OVER;
+  blend.SourceConstantAlpha = 255;
+  blend.AlphaFormat = AC_SRC_ALPHA;
+  UpdateOverlayLayered(hwnd_, screen, &origin, &size, mem, &src, 0, &blend,
+                      ULW_ALPHA);
+  SelectObject(mem, old);
+  DeleteObject(dib);
+  DeleteDC(mem);
+  ReleaseDC(nullptr, screen);
+}
+// AIGC END
+
 void PublicHost::Present() {
   if (!hwnd_) {
     return;
   }
+  if (rubber_) {
+    PresentRubberFast();
+    return;
+  }
+  HideMarqueeBand();
+  ClearRubberBaseCache();
+  rubber_sel_finger_.clear();
   RECT wr{};
   GetWindowRect(hwnd_, &wr);
   const int w = (std::max)(1, static_cast<int>(wr.right - wr.left));
@@ -1200,7 +1711,7 @@ void PublicHost::Present() {
   }
   HGDIOBJ old = SelectObject(mem, dib);
   std::memset(bits, 0, static_cast<size_t>(w) * static_cast<size_t>(h) * 4);
-  Paint(mem);
+  Paint(mem, /*draw_selection=*/true, /*draw_rubber=*/false);
   POINT origin{wr.left, wr.top};
   SIZE size{w, h};
   POINT src{0, 0};
@@ -1208,7 +1719,7 @@ void PublicHost::Present() {
   blend.BlendOp = AC_SRC_OVER;
   blend.SourceConstantAlpha = 255;
   blend.AlphaFormat = AC_SRC_ALPHA;
-  UpdateLayeredWindow(hwnd_, screen, &origin, &size, mem, &src, 0, &blend,
+  UpdateOverlayLayered(hwnd_, screen, &origin, &size, mem, &src, 0, &blend,
                       ULW_ALPHA);
   SelectObject(mem, old);
   DeleteObject(dib);

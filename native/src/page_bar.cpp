@@ -69,6 +69,16 @@ void EnsureGdiplus() {
 }
 }  // namespace
 
+RECT PageBar::HostWorkArea() const {
+  if (hwnd_ && IsWindow(hwnd_)) {
+    RECT rc{};
+    GetWindowRect(hwnd_, &rc);
+    POINT c{(rc.left + rc.right) / 2, (rc.top + rc.bottom) / 2};
+    return WorkAreaAtPoint(c);
+  }
+  return PrimaryWorkArea();
+}
+
 bool PageBar::Create(HINSTANCE instance) {
   if (!g_registered) {
     WNDCLASSEXW wc{};
@@ -85,7 +95,7 @@ bool PageBar::Create(HINSTANCE instance) {
   ApplyDesignMetrics(96);
   const int w = CardMargin() + PadX() * 2 + chip_w_;
   const int h = ContentHeight();
-  const RECT work = PrimaryWorkArea();
+  const RECT work = HostWorkArea();
   // Float starts tucked; tabs sit fully on the edge.
   const int x = IsFloatStyle() ? (work.right - kPeekW - kEdgeMargin)
                                : (work.right - w - kEdgeMargin);
@@ -196,7 +206,7 @@ void PageBar::ApplyEdgeX() {
   if (!hwnd_) {
     return;
   }
-  const RECT work = PrimaryWorkArea();
+  const RECT work = HostWorkArea();
   RECT rc{};
   GetWindowRect(hwnd_, &rc);
   const int w = rc.right - rc.left;
@@ -207,7 +217,7 @@ void PageBar::ApplyEdgeX() {
   // Slide: collapsed leaves only the left nose on-screen; expanded seats flush.
   const int visible = VisibleWidth();
   const int x = static_cast<int>(work.right) - visible - kEdgeMargin;
-  SetWindowPos(hwnd_, nullptr, x, y, w, h, SWP_NOZORDER | SWP_NOACTIVATE);
+  SetOverlayScreenPos(hwnd_, x, y, w, h, SWP_NOZORDER);
 }
 
 void PageBar::SetExpandTarget(float target) {
@@ -456,7 +466,7 @@ void PageBar::DockToRightEdge(int preferred_y) {
   if (!hwnd_) {
     return;
   }
-  const RECT work = PrimaryWorkArea();
+  const RECT work = HostWorkArea();
   RECT rc{};
   GetWindowRect(hwnd_, &rc);
   const int w = rc.right - rc.left;
@@ -469,7 +479,7 @@ void PageBar::DockToRightEdge(int preferred_y) {
                  (std::min)(y, static_cast<int>(work.bottom) - h));
   const int visible = VisibleWidth();
   const int x = static_cast<int>(work.right) - visible - kEdgeMargin;
-  SetWindowPos(hwnd_, nullptr, x, y, w, h, SWP_NOZORDER | SWP_NOACTIVATE);
+  SetOverlayScreenPos(hwnd_, x, y, w, h, SWP_NOZORDER);
   anchor_y_ = y - static_cast<int>(work.top);
   if (on_moved_) {
     on_moved_();
@@ -483,7 +493,7 @@ void PageBar::Relayout() {
   RebuildSlots();
   const int w = CardMargin() + PadX() * 2 + chip_w_;
   const int h = ContentHeight();
-  const RECT work = PrimaryWorkArea();
+  const RECT work = HostWorkArea();
   int y = static_cast<int>(work.top) +
           (static_cast<int>(work.bottom - work.top) - h) / 2;
   if (anchor_y_ >= 0) {
@@ -493,7 +503,7 @@ void PageBar::Relayout() {
                  (std::min)(y, static_cast<int>(work.bottom) - h));
   const int visible = VisibleWidth();
   const int x = static_cast<int>(work.right) - visible - kEdgeMargin;
-  SetWindowPos(hwnd_, nullptr, x, y, w, h, SWP_NOZORDER | SWP_NOACTIVATE);
+  SetOverlayScreenPos(hwnd_, x, y, w, h, SWP_NOZORDER);
   Paint(nullptr);
 }
 
@@ -605,13 +615,12 @@ void PageBar::AttachToDesktopLayer() {
   if (!hwnd_) {
     return;
   }
-  // Already seated — skip HWND_BOTTOM + raise (page-switch flash).
-  if (IsAttachedToDesktop(hwnd_)) {
-    return;
+  // AIGC START
+  // Keepalive Raise is SWP_NOREDRAW — cheaper than a buried blank page bar.
+  if (!AttachOverlayToDesktop(hwnd_, true)) {
+    ForceAttachOverlayToDesktop(hwnd_, true);
   }
-  AttachOverlayToDesktop(hwnd_, true);
-  PlaceOverlayInDesktopBand(hwnd_, true);
-  RaiseOverlayInDesktopBand(hwnd_);
+  // AIGC END
 }
 
 int PageBar::HitTest(int x, int y) const {
@@ -748,6 +757,12 @@ LRESULT CALLBACK PageBar::WndProc(HWND hwnd, UINT msg, WPARAM wparam,
 }
 
 LRESULT PageBar::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
+  if (msg == WM_SYSCOMMAND && FilterDesktopChromeSysCommand(wparam)) {
+    return 0;
+  }
+  if (msg == WM_WINDOWPOSCHANGING) {
+    FilterDesktopChromeWindowPosChanging(reinterpret_cast<WINDOWPOS*>(lparam));
+  }
   switch (msg) {
     case WM_PAINT: {
       PAINTSTRUCT ps{};
@@ -815,7 +830,8 @@ LRESULT PageBar::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
       drag_moved_ = true;
       POINT screen{};
       GetCursorPos(&screen);
-      const RECT work = PrimaryWorkArea();
+      // Follow the monitor under the pointer while dragging (multi-display).
+      const RECT work = WorkAreaAtPoint(screen);
       RECT rc{};
       GetWindowRect(hwnd_, &rc);
       const int h = rc.bottom - rc.top;
@@ -825,8 +841,7 @@ LRESULT PageBar::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
       // Keep X locked to the (expanded) right-edge seat while dragging.
       const int nx =
           static_cast<int>(work.right) - VisibleWidth() - kEdgeMargin;
-      SetWindowPos(hwnd_, nullptr, nx, ny, 0, 0,
-                   SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+      MoveOverlayScreen(hwnd_, nx, ny);
       return 0;
     }
     case WM_MOUSELEAVE:
@@ -1199,7 +1214,7 @@ void PageBar::Paint(HDC) {
   blend.BlendOp = AC_SRC_OVER;
   blend.SourceConstantAlpha = 255;
   blend.AlphaFormat = AC_SRC_ALPHA;
-  UpdateLayeredWindow(hwnd_, screen, &origin, &size, mem, &src, 0, &blend,
+  UpdateOverlayLayered(hwnd_, screen, &origin, &size, mem, &src, 0, &blend,
                       ULW_ALPHA);
   SelectObject(mem, old);
   DeleteObject(dib);

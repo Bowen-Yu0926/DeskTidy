@@ -1,5 +1,6 @@
 #include "mist_webview.h"
 
+#include "display_geom.h"
 #include "paths_util.h"
 
 #include <dwmapi.h>
@@ -417,6 +418,8 @@ void MistWebDialogRun(MistWebDialog* dlg, const wchar_t* title, int width,
   if (!GetCursorPos(&cursor)) {
     cursor = {0, 0};
   }
+  // Design sizes are @96 DPI — scale + clamp to the host work area.
+  ScaleDialogSizeForPoint(cursor, &width, &height);
   HMONITOR mon = MonitorFromPoint(cursor, MONITOR_DEFAULTTONEAREST);
   MONITORINFO mi{};
   mi.cbSize = sizeof(mi);
@@ -430,7 +433,8 @@ void MistWebDialogRun(MistWebDialog* dlg, const wchar_t* title, int width,
   const int y = work.top + ((work.bottom - work.top) - height) / 3;
 
   const DWORD ex = dlg->frameless
-                       ? (WS_EX_TOOLWINDOW | WS_EX_TOPMOST)
+                       ? (WS_EX_TOOLWINDOW |
+                          (dlg->topmost ? WS_EX_TOPMOST : 0))
                        : WS_EX_DLGMODALFRAME;
   const DWORD style = dlg->frameless
                           ? (WS_POPUP | WS_CLIPCHILDREN)

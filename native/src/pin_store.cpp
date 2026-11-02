@@ -59,6 +59,20 @@ std::string EscapeJson(const std::string& s) {
 
 std::wstring NormalizePinKey(const std::wstring& path) {
   std::wstring key = path;
+  // OLE / Shell sometimes hands \\?\D:\… while desktop scan uses D:\… —
+  // without stripping, SetPin and FindPin miss each other → fence + float twin.
+  if (key.size() >= 4 && key[0] == L'\\' && key[1] == L'\\' &&
+      key[2] == L'?' && key[3] == L'\\') {
+    if (key.size() >= 8 &&
+        (key[4] == L'U' || key[4] == L'u') &&
+        (key[5] == L'N' || key[5] == L'n') &&
+        (key[6] == L'C' || key[6] == L'c') && key[7] == L'\\') {
+      // \\?\UNC\server\share\… → \\server\share\…
+      key = L"\\\\" + key.substr(8);
+    } else {
+      key = key.substr(4);
+    }
+  }
   for (auto& ch : key) {
     if (ch == L'/') {
       ch = L'\\';

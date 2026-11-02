@@ -8,6 +8,7 @@
 #include "tool_paths.h"
 
 #include <Windows.h>
+#include <ShlObj.h>
 
 #include <cstring>
 #include <cwctype>
@@ -356,11 +357,15 @@ void CopyDirRecursive(const std::wstring& src, const std::wstring& dst) {
 
 std::wstring LegacyNotesDir() { return JoinPath(NativeDataDir(), L"notes"); }
 
-// Configured notes folder, or <exe dir>\笔记 when unset (Python notepad.py).
+// Configured notes folder; else prefer 文档\DeskTidy\notes when present; else exe\笔记.
 std::wstring ResolveNotesFolder() {
   const AppPrefs prefs = LoadAppPrefs();
   if (!prefs.notepad_folder.empty()) {
     return prefs.notepad_folder;
+  }
+  const std::wstring docs_notes = DocumentsDeskTidyNotesDir();
+  if (!docs_notes.empty() && DirExists(docs_notes)) {
+    return docs_notes;
   }
   return JoinPath(ExeDir(), L"笔记");
 }
@@ -405,6 +410,17 @@ std::wstring PreviewOf(const std::wstring& line) {
 }
 
 }  // namespace
+
+std::wstring DocumentsDeskTidyNotesDir() {
+  PWSTR docs = nullptr;
+  if (FAILED(SHGetKnownFolderPath(FOLDERID_Documents, 0, nullptr, &docs)) ||
+      !docs) {
+    return {};
+  }
+  std::wstring p = JoinPath(docs, L"DeskTidy\\notes");
+  CoTaskMemFree(docs);
+  return p;
+}
 
 std::wstring NotesLibraryDir(bool ensure) {
   std::wstring dir = ResolveNotesFolder();

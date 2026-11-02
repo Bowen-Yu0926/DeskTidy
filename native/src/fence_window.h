@@ -21,7 +21,7 @@ class FenceWindow {
  public:
   using MovedFn = std::function<void(FenceWindow*)>;
   using PathsFn =
-      std::function<void(FenceWindow*, const std::vector<std::wstring>&)>;
+      std::function<DWORD(FenceWindow*, const std::vector<std::wstring>&)>;
   using DragDoneFn = std::function<void(FenceWindow*)>;
   // `drop` is cursor screen pos when unpinning from a drag; otherwise cursor.
   using UnpinFn =
@@ -51,8 +51,9 @@ class FenceWindow {
   using ReorderFn =
       std::function<void(FenceWindow*, const std::vector<std::wstring>&)>;
   // Drop-at with insertion index (F1): index < 0 means append.
-  using DropAtFn = std::function<void(FenceWindow*,
-                                      const std::vector<std::wstring>&, int)>;
+  // Returns the OLE effect actually applied (NONE if the drop was a no-op).
+  using DropAtFn = std::function<DWORD(FenceWindow*,
+                                       const std::vector<std::wstring>&, int)>;
   // Per-fence icon zoom changed (F4): zoom_percent in [70, 160].
   using ZoomFn = std::function<void(FenceWindow*, int zoom_percent)>;
   // Fired when a fence finishes a move (drag-end); app snaps + resolves
@@ -208,6 +209,11 @@ class FenceWindow {
   void Paint(HDC hdc);
   void PresentLayered();
   void LayoutCells();
+  // Fences-class: paint size is owned by the fence, not a transient HWND rect
+  // during Explorer attach/create churn.
+  bool ResolveLayerSize(int* out_w, int* out_h) const;
+  void LayoutCellsTo(int w, int h);
+  void ClampScrollForView(int view_h);
   int HitTestIcon(int x, int y) const;
   // Glyph + caption ink (not full grid cell). Used by hit-test and rubber-band
   // so cell padding / empty chrome clear selection like Explorer / Fences.

@@ -51,7 +51,8 @@ constexpr int kSnapThresholdPx = 24;
 constexpr int kCursorNoticePx = 110;
 constexpr float kLonelySoftSec = 35.f;
 constexpr float kLonelyHardSec = 90.f;
-constexpr int kGroundMarginPx = 48;
+// Design @96 DPI; runtime uses GroundMarginPx() (DPI + sprite-relative).
+constexpr int kGroundMargin0 = 48;
 bool g_registered = false;
 
 // P2-22: motion / FX aligned with Python pet_anim._motion + paint helpers.
@@ -304,7 +305,7 @@ bool PresentTransparent(HWND hwnd, std::function<void(Gdiplus::Graphics&, int, i
   blend.BlendOp = AC_SRC_OVER;
   blend.SourceConstantAlpha = 255;
   blend.AlphaFormat = AC_SRC_ALPHA;
-  UpdateLayeredWindow(hwnd, screen, &origin, &size, mem, &src, 0, &blend,
+  UpdateOverlayLayered(hwnd, screen, &origin, &size, mem, &src, 0, &blend,
                       ULW_ALPHA);
   SelectObject(mem, old);
   DeleteObject(dib);
@@ -1096,12 +1097,30 @@ int PetWindow::ScaledH() const {
   return (std::max)(24, static_cast<int>(std::lround(sprite_h_ * size_scale_ * dpi)));
 }
 
+int PetWindow::GroundMarginPx() const {
+  const int dpi = current_dpi_ > 0 ? current_dpi_ : SystemDpi();
+  const int design = ScalePxForDpi(kGroundMargin0, dpi);
+  // Keep a visible band under the sprite on small/HiDPI work areas.
+  const int from_sprite = ScaledH() * 12 / 100;
+  const int lo = ScalePxForDpi(24, dpi);
+  const int hi = ScalePxForDpi(72, dpi);
+  return (std::max)(lo, (std::min)(hi, (std::max)(design, from_sprite)));
+}
+
+int PetWindow::PageHeadClearancePx(int pet_h) const {
+  const int dpi = current_dpi_ > 0 ? current_dpi_ : SystemDpi();
+  int clear = pet_h * 22 / 100;
+  const int lo = ScalePxForDpi(36, dpi);
+  const int hi = ScalePxForDpi(80, dpi);
+  clear = (std::max)(lo, (std::min)(hi, clear));
+  return clear;
+}
+
 void PetWindow::ApplyScaledWindowSize() {
   if (!hwnd_) {
     return;
   }
-  SetWindowPos(hwnd_, nullptr, 0, 0, ScaledW(), ScaledH(),
-               SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+  SetOverlayScreenPos(hwnd_, 0, 0, ScaledW(), ScaledH(), SWP_NOMOVE | SWP_NOZORDER);
 }
 
 void PetWindow::RebaseFloor() {
@@ -1115,7 +1134,7 @@ void PetWindow::RebaseFloor() {
     pt.y = (wr.top + wr.bottom) / 2;
   }
   const RECT work = WorkAreaAtPoint(pt);
-  base_y_ = work.bottom - ScaledH() - kGroundMarginPx;
+  base_y_ = work.bottom - ScaledH() - GroundMarginPx();
 }
 
 bool PetWindow::RectVisibleOnAnyMonitor(const RECT& rc) const {
@@ -1415,9 +1434,7 @@ void PetWindow::StepPhysics(DWORD elapsed_ms) {
       if (HasPose(L"walk") && pose_ != L"walk") {
         SetPose(L"walk");
       }
-      SetWindowPos(hwnd_, nullptr, static_cast<int>(pos_x_),
-                   static_cast<int>(pos_y_), 0, 0,
-                   SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+      MoveOverlayScreen(hwnd_, static_cast<int>(pos_x_), static_cast<int>(pos_y_));
       chrome_dirty_ = true;
     } else if (HasPose(L"idle") && pose_ != L"idle") {
       SetPose(L"idle");
@@ -1441,9 +1458,7 @@ void PetWindow::StepPhysics(DWORD elapsed_ms) {
       walking_ = true;
       vel_x_ = 44.f * static_cast<float>(walk_dir_);
     }
-    SetWindowPos(hwnd_, nullptr, static_cast<int>(pos_x_),
-                 static_cast<int>(pos_y_), 0, 0,
-                 SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+    MoveOverlayScreen(hwnd_, static_cast<int>(pos_x_), static_cast<int>(pos_y_));
     return;
   }
 
@@ -1469,9 +1484,7 @@ void PetWindow::StepPhysics(DWORD elapsed_ms) {
       return;
     }
     pos_y_ = static_cast<float>(ledge_top_ - hh);
-    SetWindowPos(hwnd_, nullptr, static_cast<int>(pos_x_),
-                 static_cast<int>(pos_y_), 0, 0,
-                 SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+    MoveOverlayScreen(hwnd_, static_cast<int>(pos_x_), static_cast<int>(pos_y_));
     return;
   }
 
@@ -1505,9 +1518,7 @@ void PetWindow::StepPhysics(DWORD elapsed_ms) {
         vel_x_ *= 0.72f;
       }
     }
-    SetWindowPos(hwnd_, nullptr, static_cast<int>(pos_x_),
-                 static_cast<int>(pos_y_), 0, 0,
-                 SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+    MoveOverlayScreen(hwnd_, static_cast<int>(pos_x_), static_cast<int>(pos_y_));
     return;
   }
 
@@ -1535,8 +1546,7 @@ void PetWindow::StepPhysics(DWORD elapsed_ms) {
       }
       climb_cooldown_ = 20;
     }
-    SetWindowPos(hwnd_, nullptr, static_cast<int>(pos_x_), base_y_, 0, 0,
-                 SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+    MoveOverlayScreen(hwnd_, static_cast<int>(pos_x_), base_y_);
     return;
   }
 }
@@ -1608,7 +1618,7 @@ void PetWindow::EndDrag(POINT release) {
     StartThrow(0.f, 80.f);  // dropped above floor → fall (Python)
     return;
   }
-  base_y_ = work.bottom - (rc.bottom - rc.top) - kGroundMarginPx;
+  base_y_ = work.bottom - (rc.bottom - rc.top) - GroundMarginPx();
   pos_y_ = static_cast<float>(base_y_);
   PersistPrefs();
   ScheduleIdle(now);
@@ -1733,7 +1743,7 @@ void PetWindow::NudgeClearOfFenceBottoms(
   // Clamp to the work area, only moving down.
   POINT mid{spr_l + ScaledW() / 2, need_y + ScaledH() / 2};
   const RECT work = WorkAreaAtPoint(mid);
-  const int max_y = work.bottom - ScaledH() - kGroundMarginPx;
+  const int max_y = work.bottom - ScaledH() - GroundMarginPx();
   if (need_y > max_y) {
     need_y = max_y;
   }
@@ -1741,8 +1751,7 @@ void PetWindow::NudgeClearOfFenceBottoms(
     return;
   }
   pos_y_ = static_cast<float>(need_y);
-  SetWindowPos(hwnd_, nullptr, static_cast<int>(pos_x_), need_y, 0, 0,
-               SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+  MoveOverlayScreen(hwnd_, static_cast<int>(pos_x_), need_y);
   present_dirty_ = true;
   PlacePages();
   PlaceMenu();
@@ -2272,11 +2281,10 @@ void PetWindow::PlacePages() {
   LayoutChrome(nullptr, &w, &h);
   const int pet_w = rc.right - rc.left;
   const int pet_h = rc.bottom - rc.top;
-  // Keep pointer tips clear of hoodie hair (Python head-clearance).
-  int head_clear = pet_h * 20 / 100;
-  head_clear = (std::max)(36, (std::min)(64, head_clear));
+  // Keep pointer tips clear of hoodie hair (display-adaptivity / Fences chrome).
+  const int head_clear = PageHeadClearancePx(pet_h);
   const int x = rc.left + (pet_w - w) / 2;
-  const int y = rc.top - h - head_clear + 8;  // slight overlap into head band
+  const int y = rc.top - h - head_clear;
   SetWindowPos(pages_, nullptr, x, y, w, h,
                SWP_NOACTIVATE | SWP_NOZORDER | SWP_SHOWWINDOW);
   PaintPages(nullptr);
@@ -2661,37 +2669,48 @@ void PetWindow::EnsureDropTarget() {
     return;
   }
   drop_target_ =
-      new PathDropTarget([this](const std::vector<std::wstring>& paths) {
+      new PathDropTarget([this](const std::vector<std::wstring>& paths,
+                                DWORD proposed) -> DWORD {
         auto has_pose = [&](const wchar_t* name) {
           return std::find(pose_names_.begin(), pose_names_.end(), name) !=
                  pose_names_.end();
         };
         walking_ = false;
         falling_ = false;
+        bool ok = false;
         if (on_trash_) {
-          on_trash_(paths);
+          ok = on_trash_(paths);
         }
-        Say("trash");
-        if (has_pose(L"trash")) {
-          SetPose(L"trash");
-          // P5: one-shot crumple → hold last cel, then back to idle/wait.
-          const bool voyage = _wcsicmp(character_.c_str(), L"voyage") == 0;
-          int cels = static_cast<int>(frames_.size());
-          int played = cels;
-          if (!voyage && cels >= 10) {
-            played = cels - 2;  // hoodie skips the last two cels (Python)
+        if (ok) {
+          Say("trash");
+          if (has_pose(L"trash")) {
+            SetPose(L"trash");
+            // P5: one-shot crumple → hold last cel, then back to idle/wait.
+            const bool voyage = _wcsicmp(character_.c_str(), L"voyage") == 0;
+            int cels = static_cast<int>(frames_.size());
+            int played = cels;
+            if (!voyage && cels >= 10) {
+              played = cels - 2;  // hoodie skips the last two cels (Python)
+            }
+            const int interval = FrameIntervalMs(L"trash");
+            DWORD dur =
+                static_cast<DWORD>(played * interval) + (voyage ? 400 : 0);
+            if (dur < 1200) {
+              dur = 1200;
+            }
+            last_interact_ms_ = GetTickCount();
+            state_until_ms_ = GetTickCount() + dur;
+          } else if (has_pose(L"idle")) {
+            SetPose(L"idle");
           }
-          const int interval = FrameIntervalMs(L"trash");
-          DWORD dur = static_cast<DWORD>(played * interval) + (voyage ? 400 : 0);
-          if (dur < 1200) {
-            dur = 1200;
-          }
-          last_interact_ms_ = GetTickCount();
-          state_until_ms_ = GetTickCount() + dur;
-        } else if (has_pose(L"idle")) {
-          SetPose(L"idle");
         }
+        // AIGC START
+        return ok ? proposed : DROPEFFECT_NONE;
+        // AIGC END
       });
+  // AIGC START
+  drop_target_->SetFileDropSemantics(FileDropSemantics::PreferMove);
+  // AIGC END
   if (!RegisterPathDropTarget(hwnd_, drop_target_)) {
     drop_target_->Release();
     drop_target_ = nullptr;
@@ -2744,22 +2763,22 @@ void PetWindow::Show() {
     if (!IsWindowVisible(pages_)) {
       ShowWindow(pages_, SW_SHOWNOACTIVATE);
     }
-    if (!IsAttachedToDesktop(pages_)) {
-      AttachOverlayToDesktop(pages_, true);
-      PlaceOverlayInDesktopBand(pages_, true);
-      RaiseOverlayInDesktopBand(pages_);
+    // AIGC START
+    if (!AttachOverlayToDesktop(pages_, true)) {
+      ForceAttachOverlayToDesktop(pages_, true);
     }
+    // AIGC END
     PlacePages();
   }
   if (menu_) {
     if (!IsWindowVisible(menu_)) {
       ShowWindow(menu_, SW_SHOWNOACTIVATE);
     }
-    if (!IsAttachedToDesktop(menu_)) {
-      AttachOverlayToDesktop(menu_, true);
-      PlaceOverlayInDesktopBand(menu_, true);
-      RaiseOverlayInDesktopBand(menu_);
+    // AIGC START
+    if (!AttachOverlayToDesktop(menu_, true)) {
+      ForceAttachOverlayToDesktop(menu_, true);
     }
+    // AIGC END
     PlaceMenu();
   }
 }
@@ -2791,12 +2810,11 @@ void PetWindow::AttachToDesktopLayer() {
   if (!hwnd_) {
     return;
   }
-  if (IsAttachedToDesktop(hwnd_)) {
-    return;
+  // AIGC START
+  if (!AttachOverlayToDesktop(hwnd_, true)) {
+    ForceAttachOverlayToDesktop(hwnd_, true);
   }
-  AttachOverlayToDesktop(hwnd_, true);
-  PlaceOverlayInDesktopBand(hwnd_, true);
-  RaiseOverlayInDesktopBand(hwnd_);
+  // AIGC END
 }
 
 int PetWindow::WantedTickMs() const {
@@ -2898,6 +2916,12 @@ LRESULT CALLBACK PetWindow::WndProc(HWND hwnd, UINT msg, WPARAM wparam,
 }
 
 LRESULT PetWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
+  if (msg == WM_SYSCOMMAND && FilterDesktopChromeSysCommand(wparam)) {
+    return 0;
+  }
+  if (msg == WM_WINDOWPOSCHANGING) {
+    FilterDesktopChromeWindowPosChanging(reinterpret_cast<WINDOWPOS*>(lparam));
+  }
   switch (msg) {
     case WM_SETCURSOR:
       if (dragging_ && LOWORD(lparam) == HTCLIENT) {
@@ -2958,8 +2982,7 @@ LRESULT PetWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
             present_dirty_ = true;
           }
         }
-        SetWindowPos(hwnd_, nullptr, new_x, pt.y - drag_offset_.y, 0, 0,
-                     SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+        MoveOverlayScreen(hwnd_, new_x, pt.y - drag_offset_.y);
         pos_x_ = static_cast<float>(new_x);
         pos_y_ = static_cast<float>(pt.y - drag_offset_.y);
         PushDragSample(pt);
@@ -2997,9 +3020,7 @@ LRESULT PetWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
       current_dpi_ = dpi > 0 ? dpi : SystemDpi();
       const RECT* prc = reinterpret_cast<const RECT*>(lparam);
       if (prc) {
-        SetWindowPos(hwnd_, nullptr, prc->left, prc->top,
-                     prc->right - prc->left, prc->bottom - prc->top,
-                     SWP_NOZORDER | SWP_NOACTIVATE);
+        SetOverlayScreenPos(hwnd_, prc->left, prc->top, prc->right - prc->left, prc->bottom - prc->top, SWP_NOZORDER);
       }
       RebaseFloor();
       ApplyScaledWindowSize();
@@ -3271,7 +3292,7 @@ void PetWindow::Present() {
   blend.BlendOp = AC_SRC_OVER;
   blend.SourceConstantAlpha = 255;
   blend.AlphaFormat = AC_SRC_ALPHA;
-  UpdateLayeredWindow(hwnd_, screen, &origin, &size, mem, &src, 0, &blend,
+  UpdateOverlayLayered(hwnd_, screen, &origin, &size, mem, &src, 0, &blend,
                       ULW_ALPHA);
 
   // P0-12: shape HWND to the sprite's own alpha (Python QRegion mask). The

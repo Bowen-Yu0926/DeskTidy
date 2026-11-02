@@ -221,7 +221,7 @@ AppPrefs LoadAppPrefsFromPath(const std::wstring& path) {
   prefs.auto_organize_on_startup =
       ParseBoolField(json, "auto_organize_on_startup", false);
   prefs.auto_organize_watch =
-      ParseBoolField(json, "auto_organize_watch", false);
+      ParseBoolField(json, "auto_organize_watch", true);
   prefs.record_seconds = ParseIntField(json, "record_seconds", 0);
   if (prefs.record_seconds < 0) {
     prefs.record_seconds = 0;

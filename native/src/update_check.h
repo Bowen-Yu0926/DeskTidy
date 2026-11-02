@@ -39,7 +39,8 @@ void StartUpdateCheckAsync(HWND owner, bool force, bool interactive);
 // (UI thread) asks the user to confirm and then calls LaunchInstallerSilent.
 void StartUpdateInstallAsync(HWND owner);
 
-// Launch the downloaded installer silently (Inno Setup). Returns false + err.
+// Launch the downloaded installer (/SILENT keeps Inno progress UI).
+// Returns false + err on failure.
 bool LaunchInstallerSilent(const std::wstring& path, std::wstring* err);
 
 // Legacy manual-check entry (tools_misc OpenUpdatePage): async + forced refresh.

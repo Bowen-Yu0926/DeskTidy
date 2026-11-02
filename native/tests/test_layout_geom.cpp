@@ -1,4 +1,6 @@
-// Verifies fence geometry survives load-heal (market: Fences keeps user sizes).
+// Verifies fence geometry survives load-heal (market: Fences keeps user sizes)
+// and display-adaptivity helpers behave across work-area sizes.
+#include "display_geom.h"
 #include "layout.h"
 
 #include <cstdio>
@@ -89,6 +91,97 @@ int main() {
     Expect(n > 0, "explicit restore detects skewed row");
     Expect(fences[0].w != 1631 || fences[1].w != 275,
            "explicit restore changes skewed sizes");
+  }
+
+  // 4) Cross-display absolute page_geometries must not stomp donor top-level.
+  {
+    auto fences = UserResizedSystemRow();
+    fences[0].x = 40;
+    fences[0].y = 40;
+    fences[0].w = 400;
+    fences[0].h = 300;
+    fences[0].page_geometries[0].w = 8000;  // larger than any work area
+    fences[0].page_geometries[0].h = 5000;
+    PromoteHomePageGeometries(&fences);
+    Expect(fences[0].w == 400 && fences[0].h == 300,
+           "promote skips oversized page_geometries");
+  }
+
+  // 5) Runaway / taller-than-work height is healed automatically.
+  {
+    auto fences = UserResizedSystemRow();
+    fences[0].h = 9000;
+    fences[0].page_geometries[0].h = 9000;
+    fences[1].h = 9000;
+    fences[1].page_geometries[0].h = 9000;
+    HealFenceLayouts(&fences);
+    Expect(fences[0].h < 2000 && fences[1].h < 2000,
+           "heal shrinks runaway fullscreen heights");
+  }
+
+  // 6) Intentional tall fence (~80% work) must NOT be auto-shrunk.
+  {
+    const RECT work = PrimaryWorkArea();
+    const int wh = (std::max)(1, static_cast<int>(work.bottom - work.top));
+    auto fences = UserResizedSystemRow();
+    const int tall = wh * 80 / 100;
+    fences[0].h = tall;
+    fences[0].page_geometries[0].h = tall;
+    fences[0].w = (std::min)(fences[0].w,
+                              static_cast<int>(work.right - work.left) - 40);
+    fences[0].page_geometries[0].w = fences[0].w;
+    HealFenceLayouts(&fences);
+    Expect(fences[0].h >= tall - 8 && fences[0].h <= tall + 8,
+           "heal keeps intentional ~80% height");
+  }
+
+  // 7) DefaultLayouts honor content_min and stay within half work.
+  {
+    const auto defaults = DefaultLayouts();
+    Expect(!defaults.empty(), "DefaultLayouts non-empty");
+    const RECT work = PrimaryWorkArea();
+    const int wh = (std::max)(1, static_cast<int>(work.bottom - work.top));
+    const int content_min = MinFenceHeightForIconRows(2);
+    for (const auto& f : defaults) {
+      Expect(f.h >= content_min || f.h >= wh / 2,
+             "default fence height meets content_min or half-work cap");
+      Expect(f.h <= wh / 2 + 2, "default fence height capped at half work");
+      Expect(f.w >= kFenceMinW, "default fence width >= min");
+    }
+  }
+
+  // 8) FingerprintIsTransient: portrait / 1280-wide must NOT kill profiles.
+  {
+    Expect(!FingerprintIsTransient("0,0,1080x1920@150x260mm@1"),
+           "portrait secondary is not transient");
+    Expect(!FingerprintIsTransient("0,0,1280x800@277x156mm@1"),
+           "1280-wide laptop is not transient");
+    Expect(FingerprintIsTransient("0,0,800x800@100x100mm@1"),
+           "tiny square panel is transient");
+    Expect(FingerprintIsTransient("0,0,1920x200@520x50mm@1"),
+           "hotplug stub short height is transient");
+  }
+
+  // 9) Dialog scaling grows with DPI and clamps to work.
+  {
+    const RECT work = PrimaryWorkArea();
+    POINT mid{(work.left + work.right) / 2, (work.top + work.bottom) / 2};
+    int w = 440;
+    int h = 260;
+    ScaleDialogSizeForPoint(mid, &w, &h);
+    Expect(w >= 200 && h >= 120, "scaled dialog has sane mins");
+    Expect(w <= (work.right - work.left) && h <= (work.bottom - work.top),
+           "scaled dialog fits work area");
+    Expect(ScalePxForDpi(100, 96) == 100, "ScalePxForDpi identity @96");
+    Expect(ScalePxForDpi(100, 144) == 150, "ScalePxForDpi 150%");
+  }
+
+  // 10) Shared fence min constants are coherent.
+  {
+    Expect(kFenceMinW == 160 && kFenceMinH == 120, "fence min constants");
+    Expect(kFenceExpandedFloor >= kFenceMinH, "expanded floor >= min h");
+    Expect(kFenceDefaultW >= kFenceMinW && kFenceDefaultH >= kFenceMinH,
+           "defaults above mins");
   }
 
   if (g_fails) {

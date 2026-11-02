@@ -4,10 +4,17 @@
 
 #include <vector>
 
-// Fences desktop-layer shell helpers (native).
-// Overlays are owned by the DefView host and sit just above DefView
-// (under normal APPWINDOWs). After Win+D, when DefView is topmost,
-// raise uses HWND_TOP of the non-topmost band so fences are not buried.
+// Fences / Rainmeter desktop-layer shell helpers (native).
+//
+// Seat: Progman/WorkerW-owned top-level WS_POPUP | WS_EX_LAYERED (Rainmeter
+// OnDesktop / classic Fences-class). HWND_BOTTOM under APPWINDOWs; ownership
+// keeps chrome above DefView icons.
+//
+// Win11 24H2+ raised desktop (Progman WS_EX_NOREDIRECTIONBITMAP): DefView
+// *children* do not compose UpdateLayeredWindow pixels — do NOT SetParent to
+// DefView. Soft-heal owner only (no hard Detach flash).
+//
+// Peek: DetachOverlayFromDesktop + HWND_TOPMOST.
 
 struct DefViewHost {
   HWND host = nullptr;     // Progman or WorkerW containing DefView
@@ -22,11 +29,22 @@ bool AttachOverlayToDesktop(HWND hwnd, bool show = true);
 bool ForceAttachOverlayToDesktop(HWND hwnd, bool show = true);
 bool DetachOverlayFromDesktop(HWND hwnd);
 void PlaceOverlayInDesktopBand(HWND hwnd, bool force = false);
-void RaiseOverlayInDesktopBand(HWND hwnd);  // DefView-adjacent only
+void RaiseOverlayInDesktopBand(HWND hwnd);
+bool IsOverlayAboveDefView(HWND hwnd);
 bool IsExplorerDesktopForeground();
+bool IsShowDesktopActive();
+bool FilterDesktopChromeSysCommand(WPARAM wparam);
+bool FilterDesktopChromeWindowPosChanging(WINDOWPOS* wp);
 
-// Market pattern (Fences / Python OverlayWindowBatch): one DeferWindowPos for
-// page-switch hide+show. N individual ShowWindow calls flash the desktop.
+bool SetOverlayScreenPos(HWND hwnd, int x, int y, int w, int h, UINT flags);
+bool MoveOverlayScreen(HWND hwnd, int x, int y);
+
+// Layered blit. If hwnd is unexpectedly parented, omit pptDst (child ULW
+// treats screen coords as client and drifts).
+bool UpdateOverlayLayered(HWND hwnd, HDC hdc_dst, const POINT* screen_origin,
+                          const SIZE* size, HDC hdc_src, const POINT* ppt_src,
+                          COLORREF key, BLENDFUNCTION* blend, DWORD flags);
+
 class OverlayWindowBatch {
  public:
   void Hide(HWND hwnd);
@@ -44,10 +62,5 @@ class OverlayWindowBatch {
   std::vector<Item> items_;
 };
 
-// Explorer-restart guard: returns true once when the DefView HWND changes
-// (Explorer crashed / restarted the desktop shell). Cheap — FindWindow only.
-// First call records the current HWND and returns false.
 bool PollExplorerDesktopRebuild();
-// Forget the tracked DefView HWND (e.g. after a rebuild has been handled or
-// when overlays are intentionally re-seated).
 void ResetExplorerRebuildTracking();

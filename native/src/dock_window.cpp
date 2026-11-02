@@ -21,13 +21,14 @@
 
 namespace {
 constexpr wchar_t kClassName[] = L"DeskTidyNativeDock";
-// Match Python DockWidget: 44px buttons, 32px icons, 16px radius.
-constexpr int kBtn = 44;
-constexpr int kIcon = 32;
-constexpr int kGap = 8;
-constexpr int kMarginX = 10;
-constexpr int kMarginY = 6;
-constexpr int kH = kMarginY * 2 + kBtn;
+// Match Python DockWidget design sheet @ 96 DPI.
+constexpr int kBtn0 = 44;
+constexpr int kIcon0 = 32;
+constexpr int kGap0 = 8;
+constexpr int kMarginX0 = 10;
+constexpr int kMarginY0 = 6;
+constexpr int kClear0 = 48;
+constexpr int kRadius0 = 16;
 bool g_registered = false;
 
 void AddRoundRect(Gdiplus::GraphicsPath* path, int w, int h, int radius) {
@@ -110,7 +111,7 @@ void DockWindow::ApplyPaths(const std::vector<std::wstring>& paths) {
         sfi.szDisplayName[0]) {
       s.item.name = sfi.szDisplayName;
     }
-    s.icon = LoadItemIcon(path, kIcon);
+    s.icon = LoadItemIcon(path, HostMetrics().icon);
     slots_.push_back(std::move(s));
   }
   LayoutSlots();
@@ -137,16 +138,18 @@ bool DockWindow::Create(HINSTANCE instance) {
     g_registered = true;
   }
 
+  metrics_ = HostMetrics();
   POINT cursor{};
   GetCursorPos(&cursor);
   const RECT work = WorkAreaAtPoint(cursor);
-  const int w = kMarginX * 2 + kBtn;
+  const int bar_h = metrics_.my * 2 + metrics_.btn;
+  const int w = metrics_.mx * 2 + metrics_.btn;
   const int x = work.left + (work.right - work.left - w) / 2;
-  // Match Python DockWidget: 48px above work-area bottom (page bar clearance).
-  const int y = work.bottom - kH - 48;
+  // Match Python DockWidget: clearance above work-area bottom (DPI-scaled).
+  const int y = work.bottom - bar_h - metrics_.clear;
   hwnd_ = CreateWindowExW(
       WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_LAYERED, kClassName, L"Dock",
-      WS_POPUP, x, y, w, kH, nullptr, nullptr, instance, this);
+      WS_POPUP, x, y, w, bar_h, nullptr, nullptr, instance, this);
   if (!hwnd_) {
     return false;
   }
@@ -247,12 +250,11 @@ void DockWindow::AttachToDesktopLayer() {
   if (!hwnd_) {
     return;
   }
-  if (IsAttachedToDesktop(hwnd_)) {
-    return;
+  // AIGC START
+  if (!AttachOverlayToDesktop(hwnd_, true)) {
+    ForceAttachOverlayToDesktop(hwnd_, true);
   }
-  AttachOverlayToDesktop(hwnd_, true);
-  PlaceOverlayInDesktopBand(hwnd_, true);
-  RaiseOverlayInDesktopBand(hwnd_);
+  // AIGC END
 }
 
 void DockWindow::SetItems(std::vector<DesktopItem> items) {
@@ -273,11 +275,62 @@ void DockWindow::SetItems(std::vector<DesktopItem> items) {
     }
     Slot s;
     s.item = std::move(item);
-    s.icon = LoadItemIcon(s.item.path, kIcon);
+    s.icon = LoadItemIcon(s.item.path, HostMetrics().icon);
     slots_.push_back(std::move(s));
   }
   LayoutSlots();
   ApplyVisibility();
+}
+
+DockWindow::Metrics DockWindow::HostMetrics() const {
+  POINT pt{};
+  if (hwnd_ && IsWindow(hwnd_)) {
+    RECT rc{};
+    GetWindowRect(hwnd_, &rc);
+    pt = {(rc.left + rc.right) / 2, (rc.top + rc.bottom) / 2};
+  } else {
+    GetCursorPos(&pt);
+  }
+  const int dpi = (std::max)(96, DpiAtPoint(pt));
+  auto S = [dpi](int v) { return MulDiv(v, dpi, 96); };
+  Metrics m;
+  m.dpi = dpi;
+  m.btn = S(kBtn0);
+  m.icon = S(kIcon0);
+  m.gap = S(kGap0);
+  m.mx = S(kMarginX0);
+  m.my = S(kMarginY0);
+  m.clear = S(kClear0);
+  m.radius = S(kRadius0);
+  m.glow = S(4);
+  return m;
+}
+
+RECT DockWindow::HostWorkArea() const {
+  if (hwnd_ && IsWindow(hwnd_)) {
+    RECT rc{};
+    GetWindowRect(hwnd_, &rc);
+    POINT c{(rc.left + rc.right) / 2, (rc.top + rc.bottom) / 2};
+    return WorkAreaAtPoint(c);
+  }
+  POINT cursor{};
+  GetCursorPos(&cursor);
+  return WorkAreaAtPoint(cursor);
+}
+
+void DockWindow::RebuildIcons() {
+  const int icon = metrics_.icon > 0 ? metrics_.icon : HostMetrics().icon;
+  for (auto& s : slots_) {
+    if (s.icon) {
+      DestroyIcon(s.icon);
+      s.icon = nullptr;
+    }
+    s.icon = LoadItemIcon(s.item.path, icon);
+  }
+}
+
+void DockWindow::RelayoutForDpi() {
+  LayoutSlots();
 }
 
 void DockWindow::SetEdge(const std::wstring& edge) {
@@ -308,36 +361,45 @@ void DockWindow::LayoutSlots() {
     ApplyVisibility();
     return;
   }
+  const Metrics prev = metrics_;
+  metrics_ = HostMetrics();
+  if (prev.icon != metrics_.icon) {
+    RebuildIcons();
+  }
   const int n = static_cast<int>(slots_.size());
-  POINT cursor{};
-  GetCursorPos(&cursor);
-  // Prefer the monitor under the cursor (Python work_screen), not primary only.
-  const RECT work = WorkAreaAtPoint(cursor);
-  const int icon_pad = (kBtn - kIcon) / 2;
+  // Prefer the monitor hosting the dock (fall back to cursor).
+  const RECT work = HostWorkArea();
+  const int btn = metrics_.btn;
+  const int icon = metrics_.icon;
+  const int gap = metrics_.gap;
+  const int mx = metrics_.mx;
+  const int my = metrics_.my;
+  const int icon_pad = (std::max)(0, (btn - icon) / 2);
+  const int edge_pad = MulDiv(12, metrics_.dpi, 96);
   int x = 0, y = 0, w = 0, h = 0;
   if (edge_ == L"left" || edge_ == L"right") {
-    w = kMarginY * 2 + kBtn;
-    h = kMarginX * 2 + n * kBtn + (std::max)(0, n - 1) * kGap;
+    w = my * 2 + btn;
+    h = mx * 2 + n * btn + (std::max)(0, n - 1) * gap;
     y = work.top + ((work.bottom - work.top) - h) / 2;
-    x = edge_ == L"left" ? work.left + 12 : work.right - w - 12;
-    SetWindowPos(hwnd_, nullptr, x, y, w, h, SWP_NOZORDER | SWP_NOACTIVATE);
-    int top = kMarginX;
+    x = edge_ == L"left" ? work.left + edge_pad : work.right - w - edge_pad;
+    SetOverlayScreenPos(hwnd_, x, y, w, h, SWP_NOZORDER);
+    int top = mx;
     for (auto& s : slots_) {
-      s.bounds = {kMarginY + icon_pad, top + icon_pad,
-                  kMarginY + icon_pad + kIcon, top + icon_pad + kIcon};
-      top += kBtn + kGap;
+      s.bounds = {my + icon_pad, top + icon_pad, my + icon_pad + icon,
+                  top + icon_pad + icon};
+      top += btn + gap;
     }
   } else {
-    w = kMarginX * 2 + n * kBtn + (std::max)(0, n - 1) * kGap;
-    h = kH;
+    w = mx * 2 + n * btn + (std::max)(0, n - 1) * gap;
+    h = my * 2 + btn;
     x = work.left + ((work.right - work.left) - w) / 2;
-    y = work.bottom - h - 48;
-    SetWindowPos(hwnd_, nullptr, x, y, w, h, SWP_NOZORDER | SWP_NOACTIVATE);
-    int left = kMarginX;
+    y = work.bottom - h - metrics_.clear;
+    SetOverlayScreenPos(hwnd_, x, y, w, h, SWP_NOZORDER);
+    int left = mx;
     for (auto& s : slots_) {
-      s.bounds = {left + icon_pad, kMarginY + icon_pad, left + icon_pad + kIcon,
-                  kMarginY + icon_pad + kIcon};
-      left += kBtn + kGap;
+      s.bounds = {left + icon_pad, my + icon_pad, left + icon_pad + icon,
+                  my + icon_pad + icon};
+      left += btn + gap;
     }
   }
   Present();
@@ -400,6 +462,12 @@ LRESULT CALLBACK DockWindow::WndProc(HWND hwnd, UINT msg, WPARAM wparam,
 }
 
 LRESULT DockWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
+  if (msg == WM_SYSCOMMAND && FilterDesktopChromeSysCommand(wparam)) {
+    return 0;
+  }
+  if (msg == WM_WINDOWPOSCHANGING) {
+    FilterDesktopChromeWindowPosChanging(reinterpret_cast<WINDOWPOS*>(lparam));
+  }
   switch (msg) {
     case WM_PAINT: {
       PAINTSTRUCT ps{};
@@ -469,7 +537,11 @@ void DockWindow::Paint(HDC hdc) {
   g.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
   g.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHalf);
   Gdiplus::GraphicsPath path;
-  AddRoundRect(&path, w, h, 16);
+  const int radius = (std::max)(4, metrics_.radius);
+  const int btn = (std::max)(24, metrics_.btn);
+  const int icon = (std::max)(16, metrics_.icon);
+  const int glow = (std::max)(2, metrics_.glow);
+  AddRoundRect(&path, w, h, radius);
   // Python default: rgba(22,27,34,0.85) + blue border.
   Gdiplus::SolidBrush fill(Gdiplus::Color(fill_alpha_, 22, 27, 34));
   Gdiplus::Pen edge(Gdiplus::Color(100, 88, 166, 255), 1.0f);
@@ -478,11 +550,12 @@ void DockWindow::Paint(HDC hdc) {
   for (size_t i = 0; i < slots_.size(); ++i) {
     const auto& s = slots_[i];
     if (static_cast<int>(i) == hover_index_) {
-      Gdiplus::SolidBrush glow(Gdiplus::Color(90, 120, 170, 255));
-      g.FillRectangle(&glow, s.bounds.left - 4, s.bounds.top - 4, kBtn, kBtn);
+      Gdiplus::SolidBrush glow_br(Gdiplus::Color(90, 120, 170, 255));
+      g.FillRectangle(&glow_br, s.bounds.left - glow, s.bounds.top - glow, btn,
+                      btn);
     }
     if (s.icon) {
-      DrawIconEx(hdc, s.bounds.left, s.bounds.top, s.icon, kIcon, kIcon, 0,
+      DrawIconEx(hdc, s.bounds.left, s.bounds.top, s.icon, icon, icon, 0,
                  nullptr, DI_NORMAL);
     }
   }
@@ -525,7 +598,7 @@ void DockWindow::Present() {
   blend.BlendOp = AC_SRC_OVER;
   blend.SourceConstantAlpha = 255;
   blend.AlphaFormat = AC_SRC_ALPHA;
-  UpdateLayeredWindow(hwnd_, screen, &origin, &size, mem, &src, 0, &blend,
+  UpdateOverlayLayered(hwnd_, screen, &origin, &size, mem, &src, 0, &blend,
                       ULW_ALPHA);
   SelectObject(mem, old);
   DeleteObject(dib);

@@ -15,7 +15,7 @@ version: 1
 status: active
 automation: python -m pytest "testcases/DeskTidy/扩展工具/test_QA_DT_TL_001.py" -q
 last_run: PASS
-last_run_at: 2026-10-29 14:08
+last_run_at: 2026-10-29 15:27
 ---
 ## 测什么
 
@@ -78,6 +78,6 @@ last_run_at: 2026-10-29 14:08
 ## 最终结果
 
 - **结果**：PASS
-- **时间**：2026-10-29 14:08
-- **说明**：automation exit 0；…                                                                     [100%] | 4 passed in 0.03s
+- **时间**：2026-10-29 15:27
+- **说明**：automation exit 0；…                                                                     [100%] | 4 passed in 0.84s
 

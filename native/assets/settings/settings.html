@@ -1207,7 +1207,7 @@
             <!-- Fences always on; dbl-click hide removed (keep hidden inputs for prefs bind). -->
             <label class="toggle" hidden><input type="checkbox" id="ext_show_fences" checked /> 显示桌面分区</label>
             <label class="toggle"><input type="checkbox" id="org_startup2" /> 启动时自动整理桌面（按规则钉选到分区）</label>
-            <label class="toggle"><input type="checkbox" id="org_watch2" /> 新桌面文件按规则自动钉选到分区</label>
+            <label class="toggle"><input type="checkbox" id="org_watch2" /> 新桌面文件按规则自动钉选到分区（Fences 式）</label>
             <label class="toggle" hidden><input type="checkbox" id="ext_dblclick_hide" /> 双击桌面空白处隐藏/显示系统桌面图标</label>
           </div>
           <!-- Public strip default off; keep binding, hide control. -->
@@ -1340,7 +1340,7 @@
   const state = {
     fences: [], pages: [], page_locked: [], selected: 0, selected_page: 0, current_page: 0,
     dock: false, pet: true, autostart: true,
-    org_startup: false, org_watch: false, preview: [],
+    org_startup: false, org_watch: true, preview: [],
     org_pending: 0, org_organized: 0, org_total: 0, org_files: [],
     minutes_on_bar: true, notepad_enabled: true, elevate_hotkey_helper: false, record_on_bar: false,
     calculator_on_bar: false, todos_on_bar: false, screenshot_auto_pin: false,

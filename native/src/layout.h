@@ -41,13 +41,21 @@ struct FencePageGeometry {
   bool collapsed = false;
 };
 
+// Shared fence size floors (resize / heal / editor / collisions).
+// Content-fit height still uses MinFenceHeightForIconRows on top of these.
+constexpr int kFenceMinW = 160;
+constexpr int kFenceMinH = 120;
+constexpr int kFenceExpandedFloor = 180;
+constexpr int kFenceDefaultW = 280;
+constexpr int kFenceDefaultH = 360;
+
 struct FenceLayout {
   std::string id;
   std::wstring title;
   int x = 100;
   int y = 40;
-  int w = 280;
-  int h = 360;
+  int w = kFenceDefaultW;
+  int h = kFenceDefaultH;
   int page = 0;
   // P2-11: multi-page membership (Python fence["pages"]). Empty → {page}.
   std::vector<int> pages;

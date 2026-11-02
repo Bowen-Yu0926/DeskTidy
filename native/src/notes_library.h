@@ -20,6 +20,8 @@ std::wstring PickNoteFromLibrary(HWND owner);
 // path on cancel). line is 0-based, or -1 for filename-only matches (P1-19).
 NoteSearchHit SearchNotesInLibrary(HWND owner);
 std::wstring NotesLibraryDir(bool ensure = true);
+// 文档\DeskTidy\notes (legacy / Explorer path users still open).
+std::wstring DocumentsDeskTidyNotesDir();
 
 // Encoding-aware recursive search over the library. `case_sensitive` defaults
 // to the prefs switch when left false (the UI toggles it live). Returns up to

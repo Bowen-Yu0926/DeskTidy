@@ -15,7 +15,7 @@ version: 1
 status: active
 automation: python -m pytest "testcases/DeskTidy/桌面资源管理器对标/test_QA_DT_SH_003.py" -q
 last_run: PASS
-last_run_at: 2026-10-29 09:42
+last_run_at: 2026-10-29 15:27
 ---
 ## 测什么
 
@@ -76,6 +76,6 @@ last_run_at: 2026-10-29 09:42
 ## 最终结果
 
 - **结果**：PASS
-- **时间**：2026-10-29 09:42
-- **说明**：automation exit 0；…                                                                      [100%] | 3 passed in 0.05s
+- **时间**：2026-10-29 15:27
+- **说明**：automation exit 0；…                                                                      [100%] | 3 passed in 0.04s
 

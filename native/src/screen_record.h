@@ -11,6 +11,8 @@ bool ToggleScreenRecord(HWND owner);
 // record config dialog (friendly names, never hand-typed).
 std::vector<std::wstring> ListAudioCaptureDevices();
 bool IsScreenRecording();
+// Cheap: true when ffmpeg handle or pause state may need a poll (no Wait).
+bool ScreenRecordSessionLive();
 bool IsScreenRecordPaused();
 void PauseScreenRecord(bool pause);
 void StopScreenRecord();

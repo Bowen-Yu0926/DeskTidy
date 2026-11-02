@@ -43,6 +43,9 @@ inline bool MistConfirm(HWND owner, const wchar_t* title,
          MistMsgResult::Yes;
 }
 
+// Prefetch WebView2 user-data for mist confirm cards (DeskNote boot).
+void MistWarmMessageEnv();
+
 // Mist prompt (prompt.html). Empty string on cancel / failure.
 std::wstring MistPromptText(HWND owner, const wchar_t* title,
                             const wchar_t* label, const std::wstring& initial);

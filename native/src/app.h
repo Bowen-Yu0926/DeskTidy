@@ -23,6 +23,7 @@
 #include "vault_window.h"
 
 #include <Windows.h>
+#include <ShlObj.h>
 #include <shellapi.h>
 
 #include <memory>
@@ -148,11 +149,11 @@ class App {
   void ApplyLoadedGeneralPrefs();
   void OnDesktopBlankDoubleClick();
   // Explorer / Fences: left-click blank desktop clears fence icon selection.
-  void OnDesktopBlankLeftDown();
+  void OnDesktopBlankLeftDown(LPARAM screen_pt);
   // Organized mode: paste clipboard files onto the real Desktop folder (floats).
   void OnDesktopPaste();
-  // Explorer drop onto public float chrome → copy into Desktop folder.
-  void OnDesktopDropPaths(const std::vector<std::wstring>& paths);
+  // Explorer drop onto public float chrome → Desktop folder. Returns OLE effect.
+  DWORD OnDesktopDropPaths(const std::vector<std::wstring>& paths);
   // P1-6: double-click toggles stock Explorer desktop ↔ organized DeskTidy view.
   void ShowStockDesktopView();
   void ShowOrganizedDesktopView();
@@ -177,7 +178,8 @@ class App {
   void TrimMemory();
   void ShowTrayBalloon(const std::wstring& title, const std::wstring& text);
   COLORREF TrayAccentColor() const;
-  void OnPathsDropped(FenceWindow* fence, const std::vector<std::wstring>& paths);
+  DWORD OnPathsDropped(FenceWindow* fence,
+                       const std::vector<std::wstring>& paths);
   void OnPathsPasted(FenceWindow* fence, const std::vector<std::wstring>& paths,
                      bool move);
   // P1-13: pin-transfer drop handler + floating hint lifecycle.
@@ -187,9 +189,11 @@ class App {
   void HidePinDragHint();
   void DissolveFence(FenceWindow* fence);
   void SetWhitelistForPaths(const std::vector<std::wstring>& paths, bool add);
-  void HandleIncomingPaths(FenceWindow* fence,
-                           const std::vector<std::wstring>& paths, bool paste,
-                           bool move);
+  // Returns OLE effect for drag sinks (COPY for virtual pin; MOVE/COPY/NONE
+  // for portal imports). Paste callers may ignore the return.
+  DWORD HandleIncomingPaths(FenceWindow* fence,
+                            const std::vector<std::wstring>& paths, bool paste,
+                            bool move);
   void RebuildDockItems();
   void WireFence(FenceWindow* fence);
   // heal_geometry: true after display change; false when applying a snapshot
@@ -208,6 +212,12 @@ class App {
   bool DesktopChromeHealthy() const;
   void StartForegroundHook();
   void StopForegroundHook();
+  // Explorer desktop membership (Fences-class): SHChangeNotify + debounce,
+  // not a blind PresentLayered patch after every poll tick.
+  void StartDesktopShellNotify();
+  void StopDesktopShellNotify();
+  void ScheduleDesktopContentRefresh();
+  void OnDesktopContentRefresh();
   // Worker threads (vault pull / organize) are joined with a bounded wait on
   // shutdown instead of being detached (P1 exit race).
   void ReapFinishedWorkers();
@@ -220,6 +230,9 @@ class App {
   HWINEVENTHOOK fg_hook_ = nullptr;
   std::vector<std::thread> workers_;
   int band_restore_left_ = 0;
+  // Last known Win+D / Show Desktop band (DefView TOPMOST). Re-seat only on
+  // transition — Rainmeter CheckDesktopState, not every settle tick.
+  bool show_desktop_seated_ = false;
   // Tick until which ScheduleDesktopBandRestore is ignored (vault/settings dismiss).
   ULONGLONG suppress_band_restore_until_ = 0;
   std::vector<std::unique_ptr<FenceWindow>> fences_;
@@ -250,6 +263,9 @@ class App {
   std::vector<HotkeyDef> hotkeys_;
   HotkeyRelay hotkey_relay_;
   DesktopWatch desktop_watch_;
+  ULONG shell_notify_id_ = 0;
+  PIDLIST_ABSOLUTE shell_notify_pidls_[2]{};
+  int shell_notify_pidl_count_ = 0;
   AppPrefs prefs_;
   std::string display_fp_;
   int app_dpi_ = 96;

@@ -27,6 +27,8 @@ class PublicHost {
   void SetPlacements(FloatPlacementMap placements);
   void SetBlockedRects(std::vector<RECT> rects);
   void Reflow();
+  // Re-blit layered content (Win+D restore); no-op when hidden.
+  void RefreshLayer();
   void AttachToDesktopLayer();
   void SetOnPathReplaced(
       std::function<void(const std::wstring&, const std::wstring&)> fn) {
@@ -38,9 +40,9 @@ class PublicHost {
   void SetOnRefresh(std::function<void()> fn) { on_refresh_ = std::move(fn); }
   // Fences: Ctrl+V / blank-area Paste lands files on the real Desktop folder.
   void SetOnPaste(std::function<void()> fn) { on_paste_ = std::move(fn); }
-  // Explorer drop onto float chrome → copy into Desktop folder.
+  // Explorer drop onto float chrome → Desktop folder. Returns OLE effect.
   void SetOnPathsDropped(
-      std::function<void(const std::vector<std::wstring>&)> fn) {
+      std::function<DWORD(const std::vector<std::wstring>&)> fn) {
     on_paths_dropped_ = std::move(fn);
   }
   void SetOnPlacementsChanged(
@@ -52,6 +54,8 @@ class PublicHost {
 
   // Screen-space slot rects for “draw fence around icons” scoop.
   std::vector<std::pair<std::wstring, RECT>> SlotScreenRects() const;
+  // Organized mode: blank DefView click → start float marquee (Explorer/Fences).
+  void BeginRubberFromScreen(POINT screen, bool additive);
 
  private:
   struct Slot {
@@ -62,8 +66,9 @@ class PublicHost {
   };
   static LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
   LRESULT HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam);
-  void Paint(HDC hdc);
+  void Paint(HDC hdc, bool draw_selection, bool draw_rubber);
   void Present();
+  void PresentRubberFast();
   void Layout();
   void ApplyVisibility();
   int HitTest(int x, int y) const;
@@ -74,6 +79,12 @@ class PublicHost {
   void ShowBackgroundMenu(POINT screen);
   void PasteClipboardFiles();
   void EnsureDropTarget();
+  // Fences-class: icon host geometry stays fixed; marquee is a separate band.
+  void PresentMarqueeBand();
+  void HideMarqueeBand();
+  void ClearRubberBaseCache();
+  bool EnsureRubberBaseCache(int w, int h);
+  bool SelectionFingerprint(std::vector<char>* out) const;
 
   void EnsureSelSize();
   void ClearSelection();
@@ -90,6 +101,7 @@ class PublicHost {
   void OpenSelection();
 
   HWND hwnd_ = nullptr;
+  HWND marquee_hwnd_ = nullptr;
   PathDropTarget* drop_target_ = nullptr;
   bool want_visible_ = false;
   IconGridMetrics metrics_{};
@@ -98,8 +110,15 @@ class PublicHost {
   bool drag_moved_ = false;
   POINT drag_press_{};
   bool rubber_ = false;
+  bool rubber_additive_ = false;
   POINT rubber_origin_{};
   RECT rubber_rc_{};
+  HBITMAP rubber_base_dib_ = nullptr;
+  void* rubber_base_bits_ = nullptr;
+  int rubber_base_w_ = 0;
+  int rubber_base_h_ = 0;
+  ULONGLONG rubber_present_ms_ = 0;
+  std::vector<char> rubber_sel_finger_;
   std::vector<char> selected_;
   int selection_anchor_ = -1;
   int current_page_ = 0;
@@ -110,6 +129,6 @@ class PublicHost {
   std::function<void(const std::wstring&)> on_removed_;
   std::function<void()> on_refresh_;
   std::function<void()> on_paste_;
-  std::function<void(const std::vector<std::wstring>&)> on_paths_dropped_;
+  std::function<DWORD(const std::vector<std::wstring>&)> on_paths_dropped_;
   std::function<void(const FloatPlacementMap&)> on_placements_changed_;
 };

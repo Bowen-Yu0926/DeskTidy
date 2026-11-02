@@ -28,7 +28,15 @@ HWND OwnerOf(HWND hwnd) {
 }
 
 HWND ParentOf(HWND hwnd) {
-  return IsWindowAlive(hwnd) ? GetParent(hwnd) : nullptr;
+  // GetParent() on a WS_POPUP returns the *owner* — that made SoftSeat think
+  // every Progman-owned fence was a child and fail IsAttached forever.
+  if (!IsWindowAlive(hwnd)) {
+    return nullptr;
+  }
+  if ((GetWindowLongPtrW(hwnd, GWL_STYLE) & WS_CHILD) == 0) {
+    return nullptr;
+  }
+  return GetParent(hwnd);
 }
 
 bool SetOwner(HWND hwnd, HWND owner) {
@@ -44,24 +52,6 @@ bool SetOwner(HWND hwnd, HWND owner) {
   return true;
 }
 
-HWND WindowAboveDefView(HWND defview, HWND host, HWND self) {
-  HWND anchor = defview ? defview : host;
-  if (!IsWindowAlive(anchor)) {
-    return nullptr;
-  }
-  HWND above = GetWindow(anchor, GW_HWNDPREV);
-  if (above == self) {
-    above = GetWindow(self, GW_HWNDPREV);
-  }
-  if (above == self) {
-    return nullptr;
-  }
-  return above;
-}
-
-// Win+D minimizes desktop-owned overlays: IsWindowVisible stays TRUE while
-// IsIconic is set, and SW_SHOWNOACTIVATE cannot un-minimize a window. Restore
-// iconic overlays first, then show hidden ones without stealing focus.
 void ShowOverlayNoActivate(HWND hwnd) {
   if (!IsWindowAlive(hwnd)) {
     return;
@@ -73,6 +63,62 @@ void ShowOverlayNoActivate(HWND hwnd) {
   if (!IsWindowVisible(hwnd)) {
     ShowWindow(hwnd, SW_SHOWNOACTIVATE);
   }
+}
+
+void EnsureTopLevelPopupStyle(HWND hwnd) {
+  if (!IsWindowAlive(hwnd)) {
+    return;
+  }
+  LONG_PTR style = GetWindowLongPtrW(hwnd, GWL_STYLE);
+  if ((style & WS_CHILD) || !(style & WS_POPUP)) {
+    style = (style & ~static_cast<LONG_PTR>(WS_CHILD)) | WS_POPUP;
+    SetWindowLongPtrW(hwnd, GWL_STYLE, style);
+  }
+}
+
+// Soft-retarget owner without clearing it first. Detach→null blanks ULW.
+bool SoftSeatToOwner(HWND hwnd, HWND owner, bool show) {
+  if (!IsWindowAlive(hwnd) || !IsWindowAlive(owner)) {
+    return false;
+  }
+  RECT screen{};
+  if (!GetWindowRect(hwnd, &screen)) {
+    return false;
+  }
+  // Migrate off a mistaken DefView-child seat (blank ULW on raised desktop).
+  bool need_frame = false;
+  if (ParentOf(hwnd)) {
+    SetParent(hwnd, nullptr);
+    need_frame = true;
+  }
+  const LONG_PTR style_before = GetWindowLongPtrW(hwnd, GWL_STYLE);
+  EnsureTopLevelPopupStyle(hwnd);
+  if (GetWindowLongPtrW(hwnd, GWL_STYLE) != style_before) {
+    need_frame = true;
+  }
+  if (OwnerOf(hwnd) != owner) {
+    if (!SetOwner(hwnd, owner)) {
+      return false;
+    }
+    need_frame = true;
+  }
+  // SWP_FRAMECHANGED on every SoftSeat used to wipe UpdateLayeredWindow pixels
+  // (attached+visible but fully transparent — page bar still showed). Only
+  // reframe when parent/style/owner actually changed.
+  if (!need_frame && !show) {
+    return OwnerOf(hwnd) == owner && !ParentOf(hwnd);
+  }
+  const int w = screen.right - screen.left;
+  const int h = screen.bottom - screen.top;
+  UINT flags = SWP_NOACTIVATE | SWP_NOZORDER;
+  if (need_frame) {
+    flags |= SWP_FRAMECHANGED;
+  }
+  if (show) {
+    flags |= SWP_SHOWWINDOW;
+  }
+  SetWindowPos(hwnd, nullptr, screen.left, screen.top, w, h, flags);
+  return OwnerOf(hwnd) == owner && !ParentOf(hwnd);
 }
 
 }  // namespace
@@ -90,7 +136,6 @@ bool PollExplorerDesktopRebuild() {
   const DefViewHost host = FindDefViewHost();
   const HWND cur = host.defview;
   if (cur == nullptr) {
-    // No DefView yet (Explorer still starting / restarted but not ready).
     return false;
   }
   if (g_tracked_defview == nullptr) {
@@ -167,10 +212,51 @@ bool IsAttachedToDesktop(HWND hwnd, const DefViewHost* cached) {
   if (!host.host) {
     return false;
   }
+  // Must be top-level owned by the DefView host — not a DefView child
+  // (children blank under UpdateLayeredWindow on raised desktop).
+  if (ParentOf(hwnd)) {
+    return false;
+  }
   const HWND owner = OwnerOf(hwnd);
-  const HWND parent = ParentOf(hwnd);
-  return owner == host.host || owner == host.defview || parent == host.host ||
-         parent == host.defview;
+  return owner == host.host || owner == host.defview;
+}
+
+bool SetOverlayScreenPos(HWND hwnd, int x, int y, int w, int h, UINT flags) {
+  if (!IsWindowAlive(hwnd)) {
+    return false;
+  }
+  HWND parent = ParentOf(hwnd);
+  int cx = x;
+  int cy = y;
+  if (parent && !(flags & SWP_NOMOVE)) {
+    POINT pt{x, y};
+    if (ScreenToClient(parent, &pt)) {
+      cx = pt.x;
+      cy = pt.y;
+    }
+  }
+  return SetWindowPos(hwnd, nullptr, cx, cy, w, h, flags | SWP_NOACTIVATE) !=
+         FALSE;
+}
+
+bool MoveOverlayScreen(HWND hwnd, int x, int y) {
+  return SetOverlayScreenPos(hwnd, x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER);
+}
+
+bool UpdateOverlayLayered(HWND hwnd, HDC hdc_dst, const POINT* screen_origin,
+                          const SIZE* size, HDC hdc_src, const POINT* ppt_src,
+                          COLORREF key, BLENDFUNCTION* blend, DWORD flags) {
+  if (!IsWindowAlive(hwnd)) {
+    return false;
+  }
+  const POINT* ppt = screen_origin;
+  if (ParentOf(hwnd)) {
+    ppt = nullptr;
+  }
+  return UpdateLayeredWindow(hwnd, hdc_dst, const_cast<POINT*>(ppt),
+                             const_cast<SIZE*>(size), hdc_src,
+                             const_cast<POINT*>(ppt_src), key, blend,
+                             flags) != FALSE;
 }
 
 bool AttachOverlayToDesktop(HWND hwnd, bool show) {
@@ -185,28 +271,20 @@ bool AttachOverlayToDesktop(HWND hwnd, bool show) {
   if (!host.host || IsWallpaperWorkerW(host.host)) {
     return false;
   }
+
   if (IsAttachedToDesktop(hwnd, &host)) {
     if (show) {
+      RaiseOverlayInDesktopBand(hwnd);
       ShowOverlayNoActivate(hwnd);
     }
     return true;
   }
 
-  RECT rect{};
-  if (!GetWindowRect(hwnd, &rect)) {
+  if (!SoftSeatToOwner(hwnd, host.host, show)) {
     return false;
   }
-
-  if (!SetOwner(hwnd, host.host)) {
-    return false;
-  }
-
-  SetWindowPos(hwnd, nullptr, rect.left, rect.top, rect.right - rect.left,
-               rect.bottom - rect.top, SWP_NOZORDER | SWP_NOACTIVATE);
-
-  PlaceOverlayInDesktopBand(hwnd, true);
-
   if (show) {
+    RaiseOverlayInDesktopBand(hwnd);
     ShowOverlayNoActivate(hwnd);
   }
   return IsAttachedToDesktop(hwnd, &host);
@@ -216,16 +294,19 @@ bool ForceAttachOverlayToDesktop(HWND hwnd, bool show) {
   if (!IsWindowAlive(hwnd)) {
     return false;
   }
-  // Win+D / wallpaper WorkerW churn can leave a stale owner — detach first.
   InvalidateDefViewCache();
+  if (IsWallpaperWorkerW(OwnerOf(hwnd)) || IsWallpaperWorkerW(ParentOf(hwnd)) ||
+      ParentOf(hwnd)) {
+    DetachOverlayFromDesktop(hwnd);
+  }
+  if (AttachOverlayToDesktop(hwnd, show)) {
+    return true;
+  }
   DetachOverlayFromDesktop(hwnd);
   return AttachOverlayToDesktop(hwnd, show);
 }
 
 bool IsExplorerDesktopForeground() {
-  // Match Python is_explorer_desktop_foreground: Progman/WorkerW/DefView only.
-  // Taskbar / tray must NOT count — clicking the tray icon would otherwise
-  // schedule RaiseOverlay and lift fences above open apps.
   HWND fg = GetForegroundWindow();
   if (!IsWindowAlive(fg)) {
     return false;
@@ -255,44 +336,119 @@ bool DetachOverlayFromDesktop(HWND hwnd) {
   }
   RECT rect{};
   GetWindowRect(hwnd, &rect);
-  SetOwner(hwnd, nullptr);
   if (ParentOf(hwnd)) {
     SetParent(hwnd, nullptr);
   }
+  EnsureTopLevelPopupStyle(hwnd);
+  SetOwner(hwnd, nullptr);
   if (rect.right > rect.left && rect.bottom > rect.top) {
     SetWindowPos(hwnd, nullptr, rect.left, rect.top, rect.right - rect.left,
-                 rect.bottom - rect.top, SWP_NOZORDER | SWP_NOACTIVATE);
+                 rect.bottom - rect.top,
+                 SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
   }
   return true;
 }
 
+void RaiseOverlayInDesktopBand(HWND hwnd);
+
 void PlaceOverlayInDesktopBand(HWND hwnd, bool /*force*/) {
-  if (!IsWindowAlive(hwnd)) {
-    return;
+  RaiseOverlayInDesktopBand(hwnd);
+}
+
+bool IsShowDesktopActive() {
+  const DefViewHost host = FindDefViewHost();
+  if (!host.defview || !IsWindowAlive(host.defview)) {
+    return false;
   }
-  // HWND_BOTTOM = 1 — seat under APPWINDOWs (Fences desktop seat).
-  SetWindowPos(hwnd, HWND_BOTTOM, 0, 0, 0, 0, kSwpNoMoveNoSizeNoActivate);
+  return (GetWindowLongPtrW(host.defview, GWL_EXSTYLE) & WS_EX_TOPMOST) != 0;
+}
+
+bool FilterDesktopChromeSysCommand(WPARAM wparam) {
+  return (wparam & 0xFFF0) == SC_MINIMIZE;
+}
+
+bool FilterDesktopChromeWindowPosChanging(WINDOWPOS* wp) {
+  if (!wp) {
+    return false;
+  }
+  if (!(wp->flags & SWP_NOMOVE) && (wp->x <= -16000 || wp->y <= -16000)) {
+    wp->flags |= SWP_NOMOVE | SWP_NOSIZE;
+    return true;
+  }
+  return false;
 }
 
 void RaiseOverlayInDesktopBand(HWND hwnd) {
   if (!IsWindowAlive(hwnd)) {
     return;
   }
-  const DefViewHost host = FindDefViewHost();
+  DefViewHost host = FindDefViewHost();
+  if (IsWallpaperWorkerW(OwnerOf(hwnd)) || IsWallpaperWorkerW(ParentOf(hwnd)) ||
+      ParentOf(hwnd)) {
+    DetachOverlayFromDesktop(hwnd);
+    InvalidateDefViewCache();
+    host = FindDefViewHost();
+  }
+  if (!host.host || IsWallpaperWorkerW(host.host)) {
+    InvalidateDefViewCache();
+    host = FindDefViewHost();
+    if (!host.host || IsWallpaperWorkerW(host.host)) {
+      return;
+    }
+  }
+
+  const bool want_show =
+      IsWindowVisible(hwnd) != FALSE && IsIconic(hwnd) == FALSE;
   if (!IsAttachedToDesktop(hwnd, &host)) {
+    if (!SoftSeatToOwner(hwnd, host.host, want_show)) {
+      return;
+    }
+  }
+
+  const UINT flags = kSwpNoMoveNoSizeNoActivate | SWP_NOREDRAW;
+  const bool show_desktop = IsShowDesktopActive();
+  const LONG_PTR ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+  const bool self_topmost = (ex & WS_EX_TOPMOST) != 0;
+
+  if (show_desktop) {
+    if (!self_topmost) {
+      SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, flags);
+    }
+    SetWindowPos(hwnd, HWND_TOP, 0, 0, 0, 0, flags);
+    if (want_show) {
+      ShowOverlayNoActivate(hwnd);
+    }
     return;
   }
 
-  // Place just above DefView: insert-after = window currently above DefView.
-  // When DefView is already topmost (Win+D), insert-after HWND_TOP (0) puts
-  // the overlay at the top of the non-topmost band — matching Python.
-  // Seating HWND_BOTTOM here buries fences under wallpaper after show-desktop.
-  HWND above = WindowAboveDefView(host.defview, host.host, hwnd);
-  HWND insert_after = (above && above != hwnd) ? above : HWND_TOP;
-  const UINT flags = kSwpNoMoveNoSizeNoActivate | SWP_NOREDRAW;
-  SetWindowPos(hwnd, insert_after, 0, 0, 0, 0, flags);
+  if (self_topmost) {
+    SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, flags);
+  }
+  // Owned popup: HWND_BOTTOM under APPWINDOWs; ownership keeps us above DefView.
+  SetWindowPos(hwnd, HWND_BOTTOM, 0, 0, 0, 0, flags);
+  if (want_show) {
+    ShowOverlayNoActivate(hwnd);
+  }
+}
 
-  ShowOverlayNoActivate(hwnd);
+bool IsOverlayAboveDefView(HWND hwnd) {
+  if (!IsWindowAlive(hwnd)) {
+    return false;
+  }
+  const DefViewHost host = FindDefViewHost();
+  if (!host.defview || !host.host) {
+    return true;
+  }
+  if (!IsAttachedToDesktop(hwnd, &host)) {
+    return false;
+  }
+  if (IsWallpaperWorkerW(OwnerOf(hwnd)) || IsWallpaperWorkerW(ParentOf(hwnd))) {
+    return false;
+  }
+  if (IsIconic(hwnd)) {
+    return false;
+  }
+  return true;
 }
 
 void OverlayWindowBatch::Hide(HWND hwnd) {
@@ -322,7 +478,6 @@ void OverlayWindowBatch::Commit() {
   if (items.empty()) {
     return;
   }
-  // Hide leavers before showing arrivers — one-frame overlap flashes.
   std::stable_sort(items.begin(), items.end(),
                    [](const Item& a, const Item& b) {
                      const int oa = a.op == kHide ? 0 : (a.op == kMove ? 1 : 2);
@@ -334,15 +489,27 @@ void OverlayWindowBatch::Commit() {
                             reinterpret_cast<uintptr_t>(b.hwnd);
                    });
 
+  for (auto& it : items) {
+    if (it.op != kMove) {
+      continue;
+    }
+    HWND parent = ParentOf(it.hwnd);
+    if (parent) {
+      POINT pt{it.x, it.y};
+      if (ScreenToClient(parent, &pt)) {
+        it.x = pt.x;
+        it.y = pt.y;
+      }
+    }
+  }
+
   auto flags_for = [](Op op) -> UINT {
     const UINT base = SWP_NOZORDER | SWP_NOACTIVATE;
     if (op == kHide) {
-      // NOREDRAW on hide avoids intermediate DWM frames.
       return base | SWP_NOMOVE | SWP_NOSIZE | SWP_HIDEWINDOW | SWP_NOREDRAW |
              SWP_NOCOPYBITS;
     }
     if (op == kShow) {
-      // No SWP_NOREDRAW / NOCOPYBITS on show — blank or discarded client flash.
       return base | SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW;
     }
     return base | SWP_NOREDRAW | SWP_NOCOPYBITS;

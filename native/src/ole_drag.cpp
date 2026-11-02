@@ -9,6 +9,20 @@
 
 namespace {
 
+// Local copy of icon_actions::SameVolume — deskNote links ole_drag without
+// icon_actions.obj, and PathDropTarget needs volume-aware MOVE/COPY.
+bool SameVolumeLocal(const std::wstring& a, const std::wstring& b) {
+  wchar_t va[MAX_PATH] = {};
+  wchar_t vb[MAX_PATH] = {};
+  if (!GetVolumePathNameW(a.c_str(), va, MAX_PATH)) {
+    wcsncpy_s(va, a.c_str(), _TRUNCATE);
+  }
+  if (!GetVolumePathNameW(b.c_str(), vb, MAX_PATH)) {
+    wcsncpy_s(vb, b.c_str(), _TRUNCATE);
+  }
+  return _wcsicmp(va, vb) == 0;
+}
+
 CLIPFORMAT PinTransferFormat() {
   static CLIPFORMAT fmt = 0;
   if (!fmt) {
@@ -24,6 +38,10 @@ bool g_pin_transferred = false;
 // True while ShellDoDragPins runs — desktop release must NOT CF_HDROP into
 // Explorer (files already live on the desktop → 「源相同」 + icon stack).
 bool g_pin_drag_active = false;
+// True while ShellDoDragFiles runs from the public float host. Same rule:
+// releasing over desktop/public must cancel OLE (Fences/Explorer), not drop
+// CF_HDROP onto the Desktop folder the files already live in.
+bool g_float_drag_active = false;
 // Set when QueryContinueDrag cancels because the cursor is over the desktop /
 // public unpin zone (not Esc). Caller should unpin in that case only.
 bool g_desktop_unpin_requested = false;
@@ -51,6 +69,7 @@ bool IsPointOverDesktopUnpinZone(POINT pt) {
       return false;
     }
     if (wcscmp(cls, L"DeskTidyNativePublic") == 0 ||
+        wcscmp(cls, L"DeskTidyNativeMarquee") == 0 ||
         wcscmp(cls, L"DeskTidyNativeDock") == 0) {
       return true;
     }
@@ -104,13 +123,14 @@ class SimpleDropSource : public IDropSource {
       return DRAGDROP_S_CANCEL;
     }
     if ((key_state & MK_LBUTTON) == 0) {
-      // Pin drag released over desktop/public → cancel OLE so Explorer never
-      // sees same-folder CF_HDROP (「源和目标文件名相同」). Caller unpins.
-      if (g_pin_drag_active) {
+      // Pin / float drag released over desktop/public → cancel OLE so Explorer
+      // never sees same-folder CF_HDROP (「源和目标文件名相同」). Pin caller
+      // unpins; float caller keeps prior seats (no rewrite).
+      if (g_pin_drag_active || g_float_drag_active) {
         POINT pt{};
         GetCursorPos(&pt);
         if (IsPointOverDesktopUnpinZone(pt)) {
-          g_desktop_unpin_requested = true;
+          g_desktop_unpin_requested = g_pin_drag_active;
           return DRAGDROP_S_CANCEL;
         }
       }
@@ -498,7 +518,8 @@ IDataObject* CreateShellDataObject(const std::vector<std::wstring>& paths) {
 
 }  // namespace
 
-bool ShellDoDragFiles(const std::vector<std::wstring>& paths) {
+bool ShellDoDragFiles(const std::vector<std::wstring>& paths,
+                      bool cancel_desktop_self_drop) {
   IDataObject* data = CreateShellDataObject(paths);
   if (!data) {
     return false;
@@ -508,8 +529,12 @@ bool ShellDoDragFiles(const std::vector<std::wstring>& paths) {
     data->Release();
     return false;
   }
+  // AIGC START
+  g_float_drag_active = cancel_desktop_self_drop;
   DWORD effect = DROPEFFECT_COPY | DROPEFFECT_MOVE | DROPEFFECT_LINK;
   const HRESULT hr = DoDragDrop(data, source, effect, &effect);
+  g_float_drag_active = false;
+  // AIGC END
   source->Release();
   data->Release();
   return hr == DRAGDROP_S_DROP;
@@ -691,14 +716,73 @@ bool PathDropTarget::ExtractPinTransfer(IDataObject* data, std::wstring* src,
   return !src->empty() && !paths->empty();
 }
 
+FileDropSemantics PathDropTarget::ActiveSemantics() const {
+  return semantics_fn_ ? semantics_fn_() : semantics_;
+}
+
+std::wstring PathDropTarget::ActiveDestDir() const {
+  return dest_fn_ ? dest_fn_() : dest_dir_;
+}
+
+DWORD PathDropTarget::ResolveFileEffect(DWORD key_state, DWORD allowed,
+                                        const std::wstring& sample_src) const {
+  // AIGC START
+  // Fences/Explorer effect matrix for CF_HDROP sinks.
+  allowed &= (DROPEFFECT_COPY | DROPEFFECT_MOVE | DROPEFFECT_LINK);
+  if (!allowed) {
+    return DROPEFFECT_NONE;
+  }
+  switch (ActiveSemantics()) {
+    case FileDropSemantics::VirtualPin:
+      return (allowed & DROPEFFECT_COPY) ? DROPEFFECT_COPY
+                                         : DROPEFFECT_NONE;
+    case FileDropSemantics::PreferMove:
+      if (allowed & DROPEFFECT_MOVE) {
+        return DROPEFFECT_MOVE;
+      }
+      return (allowed & DROPEFFECT_COPY) ? DROPEFFECT_COPY : DROPEFFECT_NONE;
+    case FileDropSemantics::Physical:
+    default:
+      break;
+  }
+  const bool ctrl = (key_state & MK_CONTROL) != 0;
+  const bool shift = (key_state & MK_SHIFT) != 0;
+  const bool alt = (key_state & MK_ALT) != 0;
+  if ((ctrl && shift) || alt) {
+    if (allowed & DROPEFFECT_LINK) {
+      return DROPEFFECT_LINK;
+    }
+  }
+  if (ctrl && (allowed & DROPEFFECT_COPY)) {
+    return DROPEFFECT_COPY;
+  }
+  if (shift && (allowed & DROPEFFECT_MOVE)) {
+    return DROPEFFECT_MOVE;
+  }
+  const std::wstring dest = ActiveDestDir();
+  if (!dest.empty() && !sample_src.empty() &&
+      SameVolumeLocal(sample_src, dest) && (allowed & DROPEFFECT_MOVE)) {
+    return DROPEFFECT_MOVE;
+  }
+  if (allowed & DROPEFFECT_COPY) {
+    return DROPEFFECT_COPY;
+  }
+  if (allowed & DROPEFFECT_MOVE) {
+    return DROPEFFECT_MOVE;
+  }
+  return DROPEFFECT_NONE;
+  // AIGC END
+}
+
 HRESULT STDMETHODCALLTYPE PathDropTarget::DragEnter(IDataObject* data,
-                                                    DWORD /*key_state*/,
+                                                    DWORD key_state,
                                                     POINTL /*pt*/,
                                                     DWORD* effect) {
   g_over_pin_target = false;
   g_over_pin_invalid = false;
   pin_mode_ = false;
   accept_ = false;
+  sample_src_.clear();
 
   std::wstring src;
   std::vector<std::wstring> paths;
@@ -718,8 +802,17 @@ HRESULT STDMETHODCALLTYPE PathDropTarget::DragEnter(IDataObject* data,
   }
 
   accept_ = HasFileDrop(data);
+  if (accept_) {
+    const auto dropped = ExtractPaths(data);
+    if (!dropped.empty()) {
+      sample_src_ = dropped.front();
+    }
+  }
   if (effect) {
-    *effect = accept_ ? (*effect & (DROPEFFECT_COPY | DROPEFFECT_MOVE))
+    const DWORD allowed =
+        effect ? (*effect & (DROPEFFECT_COPY | DROPEFFECT_MOVE | DROPEFFECT_LINK))
+               : (DROPEFFECT_COPY | DROPEFFECT_MOVE);
+    *effect = accept_ ? ResolveFileEffect(key_state, allowed, sample_src_)
                       : DROPEFFECT_NONE;
   }
   if (highlight_fn_) {
@@ -728,7 +821,7 @@ HRESULT STDMETHODCALLTYPE PathDropTarget::DragEnter(IDataObject* data,
   return S_OK;
 }
 
-HRESULT STDMETHODCALLTYPE PathDropTarget::DragOver(DWORD /*key_state*/,
+HRESULT STDMETHODCALLTYPE PathDropTarget::DragOver(DWORD key_state,
                                                    POINTL /*pt*/,
                                                    DWORD* effect) {
   if (pin_mode_) {
@@ -738,7 +831,9 @@ HRESULT STDMETHODCALLTYPE PathDropTarget::DragOver(DWORD /*key_state*/,
     return S_OK;
   }
   if (effect) {
-    *effect = accept_ ? (*effect & (DROPEFFECT_COPY | DROPEFFECT_MOVE))
+    const DWORD allowed =
+        *effect & (DROPEFFECT_COPY | DROPEFFECT_MOVE | DROPEFFECT_LINK);
+    *effect = accept_ ? ResolveFileEffect(key_state, allowed, sample_src_)
                       : DROPEFFECT_NONE;
   }
   return S_OK;
@@ -749,6 +844,7 @@ HRESULT STDMETHODCALLTYPE PathDropTarget::DragLeave() {
   g_over_pin_invalid = false;
   accept_ = false;
   pin_mode_ = false;
+  sample_src_.clear();
   if (highlight_fn_) {
     highlight_fn_(false);
   }
@@ -756,7 +852,7 @@ HRESULT STDMETHODCALLTYPE PathDropTarget::DragLeave() {
 }
 
 HRESULT STDMETHODCALLTYPE PathDropTarget::Drop(IDataObject* data,
-                                               DWORD /*key_state*/, POINTL /*pt*/,
+                                               DWORD key_state, POINTL /*pt*/,
                                                DWORD* effect) {
   if (pin_mode_) {
     std::wstring src;
@@ -776,6 +872,7 @@ HRESULT STDMETHODCALLTYPE PathDropTarget::Drop(IDataObject* data,
     g_over_pin_invalid = false;
     accept_ = false;
     pin_mode_ = false;
+    sample_src_.clear();
     if (highlight_fn_) {
       highlight_fn_(false);
     }
@@ -783,13 +880,28 @@ HRESULT STDMETHODCALLTYPE PathDropTarget::Drop(IDataObject* data,
   }
 
   auto paths = ExtractPaths(data);
-  if (effect) {
-    *effect = paths.empty() ? DROPEFFECT_NONE : DROPEFFECT_COPY;
-  }
+  const std::wstring sample = paths.empty() ? sample_src_ : paths.front();
+  const DWORD allowed =
+      effect ? (*effect & (DROPEFFECT_COPY | DROPEFFECT_MOVE | DROPEFFECT_LINK))
+             : (DROPEFFECT_COPY | DROPEFFECT_MOVE);
+  const DWORD proposed =
+      paths.empty() ? DROPEFFECT_NONE
+                    : ResolveFileEffect(key_state, allowed, sample);
+  // AIGC START
+  // Ask the sink what actually happened — never advertise MOVE/COPY if the
+  // handler no-oped (desktop self-drop skip, recycle fail, portal import fail).
+  DWORD actual = proposed;
   if (!paths.empty() && on_drop_) {
-    on_drop_(paths);
+    actual = on_drop_(paths, proposed);
+  } else if (paths.empty()) {
+    actual = DROPEFFECT_NONE;
   }
+  if (effect) {
+    *effect = actual;
+  }
+  // AIGC END
   accept_ = false;
+  sample_src_.clear();
   if (highlight_fn_) {
     highlight_fn_(false);
   }

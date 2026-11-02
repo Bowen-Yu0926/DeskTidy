@@ -2,7 +2,7 @@
   "language": "zh",
   "auto_start": true,
   "auto_organize_on_startup": false,
-  "auto_organize_watch": false,
+  "auto_organize_watch": true,
   "auto_snapshot_on_change": false,
   "check_update_on_startup": true,
   "update_notified_tag": "",

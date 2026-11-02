@@ -12,11 +12,112 @@
 
 #include <algorithm>
 #include <string>
+#include <vector>
 
 using Microsoft::WRL::Callback;
 using Microsoft::WRL::ComPtr;
 
 namespace {
+
+int HexNibble(wchar_t c) {
+  if (c >= L'0' && c <= L'9') {
+    return c - L'0';
+  }
+  if (c >= L'a' && c <= L'f') {
+    return c - L'a' + 10;
+  }
+  if (c >= L'A' && c <= L'F') {
+    return c - L'A' + 10;
+  }
+  return -1;
+}
+
+std::wstring UrlDecodePath(const std::wstring& in) {
+  std::wstring out;
+  out.reserve(in.size());
+  for (size_t i = 0; i < in.size(); ++i) {
+    if (in[i] == L'%' && i + 2 < in.size()) {
+      const int hi = HexNibble(in[i + 1]);
+      const int lo = HexNibble(in[i + 2]);
+      if (hi >= 0 && lo >= 0) {
+        out.push_back(static_cast<wchar_t>((hi << 4) | lo));
+        i += 2;
+        continue;
+      }
+    }
+    if (in[i] == L'+') {
+      out.push_back(L' ');
+      continue;
+    }
+    out.push_back(in[i]);
+  }
+  return out;
+}
+
+// file:///C:/a/b.md → C:\a\b.md (strips ?query / #frag).
+std::wstring PathFromFileUri(const std::wstring& uri) {
+  if (uri.size() < 7 || _wcsnicmp(uri.c_str(), L"file:", 5) != 0) {
+    return {};
+  }
+  size_t start = 5;
+  while (start < uri.size() && uri[start] == L'/') {
+    ++start;
+  }
+  // file://localhost/C:/... or file:///C:/...
+  if (start < uri.size() && _wcsnicmp(uri.c_str() + start, L"localhost/", 10) == 0) {
+    start += 10;
+  }
+  std::wstring path = uri.substr(start);
+  const size_t cut = path.find_first_of(L"?#");
+  if (cut != std::wstring::npos) {
+    path.resize(cut);
+  }
+  path = UrlDecodePath(path);
+  for (auto& ch : path) {
+    if (ch == L'/') {
+      ch = L'\\';
+    }
+  }
+  return path;
+}
+
+bool IsDeskNoteShellHtmlUri(const std::wstring& uri) {
+  std::wstring lower = uri;
+  for (auto& ch : lower) {
+    if (ch >= L'A' && ch <= L'Z') {
+      ch = static_cast<wchar_t>(ch - L'A' + L'a');
+    }
+  }
+  // file://… or https://app.desknote/… (virtual host mapping).
+  if (lower.find(L"https://app.desknote/") == 0 ||
+      lower.find(L"http://app.desknote/") == 0) {
+    return true;
+  }
+  return lower.find(L"wysiwyg_native.html") != std::wstring::npos ||
+         lower.find(L"viewer_native.html") != std::wstring::npos;
+}
+
+std::wstring ParentDir(const std::wstring& path) {
+  const size_t slash = path.find_last_of(L"\\/");
+  if (slash == std::wstring::npos) {
+    return {};
+  }
+  return path.substr(0, slash);
+}
+
+// Bust only when the shell HTML on disk changes — keep Chromium disk cache warm.
+std::wstring AssetCacheToken(const std::wstring& path) {
+  WIN32_FILE_ATTRIBUTE_DATA fad{};
+  if (!GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &fad)) {
+    return L"0";
+  }
+  ULARGE_INTEGER u{};
+  u.LowPart = fad.ftLastWriteTime.dwLowDateTime;
+  u.HighPart = fad.ftLastWriteTime.dwHighDateTime;
+  wchar_t buf[32];
+  swprintf_s(buf, L"%llX", static_cast<unsigned long long>(u.QuadPart));
+  return buf;
+}
 
 std::wstring JsonEscape(const std::wstring& s) {
   std::wstring o;
@@ -147,6 +248,29 @@ std::wstring FileUrlFromPath(const std::wstring& path) {
 
 }  // namespace
 
+void NotesWarmWebViewEnv() {
+  static bool started = false;
+  if (started) {
+    return;
+  }
+  started = true;
+  static ComPtr<ICoreWebView2Environment> env_keep;
+  const std::wstring udir =
+      JoinPath(NativeDataDir(), L"webview2-desknote");
+  CreateDirectoryW(NativeDataDir().c_str(), nullptr);
+  CreateDirectoryW(udir.c_str(), nullptr);
+  CreateCoreWebView2EnvironmentWithOptions(
+      nullptr, udir.c_str(), nullptr,
+      Callback<ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler>(
+          [](HRESULT result, ICoreWebView2Environment* env) -> HRESULT {
+            if (SUCCEEDED(result) && env) {
+              env_keep = env;
+            }
+            return S_OK;
+          })
+          .Get());
+}
+
 bool NotesWebView::Create(HWND parent) {
   parent_ = parent;
   if (!parent_) {
@@ -170,16 +294,22 @@ bool NotesWebView::Create(HWND parent) {
   }
   RECT rc{};
   GetClientRect(parent_, &rc);
-  host_ = CreateWindowExW(0, L"DeskTidyNativeNotesWeb", L"", WS_CHILD, 0, 0,
-                          rc.right, rc.bottom, parent_, nullptr,
-                          GetModuleHandleW(nullptr), this);
+  host_ = CreateWindowExW(0, L"DeskTidyNativeNotesWeb", L"",
+                          WS_CHILD | WS_CLIPSIBLINGS, 0, 0, rc.right, rc.bottom,
+                          parent_, nullptr, GetModuleHandleW(nullptr), this);
   if (!host_) {
     return false;
   }
   SetWindowLongPtrW(host_, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(this));
 
+  // Persistent profile (like Mist dialogs): second launch skips full Edge cold start.
+  const std::wstring udir =
+      JoinPath(NativeDataDir(), L"webview2-desknote");
+  CreateDirectoryW(NativeDataDir().c_str(), nullptr);
+  CreateDirectoryW(udir.c_str(), nullptr);
+
   const HRESULT hr = CreateCoreWebView2EnvironmentWithOptions(
-      nullptr, nullptr, nullptr,
+      nullptr, udir.c_str(), nullptr,
       Callback<ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler>(
           [this](HRESULT result, ICoreWebView2Environment* env) -> HRESULT {
             if (FAILED(result) || !env) {
@@ -195,6 +325,111 @@ bool NotesWebView::Create(HWND parent) {
                       }
                       controller_ = controller;
                       controller->AddRef();
+                      // Allow Explorer drops onto the WebView surface; we cancel
+                      // the resulting file:// navigation in NavigationStarting
+                      // and open/insert via on_external_drop (OLE on parent
+                      // alone misses the Chromium child HWND under the cursor).
+                      {
+                        ComPtr<ICoreWebView2Controller4> c4;
+                        if (SUCCEEDED(controller->QueryInterface(
+                                IID_PPV_ARGS(&c4))) &&
+                            c4) {
+                          c4->put_AllowExternalDrop(TRUE);
+                        }
+                      }
+                      // Own find/replace (DeskNote) — Chromium's bottom find
+                      // bar was a dead-end UX and TOPMOST find churn could
+                      // bury DeskTidy fences under DefView until page switch.
+                      {
+                        EventRegistrationToken accel_tok{};
+                        controller->add_AcceleratorKeyPressed(
+                            Callback<ICoreWebView2AcceleratorKeyPressedEventHandler>(
+                                [this](ICoreWebView2Controller* ctrl,
+                                       ICoreWebView2AcceleratorKeyPressedEventArgs*
+                                           args) -> HRESULT {
+                                  if (!args) {
+                                    return S_OK;
+                                  }
+                                  COREWEBVIEW2_KEY_EVENT_KIND kind =
+                                      COREWEBVIEW2_KEY_EVENT_KIND_KEY_DOWN;
+                                  args->get_KeyEventKind(&kind);
+                                  if (kind !=
+                                          COREWEBVIEW2_KEY_EVENT_KIND_KEY_DOWN &&
+                                      kind !=
+                                          COREWEBVIEW2_KEY_EVENT_KIND_SYSTEM_KEY_DOWN) {
+                                    return S_OK;
+                                  }
+                                  UINT key = 0;
+                                  args->get_VirtualKey(&key);
+                                  COREWEBVIEW2_PHYSICAL_KEY_STATUS status{};
+                                  args->get_PhysicalKeyStatus(&status);
+                                  if (status.WasKeyDown) {
+                                    return S_OK;
+                                  }
+                                  const bool ctrl_down =
+                                      (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+                                  const bool shift =
+                                      (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+                                  if (ctrl_down && (key == 'F' || key == 'H')) {
+                                    args->put_Handled(TRUE);
+                                    if (on_find) {
+                                      on_find(key == 'H');
+                                    }
+                                    return S_OK;
+                                  }
+                                  // Ctrl+S / Ctrl+Shift+S — steal from Chromium
+                                  // "Save page" so DeskNote Save runs (Typora).
+                                  if (ctrl_down && (key == 'S' || key == 's')) {
+                                    args->put_Handled(TRUE);
+                                    if (shift) {
+                                      // Save As is host-menu only; still block
+                                      // browser save-as.
+                                      if (parent_) {
+                                        PostMessageW(parent_, WM_COMMAND, 2102,
+                                                     0);
+                                      }
+                                    } else if (on_save) {
+                                      on_save();
+                                    } else if (parent_) {
+                                      PostMessageW(parent_, WM_COMMAND, 2101, 0);
+                                    }
+                                    return S_OK;
+                                  }
+                                  if (key == VK_F3) {
+                                    args->put_Handled(TRUE);
+                                    if (on_find_again) {
+                                      on_find_again(!shift);
+                                    } else if (on_find) {
+                                      on_find(false);
+                                    }
+                                    return S_OK;
+                                  }
+                                  // Shift+Enter: Toast maps this to Enter (new
+                                  // paragraph). Steal the key and soft-break in JS
+                                  // (split textblock + pad column — no hardBreak
+                                  // node in Toast schema).
+                                  if (key == VK_RETURN && shift && !ctrl_down &&
+                                      kind_ == Kind::kWysiwyg) {
+                                    args->put_Handled(TRUE);
+                                    ICoreWebView2* w =
+                                        static_cast<ICoreWebView2*>(webview_);
+                                    if (!w && ctrl) {
+                                      ctrl->get_CoreWebView2(&w);
+                                    }
+                                    if (w) {
+                                      w->ExecuteScript(
+                                          L"try{window.__desknoteSoftBreak&&"
+                                          L"window.__desknoteSoftBreak()}"
+                                          L"catch(e){}",
+                                          nullptr);
+                                    }
+                                    return S_OK;
+                                  }
+                                  return S_OK;
+                                })
+                                .Get(),
+                            &accel_tok);
+                      }
                       ICoreWebView2* web = nullptr;
                       controller->get_CoreWebView2(&web);
                       if (!web) {
@@ -202,6 +437,23 @@ bool NotesWebView::Create(HWND parent) {
                       }
                       webview_ = web;
                       available_ = true;
+                      // https://app.desknote/* → md_preview folder (faster than
+                      // file:// for the Toast bundle; keeps disk cache coherent).
+                      {
+                        ComPtr<ICoreWebView2_3> web3;
+                        if (SUCCEEDED(web->QueryInterface(IID_PPV_ARGS(&web3))) &&
+                            web3) {
+                          const std::wstring html = kind_ == Kind::kViewer
+                                                        ? FindViewerHtml()
+                                                        : FindWysiwygHtml();
+                          const std::wstring folder = ParentDir(html);
+                          if (!folder.empty()) {
+                            web3->SetVirtualHostNameToFolderMapping(
+                                L"app.desknote", folder.c_str(),
+                                COREWEBVIEW2_HOST_RESOURCE_ACCESS_KIND_ALLOW);
+                          }
+                        }
+                      }
                       RECT bounds{};
                       GetClientRect(host_, &bounds);
                       controller->put_Bounds(bounds);
@@ -222,6 +474,41 @@ bool NotesWebView::Create(HWND parent) {
                               })
                               .Get(),
                           &token);
+                      // Explorer drop → WebView2 navigates to file://… — cancel
+                      // shell pages stay allowed (wysiwyg_native / viewer_native).
+                      EventRegistrationToken start_tok{};
+                      web->add_NavigationStarting(
+                          Callback<ICoreWebView2NavigationStartingEventHandler>(
+                              [this](ICoreWebView2*,
+                                     ICoreWebView2NavigationStartingEventArgs*
+                                         args) -> HRESULT {
+                                if (!args || !on_external_drop) {
+                                  return S_OK;
+                                }
+                                LPWSTR uri_raw = nullptr;
+                                if (FAILED(args->get_Uri(&uri_raw)) ||
+                                    !uri_raw) {
+                                  return S_OK;
+                                }
+                                const std::wstring uri(uri_raw);
+                                CoTaskMemFree(uri_raw);
+                                if (_wcsnicmp(uri.c_str(), L"file:", 5) != 0) {
+                                  return S_OK;
+                                }
+                                if (IsDeskNoteShellHtmlUri(uri)) {
+                                  return S_OK;
+                                }
+                                const std::wstring path = PathFromFileUri(uri);
+                                if (path.empty()) {
+                                  return S_OK;
+                                }
+                                args->put_Cancel(TRUE);
+                                on_external_drop(
+                                    std::vector<std::wstring>{path});
+                                return S_OK;
+                              })
+                              .Get(),
+                          &start_tok);
                       // If the page scripts fail to post previewReady, still
                       // flush pending markdown once navigation finishes.
                       EventRegistrationToken nav_tok{};
@@ -275,7 +562,27 @@ void NotesWebView::NavigateHome() {
   if (html.empty()) {
     return;
   }
-  web->Navigate(FileUrlFromPath(html).c_str());
+  ready_ = false;
+  content_ready_ = false;
+  const std::wstring leaf = kind_ == Kind::kViewer ? L"viewer_native.html"
+                                                   : L"wysiwyg_native.html";
+  const std::wstring token = AssetCacheToken(html);
+  // Prefer virtual host (mapped in Create). Fall back to file:// if mapping
+  // failed on older runtimes — still works, just slower cache semantics.
+  ComPtr<ICoreWebView2_3> web3;
+  if (SUCCEEDED(web->QueryInterface(IID_PPV_ARGS(&web3))) && web3) {
+    const std::wstring folder = ParentDir(html);
+    if (!folder.empty()) {
+      web3->SetVirtualHostNameToFolderMapping(
+          L"app.desknote", folder.c_str(),
+          COREWEBVIEW2_HOST_RESOURCE_ACCESS_KIND_ALLOW);
+    }
+    const std::wstring url =
+        L"https://app.desknote/" + leaf + L"?v=" + token;
+    web->Navigate(url.c_str());
+    return;
+  }
+  web->Navigate((FileUrlFromPath(html) + L"?v=" + token).c_str());
 }
 
 void NotesWebView::OnReady() {
@@ -303,22 +610,31 @@ void NotesWebView::OnWebMessage(const std::wstring& json) {
   if (type == L"ready" || type == L"previewReady") {
     OnReady();
   } else if (type == L"dirty") {
+    // setMarkdown / PullMarkdown / post-Save Toast churn — ignore so a
+    // freshly saved or seeded note does not stick on the unsaved disc.
+    if (applying_set_ || pulling_md_ ||
+        (quiet_dirty_until_ != 0 &&
+         GetTickCount64() < quiet_dirty_until_)) {
+      return;
+    }
     if (on_dirty) {
       on_dirty();
     } else if (on_changed) {
       on_changed();
     }
   } else if (type == L"md" || type == L"changed") {
-    if (pulling_md_) {
-      // ExecuteScript callback owns pending_md_ for this pull — ignore late
-      // debounced `changed` bodies that would overwrite a fresher get.
-      if (type == L"changed" && on_changed) {
-        on_changed();
-      }
+    if (pulling_md_ || applying_set_) {
+      // Pull owns pending_md_; SetMarkdown owns it until contentReady — a late
+      // debounce must not MarkDirty after Ctrl+S (glyph stuck on disc).
     } else {
       pending_md_ = JsonStringField(json, L"md");
       got_md_ = true;
       if (type == L"changed" && on_changed) {
+        if (quiet_dirty_until_ != 0 &&
+            GetTickCount64() < quiet_dirty_until_) {
+          // Keep cache fresh, but do not flip the tab disc after Save.
+          return;
+        }
         on_changed();
       }
     }
@@ -327,6 +643,25 @@ void NotesWebView::OnWebMessage(const std::wstring& json) {
       on_need_content();
     } else if (!pending_md_.empty()) {
       SetMarkdown(pending_md_);
+    }
+  } else if (type == L"fontPrefs") {
+    if (on_font_prefs) {
+      const std::wstring face = JsonStringField(json, L"face");
+      const int pt = static_cast<int>(JsonDoubleField(json, L"pt", 12.0));
+      on_font_prefs(face, pt);
+    }
+  } else if (type == L"chromeReady") {
+    // Reveal body host; keep applying_set_ until contentReady so an empty
+    // Toast `changed` cannot clobber pending_md_ and soft-save wipe the file.
+    content_ready_ = true;
+    if (on_content_ready) {
+      on_content_ready();
+    }
+  } else if (type == L"contentReady") {
+    content_ready_ = true;
+    applying_set_ = false;
+    if (on_content_ready) {
+      on_content_ready();
     }
   } else if (type == L"scroll") {
     scroll_ratio_ = JsonDoubleField(json, L"ratio", 0.0);
@@ -359,6 +694,7 @@ void NotesWebView::Destroy() {
   }
   available_ = false;
   ready_ = false;
+  content_ready_ = false;
 }
 
 void NotesWebView::Show() {
@@ -409,12 +745,33 @@ void NotesWebView::Resize() {
   }
 }
 
+void NotesWebView::EvalScript(const std::wstring& js) {
+  auto* web = static_cast<ICoreWebView2*>(webview_);
+  if (!web || js.empty()) {
+    return;
+  }
+  web->ExecuteScript(js.c_str(), nullptr);
+}
+
+void NotesWebView::AckClean() {
+  // Cover Toast 150ms debounce + trailing exit-slot + in-flight posts.
+  quiet_dirty_until_ = GetTickCount64() + 600;
+  auto* web = static_cast<ICoreWebView2*>(webview_);
+  if (!web || !ready_ || kind_ != Kind::kWysiwyg) {
+    return;
+  }
+  web->PostWebMessageAsJson(L"{\"type\":\"ackClean\"}");
+}
+
 void NotesWebView::SetMarkdown(const std::wstring& md) {
   // Keep cache coherent so SyncFromWysiwyg / Save can skip PullMarkdown IPC.
   pending_md_ = md;
+  applying_set_ = true;
   auto* web = static_cast<ICoreWebView2*>(webview_);
   if (!web || !ready_) {
     pending_set_ = md;
+    // Not painted yet — cache is already the new doc; allow later changed.
+    applying_set_ = false;
     return;
   }
   const std::wstring theme =
@@ -645,6 +1002,9 @@ LRESULT NotesWebView::HandleHost(UINT msg, WPARAM wparam, LPARAM lparam) {
   if (msg == WM_SIZE) {
     Resize();
     return 0;
+  }
+  if (msg == WM_DROPFILES && parent_) {
+    return SendMessageW(parent_, WM_DROPFILES, wparam, lparam);
   }
   if (msg == WM_DESTROY) {
     host_ = nullptr;

@@ -201,8 +201,24 @@ void ClampRectToWorkArea(RECT* rc) {
     return;
   }
   const RECT work = WorkAreaForRect(*rc);
-  const int w = rc->right - rc->left;
-  const int h = rc->bottom - rc->top;
+  const int max_w = (std::max)(1, static_cast<int>(work.right - work.left));
+  const int max_h = (std::max)(1, static_cast<int>(work.bottom - work.top));
+  // Cap size first (Fences/snap_geometry): a partition cannot outgrow its
+  // monitor work area — otherwise hotplug scale bugs persist as "fullscreen".
+  int w = rc->right - rc->left;
+  int h = rc->bottom - rc->top;
+  if (w < 1) {
+    w = 1;
+  }
+  if (h < 1) {
+    h = 1;
+  }
+  if (w > max_w) {
+    w = max_w;
+  }
+  if (h > max_h) {
+    h = max_h;
+  }
   int x = rc->left;
   int y = rc->top;
   if (x + w > work.right) {
@@ -351,15 +367,18 @@ bool FingerprintIsTransient(const std::string& fp) {
       int w = 0;
       int h = 0;
       if (ParsePanelPixels(part.substr(a, b - a), &w, &h)) {
-        // Primary pixels both < 900, or square ~800 (Qt offscreen / tiny panels).
+        // Tiny / square fake panels during plug-unplug (Qt offscreen ~800²).
+        // Do NOT treat every w<1280 panel as transient — that killed profiles for
+        // portrait secondaries, 1280-wide laptops, and projectors (Fences keeps
+        // those topologies).
         if (w < 900 && h < 900) {
           return true;
         }
         if (w == h && w <= 1024) {
           return true;
         }
-        // Match Python: any panel narrower than a typical laptop logical width.
-        if (w > 0 && w < 1280) {
+        // Hotplug stub: absurdly short work height on a normal-width panel.
+        if (w >= 640 && h > 0 && h < 400) {
           return true;
         }
       }
@@ -561,4 +580,49 @@ IconGridMetrics QueryIconGridMetrics() {
   const int min_caption = (std::max)(16, line_h);
   out.cell_h = (std::max)(out.icon_size + min_caption, out.cell_h);
   return out;
+}
+
+int MinFenceHeightForIconRows(int rows, const IconGridMetrics* metrics) {
+  const IconGridMetrics local = metrics ? *metrics : QueryIconGridMetrics();
+  const int n = (std::max)(1, rows);
+  // Match fence_window chrome: header 32 + bottom pad 12 @ 96dpi, then DPI.
+  const int dpi = SystemDpi();
+  const int header = MulDiv(32, dpi, 96);
+  const int pad = MulDiv(12, dpi, 96);
+  const int cell = (std::max)(48, local.cell_h);
+  return header + pad + n * cell;
+}
+
+int ScalePxForDpi(int px, int dpi) {
+  if (dpi <= 0) {
+    dpi = SystemDpi();
+  }
+  if (dpi == 96) {
+    return px;
+  }
+  return MulDiv(px, dpi, 96);
+}
+
+void ScaleDialogSizeForPoint(POINT at, int* width, int* height) {
+  if (!width || !height) {
+    return;
+  }
+  const int dpi = DpiAtPoint(at);
+  *width = ScalePxForDpi(*width, dpi);
+  *height = ScalePxForDpi(*height, dpi);
+  const RECT work = WorkAreaAtPoint(at);
+  const int max_w = (std::max)(200, static_cast<int>(work.right - work.left) * 90 / 100);
+  const int max_h = (std::max)(160, static_cast<int>(work.bottom - work.top) * 90 / 100);
+  if (*width > max_w) {
+    *width = max_w;
+  }
+  if (*height > max_h) {
+    *height = max_h;
+  }
+  if (*width < 200) {
+    *width = 200;
+  }
+  if (*height < 120) {
+    *height = 120;
+  }
 }
