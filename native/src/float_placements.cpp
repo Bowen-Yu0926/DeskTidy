@@ -53,6 +53,31 @@ bool FindIntNear(const std::string& body, size_t from, const char* key,
   return true;
 }
 
+bool FindBoolNear(const std::string& body, size_t from, const char* key,
+                  bool* out) {
+  if (!out || !key) {
+    return false;
+  }
+  const std::string needle = std::string("\"") + key + "\":";
+  const size_t pos = body.find(needle, from);
+  if (pos == std::string::npos || pos > from + 400) {
+    return false;
+  }
+  size_t i = pos + needle.size();
+  while (i < body.size() && (body[i] == ' ' || body[i] == '\t')) {
+    ++i;
+  }
+  if (body.compare(i, 4, "true") == 0) {
+    *out = true;
+    return true;
+  }
+  if (body.compare(i, 5, "false") == 0) {
+    *out = false;
+    return true;
+  }
+  return false;
+}
+
 }  // namespace
 
 std::wstring FloatPlacementsPath() {
@@ -100,6 +125,7 @@ FloatPlacementMap LoadFloatPlacements() {
     fp.rx = Clamp01(rx);
     fp.ry = Clamp01(ry);
     fp.has_pos = has_rx && has_ry;
+    FindBoolNear(json, pkey, "page_local", &fp.page_local);
     if (!fp.path.empty()) {
       map[NormalizePinKey(fp.path)] = fp;
     }
@@ -118,6 +144,9 @@ bool SaveFloatPlacements(const FloatPlacementMap& map) {
         << "\",\"page\":" << fp.page;
     if (fp.has_pos) {
       out << ",\"rx\":" << fp.rx << ",\"ry\":" << fp.ry;
+    }
+    if (fp.page_local) {
+      out << ",\"page_local\":true";
     }
     out << "}";
     if (++i < map.size()) {
@@ -159,15 +188,21 @@ void UpsertFloatPlacement(FloatPlacementMap* map, const std::wstring& path,
   if (!map || path.empty()) {
     return;
   }
+  const std::wstring key = NormalizePinKey(path);
   FloatPlacement fp;
+  auto it = map->find(key);
+  if (it != map->end()) {
+    fp = it->second;  // keep page_local / prior page unless overridden
+  }
   fp.path = path;
   fp.page = (std::max)(0, page);
   FloatRatiosFromScreen(screen, &fp.rx, &fp.ry);
   fp.has_pos = true;
-  (*map)[NormalizePinKey(path)] = std::move(fp);
+  (*map)[key] = std::move(fp);
 }
 
-void SetFloatPage(FloatPlacementMap* map, const std::wstring& path, int page) {
+void SetFloatPage(FloatPlacementMap* map, const std::wstring& path, int page,
+                  bool page_local) {
   if (!map || path.empty()) {
     return;
   }
@@ -178,11 +213,13 @@ void SetFloatPage(FloatPlacementMap* map, const std::wstring& path, int page) {
     fp.path = path;
     fp.page = (std::max)(0, page);
     fp.has_pos = false;
+    fp.page_local = page_local;
     (*map)[key] = std::move(fp);
     return;
   }
   it->second.page = (std::max)(0, page);
   it->second.path = path;
+  it->second.page_local = page_local;
 }
 
 void EraseFloatPlacement(FloatPlacementMap* map, const std::wstring& path) {

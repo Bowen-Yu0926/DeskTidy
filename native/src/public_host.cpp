@@ -36,6 +36,7 @@ constexpr int kGapY0 = 6;
 // used to appear as a「黑影」above unpinned floats (especially near top-left).
 constexpr int kHeaderH = 0;
 constexpr int kExtPublicRefresh = 1;
+constexpr int kExtPublicMovePage = 2;
 constexpr int kDragThreshold = 6;
 bool g_reg = false;
 ULONG_PTR g_gdiplus = 0;
@@ -635,23 +636,57 @@ void PublicHost::ShowBackgroundMenu(POINT screen) {
   }
 }
 
+void PublicHost::ShowMoveToPageMenu(POINT screen) {
+  auto paths = SelectedPaths();
+  if (paths.empty()) {
+    return;
+  }
+  std::vector<std::wstring> names = page_names_;
+  if (names.empty()) {
+    names = {L"工作", L"文档"};
+  }
+  HMENU menu = CreatePopupMenu();
+  for (size_t i = 0; i < names.size() && i < 12; ++i) {
+    AppendMenuW(menu, MF_STRING, static_cast<UINT>(1 + i), names[i].c_str());
+  }
+  SetForegroundWindow(hwnd_);
+  const int cmd = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_NONOTIFY, screen.x,
+                                 screen.y, 0, hwnd_, nullptr);
+  DestroyMenu(menu);
+  if (cmd >= 1 && cmd <= static_cast<int>(names.size()) && on_move_to_page_) {
+    on_move_to_page_(paths, cmd - 1);
+  }
+}
+
 void PublicHost::ShowSlotMenu(int index, POINT screen) {
   if (index < 0 || index >= static_cast<int>(slots_.size())) {
     return;
   }
-  Slot& slot = slots_[static_cast<size_t>(index)];
-  const std::wstring path = slot.item.path;
-  // P1-7: full Explorer IContextMenu (打开/剪切/复制/重命名/删除/属性/发送到…)
-  // with a DeskTidy "刷新" extra — consistent with fence icons, no hand-rolled
-  // 6-item menu.
-  const std::vector<ShellMenuExtra> extras{{L"刷新", kExtPublicRefresh}};
+  // Keep marquee multi-select; only collapse when the click was outside it.
+  if (!IsSelected(index)) {
+    SelectOnly(index);
+  }
+  auto paths = SelectedPaths();
+  if (paths.empty()) {
+    paths.push_back(slots_[static_cast<size_t>(index)].item.path);
+  }
+  // P1-7: full Explorer IContextMenu with DeskTidy extras (refresh + move page).
+  // Operate on the whole selection (Fences / Explorer multi-select).
+  const std::vector<ShellMenuExtra> extras{
+      {Tr("menu_move_page"), kExtPublicMovePage},
+      {L"刷新", kExtPublicRefresh},
+  };
   ShellVerbFn on_verb = [this](const std::wstring& verb) {
     if (verb == L"refresh" && on_refresh_) {
       on_refresh_();
     }
   };
-  const int shell_cmd = TrackShellContextMenu(hwnd_, screen, {path}, extras,
-                                              on_verb, nullptr);
+  const int shell_cmd =
+      TrackShellContextMenu(hwnd_, screen, paths, extras, on_verb, nullptr);
+  if (shell_cmd == kExtPublicMovePage) {
+    ShowMoveToPageMenu(screen);
+    return;
+  }
   if (shell_cmd == kExtPublicRefresh) {
     if (on_refresh_) {
       on_refresh_();
@@ -661,9 +696,14 @@ void PublicHost::ShowSlotMenu(int index, POINT screen) {
   if (shell_cmd == 0) {
     // Shell verb ran (or cancel). Drop floats for paths that vanished and
     // re-scan so rename/delete/new-file land correctly.
-    if (GetFileAttributesW(path.c_str()) == INVALID_FILE_ATTRIBUTES &&
-        on_removed_) {
-      on_removed_(path);
+    bool any_gone = false;
+    for (const auto& p : paths) {
+      if (GetFileAttributesW(p.c_str()) == INVALID_FILE_ATTRIBUTES) {
+        any_gone = true;
+        if (on_removed_) {
+          on_removed_(p);
+        }
+      }
     }
     if (on_refresh_) {
       on_refresh_();
@@ -672,6 +712,7 @@ void PublicHost::ShowSlotMenu(int index, POINT screen) {
   }
   if (shell_cmd < 0) {
     // IContextMenu unavailable — fall back to the hand-rolled menu.
+    const std::wstring& path = paths.front();
     const int cmd = TrackIconShellMenu(hwnd_, screen, false);
     switch (cmd) {
       case 1:

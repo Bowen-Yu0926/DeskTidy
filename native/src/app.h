@@ -50,6 +50,9 @@ class App {
   // After 账号浮窗 hides: cancel band-settle Raise and sink fences under apps.
   void OnVaultHidden();
   void SeatAllFencesUnderApps();
+  // Soft-park: SW_HIDE every fence that must not paint on this page (leaks of
+  // IsWindowVisible off-page fences ghost under apps when DefView is covered).
+  void HideOffPageFences();
   void PersistLayouts();
   void SchedulePersistLayouts();
   // Idle off-screen Present for soft-parked dirty fences (snappy page switch).

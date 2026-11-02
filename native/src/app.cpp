@@ -99,6 +99,7 @@ constexpr UINT kMsgOrganizeDone = WM_APP + 49;
 constexpr UINT kMsgDesktopBlankDown = WM_APP + 50;
 constexpr UINT kMsgDesktopPaste = WM_APP + 51;
 constexpr UINT kMsgShellNotify = WM_APP + 52;
+constexpr UINT kMsgHideOffPage = WM_APP + 53;
 constexpr DWORD kTrayOpenDebounceMs = 450;
 constexpr wchar_t kMsgClass[] = L"DeskTidyNativeMsg";
 bool g_organize_busy = false;
@@ -1182,6 +1183,10 @@ bool App::Init(HINSTANCE instance) {
     float_placements_ = m;
     SaveFloatPlacements(float_placements_);
   });
+  public_host_.SetOnMoveToPage(
+      [this](const std::vector<std::wstring>& paths, int page) {
+        MoveDesktopItemsToPage(paths, page);
+      });
   search_.SetOnPathReplaced(
       [this](const std::wstring& from, const std::wstring& to) {
         RetargetPin(from, to);
@@ -2745,8 +2750,9 @@ void App::OpenMinutes() {
 
 void App::RebuildPublicItems() {
   // Floats = desktop items NOT pinned to any fence (Fences-class loose icons).
-  // enable_public_desktop ON  → shared across pages (default, like Fences public).
-  // enable_public_desktop OFF → page-local (placement.page == current_page_).
+  // enable_public_desktop ON  → shared across pages unless placement.page_local.
+  // enable_public_desktop OFF → always page-local (placement.page == current).
+  // 「移动到分页」sets page_local so the icon leaves other pages.
   std::vector<DesktopItem> pub;
   const auto items = ScanDesktopItems();
   pub.reserve(items.size());
@@ -2774,12 +2780,14 @@ void App::RebuildPublicItems() {
       fp.path = it.path;
       fp.page = current_page_;
       fp.has_pos = false;
+      fp.page_local = false;  // new loose icons stay shared when public on
       float_placements_[key] = fp;
       placements_dirty = true;
       pub.push_back(it);
       continue;
     }
-    if (!shared && fit->second.page != current_page_) {
+    const bool page_bound = !shared || fit->second.page_local;
+    if (page_bound && fit->second.page != current_page_) {
       continue;
     }
     pub.push_back(it);
@@ -3490,6 +3498,29 @@ void App::HandleSettingsClose() {
   RequestQuit();
 }
 
+void App::HideOffPageFences() {
+  if (peek_active_) {
+    return;
+  }
+  for (auto& fence : fences_) {
+    if (!fence || !fence->Hwnd()) {
+      continue;
+    }
+    const bool want =
+        !fences_hidden_ && fence->VisibleOnPage(current_page_);
+    if (want) {
+      continue;
+    }
+    const HWND hwnd = fence->Hwnd();
+    // Soft-park must be a real hide. Visible-but-under-DefView off-page fences
+    // look fine on a bare desktop, then both pages ghost when an app covers
+    // DefView (Progman-owned layered popups still paint on the wallpaper).
+    if (IsWindowVisible(hwnd) || IsIconic(hwnd)) {
+      ShowWindow(hwnd, SW_HIDE);
+    }
+  }
+}
+
 void App::SeatAllFencesUnderApps() {
   // Market/Python `_keep_overlays_under_apps`: HWND_BOTTOM sink under APPWINDOWs.
   // Do NOT RaiseOverlay here — Raise after Place was lifting Progman-owned
@@ -3498,6 +3529,7 @@ void App::SeatAllFencesUnderApps() {
   // Critical: AttachOverlay may ShowWindow when hidden. Only seat chrome that
   // should be visible — otherwise opening Settings resurrects a pet/dock the
   // user just turned off.
+  HideOffPageFences();
   auto seat = [](HWND hwnd) {
     if (!hwnd || !IsWindow(hwnd)) {
       return;
@@ -3838,6 +3870,7 @@ void App::SyncPageChrome() {
   // Python: pet visible + show_page_bubbles ⇒ float bar on pet; else edge peeks.
   // show_page_indicator gates the right-edge bar (not pet bubbles).
   pet_.SetPages(page_names_, current_page_);
+  public_host_.SetPageNames(page_names_);
   const bool pet_hosts = pet_visible_ && pet_.ShowPageBubbles();
   const bool edge_ok = prefs_.show_page_indicator;
   if (pet_hosts) {
@@ -4577,7 +4610,7 @@ void App::MoveDesktopItemsToFence(const std::vector<std::wstring>& paths,
 
 void App::MoveDesktopItemsToPage(const std::vector<std::wstring>& paths,
                                  int page_index) {
-  // Fences-class: unpin and attach the float to the target page.
+  // Fences-class: unpin and park the float on the target page only (page_local).
   bool pins_changed = false;
   for (const auto& p : paths) {
     if (FindPin(pins_, p)) {
@@ -4585,7 +4618,7 @@ void App::MoveDesktopItemsToPage(const std::vector<std::wstring>& paths,
       pins_changed = true;
     }
     SuppressOrganizePath(p, 24.0 * 3600.0);
-    SetFloatPage(&float_placements_, p, page_index);
+    SetFloatPage(&float_placements_, p, page_index, /*page_local=*/true);
   }
   if (pins_changed) {
     BumpPinsEpoch();
@@ -4941,9 +4974,9 @@ void App::RefreshDesktopIcons() {
     public_host_.SetItems({});
     public_host_.Hide();
   }
-  // Soft-park off-page fences after content refresh so the next page click
-  // is Show-only (Fences-class), not a cold Present storm on the UI thread.
-  ScheduleWarmFenceLayers();
+  // Do not WarmLayerOffscreen here — Show/-32000/Hide races SetPage and can
+  // leave off-page fences IsWindowVisible (ghost under apps). Hide instead.
+  HideOffPageFences();
 }
 
 void App::RefreshIconGrids() {
@@ -5076,86 +5109,32 @@ void App::SetPage(int page) {
   pet_.SetPages(page_names_, current_page_);
   settings_.SetCurrentPage(current_page_, settings_.IsOpen());
 
-  // Stop idle warm — it Show/-32000/Hide and can hide a fence SetPage just
-  // mapped (symptom: blank until desktop click → RestoreDesktopChrome Show).
   if (message_hwnd_) {
     KillTimer(message_hwnd_, kTimerWarmFences);
   }
 
-  // Market: one DeferWindowPos for leavers+arrivers (Python OverlayWindowBatch).
-  // Soft-park Hide→Show blanks ULW on Win11 — always Show+Raise+Present.
-  OverlayWindowBatch batch;
-  std::vector<FenceWindow*> arrivals;
-  std::vector<FenceWindow*> need_present;
+  // Page switch (Fences-class): hard-hide leavers, then Show+Present arrivals.
+  // Soft-park "visible under DefView" used to skip Present (mapped && !above
+  // DefView → Raise only) — blank until desktop click RefreshLayer.
+  HideOffPageFences();
+  InvalidateDefViewCache();
   for (auto& fence : fences_) {
     if (!fence || !fence->Hwnd()) {
       continue;
     }
-    const HWND hwnd = fence->Hwnd();
     const bool want =
         !fences_hidden_ && !peek_active_ && fence->VisibleOnPage(current_page_);
-    const bool mapped =
-        IsWindowVisible(hwnd) != FALSE && IsIconic(hwnd) == FALSE;
-    if (want) {
-      const FencePageGeometry geo = fence->GeometryForPage(current_page_);
-      RECT wr{};
-      GetWindowRect(hwnd, &wr);
-      const int cur_w = wr.right - wr.left;
-      const int cur_h = wr.bottom - wr.top;
-      const int want_h =
-          geo.collapsed ? (std::max)(1, cur_h) : (std::max)(80, geo.h);
-      const bool geo_changed =
-          cur_w != (std::max)(120, geo.w) ||
-          (!geo.collapsed && cur_h != want_h) || wr.left != geo.x ||
-          wr.top != geo.y;
-      fence->ApplyPageGeometry(geo, /*present=*/false);
-      if (!IsAttachedToDesktop(hwnd)) {
-        AttachOverlayToDesktop(hwnd, /*show=*/false);
-      }
-      if (!mapped) {
-        batch.Show(hwnd);
-        arrivals.push_back(fence.get());
-        need_present.push_back(fence.get());
-      } else if (geo_changed || fence->LayerDirty()) {
-        arrivals.push_back(fence.get());
-        need_present.push_back(fence.get());
-      } else if (!IsOverlayAboveDefView(hwnd)) {
-        arrivals.push_back(fence.get());
-      }
-    } else if (mapped) {
-      batch.Hide(hwnd);
-    }
-  }
-  batch.Commit();
-
-  // Same cure as desktop-click band restore: Invalidate + Raise + forced Show,
-  // then Present. Do not gate Present on IsWindowVisible — DeferWindowPos show
-  // can lag a tick and used to skip the only paint that makes partitions appear.
-  InvalidateDefViewCache();
-  for (FenceWindow* fence : arrivals) {
-    if (!fence || !fence->Hwnd()) {
+    if (!want) {
       continue;
     }
-    const HWND hwnd = fence->Hwnd();
-    if (!IsAttachedToDesktop(hwnd)) {
-      if (!AttachOverlayToDesktop(hwnd, true)) {
-        ForceAttachOverlayToDesktop(hwnd, true);
-      }
+    const FencePageGeometry geo = fence->GeometryForPage(current_page_);
+    fence->ApplyPageGeometry(geo, /*present=*/false);
+    // Same path as desktop-click restore: map, raise above DefView, always paint.
+    fence->Show();
+    if (fence->Hwnd() && IsWindowVisible(fence->Hwnd()) &&
+        !IsIconic(fence->Hwnd())) {
+      fence->RefreshLayer();
     }
-    if (!IsWindowVisible(hwnd) || IsIconic(hwnd)) {
-      ShowWindow(hwnd, IsIconic(hwnd) ? SW_RESTORE : SW_SHOWNOACTIVATE);
-    }
-    RaiseOverlayInDesktopBand(hwnd);
-  }
-  for (FenceWindow* fence : need_present) {
-    if (!fence || !fence->Hwnd()) {
-      continue;
-    }
-    const HWND hwnd = fence->Hwnd();
-    if (!IsWindowVisible(hwnd) || IsIconic(hwnd)) {
-      ShowWindow(hwnd, IsIconic(hwnd) ? SW_RESTORE : SW_SHOWNOACTIVATE);
-    }
-    fence->RefreshLayer();
   }
 
   // Chrome: paint/selection only — never restack on page click.
@@ -5170,9 +5149,8 @@ void App::SetPage(int page) {
     KillTimer(message_hwnd_, kTimerReflowPublic);
     SetTimer(message_hwnd_, kTimerReflowPublic, 48, nullptr);
   }
+  HideOffPageFences();
   SchedulePersistLayouts();
-  // One settle tick — covers DefView burying the just-shown layered fences.
-  ScheduleDesktopBandRestore();
 }
 
 void App::ScheduleDesktopBandRestore() {
@@ -5321,8 +5299,11 @@ void CALLBACK App::ForegroundWinEvent(HWINEVENTHOOK, DWORD, HWND, LONG, LONG,
     return;
   }
   // Coalesce: Win+D / Alt+Tab-to-desktop — settle overlays after Explorer FG.
+  // App FG: still re-hide soft-parked pages (visible-under-DefView ghosts).
   if (IsExplorerDesktopForeground()) {
     PostMessageW(g_app_for_hook->message_hwnd_, kMsgBandRestore, 0, 0);
+  } else {
+    PostMessageW(g_app_for_hook->message_hwnd_, kMsgHideOffPage, 0, 0);
   }
 }
 
@@ -5387,6 +5368,10 @@ bool App::DesktopChromeHealthy() const {
 }
 
 void App::RestoreDesktopChrome() {
+  // Always re-hide soft-parked pages first (even on the healthy early-out).
+  // Off-page fences that stay mapped under DefView ghost when an app is FG.
+  HideOffPageFences();
+
   // While settings/vault/todos is open, do NOT re-seat fences.
   if (!DesktopChromeMayRestack()) {
     if (settings_.IsOpen() && settings_.Hwnd()) {
@@ -5929,6 +5914,9 @@ LRESULT CALLBACK App::TrayWndProc(HWND hwnd, UINT msg, WPARAM wparam,
   switch (msg) {
     case kMsgBandRestore:
       self->ScheduleDesktopBandRestore();
+      return 0;
+    case kMsgHideOffPage:
+      self->HideOffPageFences();
       return 0;
     case kMsgShellNotify: {
       // SHCNRF_NewDelivery: lock, then debounce a single membership refresh.

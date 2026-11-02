@@ -49,6 +49,14 @@ class PublicHost {
       std::function<void(const FloatPlacementMap&)> fn) {
     on_placements_changed_ = std::move(fn);
   }
+  // Batch「移动到分页」— paths already selected (marquee / multi-select).
+  void SetOnMoveToPage(
+      std::function<void(const std::vector<std::wstring>&, int)> fn) {
+    on_move_to_page_ = std::move(fn);
+  }
+  void SetPageNames(std::vector<std::wstring> names) {
+    page_names_ = std::move(names);
+  }
   void SetTitle(const std::wstring& title) { title_ = title; }
   void SetCurrentPage(int page) { current_page_ = page; }
 
@@ -76,6 +84,7 @@ class PublicHost {
   void PersistSlotPlacements();
   void BeginOleDrag();
   void ShowSlotMenu(int index, POINT screen);
+  void ShowMoveToPageMenu(POINT screen);
   void ShowBackgroundMenu(POINT screen);
   void PasteClipboardFiles();
   void EnsureDropTarget();
@@ -125,10 +134,12 @@ class PublicHost {
   FloatPlacementMap placements_;
   std::vector<Slot> slots_;
   std::vector<RECT> blocked_;
+  std::vector<std::wstring> page_names_;
   std::function<void(const std::wstring&, const std::wstring&)> on_path_replaced_;
   std::function<void(const std::wstring&)> on_removed_;
   std::function<void()> on_refresh_;
   std::function<void()> on_paste_;
   std::function<DWORD(const std::vector<std::wstring>&)> on_paths_dropped_;
   std::function<void(const FloatPlacementMap&)> on_placements_changed_;
+  std::function<void(const std::vector<std::wstring>&, int)> on_move_to_page_;
 };

@@ -984,10 +984,9 @@ void FenceWindow::Show() {
   if (!hwnd_) {
     return;
   }
-  // Page switch Show must not override an explicit user-hide (visible_=false).
-  if (!VisibleOnPage(page_)) {
-    return;
-  }
+  // Callers (SetPage / RestoreDesktopChrome) already filter VisibleOnPage for
+  // the *current* app page. Do not gate on page_ alone — that is only the
+  // primary membership and no-op'd multi-page / soft-park restores.
   visible_ = true;
   auto it = page_geometries_.find(page_);
   if (it != page_geometries_.end()) {
@@ -998,6 +997,8 @@ void FenceWindow::Show() {
   // not-visible and restore it (Python overlay_win32_visible does the same).
   const bool was_iconic = IsIconic(hwnd_) != FALSE;
   const bool was_visible = IsWindowVisible(hwnd_) != FALSE && !was_iconic;
+  const bool buried =
+      was_visible && IsAttachedToDesktop(hwnd_) && !IsOverlayAboveDefView(hwnd_);
   if (was_iconic) {
     ShowWindow(hwnd_, SW_RESTORE);
   } else if (!was_visible) {
@@ -1005,15 +1006,14 @@ void FenceWindow::Show() {
   }
   if (!IsAttachedToDesktop(hwnd_)) {
     AttachToDesktopLayer();
-  } else if (!IsOverlayAboveDefView(hwnd_)) {
-    // Already owned but buried under DefView / wrong host — soft Raise only.
-    // Healthy Show must not Place+Raise+Present every keepalive tick (flash).
+  } else if (buried || !IsOverlayAboveDefView(hwnd_)) {
     RaiseOverlayInDesktopBand(hwnd_);
   }
-  // Win+D: minimize used to WM_SIZE→PresentLayered a blank layered bitmap;
-  // after restore always relayout + repaint so icons/labels come back
-  // (Fences-class: show-desktop returns chrome AND shortcuts).
-  if (!was_visible || was_iconic) {
+  // Present after map/raise. Soft-park "visible under DefView" keeps
+  // IsWindowVisible TRUE with a blank ULW — skipping Present is why page
+  // switch needed a desktop click. Healthy already-mapped Show (ApplyPage
+  // Visibility) skips the blit to avoid flash.
+  if (!was_visible || was_iconic || buried || layer_dirty_) {
     LayoutCells();
     PresentLayered();
   }

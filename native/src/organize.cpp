@@ -30,27 +30,13 @@ std::wstring TitleForFence(
   return WidenUtf8(id);
 }
 
-bool IsMisplacedSystemPin(const DesktopItem& it, const std::string& fence_id) {
-  const std::string kind = OrganizeKindOfItem(it);
-  if (kind == "file") {
-    return fence_id == "system_software" || fence_id == "system_software_side" ||
-           fence_id == "system_common";
-  }
-  if (kind == "icon") {
-    return fence_id == "system_docs";
-  }
-  return false;
-}
-
 bool ShouldSkipVirtual(const DesktopItem& it, const PinMap& pins,
-                       const std::vector<std::wstring>& wl, bool reassign) {
-  if (!reassign) {
-    const std::string* pin = FindPin(pins, it.path);
-    // Already pinned: keep manual placements, but allow 一键整理 to correct
-    // files stuck on「其他/常用」and icons stuck on「文档」(two-page model).
-    if (pin && !pin->empty() && !IsMisplacedSystemPin(it, *pin)) {
-      return true;
-    }
+                       const std::vector<std::wstring>& wl, bool /*reassign*/) {
+  // Fences-class: only organize loose public-desktop floats. Anything already
+  // pinned into a fence stays where the user put it (incl. explicit reassign).
+  const std::string* pin = FindPin(pins, it.path);
+  if (pin && !pin->empty()) {
+    return true;
   }
   if (IsOrganizeSuppressed(it.path)) {
     return true;
