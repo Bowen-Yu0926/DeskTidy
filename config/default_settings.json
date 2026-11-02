@@ -21,7 +21,7 @@
   "first_run_organize_done": false,
   "session_active": false,
   "desktop_right_click_menu": true,
-  "enable_public_desktop": false,
+  "enable_public_desktop": true,
   "hosted_namespace_icons": {},
   "hotkeys": {
     "organize": "Ctrl+Shift+O",

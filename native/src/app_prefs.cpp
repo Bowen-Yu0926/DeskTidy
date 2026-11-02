@@ -374,8 +374,13 @@ AppPrefs LoadAppPrefsFromPath(const std::wstring& path) {
   prefs.session_active = ParseBoolField(json, "session_active", false);
   prefs.show_fences = true;  // always shown; ignore persisted false
   prefs.double_click_hide = false;  // feature removed
-  // Default off; settings toggle removed (floats stay page-local).
-  prefs.enable_public_desktop = false;
+  // Cross-page shared floats (Fences public). Heal: older builds force-wrote
+  // false while the settings toggle was hidden — restore default on once.
+  const bool public_migrated =
+      ParseBoolField(json, "public_desktop_pref_migrated_v1", false);
+  prefs.enable_public_desktop =
+      public_migrated ? ParseBoolField(json, "enable_public_desktop", true)
+                      : true;
   prefs.vault_launcher_x = ParseIntField(json, "vault_launcher_x", -1);
   prefs.vault_launcher_y = ParseIntField(json, "vault_launcher_y", -1);
   prefs.show_page_indicator =
@@ -416,6 +421,10 @@ AppPrefs LoadAppPrefsFromPath(const std::wstring& path) {
   }
   if (prefs.notes_search_max_file_bytes > 16 * 1024 * 1024) {
     prefs.notes_search_max_file_bytes = 16 * 1024 * 1024;
+  }
+  if (!public_migrated) {
+    // Persist heal so a later opt-out is respected across restarts.
+    SaveAppPrefsToPath(prefs, path);
   }
   return prefs;
 }
@@ -511,6 +520,7 @@ void SaveAppPrefsToPath(const AppPrefs& prefs, const std::wstring& path) {
       << (prefs.double_click_hide ? "true" : "false")
       << ",\n  \"enable_public_desktop\": "
       << (prefs.enable_public_desktop ? "true" : "false")
+      << ",\n  \"public_desktop_pref_migrated_v1\": true"
       << ",\n  \"vault_launcher_x\": " << prefs.vault_launcher_x
       << ",\n  \"vault_launcher_y\": " << prefs.vault_launcher_y
       << ",\n  \"show_page_indicator\": "

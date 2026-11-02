@@ -92,6 +92,8 @@ constexpr UINT kTimerReflowPublic = 53;
 // Debounced desktop content refresh after SHChangeNotify / portal watch
 // (Fences/Explorer: wait for the FS event to settle, then one scan).
 constexpr UINT kTimerDesktopShell = 54;
+// Idle warm-paint for soft-parked (off-page) fences — one per tick.
+constexpr UINT kTimerWarmFences = 55;
 constexpr UINT kMsgVaultPullDone = WM_APP + 48;
 constexpr UINT kMsgOrganizeDone = WM_APP + 49;
 constexpr UINT kMsgDesktopBlankDown = WM_APP + 50;
@@ -2742,12 +2744,14 @@ void App::OpenMinutes() {
 }
 
 void App::RebuildPublicItems() {
-  // Python public_desktop: floats = desktop items NOT pinned to any fence.
-  // Page filter: placement.page == current_page_ (missing → claim current page).
+  // Floats = desktop items NOT pinned to any fence (Fences-class loose icons).
+  // enable_public_desktop ON  → shared across pages (default, like Fences public).
+  // enable_public_desktop OFF → page-local (placement.page == current_page_).
   std::vector<DesktopItem> pub;
   const auto items = ScanDesktopItems();
   pub.reserve(items.size());
   bool placements_dirty = false;
+  const bool shared = prefs_.enable_public_desktop;
   // Heal ghosts: OLE post-drag used to write float rows back after SetPin.
   for (auto it = float_placements_.begin(); it != float_placements_.end();) {
     const std::wstring& probe =
@@ -2775,7 +2779,7 @@ void App::RebuildPublicItems() {
       pub.push_back(it);
       continue;
     }
-    if (fit->second.page != current_page_) {
+    if (!shared && fit->second.page != current_page_) {
       continue;
     }
     pub.push_back(it);
@@ -3578,6 +3582,14 @@ void App::SchedulePersistLayouts() {
   // Coalesce rapid page clicks / geometry tweaks — avoid sync disk on UI path.
   KillTimer(message_hwnd_, kTimerPersistLayouts);
   SetTimer(message_hwnd_, kTimerPersistLayouts, 350, nullptr);
+}
+
+void App::ScheduleWarmFenceLayers() {
+  if (!message_hwnd_) {
+    return;
+  }
+  KillTimer(message_hwnd_, kTimerWarmFences);
+  SetTimer(message_hwnd_, kTimerWarmFences, 32, nullptr);
 }
 
 void App::ReflowPublicFloats() {
@@ -4917,7 +4929,7 @@ void App::RefreshDesktopIcons() {
   }
   RebuildDockItems();
   // One icon truth: floats only when Explorer icons are hidden (Fences).
-  // enable_public_desktop remains in prefs but no longer stacks a second set.
+  // enable_public_desktop controls cross-page sharing inside RebuildPublicItems.
   const bool want_floats = !icons_visible_intent_;
   public_visible_ = want_floats;
   if (want_floats) {
@@ -4929,6 +4941,9 @@ void App::RefreshDesktopIcons() {
     public_host_.SetItems({});
     public_host_.Hide();
   }
+  // Soft-park off-page fences after content refresh so the next page click
+  // is Show-only (Fences-class), not a cold Present storm on the UI thread.
+  ScheduleWarmFenceLayers();
 }
 
 void App::RefreshIconGrids() {
@@ -5061,10 +5076,17 @@ void App::SetPage(int page) {
   pet_.SetPages(page_names_, current_page_);
   settings_.SetCurrentPage(current_page_, settings_.IsOpen());
 
+  // Stop idle warm — it Show/-32000/Hide and can hide a fence SetPage just
+  // mapped (symptom: blank until desktop click → RestoreDesktopChrome Show).
+  if (message_hwnd_) {
+    KillTimer(message_hwnd_, kTimerWarmFences);
+  }
+
   // Market: one DeferWindowPos for leavers+arrivers (Python OverlayWindowBatch).
-  // Paint arrivals while still hidden, then SHOW with content ready.
+  // Soft-park Hide→Show blanks ULW on Win11 — always Show+Raise+Present.
   OverlayWindowBatch batch;
-  std::vector<HWND> raise_after;
+  std::vector<FenceWindow*> arrivals;
+  std::vector<FenceWindow*> need_present;
   for (auto& fence : fences_) {
     if (!fence || !fence->Hwnd()) {
       continue;
@@ -5091,44 +5113,49 @@ void App::SetPage(int page) {
         AttachOverlayToDesktop(hwnd, /*show=*/false);
       }
       if (!mapped) {
-        // Soft-park restore: batch SWP_SHOWWINDOW, then Present after map.
-        // ULW while still hidden often leaves a blank layered surface on
-        // Win11 after Show (hits pass through; BitBlt shows wallpaper) —
-        // match FenceWindow::Show which paints only after visible.
         batch.Show(hwnd);
-        raise_after.push_back(hwnd);
-      } else if (geo_changed) {
-        // Already mapped (multi-page / same-page heal): size/pos changed
-        // without Present would leave a transparent layered surface.
-        raise_after.push_back(hwnd);
+        arrivals.push_back(fence.get());
+        need_present.push_back(fence.get());
+      } else if (geo_changed || fence->LayerDirty()) {
+        arrivals.push_back(fence.get());
+        need_present.push_back(fence.get());
       } else if (!IsOverlayAboveDefView(hwnd)) {
-        // AIGC START
-        // Mapped + same geo but buried under DefView (间歇消失根因).
-        raise_after.push_back(hwnd);
-        // AIGC END
+        arrivals.push_back(fence.get());
       }
     } else if (mapped) {
-      // Soft hide via batch (keep layered buffer; no per-fence ShowWindow).
       batch.Hide(hwnd);
     }
   }
   batch.Commit();
-  for (HWND hwnd : raise_after) {
-    RaiseOverlayInDesktopBand(hwnd);
-  }
-  // Present after Show+Raise — paint-before-map was the page-switch blank.
-  for (auto& fence : fences_) {
+
+  // Same cure as desktop-click band restore: Invalidate + Raise + forced Show,
+  // then Present. Do not gate Present on IsWindowVisible — DeferWindowPos show
+  // can lag a tick and used to skip the only paint that makes partitions appear.
+  InvalidateDefViewCache();
+  for (FenceWindow* fence : arrivals) {
     if (!fence || !fence->Hwnd()) {
       continue;
     }
     const HWND hwnd = fence->Hwnd();
-    if (fences_hidden_ || peek_active_ ||
-        !fence->VisibleOnPage(current_page_)) {
+    if (!IsAttachedToDesktop(hwnd)) {
+      if (!AttachOverlayToDesktop(hwnd, true)) {
+        ForceAttachOverlayToDesktop(hwnd, true);
+      }
+    }
+    if (!IsWindowVisible(hwnd) || IsIconic(hwnd)) {
+      ShowWindow(hwnd, IsIconic(hwnd) ? SW_RESTORE : SW_SHOWNOACTIVATE);
+    }
+    RaiseOverlayInDesktopBand(hwnd);
+  }
+  for (FenceWindow* fence : need_present) {
+    if (!fence || !fence->Hwnd()) {
       continue;
     }
-    if (IsWindowVisible(hwnd) && !IsIconic(hwnd)) {
-      fence->RefreshLayer();
+    const HWND hwnd = fence->Hwnd();
+    if (!IsWindowVisible(hwnd) || IsIconic(hwnd)) {
+      ShowWindow(hwnd, IsIconic(hwnd) ? SW_RESTORE : SW_SHOWNOACTIVATE);
     }
+    fence->RefreshLayer();
   }
 
   // Chrome: paint/selection only — never restack on page click.
@@ -5144,6 +5171,8 @@ void App::SetPage(int page) {
     SetTimer(message_hwnd_, kTimerReflowPublic, 48, nullptr);
   }
   SchedulePersistLayouts();
+  // One settle tick — covers DefView burying the just-shown layered fences.
+  ScheduleDesktopBandRestore();
 }
 
 void App::ScheduleDesktopBandRestore() {
@@ -5612,9 +5641,9 @@ void App::SetDockVisible(bool on) {
 void App::SetPublicVisible(bool on) {
   prefs_.enable_public_desktop = on;
   SaveAppPrefs(prefs_);
-  // Shared public toggle; loose floats still appear while Explorer icons hidden.
+  // Toggle cross-page sharing; loose floats still need Explorer icons hidden.
   RefreshDesktopIcons();
-  LogLine(L"[public] enable=%d floats=%d", on ? 1 : 0,
+  LogLine(L"[public] shared=%d floats=%d", on ? 1 : 0,
           public_visible_ ? 1 : 0);
 }
 
@@ -6083,6 +6112,36 @@ LRESULT CALLBACK App::TrayWndProc(HWND hwnd, UINT msg, WPARAM wparam,
       if (wparam == kTimerPersistLayouts) {
         KillTimer(hwnd, kTimerPersistLayouts);
         self->PersistLayouts();
+        return 0;
+      }
+      if (wparam == kTimerWarmFences) {
+        KillTimer(hwnd, kTimerWarmFences);
+        // Warm one dirty soft-parked fence per tick (keeps UI responsive).
+        bool warmed = false;
+        for (auto& fence : self->fences_) {
+          if (!fence || !fence->Hwnd() || !fence->LayerDirty()) {
+            continue;
+          }
+          if (IsWindowVisible(fence->Hwnd()) && !IsIconic(fence->Hwnd())) {
+            continue;
+          }
+          const int page = fence->Page();
+          fence->ApplyPageGeometry(fence->GeometryForPage(page),
+                                   /*present=*/false);
+          fence->WarmLayerOffscreen();
+          warmed = true;
+          break;
+        }
+        if (warmed) {
+          for (const auto& fence : self->fences_) {
+            if (fence && fence->LayerDirty() && fence->Hwnd() &&
+                (!IsWindowVisible(fence->Hwnd()) ||
+                 IsIconic(fence->Hwnd()))) {
+              SetTimer(hwnd, kTimerWarmFences, 32, nullptr);
+              break;
+            }
+          }
+        }
         return 0;
       }
       if (wparam == kTimerReflowPublic) {

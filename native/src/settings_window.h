@@ -113,7 +113,7 @@ class SettingsWindow {
     bool close_to_tray = true;
   bool show_fences = true;
   bool double_click_hide = false;
-    bool enable_public_desktop = false;
+    bool enable_public_desktop = true;
     bool show_page_indicator = true;
     std::string page_chrome_style = "float";  // float | tabs
     std::string lang = "zh";

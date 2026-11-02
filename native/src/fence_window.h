@@ -84,6 +84,10 @@ class FenceWindow {
   void HideTransient();
   void AttachToDesktopLayer();
   void RefreshLayer();  // re-upload UpdateLayeredWindow pixels
+  // Soft-park: content changed while HWND hidden — needs Present after Show.
+  bool LayerDirty() const { return layer_dirty_; }
+  // Paint off-screen then soft-hide so the first page visit is Show-only.
+  void WarmLayerOffscreen();
   void SetOnMoved(MovedFn fn) { on_moved_ = std::move(fn); }
   void SetOnPathsDropped(PathsFn fn) { on_paths_dropped_ = std::move(fn); }
   void SetOnDragDone(DragDoneFn fn) { on_drag_done_ = std::move(fn); }
@@ -380,4 +384,7 @@ class FenceWindow {
   bool style_preview_active_ = false;
   bool style_menu_open_ = false;
   DWORD footer_zoom_hint_until_ = 0;
+  // True when pixels must be re-uploaded after the next Show (never ULW while
+  // hidden — Win11 often leaves a blank layered surface after mapping).
+  bool layer_dirty_ = true;
 };

@@ -218,7 +218,12 @@ void FenceWindow::ApplyStyle() {
   if (hwnd_) {
     // Per-pixel alpha via UpdateLayeredWindow only — do not call
     // SetLayeredWindowAttributes (it disables subsequent ULW updates).
-    PresentLayered();
+    // Soft-park: never ULW while hidden (Win11 blank-after-Show).
+    if (IsWindowVisible(hwnd_) && !IsIconic(hwnd_)) {
+      PresentLayered();
+    } else {
+      layer_dirty_ = true;
+    }
   }
 }
 
@@ -466,6 +471,7 @@ void FenceWindow::PresentLayered() {
   DeleteObject(dib);
   DeleteDC(mem);
   ReleaseDC(nullptr, screen);
+  layer_dirty_ = false;
 }
 
 void FenceWindow::SetStyleId(const std::string& style_id) {
@@ -521,8 +527,13 @@ void FenceWindow::RebuildIconsForZoom() {
     cell.icon = LoadItemIcon(cell.item.path, icon_sz);
   }
   LayoutCells();
-  if (hwnd_) {
+  if (!hwnd_) {
+    return;
+  }
+  if (IsWindowVisible(hwnd_) && !IsIconic(hwnd_)) {
     PresentLayered();
+  } else {
+    layer_dirty_ = true;
   }
 }
 
@@ -747,9 +758,8 @@ bool FenceWindow::Create(HINSTANCE instance, const FenceLayout& layout) {
   SetWindowLongPtrW(hwnd_, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(this));
   ApplyStyle();
   EnsureDropTarget();
-  if (collapsed_) {
-    PresentLayered();
-  }
+  // First paint happens on Show / WarmLayerOffscreen / SetItems while mapped.
+  layer_dirty_ = true;
   return true;
 }
 
@@ -1049,6 +1059,37 @@ void FenceWindow::AttachToDesktopLayer() {
 
 void FenceWindow::RefreshLayer() { PresentLayered(); }
 
+void FenceWindow::WarmLayerOffscreen() {
+  if (!hwnd_ || !IsWindow(hwnd_) || !layer_dirty_) {
+    return;
+  }
+  if (IsWindowVisible(hwnd_) && !IsIconic(hwnd_)) {
+    PresentLayered();
+    return;
+  }
+  RECT wr{};
+  if (!GetWindowRect(hwnd_, &wr) || wr.right <= wr.left ||
+      wr.bottom <= wr.top) {
+    return;
+  }
+  const int w = wr.right - wr.left;
+  const int h = wr.bottom - wr.top;
+  // Show off-screen so ULW sticks, then soft-hide at the real seat.
+  // If SetPage maps us mid-warm, do NOT Hide — that was "click desktop to see".
+  SetWindowPos(hwnd_, nullptr, -32000, -32000, w, h,
+               SWP_NOZORDER | SWP_NOACTIVATE | SWP_SHOWWINDOW | SWP_NOREDRAW);
+  PresentLayered();
+  RECT now{};
+  if (!GetWindowRect(hwnd_, &now)) {
+    return;
+  }
+  // Still parked off-screen ⇒ soft-hide back to the saved seat.
+  if (now.left <= -16000 && now.top <= -16000) {
+    SetWindowPos(hwnd_, nullptr, wr.left, wr.top, w, h,
+                 SWP_NOZORDER | SWP_NOACTIVATE | SWP_HIDEWINDOW | SWP_NOREDRAW);
+  }
+}
+
 void FenceWindow::SetViewMode(const std::string& mode) {
   const std::string next = (mode == "list") ? "list" : "grid";
   if (view_mode_ == next) {
@@ -1157,7 +1198,12 @@ void FenceWindow::SetItems(std::vector<DesktopItem> items) {
   if (!hwnd_) {
     return;
   }
-  if (same_seats && !IsWindowVisible(hwnd_)) {
+  // Never UpdateLayeredWindow while hidden (Win11 blank-after-Show). Mark dirty
+  // so SetPage / Show / WarmLayerOffscreen can paint after mapping.
+  if (!IsWindowVisible(hwnd_) || IsIconic(hwnd_)) {
+    if (!same_seats) {
+      layer_dirty_ = true;
+    }
     return;
   }
   PresentLayered();

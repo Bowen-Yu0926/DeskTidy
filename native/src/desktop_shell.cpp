@@ -506,8 +506,9 @@ void OverlayWindowBatch::Commit() {
   auto flags_for = [](Op op) -> UINT {
     const UINT base = SWP_NOZORDER | SWP_NOACTIVATE;
     if (op == kHide) {
-      return base | SWP_NOMOVE | SWP_NOSIZE | SWP_HIDEWINDOW | SWP_NOREDRAW |
-             SWP_NOCOPYBITS;
+      // Soft-park: keep UpdateLayeredWindow pixels. SWP_NOCOPYBITS used to
+      // discard the buffer so every page switch cold-painted every fence.
+      return base | SWP_NOMOVE | SWP_NOSIZE | SWP_HIDEWINDOW | SWP_NOREDRAW;
     }
     if (op == kShow) {
       return base | SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW;

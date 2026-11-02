@@ -93,7 +93,8 @@ struct AppPrefs {
   bool session_active = false;
   bool show_fences = true;          // always on; UI toggle removed
   bool double_click_hide = false;   // feature removed; kept for prefs compat
-  bool enable_public_desktop = false;
+  // Fences-class: unpinned desktop floats shared across pages (default on).
+  bool enable_public_desktop = true;
   // Desktop 「账」float position (-1 = default corner).
   int vault_launcher_x = -1;
   int vault_launcher_y = -1;

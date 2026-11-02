@@ -52,6 +52,8 @@ class App {
   void SeatAllFencesUnderApps();
   void PersistLayouts();
   void SchedulePersistLayouts();
+  // Idle off-screen Present for soft-parked dirty fences (snappy page switch).
+  void ScheduleWarmFenceLayers();
   // Update public-float blocked rects + layout without rescanning the desktop.
   void ReflowPublicFloats();
   void RefreshSettingsList();
@@ -278,7 +280,8 @@ class App {
   int current_page_ = 0;
   bool dock_visible_ = true;
   bool pet_visible_ = true;
-  // Public desktop strip visibility mirrors prefs_.enable_public_desktop.
+  // Float host visible while Explorer icons are hidden; cross-page sharing
+  // still follows prefs_.enable_public_desktop inside RebuildPublicItems.
   bool public_visible_ = false;
   // Intended Explorer-icon visibility. Shell applies toggles asynchronously,
   // so AreDesktopIconsVisible() can lag and must not drive float visibility.
