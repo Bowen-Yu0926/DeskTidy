@@ -107,6 +107,28 @@ bool ParsePanelPixels(const std::string& part, int* w, int* h) {
   return *w > 0 && *h > 0;
 }
 
+// Monitor list cache (drag/resize hot path): EnumDisplayMonitors +
+// GetMonitorInfoW per monitor was re-enumerated on every SnapRectToWorkArea
+// during a drag. Reuse for a short TTL, invalidating early when the monitor
+// count changes (plug/unplug) — same short-TTL pattern as icon grid metrics.
+std::vector<MonitorInfo> g_mon_cache;
+ULONGLONG g_mon_tick = 0;
+bool g_mon_valid = false;
+constexpr ULONGLONG kMonCacheTtlMs = 500;
+
+const std::vector<MonitorInfo>& CachedMonitors() {
+  const ULONGLONG now = GetTickCount64();
+  const int count = GetSystemMetrics(SM_CMONITORS);
+  if (g_mon_valid && now - g_mon_tick < kMonCacheTtlMs &&
+      static_cast<int>(g_mon_cache.size()) == count) {
+    return g_mon_cache;
+  }
+  g_mon_cache = EnumMonitors();
+  g_mon_tick = now;
+  g_mon_valid = true;
+  return g_mon_cache;
+}
+
 }  // namespace
 
 std::vector<MonitorInfo> EnumMonitors() {
@@ -132,7 +154,7 @@ RECT VirtualScreenRect() {
 }
 
 RECT PrimaryWorkArea() {
-  for (const auto& m : EnumMonitors()) {
+  for (const auto& m : CachedMonitors()) {
     if (m.primary) {
       return m.work;
     }
@@ -154,7 +176,7 @@ RECT WorkAreaAtPoint(POINT pt) {
 
 RECT WorkAreaForRect(const RECT& rc) {
   // Match Python snap_geometry: pick by overlap area; dual-overlap → primary.
-  const auto mons = EnumMonitors();
+  const auto& mons = CachedMonitors();
   if (mons.empty()) {
     return PrimaryWorkArea();
   }

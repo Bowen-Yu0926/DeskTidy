@@ -39,7 +39,7 @@ def test_clipboard_prefers_ole_get():
     open_i = clip.find("OpenClipboard")
     assert ole_i >= 0, "OleGetClipboard missing"
     # Prefer OLE before (or in addition to) classic OpenClipboard path.
-    assert open_i < 0 or ole_i < open_i or clip.count("OleGetClipboard") >= 1
+    assert open_i < 0 or ole_i < open_i
 
 
 def test_paste_paths_call_desktop_land_without_full_disk_scan():

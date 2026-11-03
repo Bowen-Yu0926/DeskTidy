@@ -6,6 +6,11 @@
 #include <string>
 #include <vector>
 
+namespace Gdiplus {
+class FontFamily;
+class Font;
+}  // namespace Gdiplus
+
 // Right-edge page chrome (Python PageIndicatorWidget): either a mist float
 // card (peek/expand) or discrete bookmark tabs. Tools follow
 // float_bar_tool_flags; vault chip shows when account management is enabled.
@@ -86,6 +91,7 @@ class PageBar {
   static LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
   LRESULT HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam);
   void Paint(HDC hdc);
+  void EnsureFonts();
   void Relayout();
   void RebuildSlots();
   void ApplyDesignMetrics(int dpi);
@@ -137,6 +143,13 @@ class PageBar {
   int chip_h_ = 32;
   int slot_h_ = 36;
   float font_scale_ = 1.f;
+  // Cached GDI+ fonts (rebuilt only when font_scale_ changes — the 60fps
+  // expand animation otherwise re-created FontFamily + 3 Fonts per frame).
+  Gdiplus::FontFamily* font_family_ = nullptr;
+  Gdiplus::Font* font_on_ = nullptr;
+  Gdiplus::Font* font_page_ = nullptr;
+  Gdiplus::Font* font_util_ = nullptr;
+  float fonts_scale_ = -1.f;
   float expand_t_ = 0.f;       // current ease 0..1
   float expand_target_ = 0.f;  // hover wants 1, leave wants 0
   bool dragging_ = false;

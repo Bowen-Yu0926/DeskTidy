@@ -122,6 +122,13 @@ void PageBar::Destroy() {
     DestroyWindow(tip_);
     tip_ = nullptr;
   }
+  delete font_on_;
+  delete font_page_;
+  delete font_util_;
+  delete font_family_;
+  font_on_ = font_page_ = font_util_ = nullptr;
+  font_family_ = nullptr;
+  fonts_scale_ = -1.f;
   if (hwnd_) {
     DestroyWindow(hwnd_);
     hwnd_ = nullptr;
@@ -896,6 +903,36 @@ LRESULT PageBar::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
   return DefWindowProcW(hwnd_, msg, wparam, lparam);
 }
 
+void PageBar::EnsureFonts() {
+  // Fonts depend only on font_scale_ (not the per-frame expand ease), so keep
+  // them across animation frames and rebuild only when the scale changes.
+  if (font_on_ && std::fabs(fonts_scale_ - font_scale_) < 0.001f) {
+    return;
+  }
+  delete font_on_;
+  delete font_page_;
+  delete font_util_;
+  delete font_family_;
+  font_on_ = font_page_ = font_util_ = nullptr;
+  font_family_ = nullptr;
+
+  Gdiplus::FontFamily family(L"Microsoft YaHei UI");
+  const Gdiplus::FontFamily* face =
+      family.IsAvailable() ? &family : Gdiplus::FontFamily::GenericSansSerif();
+  font_family_ = face->Clone();
+  const float em_on = std::round(13.f * font_scale_);
+  const float em_page = std::round(12.5f * font_scale_);
+  const float em_util = std::round(12.f * font_scale_);
+  font_on_ = new Gdiplus::Font(font_family_, em_on, Gdiplus::FontStyleBold,
+                               Gdiplus::UnitPixel);
+  font_page_ = new Gdiplus::Font(font_family_, em_page, Gdiplus::FontStyleBold,
+                                 Gdiplus::UnitPixel);
+  font_util_ = new Gdiplus::Font(font_family_, em_util,
+                                 Gdiplus::FontStyleRegular,
+                                 Gdiplus::UnitPixel);
+  fonts_scale_ = font_scale_;
+}
+
 void PageBar::Paint(HDC) {
   if (!hwnd_) {
     return;
@@ -938,18 +975,7 @@ void PageBar::Paint(HDC) {
     g.SetTextRenderingHint(Gdiplus::TextRenderingHintAntiAliasGridFit);
     g.SetTextContrast(4);
 
-    Gdiplus::FontFamily family(L"Microsoft YaHei UI");
-    const Gdiplus::FontFamily* face =
-        family.IsAvailable() ? &family : Gdiplus::FontFamily::GenericSansSerif();
-    const float em_on = std::round(13.f * font_scale_);
-    const float em_page = std::round(12.5f * font_scale_);
-    const float em_util = std::round(12.f * font_scale_);
-    Gdiplus::Font font_on(face, em_on, Gdiplus::FontStyleBold,
-                          Gdiplus::UnitPixel);
-    Gdiplus::Font font_page(face, em_page, Gdiplus::FontStyleBold,
-                            Gdiplus::UnitPixel);
-    Gdiplus::Font font_util(face, em_util, Gdiplus::FontStyleRegular,
-                            Gdiplus::UnitPixel);
+    EnsureFonts();
     Gdiplus::StringFormat fmt;
     // Slightly centered in the chip (WeChat/dock feel); lock/rail keep side insets.
     fmt.SetAlignment(Gdiplus::StringAlignmentCenter);
@@ -1087,7 +1113,7 @@ void PageBar::Paint(HDC) {
                     : Gdiplus::Color(255, 26, 35, 50);
         Gdiplus::SolidBrush ink(ink_c);
         const Gdiplus::Font& font =
-            on ? font_on : (utility ? font_util : font_page);
+            on ? *font_on_ : (utility ? *font_util_ : *font_page_);
         if (expand_t_ > 0.35f && text_w > 8.f) {
           g.DrawString(s.label.c_str(), -1, &font,
                        Gdiplus::RectF(text_x, cy, text_w, bh), &fmt, &ink);
@@ -1167,7 +1193,7 @@ void PageBar::Paint(HDC) {
             on ? Gdiplus::Color(255, ar, ag, ab)
                : Gdiplus::Color(255, utility ? 100 : 15, utility ? 116 : 23,
                                 utility ? 139 : 42));
-        const Gdiplus::Font& font = utility ? font_util : font_page;
+        const Gdiplus::Font& font = utility ? *font_util_ : *font_page_;
         if (text_w > 8.f) {
           g.DrawString(s.label.c_str(), -1, &font,
                        Gdiplus::RectF(text_x, cy, text_w, bh), &fmt, &ink);

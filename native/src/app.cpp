@@ -101,6 +101,11 @@ constexpr UINT kMsgDesktopPaste = WM_APP + 51;
 constexpr UINT kMsgShellNotify = WM_APP + 52;
 constexpr UINT kMsgHideOffPage = WM_APP + 53;
 constexpr DWORD kTrayOpenDebounceMs = 450;
+// Min interval between full DisplayFingerprint() recomputes on the 2s watch
+// tick. WM_DISPLAYCHANGE handles real topology changes immediately; this is
+// only a fallback, so a 10s cadence keeps EnumDisplayMonitors+GetDeviceCaps
+// off the hot path without missing changes.
+constexpr ULONGLONG kDisplayFingerprintIntervalMs = 10000;
 constexpr wchar_t kMsgClass[] = L"DeskTidyNativeMsg";
 bool g_organize_busy = false;
 // Count monitors encoded in a DisplayFingerprint() string ("|"-joined panels).
@@ -2698,6 +2703,14 @@ void App::HealLayoutsNow(bool toast) {
 }
 
 void App::OnDisplayTopologyMaybeChanged() {
+  // Called from the 2s watch tick. WM_DISPLAYCHANGE converges real changes
+  // right away, so only recompute the full fingerprint (monitor enum + per-
+  // monitor DC caps) when the throttle interval has elapsed.
+  const ULONGLONG now_ms = GetTickCount64();
+  if (now_ms - display_check_last_ms_ < kDisplayFingerprintIntervalMs) {
+    return;
+  }
+  display_check_last_ms_ = now_ms;
   const std::string fp = DisplayFingerprint();
   if (FingerprintIsTransient(fp) || fp == display_fp_) {
     return;

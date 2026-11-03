@@ -114,8 +114,8 @@ def test_heal_misplaced_docs_off_software_side():
     app = _read("app.cpp")
     assert "HealMisplacedSystemPins" in org_h
     assert "system_software_side" in org
-    assert "system_docs" in org
-    assert "HealMisplacedSystemPins" in app
+    assert 'kv.second = "system_docs"' in app
+    assert "Do not HealMisplacedSystemPins" in app
 
 
 def test_drop_sinks_report_actual_ole_effect():

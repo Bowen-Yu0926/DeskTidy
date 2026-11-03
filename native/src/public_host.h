@@ -14,6 +14,11 @@
 #include <unordered_map>
 #include <vector>
 
+namespace Gdiplus {
+class Bitmap;
+class Graphics;
+}  // namespace Gdiplus
+
 // Loose desktop float host (Fences / Explorer public icons).
 class PublicHost {
  public:
@@ -144,6 +149,15 @@ class PublicHost {
   int present_h_ = 0;
   ULONGLONG rubber_present_ms_ = 0;
   std::vector<char> rubber_sel_finger_;
+  // #1 premultiplied icon bitmap cache (DrawIconAlpha was per-frame GDI alloc).
+  struct IconCacheEntry {
+    HICON icon = nullptr;
+    int dest = 0;
+    Gdiplus::Bitmap* bmp = nullptr;  // owned
+  };
+  std::vector<IconCacheEntry> icon_cache_;
+  void ClearIconCache();
+  void DrawIconCached(Gdiplus::Graphics& g, HICON icon, int x, int y, int dest);
   std::vector<char> selected_;
   int selection_anchor_ = -1;
   int current_page_ = 0;

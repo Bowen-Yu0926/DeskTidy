@@ -273,6 +273,10 @@ class App {
   int shell_notify_pidl_count_ = 0;
   AppPrefs prefs_;
   std::string display_fp_;
+  // Throttle the 2s watch-tick fingerprint recompute (EnumDisplayMonitors +
+  // per-monitor CreateDCW/GetDeviceCaps) — WM_DISPLAYCHANGE already converges
+  // real changes; this is only the slow backup.
+  ULONGLONG display_check_last_ms_ = 0;
   int app_dpi_ = 96;
   std::vector<std::wstring> page_names_;
   // U7: per-page lock flags (index = page id). Consulted for fence create/move/

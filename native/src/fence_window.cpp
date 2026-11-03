@@ -26,6 +26,7 @@
 #include <cstring>
 #include <iterator>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #pragma comment(lib, "gdiplus.lib")
@@ -128,10 +129,12 @@ void PaintSelectionChrome(Gdiplus::Graphics& g, int left, int top, int right,
 int S(HWND hwnd, int px) { return MulDiv(px, FenceDpi(hwnd), 96); }
 
 // opacity: 255 = full; ~107 (~0.42) matches Python cut ghost.
-void DrawIconSharp(Gdiplus::Graphics& g, HICON icon, int x, int y, int dest,
-                   BYTE opacity = 255) {
+// Builds an owned premultiplied 32bpp bitmap for `icon` drawn at `dest`
+// (source size = the icon's native color width clamped to [dest, 256]).
+// Returns nullptr on failure; the caller owns the returned Gdiplus::Bitmap.
+Gdiplus::Bitmap* BuildPremultipliedIcon(HICON icon, int dest, BYTE opacity) {
   if (!icon || dest <= 0) {
-    return;
+    return nullptr;
   }
   ICONINFO ii{};
   int src = dest;
@@ -167,10 +170,10 @@ void DrawIconSharp(Gdiplus::Graphics& g, HICON icon, int x, int y, int dest,
     }
     DeleteDC(mem);
     ReleaseDC(nullptr, screen);
-    return;
+    return nullptr;
   }
   HGDIOBJ old = SelectObject(mem, dib);
-  std::memset(bits, 0, static_cast<size_t>(src) * src * 4);
+  std::memset(bits, 0, static_cast<size_t>(src) * static_cast<size_t>(src) * 4);
   DrawIconEx(mem, 0, 0, icon, src, src, 0, nullptr, DI_NORMAL);
   auto* px = static_cast<BYTE*>(bits);
   const int n = src * src;
@@ -188,15 +191,138 @@ void DrawIconSharp(Gdiplus::Graphics& g, HICON icon, int x, int y, int dest,
     p[2] = static_cast<BYTE>((p[2] * a) / 255);
     p[3] = a;
   }
-  Gdiplus::Bitmap bmp(src, src, src * 4, PixelFormat32bppPARGB,
+  // Copy into a bitmap that owns its pixels (cached across frames). Blit via
+  // SourceCopy into a PARGB target (same technique as pet_window sprite load —
+  // LockBits Write on PARGB can be flaky across GDI+ versions).
+  Gdiplus::Bitmap ref(src, src, src * 4, PixelFormat32bppPARGB,
                       static_cast<BYTE*>(bits));
-  g.DrawImage(&bmp, x, y, dest, dest);
+  Gdiplus::Bitmap* out = new Gdiplus::Bitmap(src, src, PixelFormat32bppPARGB);
+  {
+    Gdiplus::Graphics g2(out);
+    g2.SetCompositingMode(Gdiplus::CompositingModeSourceCopy);
+    g2.SetInterpolationMode(Gdiplus::InterpolationModeNearestNeighbor);
+    g2.SetPixelOffsetMode(Gdiplus::PixelOffsetModeNone);
+    g2.DrawImage(&ref, 0, 0, src, src);
+  }
   SelectObject(mem, old);
   DeleteObject(dib);
   DeleteDC(mem);
   ReleaseDC(nullptr, screen);
+  return out;
+}
+
+std::wstring LowerPath(std::wstring s) {
+  for (auto& c : s) {
+    if (c >= L'A' && c <= L'Z') {
+      c = static_cast<wchar_t>(c - L'A' + L'a');
+    }
+  }
+  return s;
+}
+
+// Cut-path set cached by clipboard sequence number (avoids the per-cell
+// O(cut) linear _wcsicmp walk inside ClipboardPathIsCut during Paint).
+DWORD g_cut_seq = 0xFFFFFFFF;
+std::unordered_set<std::wstring> g_cut_set;
+
+const std::unordered_set<std::wstring>& CutPathSet() {
+  const DWORD seq = GetClipboardSequenceNumber();
+  if (seq != g_cut_seq) {
+    g_cut_seq = seq;
+    g_cut_set.clear();
+    std::vector<std::wstring> files;
+    bool cut = false;
+    if (ClipboardGetFilesWithEffect(&files, &cut) && cut) {
+      for (auto& p : files) {
+        g_cut_set.insert(LowerPath(std::move(p)));
+      }
+    }
+  }
+  return g_cut_set;
 }
 }  // namespace
+
+void FenceWindow::ClearIconCache() {
+  for (auto& e : icon_cache_) {
+    if (e.bmp) {
+      delete e.bmp;
+    }
+  }
+  icon_cache_.clear();
+}
+
+void FenceWindow::DrawIconCached(Gdiplus::Graphics& g, HICON icon, int x, int y,
+                                 int dest, BYTE opacity) {
+  if (!icon || dest <= 0) {
+    return;
+  }
+  Gdiplus::Bitmap* bmp = nullptr;
+  for (const auto& e : icon_cache_) {
+    if (e.icon == icon && e.dest == dest && e.opacity == opacity) {
+      bmp = e.bmp;
+      break;
+    }
+  }
+  if (!bmp) {
+    bmp = BuildPremultipliedIcon(icon, dest, opacity);
+    if (!bmp) {
+      return;
+    }
+    icon_cache_.push_back({icon, dest, opacity, bmp});
+  }
+  g.DrawImage(bmp, x, y, dest, dest);
+}
+
+void FenceWindow::EnsureFonts(int title_px, int caption_px, int footer_px) {
+  if (!caption_family_) {
+    caption_family_ = new Gdiplus::FontFamily(L"Microsoft YaHei UI");
+    if (!caption_family_->IsAvailable()) {
+      delete caption_family_;
+      // GenericSansSerif() returns a process-lifetime static; borrow it.
+      caption_family_ = const_cast<Gdiplus::FontFamily*>(
+          Gdiplus::FontFamily::GenericSansSerif());
+      caption_family_borrowed_ = true;
+    }
+  }
+  if (!title_font_ || cached_title_px_ != title_px) {
+    delete title_font_;
+    title_font_ = new Gdiplus::Font(
+        caption_family_, static_cast<Gdiplus::REAL>(title_px),
+        Gdiplus::FontStyleBold, Gdiplus::UnitPixel);
+    cached_title_px_ = title_px;
+  }
+  if (!caption_font_ || cached_caption_px_ != caption_px) {
+    delete caption_font_;
+    caption_font_ = new Gdiplus::Font(
+        caption_family_, static_cast<Gdiplus::REAL>(caption_px),
+        Gdiplus::FontStyleRegular, Gdiplus::UnitPixel);
+    cached_caption_px_ = caption_px;
+  }
+  if (!footer_font_ || cached_footer_px_ != footer_px) {
+    delete footer_font_;
+    footer_font_ = new Gdiplus::Font(
+        caption_family_, static_cast<Gdiplus::REAL>(footer_px),
+        Gdiplus::FontStyleRegular, Gdiplus::UnitPixel);
+    cached_footer_px_ = footer_px;
+  }
+}
+
+void FenceWindow::ReleaseFonts() {
+  delete caption_font_;
+  delete title_font_;
+  delete footer_font_;
+  if (caption_family_ && !caption_family_borrowed_) {
+    delete caption_family_;
+  }
+  caption_font_ = nullptr;
+  title_font_ = nullptr;
+  footer_font_ = nullptr;
+  caption_family_ = nullptr;
+  caption_family_borrowed_ = false;
+  cached_title_px_ = 0;
+  cached_caption_px_ = 0;
+  cached_footer_px_ = 0;
+}
 
 void FenceWindow::ApplyStyle() {
   const auto* preset = FenceStyleById(style_id_);
@@ -563,6 +689,7 @@ void FenceWindow::SetIconZoom(int percent) {
 }
 
 void FenceWindow::RebuildIconsForZoom() {
+  ClearIconCache();
   const int icon_sz = IconSizePx();
   for (auto& cell : cells_) {
     if (cell.icon) {
@@ -904,6 +1031,7 @@ void FenceWindow::EnsureDropTarget() {
 
 void FenceWindow::Destroy() {
   ClearIcons();
+  ReleaseFonts();
   ReleaseLayerBuffer();
   if (tip_) {
     DestroyWindow(tip_);
@@ -964,6 +1092,7 @@ void FenceWindow::UpdateHoverTip(int index) {
 }
 
 void FenceWindow::ClearIcons() {
+  ClearIconCache();
   for (auto& c : cells_) {
     if (c.icon) {
       DestroyIcon(c.icon);
@@ -1163,6 +1292,9 @@ void FenceWindow::SetViewMode(const std::string& mode) {
 void FenceWindow::SetItems(std::vector<DesktopItem> items) {
   // Keep HICONs across refresh when the path set is stable (desktop watch /
   // organize often re-pushes the same pins). Avoid SHGetFileInfo storms.
+  // Icon handles can be recycled after DestroyIcon, so drop the premultiplied
+  // bitmap cache before any icon is replaced/destroyed.
+  ClearIconCache();
   const std::vector<DesktopItem> before = ItemSnapshot();
   std::unordered_map<std::wstring, HICON> reuse;
   reuse.reserve(cells_.size());
@@ -1303,31 +1435,63 @@ void FenceWindow::SortCells() {
     return s;
   };
   if (sort_by_ == "date") {
-    std::stable_sort(cells_.begin(), cells_.end(), [](const Cell& a,
-                                                      const Cell& b) {
-      WIN32_FILE_ATTRIBUTE_DATA fa{}, fb{};
-      const BOOL oka =
-          GetFileAttributesExW(a.item.path.c_str(), GetFileExInfoStandard, &fa);
-      const BOOL okb =
-          GetFileAttributesExW(b.item.path.c_str(), GetFileExInfoStandard, &fb);
-      if (!oka || !okb) {
-        return oka && !okb;
+    // Hoist GetFileAttributesExW out of the comparator (was N× per comparison).
+    struct Rec {
+      size_t idx;
+      ULONGLONG ft;
+      bool ok;
+    };
+    std::vector<Rec> recs;
+    recs.reserve(cells_.size());
+    for (size_t i = 0; i < cells_.size(); ++i) {
+      WIN32_FILE_ATTRIBUTE_DATA fa{};
+      const BOOL ok = GetFileAttributesExW(cells_[i].item.path.c_str(),
+                                           GetFileExInfoStandard, &fa);
+      ULONGLONG ft = 0;
+      if (ok) {
+        ULARGE_INTEGER u;
+        u.LowPart = fa.ftLastWriteTime.dwLowDateTime;
+        u.HighPart = fa.ftLastWriteTime.dwHighDateTime;
+        ft = u.QuadPart;
       }
-      return CompareFileTime(&fa.ftLastWriteTime, &fb.ftLastWriteTime) > 0;
+      recs.push_back({i, ft, ok != 0});
+    }
+    std::stable_sort(recs.begin(), recs.end(), [](const Rec& a, const Rec& b) {
+      if (!a.ok || !b.ok) {
+        return a.ok && !b.ok;
+      }
+      return a.ft > b.ft;  // newest first (matches CompareFileTime > 0)
     });
+    std::vector<Cell> ordered;
+    ordered.reserve(cells_.size());
+    for (const auto& r : recs) {
+      ordered.push_back(std::move(cells_[r.idx]));
+    }
+    cells_ = std::move(ordered);
   } else if (sort_by_ == "size") {
-    std::stable_sort(cells_.begin(), cells_.end(), [](const Cell& a,
-                                                      const Cell& b) {
-      WIN32_FILE_ATTRIBUTE_DATA fa{}, fb{};
-      GetFileAttributesExW(a.item.path.c_str(), GetFileExInfoStandard, &fa);
-      GetFileAttributesExW(b.item.path.c_str(), GetFileExInfoStandard, &fb);
-      ULARGE_INTEGER sa{}, sb{};
-      sa.LowPart = fa.nFileSizeLow;
-      sa.HighPart = fa.nFileSizeHigh;
-      sb.LowPart = fb.nFileSizeLow;
-      sb.HighPart = fb.nFileSizeHigh;
-      return sa.QuadPart > sb.QuadPart;
-    });
+    struct Rec {
+      size_t idx;
+      ULONGLONG size;
+    };
+    std::vector<Rec> recs;
+    recs.reserve(cells_.size());
+    for (size_t i = 0; i < cells_.size(); ++i) {
+      WIN32_FILE_ATTRIBUTE_DATA fa{};
+      GetFileAttributesExW(cells_[i].item.path.c_str(), GetFileExInfoStandard,
+                           &fa);
+      ULARGE_INTEGER u;
+      u.LowPart = fa.nFileSizeLow;
+      u.HighPart = fa.nFileSizeHigh;
+      recs.push_back({i, u.QuadPart});
+    }
+    std::stable_sort(recs.begin(), recs.end(),
+                     [](const Rec& a, const Rec& b) { return a.size > b.size; });
+    std::vector<Cell> ordered;
+    ordered.reserve(cells_.size());
+    for (const auto& r : recs) {
+      ordered.push_back(std::move(cells_[r.idx]));
+    }
+    cells_ = std::move(ordered);
   } else if (sort_by_ == "type") {
     std::stable_sort(cells_.begin(), cells_.end(),
                      [&](const Cell& a, const Cell& b) {
@@ -3407,11 +3571,7 @@ void FenceWindow::Paint(HDC hdc) {
   g.SetTextRenderingHint(Gdiplus::TextRenderingHintAntiAliasGridFit);
   g.SetTextContrast(4);
 
-  Gdiplus::FontFamily family(L"Microsoft YaHei UI");
-  const Gdiplus::FontFamily* face =
-      family.IsAvailable() ? &family : Gdiplus::FontFamily::GenericSansSerif();
-  Gdiplus::Font title_font(face, static_cast<Gdiplus::REAL>(title_px),
-                           Gdiplus::FontStyleBold, Gdiplus::UnitPixel);
+  EnsureFonts(title_px, font_px, S(hwnd_, 11));
   Gdiplus::SolidBrush title_brush(
       Gdiplus::Color(255, GetRValue(title_color_), GetGValue(title_color_),
                      GetBValue(title_color_)));
@@ -3448,9 +3608,9 @@ void FenceWindow::Paint(HDC hdc) {
         light_panel_ ? 255 : 0));
     Gdiplus::RectF shadow_box = title_box;
     shadow_box.Y += 1.f;
-    g.DrawString(title_.c_str(), -1, &title_font, shadow_box, &title_fmt,
+    g.DrawString(title_.c_str(), -1, title_font_, shadow_box, &title_fmt,
                  &shadow_br);
-    g.DrawString(title_.c_str(), -1, &title_font, title_box, &title_fmt,
+    g.DrawString(title_.c_str(), -1, title_font_, title_box, &title_fmt,
                  &title_brush);
   }
   // Title-bar icons only (no text): collapse · lock · delete. Edit stays in settings.
@@ -3529,8 +3689,6 @@ void FenceWindow::Paint(HDC hdc) {
   g.SetClip(Gdiplus::Rect(rc.left, header, rc.right - rc.left,
                           rc.bottom - header));
 
-  Gdiplus::Font font(face, static_cast<Gdiplus::REAL>(font_px),
-                     Gdiplus::FontStyleRegular, Gdiplus::UnitPixel);
   Gdiplus::StringFormat list_fmt;
   list_fmt.SetAlignment(Gdiplus::StringAlignmentNear);
   list_fmt.SetLineAlignment(Gdiplus::StringAlignmentCenter);
@@ -3556,6 +3714,8 @@ void FenceWindow::Paint(HDC hdc) {
 
   // Cut ghost opacity matches Python _CUT_GHOST_OPACITY ≈ 0.42.
   constexpr BYTE kCutOpacity = 107;
+  // Resolve the cut set once per Present instead of per cell (was O(cell×cut)).
+  const auto& cut_set = CutPathSet();
 
   auto paint_cell = [&](size_t i, bool selected_pass) {
     if (i >= cells_.size()) {
@@ -3571,7 +3731,8 @@ void FenceWindow::Paint(HDC hdc) {
     if (b.bottom < header || b.top > rc.bottom) {
       return;
     }
-    const bool is_cut = ClipboardPathIsCut(cell.item.path);
+    const bool is_cut =
+        cut_set.find(LowerPath(cell.item.path)) != cut_set.end();
     bool is_drag_src = false;
     if (icon_dragging_) {
       for (int di : drag_indices_) {
@@ -3602,7 +3763,7 @@ void FenceWindow::Paint(HDC hdc) {
       }
       const int iy = b.top + ((b.bottom - b.top) - icon) / 2;
       if (cell.icon) {
-        DrawIconSharp(g, cell.icon, b.left + 4, iy, icon, icon_op);
+        DrawIconCached(g, cell.icon, b.left + 4, iy, icon, icon_op);
       }
       const int lw =
           (std::max)(1, static_cast<int>(b.right - b.left) - icon - 12);
@@ -3610,7 +3771,7 @@ void FenceWindow::Paint(HDC hdc) {
                            static_cast<Gdiplus::REAL>(b.top),
                            static_cast<Gdiplus::REAL>(lw),
                            static_cast<Gdiplus::REAL>(b.bottom - b.top));
-      g.DrawString(cell.item.name.c_str(), -1, &font, label, &list_fmt,
+      g.DrawString(cell.item.name.c_str(), -1, caption_font_, label, &list_fmt,
                    &name_brush);
       return;
     }
@@ -3624,8 +3785,8 @@ void FenceWindow::Paint(HDC hdc) {
           0.f, 0.f, static_cast<Gdiplus::REAL>(label_w),
           static_cast<Gdiplus::REAL>(line_h * max_sel_lines + 8));
       Gdiplus::RectF bound;
-      g.MeasureString(cell.item.name.c_str(), -1, &font, measure, &sel_fmt,
-                      &bound);
+      g.MeasureString(cell.item.name.c_str(), -1, caption_font_, measure,
+                      &sel_fmt, &bound);
       ink_h = static_cast<int>(bound.Height + 0.5f) + 2;
       if (ink_h < line_h) {
         ink_h = line_h;
@@ -3654,7 +3815,7 @@ void FenceWindow::Paint(HDC hdc) {
     if (cell.icon) {
       const int ix = b.left + (cell_w - icon) / 2;
       const int iy = b.top + 4;
-      DrawIconSharp(g, cell.icon, ix, iy, icon, icon_op);
+      DrawIconCached(g, cell.icon, ix, iy, icon, icon_op);
     }
     Gdiplus::RectF label(static_cast<Gdiplus::REAL>(b.left + 3),
                          static_cast<Gdiplus::REAL>(label_top),
@@ -3671,10 +3832,10 @@ void FenceWindow::Paint(HDC hdc) {
         ellipsis_fmt.SetFormatFlags(Gdiplus::StringFormatFlagsLineLimit);
         fmt = &ellipsis_fmt;
       }
-      g.DrawString(cell.item.name.c_str(), -1, &font, label, fmt,
+      g.DrawString(cell.item.name.c_str(), -1, caption_font_, label, fmt,
                    &name_brush);
     } else {
-      g.DrawString(cell.item.name.c_str(), -1, &font, label, &grid_fmt,
+      g.DrawString(cell.item.name.c_str(), -1, caption_font_, label, &grid_fmt,
                    &name_brush);
     }
   };
@@ -3758,7 +3919,7 @@ void FenceWindow::Paint(HDC hdc) {
       }
       const int ox = drag_pt_.x - icon / 2 + s * S(hwnd_, 4);
       const int oy = drag_pt_.y - icon / 2 + s * S(hwnd_, 4);
-      DrawIconSharp(g, ic, ox, oy, icon, kGhostOp);
+      DrawIconCached(g, ic, ox, oy, icon, kGhostOp);
     }
   }
 
@@ -3776,8 +3937,6 @@ void FenceWindow::Paint(HDC hdc) {
       }
     }
     if (!footer.empty()) {
-      Gdiplus::Font f_font(face, static_cast<Gdiplus::REAL>(S(hwnd_, 11)),
-                           Gdiplus::FontStyleRegular, Gdiplus::UnitPixel);
       Gdiplus::SolidBrush f_brush(Gdiplus::Color(
           190, GetRValue(caption_color_), GetGValue(caption_color_),
           GetBValue(caption_color_)));
@@ -3790,7 +3949,7 @@ void FenceWindow::Paint(HDC hdc) {
                            static_cast<Gdiplus::REAL>(fy),
                            static_cast<Gdiplus::REAL>(rc.right - pad - 12),
                            static_cast<Gdiplus::REAL>(footer_h));
-      g.DrawString(footer.c_str(), -1, &f_font, f_box, &f_fmt, &f_brush);
+      g.DrawString(footer.c_str(), -1, footer_font_, f_box, &f_fmt, &f_brush);
     }
   }
 }

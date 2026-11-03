@@ -31,5 +31,8 @@ class DesktopWatch {
   FolderStamp public_{};
   std::vector<std::wstring> extra_;
   std::vector<FolderStamp> extra_stamp_;
+  // Portal/extras can point at huge directories — throttle their full scan so
+  // the 2s tick only re-stamps them at a slower cadence (see kPortalRescanMs).
+  ULONGLONG extra_stamp_ms_ = 0;
   bool primed_ = false;
 };

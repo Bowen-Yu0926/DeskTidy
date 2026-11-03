@@ -1,6 +1,7 @@
 ﻿#pragma once
 
 #include "ole_drag.h"
+#include "pet_ledges.h"
 
 #include <Windows.h>
 
@@ -224,6 +225,10 @@ class PetWindow {
   int ledge_top_ = 0;
   HWND ledge_hwnd_ = nullptr;
   int climb_cooldown_ = 0;
+  // Cached window-ledge scan (ListWindowLedges → EnumWindows, ~1Hz). TTL-cache
+  // so climb probing reuses the last scan instead of re-enumerating every tick.
+  std::vector<WindowLedge> ledge_cache_;
+  ULONGLONG ledge_cache_ms_ = 0;
   int walk_dir_ = 1;
   // 1 = face right (default art), -1 = face left (mirrored) — P1-14.
   int facing_ = 1;

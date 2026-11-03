@@ -4,6 +4,12 @@
 
 namespace {
 
+// Portal folders may be huge (user can point one at a tree with tens of
+// thousands of files). Desktop/public-desktop are small and stamped every
+// 2s tick; extras are re-stamped only when this cadence elapses. Shell
+// notifications still drive the authoritative refresh independently.
+constexpr ULONGLONG kPortalRescanMs = 10000;
+
 std::wstring Known(REFKNOWNFOLDERID id) {
   PWSTR p = nullptr;
   if (FAILED(SHGetKnownFolderPath(id, 0, nullptr, &p)) || !p) {
@@ -113,6 +119,7 @@ void DesktopWatch::Reset() {
   for (const auto& folder : extra_) {
     extra_stamp_.push_back(StampFolder(folder));
   }
+  extra_stamp_ms_ = GetTickCount64();
   primed_ = true;
 }
 
@@ -120,15 +127,25 @@ bool DesktopWatch::PollChanged() {
   const FolderStamp u = StampFolder(Known(FOLDERID_Desktop));
   const FolderStamp p = StampFolder(Known(FOLDERID_PublicDesktop));
   bool extra_changed = false;
-  if (extra_stamp_.size() != extra_.size()) {
-    extra_stamp_.assign(extra_.size(), FolderStamp{});
-  }
-  for (size_t i = 0; i < extra_.size(); ++i) {
-    const FolderStamp now = StampFolder(extra_[i]);
-    if (primed_ && !StampEq(now, extra_stamp_[i])) {
-      extra_changed = true;
+  // Throttle the portal/extras scan: they can be arbitrarily large, so a full
+  // FindFirstFile+hash pass every 2s would hitch the UI thread. Re-stamp only
+  // when the cadence elapses; shell events already trigger the authoritative
+  // refresh. New/changed portal lists are still stamped by SetExtraFolders.
+  const ULONGLONG now_ms = GetTickCount64();
+  const bool restamp_extras =
+      !extra_.empty() && now_ms - extra_stamp_ms_ >= kPortalRescanMs;
+  if (restamp_extras) {
+    extra_stamp_ms_ = now_ms;
+    if (extra_stamp_.size() != extra_.size()) {
+      extra_stamp_.assign(extra_.size(), FolderStamp{});
     }
-    extra_stamp_[i] = now;
+    for (size_t i = 0; i < extra_.size(); ++i) {
+      const FolderStamp now = StampFolder(extra_[i]);
+      if (primed_ && !StampEq(now, extra_stamp_[i])) {
+        extra_changed = true;
+      }
+      extra_stamp_[i] = now;
+    }
   }
   if (!primed_) {
     user_ = u;

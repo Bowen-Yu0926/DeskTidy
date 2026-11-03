@@ -55,9 +55,12 @@ void EnsureGdiplus() {
 // Compose through a premultiplied GDI+ bitmap (same approach as
 // fence_window's DrawIconSharp, duplicated here to avoid a shared header
 // change while that file is in flux).
-void DrawIconAlpha(Gdiplus::Graphics& g, HICON icon, int x, int y, int dest) {
+// Builds an owned premultiplied 32bpp bitmap for `icon` drawn at `dest`
+// (source size = the icon's native color width clamped to [dest, 256]).
+// Returns nullptr on failure; the caller owns the returned Gdiplus::Bitmap.
+Gdiplus::Bitmap* BuildPremultipliedIcon(HICON icon, int dest) {
   if (!icon || dest <= 0) {
-    return;
+    return nullptr;
   }
   ICONINFO ii{};
   int src = dest;
@@ -93,7 +96,7 @@ void DrawIconAlpha(Gdiplus::Graphics& g, HICON icon, int x, int y, int dest) {
     }
     DeleteDC(mem);
     ReleaseDC(nullptr, screen);
-    return;
+    return nullptr;
   }
   HGDIOBJ old = SelectObject(mem, dib);
   std::memset(bits, 0, static_cast<size_t>(src) * static_cast<size_t>(src) * 4);
@@ -111,15 +114,24 @@ void DrawIconAlpha(Gdiplus::Graphics& g, HICON icon, int x, int y, int dest) {
     p[2] = static_cast<BYTE>((p[2] * a) / 255);
     p[3] = a;
   }
+  // Copy into a bitmap that owns its pixels (cached across frames). Blit via
+  // SourceCopy into a PARGB target (same technique as pet_window sprite load —
+  // LockBits Write on PARGB can be flaky across GDI+ versions).
+  Gdiplus::Bitmap ref(src, src, src * 4, PixelFormat32bppPARGB,
+                      static_cast<BYTE*>(bits));
+  Gdiplus::Bitmap* out = new Gdiplus::Bitmap(src, src, PixelFormat32bppPARGB);
   {
-    Gdiplus::Bitmap bmp(src, src, src * 4, PixelFormat32bppPARGB,
-                        static_cast<BYTE*>(bits));
-    g.DrawImage(&bmp, x, y, dest, dest);
+    Gdiplus::Graphics g2(out);
+    g2.SetCompositingMode(Gdiplus::CompositingModeSourceCopy);
+    g2.SetInterpolationMode(Gdiplus::InterpolationModeNearestNeighbor);
+    g2.SetPixelOffsetMode(Gdiplus::PixelOffsetModeNone);
+    g2.DrawImage(&ref, 0, 0, src, src);
   }
   SelectObject(mem, old);
   DeleteObject(dib);
   DeleteDC(mem);
   ReleaseDC(nullptr, screen);
+  return out;
 }
 
 // Explorer/DefView desktop caption (Python _qt_explorer_caption): white glyph
@@ -138,31 +150,47 @@ void DrawExplorerCaption(Gdiplus::Graphics& g, const std::wstring& text,
     r.Y += dy;
     g.DrawString(text.c_str(), -1, &font, r, &fmt, &br);
   };
-  // Outer soft ring.
-  for (int dy = -2; dy <= 2; ++dy) {
-    for (int dx = -2; dx <= 2; ++dx) {
-      if (dx == 0 && dy == 0) {
-        continue;
-      }
-      if (dx * dx + dy * dy > 4) {
-        continue;
-      }
-      paint_at(70, static_cast<float>(dx), static_cast<float>(dy));
-    }
-  }
-  // Inner ring.
-  for (int dy = -1; dy <= 1; ++dy) {
-    for (int dx = -1; dx <= 1; ++dx) {
-      if (dx == 0 && dy == 0) {
-        continue;
-      }
-      paint_at(110, static_cast<float>(dx), static_cast<float>(dy));
-    }
-  }
+  // Down-sampled 4-direction glow + main ink (was 12 + 8 + 1 DrawStrings; the
+  // per-frame caption pass runs for every float on every marquee frame).
+  paint_at(110, -1.f, 0.f);
+  paint_at(110, 1.f, 0.f);
+  paint_at(110, 0.f, -1.f);
+  paint_at(110, 0.f, 1.f);
   Gdiplus::SolidBrush ink(Gdiplus::Color(255, 255, 255, 255));
   g.DrawString(text.c_str(), -1, &font, box, &fmt, &ink);
 }
 }  // namespace
+
+void PublicHost::ClearIconCache() {
+  for (auto& e : icon_cache_) {
+    if (e.bmp) {
+      delete e.bmp;
+    }
+  }
+  icon_cache_.clear();
+}
+
+void PublicHost::DrawIconCached(Gdiplus::Graphics& g, HICON icon, int x, int y,
+                                int dest) {
+  if (!icon || dest <= 0) {
+    return;
+  }
+  Gdiplus::Bitmap* bmp = nullptr;
+  for (const auto& e : icon_cache_) {
+    if (e.icon == icon && e.dest == dest) {
+      bmp = e.bmp;
+      break;
+    }
+  }
+  if (!bmp) {
+    bmp = BuildPremultipliedIcon(icon, dest);
+    if (!bmp) {
+      return;
+    }
+    icon_cache_.push_back({icon, dest, bmp});
+  }
+  g.DrawImage(bmp, x, y, dest, dest);
+}
 
 bool PublicHost::Create(HINSTANCE instance) {
   if (!g_reg) {
@@ -268,6 +296,7 @@ void PublicHost::Destroy() {
   marquee_hwnd_ = nullptr;
   ClearRubberBaseCache();
   ReleasePresentBuffer();
+  ClearIconCache();
   for (auto& s : slots_) {
     if (s.icon) {
       DestroyIcon(s.icon);
@@ -356,6 +385,9 @@ void PublicHost::SetPlacements(FloatPlacementMap placements) {
 }
 
 void PublicHost::SetItems(std::vector<DesktopItem> items) {
+  // Icon handles can be recycled after DestroyIcon, so drop the premultiplied
+  // bitmap cache before any icon is replaced/destroyed.
+  ClearIconCache();
   std::vector<DesktopItem> before;
   before.reserve(slots_.size());
   std::unordered_map<std::wstring, HICON> reuse;
@@ -426,8 +458,8 @@ void PublicHost::Layout() {
   const int icon = (std::max)(16, metrics_.icon_size);
   (void)icon;
 
-  auto intersects_blocked = [this](const RECT& slot) {
-    for (const RECT& b : blocked_) {
+  auto intersects_blocked = [](const std::vector<RECT>& blk, const RECT& slot) {
+    for (const RECT& b : blk) {
       if (slot.left < b.right && slot.right > b.left && slot.top < b.bottom &&
           slot.bottom > b.top) {
         return true;
@@ -471,11 +503,25 @@ void PublicHost::Layout() {
         (std::min)(search_bottom, static_cast<int>(work.bottom) + step_y * 8);
     search_right =
         (std::min)(search_right, static_cast<int>(work.right) + step_x * 4);
+    // Pre-filter blocked rects to this monitor's search region: a rect that
+    // provably cannot intersect any candidate is dropped from the inner scan
+    // (results unchanged — candidates are all within [sx0,search_right]×[sy0,search_bottom]).
+    const int sx0 = work.left + margin;
+    const int sy0 = work.top + margin;
+    std::vector<RECT> mon_blocked;
+    mon_blocked.reserve(blocked_.size());
+    for (const RECT& b : blocked_) {
+      if (b.right <= sx0 || b.left >= search_right || b.bottom <= sy0 ||
+          b.top >= search_bottom) {
+        continue;
+      }
+      mon_blocked.push_back(b);
+    }
     for (int x = work.left + margin; x + cell_w <= search_right; x += step_x) {
       for (int y = work.top + margin; y + cell_h <= search_bottom;
            y += step_y) {
         const RECT slot{x, y, x + cell_w, y + cell_h};
-        if (intersects_blocked(slot)) {
+        if (intersects_blocked(mon_blocked, slot)) {
           continue;
         }
         candidates.push_back(slot);
@@ -1595,7 +1641,7 @@ void PublicHost::Paint(HDC hdc, bool draw_selection, bool draw_rubber) {
     g0.FillRectangle(&hit, 0, 0, static_cast<int>(wr.right - wr.left),
                      static_cast<int>(wr.bottom - wr.top));
   }
-  // Icons must be composited through GDI+ (see DrawIconAlpha) so the alpha
+  // Icons must be composited through GDI+ (see DrawIconCached) so the alpha
   // channel survives ULW_ALPHA; plain DrawIconEx left them invisible.
   {
     Gdiplus::Graphics gi(hdc);
@@ -1610,7 +1656,7 @@ void PublicHost::Paint(HDC hdc, bool draw_selection, bool draw_rubber) {
                          static_cast<INT>(s.bounds.bottom - s.bounds.top));
       }
       if (s.icon) {
-        DrawIconAlpha(gi, s.icon, s.icon_rc.left, s.icon_rc.top, icon);
+        DrawIconCached(gi, s.icon, s.icon_rc.left, s.icon_rc.top, icon);
       }
     }
     if (draw_rubber && rubber_) {
@@ -1717,29 +1763,19 @@ void PublicHost::PresentRubberFast() {
     return;
   }
 
-  HDC screen = GetDC(nullptr);
-  HDC mem = CreateCompatibleDC(screen);
-  BITMAPINFO bi{};
-  bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-  bi.bmiHeader.biWidth = w;
-  bi.bmiHeader.biHeight = -h;
-  bi.bmiHeader.biPlanes = 1;
-  bi.bmiHeader.biBitCount = 32;
-  bi.bmiHeader.biCompression = BI_RGB;
-  void* bits = nullptr;
-  HBITMAP dib = CreateDIBSection(screen, &bi, DIB_RGB_COLORS, &bits, nullptr, 0);
-  if (!dib || !bits) {
-    if (dib) {
-      DeleteObject(dib);
-    }
-    DeleteDC(mem);
-    ReleaseDC(nullptr, screen);
+  // Reuse the cached Present back-buffer for the composite (base + selection)
+  // instead of a fresh CreateCompatibleDC + CreateDIBSection every frame.
+  if (!EnsurePresentBuffer(w, h)) {
     return;
   }
+  HDC screen = GetDC(nullptr);
+  if (!screen) {
+    return;
+  }
+  HDC mem = present_dc_;
   const size_t nbytes =
       static_cast<size_t>(w) * static_cast<size_t>(h) * 4u;
-  std::memcpy(bits, rubber_base_bits_, nbytes);
-  HGDIOBJ old = SelectObject(mem, dib);
+  std::memcpy(present_bits_, rubber_base_bits_, nbytes);
   EnsureGdiplus();
   {
     Gdiplus::Graphics gi(mem);
@@ -1764,9 +1800,6 @@ void PublicHost::PresentRubberFast() {
   blend.AlphaFormat = AC_SRC_ALPHA;
   UpdateOverlayLayered(hwnd_, screen, &origin, &size, mem, &src, 0, &blend,
                       ULW_ALPHA);
-  SelectObject(mem, old);
-  DeleteObject(dib);
-  DeleteDC(mem);
   ReleaseDC(nullptr, screen);
 }
 // AIGC END

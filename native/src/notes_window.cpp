@@ -4301,6 +4301,7 @@ void NotesWindow::UpdateStatusBar() {
   int words = 0;
   std::wstring scope = L"全文";
   std::wstring stats_src;
+  bool stats_done = false;
   if (wysiwyg_) {
     // RichEdit is hidden/stale in Toast mode — count from host markdown cache.
     stats_src = web_.CachedMarkdown();
@@ -4323,10 +4324,20 @@ void NotesWindow::UpdateStatusBar() {
       buf.resize(static_cast<size_t>(sel_len));
       stats_src = std::move(buf);
     } else {
-      stats_src = CurrentPlainText();
+      // Full-document stats: cache separately from selection stats and re-read
+      // the whole text only when EN_CHANGE marked it dirty. Caret moves alone
+      // (the common 800ms no-op tick) reuse cached counts without GetWindowTextW.
+      if (status_full_text_dirty_) {
+        CountTextStats(CurrentPlainText(), &status_full_chars_,
+                       &status_full_words_);
+        status_full_text_dirty_ = false;
+      }
+      chars = status_full_chars_;
+      words = status_full_words_;
+      stats_done = true;
     }
   }
-  if (!stats_src.empty() || wysiwyg_ || edit_) {
+  if (!stats_done && (!stats_src.empty() || wysiwyg_ || edit_)) {
     const size_t h = std::hash<std::wstring>{}(stats_src);
     if (h == status_stats_hash_ && stats_src.size() == status_stats_len_) {
       chars = status_chars_;
@@ -7287,12 +7298,20 @@ void NotesWindow::RunSidebarSearch() {
     LayoutClient();
     return;
   }
-  const AppPrefs prefs = LoadAppPrefs();
+  // Load search prefs once per window — LoadAppPrefs() re-reads the JSON from
+  // disk on every debounced keystroke otherwise.
+  if (!sidebar_search_prefs_loaded_) {
+    const AppPrefs prefs = LoadAppPrefs();
+    notes_search_case_sensitive_ = prefs.notes_search_case_sensitive;
+    notes_search_max_hits_ = prefs.notes_search_max_hits;
+    notes_search_max_file_bytes_ = prefs.notes_search_max_file_bytes;
+    sidebar_search_prefs_loaded_ = true;
+  }
   sidebar_hits_ =
       SearchNotesLibrary(NotesLibraryDir(true), query,
-                         prefs.notes_search_case_sensitive,
-                         prefs.notes_search_max_hits,
-                         prefs.notes_search_max_file_bytes);
+                         notes_search_case_sensitive_,
+                         notes_search_max_hits_,
+                         notes_search_max_file_bytes_);
   for (const auto& hit : sidebar_hits_) {
     std::wstring label = NoteDisplayName(hit.path, true);
     if (hit.line >= 0) {
@@ -8944,6 +8963,7 @@ LRESULT NotesWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
         return 0;
       }
       if (LOWORD(wparam) == kEditId && HIWORD(wparam) == EN_CHANGE) {
+        status_full_text_dirty_ = true;
         MarkDirty();
         // In WYSIWYG, title lives in title_edit_ — don't re-parse # from body.
         if (!wysiwyg_) {
@@ -9120,7 +9140,11 @@ LRESULT NotesWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
         return 0;
       }
       if (wparam == kStatusTimer) {
-        UpdateStatusBar();
+        // Skip the periodic full-text re-read/count while hidden or minimized;
+        // the timer stays scheduled (cheap) so restore never misses an update.
+        if (IsWindowVisible(hwnd_) && !IsIconic(hwnd_)) {
+          UpdateStatusBar();
+        }
         // Keep periodic refresh at the steadier cadence.
         SetTimer(hwnd_, kStatusTimer, 800, nullptr);
         return 0;

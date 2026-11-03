@@ -11,6 +11,13 @@
 #include <string>
 #include <vector>
 
+namespace Gdiplus {
+class Bitmap;
+class Font;
+class FontFamily;
+class Graphics;
+}  // namespace Gdiplus
+
 // Target fence for cascading「移动到分页 → 分区」(id + title + page membership).
 struct FenceMoveTarget {
   std::string id;
@@ -388,6 +395,27 @@ class FenceWindow {
   // True when pixels must be re-uploaded after the next Show (never ULW while
   // hidden — Win11 often leaves a blank layered surface after mapping).
   bool layer_dirty_ = true;
+  // #1/#12 hot-path caches: premultiplied icon bitmaps + GDI+ fonts.
+  struct IconCacheEntry {
+    HICON icon = nullptr;
+    int dest = 0;
+    BYTE opacity = 255;
+    Gdiplus::Bitmap* bmp = nullptr;  // owned
+  };
+  std::vector<IconCacheEntry> icon_cache_;
+  void ClearIconCache();
+  void DrawIconCached(Gdiplus::Graphics& g, HICON icon, int x, int y, int dest,
+                      BYTE opacity);
+  Gdiplus::FontFamily* caption_family_ = nullptr;  // owned unless borrowed
+  bool caption_family_borrowed_ = false;
+  Gdiplus::Font* title_font_ = nullptr;            // owned
+  Gdiplus::Font* caption_font_ = nullptr;          // owned
+  Gdiplus::Font* footer_font_ = nullptr;           // owned
+  int cached_title_px_ = 0;
+  int cached_caption_px_ = 0;
+  int cached_footer_px_ = 0;
+  void EnsureFonts(int title_px, int caption_px, int footer_px);
+  void ReleaseFonts();
   // Reused ULW back-buffer — CreateDIBSection every Present was a hot-path tax.
   void ReleaseLayerBuffer();
   bool EnsureLayerBuffer(int w, int h);

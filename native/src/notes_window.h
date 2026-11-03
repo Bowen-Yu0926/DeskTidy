@@ -392,6 +392,16 @@ class NotesWindow {
   size_t status_stats_len_ = 0;
   int status_chars_ = 0;
   int status_words_ = 0;
+  // Full-document stats (no-selection source mode): re-read the whole RichEdit
+  // text only when EN_CHANGE marks it dirty, not on every 800ms status tick.
+  int status_full_chars_ = 0;
+  int status_full_words_ = 0;
+  bool status_full_text_dirty_ = true;
+  // Sidebar search prefs, loaded once (avoid app_prefs.json re-read per debounce).
+  bool sidebar_search_prefs_loaded_ = false;
+  bool notes_search_case_sensitive_ = false;
+  int notes_search_max_hits_ = 200;
+  int notes_search_max_file_bytes_ = 512 * 1024;
   // LayoutClient early-out when client chrome geometry is unchanged.
   int layout_w_ = -1;
   int layout_h_ = -1;

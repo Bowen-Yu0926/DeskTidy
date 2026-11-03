@@ -27,6 +27,9 @@
 #pragma comment(lib, "gdiplus.lib")
 
 namespace {
+// Ledge scan (EnumWindows) cadence cap — climb probing reuses the last scan
+// for this long before re-enumerating top-level windows.
+constexpr ULONGLONG kLedgeCacheTtlMs = 1000;
 constexpr wchar_t kClassName[] = L"DeskTidyNativePet";
 constexpr int kSize = 72;
 constexpr int kSpriteMaxW = 180;
@@ -1533,9 +1536,15 @@ void PetWindow::StepPhysics(DWORD elapsed_ms) {
                           (std::min)(pos_x_, static_cast<float>(work.right - ww)));
     }
     if (climb_cooldown_ == 0) {
-      const auto ledges = ListWindowLedges(hwnd_, 8);
+      // Reuse the last EnumWindows scan within the TTL window; refresh only
+      // when it expires so climb probing doesn't re-enumerate every tick.
+      const ULONGLONG now = GetTickCount64();
+      if (now - ledge_cache_ms_ >= kLedgeCacheTtlMs) {
+        ledge_cache_ = ListWindowLedges(hwnd_, 8);
+        ledge_cache_ms_ = now;
+      }
       const int mid = static_cast<int>(pos_x_) + ww / 2;
-      for (const auto& L : ledges) {
+      for (const auto& L : ledge_cache_) {
         if (L.y >= base_y_ - 20) {
           continue;
         }
