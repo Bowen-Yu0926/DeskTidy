@@ -282,6 +282,7 @@ bool UnprotectBlob(const std::vector<BYTE>& enc, std::string* plain) {
 }
 
 std::wstring JsonEscape(const std::wstring& s) {
+  static const wchar_t kHex[] = L"0123456789ABCDEF";
   std::wstring o;
   o.reserve(s.size() + 8);
   for (wchar_t c : s) {
@@ -301,8 +302,22 @@ std::wstring JsonEscape(const std::wstring& s) {
       case L'\t':
         o += L"\\t";
         break;
+      case L'\b':
+        o += L"\\b";
+        break;
+      case L'\f':
+        o += L"\\f";
+        break;
       default:
-        o.push_back(c);
+        if (static_cast<unsigned>(c) < 0x20u) {
+          o += L"\\u";
+          o += kHex[(static_cast<unsigned>(c) >> 12) & 0xFu];
+          o += kHex[(static_cast<unsigned>(c) >> 8) & 0xFu];
+          o += kHex[(static_cast<unsigned>(c) >> 4) & 0xFu];
+          o += kHex[static_cast<unsigned>(c) & 0xFu];
+        } else {
+          o.push_back(c);
+        }
         break;
     }
   }
@@ -777,6 +792,8 @@ void VaultWindow::DispatchAction(const std::wstring& json) {
                      JsonStringField(json, L"charset"));
   } else if (id == L"copy_pass") {
     CopyPasswordAt(JsonIntField(json, L"index", -1));
+  } else if (id == L"reveal_pass") {
+    RevealPasswordAt(JsonIntField(json, L"index", -1));
   } else if (id == L"copy_user") {
     CopyUsernameAt(JsonIntField(json, L"index", -1));
   } else if (id == L"copy_url") {
@@ -1099,6 +1116,23 @@ void VaultWindow::CopyPasswordAt(int index) {
   }
   CopyFieldToClipboard(entries_[static_cast<size_t>(index)].pass, tip.c_str(),
                        true);
+}
+
+void VaultWindow::RevealPasswordAt(int index) {
+  if (!webview_ || !web_ready_) {
+    return;
+  }
+  if (index < 0 || index >= static_cast<int>(entries_.size())) {
+    return;
+  }
+  const std::wstring& pass = entries_[static_cast<size_t>(index)].pass;
+  std::wstring json = L"{\"type\":\"revealed_password\",\"index\":";
+  json += std::to_wstring(index);
+  json += L",\"password\":\"";
+  json += JsonEscape(pass);
+  json += L"\"}";
+  auto* web = static_cast<ICoreWebView2*>(webview_);
+  web->PostWebMessageAsString(json.c_str());
 }
 
 void VaultWindow::CopyUsernameAt(int index) {

@@ -55,6 +55,7 @@ class VaultWindow {
   void ReloadFromDisk();
   std::vector<ListRow> ListRows() const;
   void CopyPasswordAt(int index);
+  void RevealPasswordAt(int index);
   void CopyUsernameAt(int index);
   void CopyUrlAt(int index);
   void DeleteAt(int index);

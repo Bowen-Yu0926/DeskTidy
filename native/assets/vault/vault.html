@@ -233,7 +233,7 @@
   </div>
 </div>
 <script>
-  const state = { items: [], logged_in: false, session: '', status: '', editIndex: -1 };
+  const state = { items: [], logged_in: false, session: '', status: '', editIndex: -1, revealed: {}, plainShown: {} };
   function post(obj) {
     try {
       if (window.chrome && window.chrome.webview) {
@@ -334,8 +334,13 @@
         '<div class="meta" data-copy-user="' + i + '" title="双击复制账号">' +
         esc(clipLine('账号', user)) + '</div>' +
         '<div class="pass-row">' +
-        '<div class="meta" data-copy-pass="' + i + '" title="双击复制密码">' +
-        esc(maskPass(it.pass_len)) + '</div>' +
+        '<div class="meta pass-text" data-copy-pass="' + i + '" title="双击复制密码">' +
+        (state.plainShown[i] && state.revealed[i] != null
+          ? esc('密码：' + state.revealed[i])
+          : esc(maskPass(it.pass_len))) + '</div>' +
+        '<button type="button" class="tbtn eye-btn" data-eye="' + i + '" title="' +
+        (state.plainShown[i] ? '隐藏密码' : '显示密码') + '">' +
+        (state.plainShown[i] ? '🙈' : '👁') + '</button>' +
         '<button type="button" class="tbtn" data-copy-pass="' + i + '" title="复制密码">复制</button>' +
         '</div>' +
         (note
@@ -396,6 +401,35 @@
     document.getElementById('modal').classList.remove('on');
     state.editIndex = -1;
   }
+  function updatePassCell(index) {
+    const row = document.querySelector('.row[data-index="' + index + '"]');
+    if (!row) return;
+    const txt = row.querySelector('.pass-text');
+    const eye = row.querySelector('.eye-btn');
+    const plain = !!state.plainShown[index];
+    const it = state.items.find((x) => x.index === index);
+    if (txt) {
+      txt.textContent = (plain && state.revealed[index] != null)
+        ? ('密码：' + state.revealed[index])
+        : maskPass(it ? it.pass_len : 0);
+    }
+    if (eye) {
+      eye.textContent = plain ? '🙈' : '👁';
+      eye.title = plain ? '隐藏密码' : '显示密码';
+    }
+  }
+  function togglePassPlain(index) {
+    if (state.plainShown[index]) {
+      state.plainShown[index] = false;
+      updatePassCell(index);
+    } else if (state.revealed[index] != null) {
+      state.plainShown[index] = true;
+      updatePassCell(index);
+    } else {
+      state.plainShown[index] = true;
+      post({ type: 'action', id: 'reveal_pass', index: index });
+    }
+  }
   document.getElementById('hide').onclick = () => post({ type: 'action', id: 'hide' });
   document.getElementById('btn-refresh').onclick = () => post({ type: 'action', id: 'refresh' });
   document.getElementById('btn-add').onclick = () => openForm(-1);
@@ -442,9 +476,11 @@
     const del = t.getAttribute('data-del');
     const pin = t.getAttribute('data-pin');
     const cp = t.getAttribute('data-copy-pass');
+    const eye = t.getAttribute('data-eye');
     if (edit != null) openForm(Number(edit));
     else if (del != null) post({ type: 'action', id: 'delete', index: Number(del) });
     else if (pin != null) post({ type: 'action', id: 'toggle_pin', index: Number(pin) });
+    else if (eye != null && t.tagName === 'BUTTON') togglePassPlain(Number(eye));
     else if (cp != null && t.tagName === 'BUTTON') {
       post({ type: 'action', id: 'copy_pass', index: Number(cp) });
     }
@@ -475,6 +511,13 @@
 
   function applyState(msg) {
     if (!msg || typeof msg !== 'object') return;
+    if (msg.type === 'revealed_password' && typeof msg.index === 'number' && typeof msg.password === 'string') {
+      state.revealed[msg.index] = msg.password;
+      if (state.plainShown[msg.index]) {
+        updatePassCell(msg.index);
+      }
+      return;
+    }
     if (typeof msg.logged_in === 'boolean') state.logged_in = msg.logged_in;
     if (typeof msg.session === 'string') state.session = msg.session;
     if (typeof msg.status === 'string') state.status = msg.status;
