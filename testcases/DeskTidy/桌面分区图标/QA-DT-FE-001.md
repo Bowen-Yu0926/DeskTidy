@@ -15,7 +15,7 @@ version: 1
 status: active
 automation: python -m pytest "testcases/DeskTidy/桌面分区图标/test_QA_DT_FE_001.py" -q
 last_run: PASS
-last_run_at: 2026-11-02 16:50
+last_run_at: 2026-11-03 08:55
 ---
 ## 测什么
 
@@ -83,6 +83,6 @@ last_run_at: 2026-11-02 16:50
 ## 最终结果
 
 - **结果**：PASS
-- **时间**：2026-11-02 16:50
-- **说明**：automation exit 0；…                                                                     [100%] | 4 passed in 0.04s
+- **时间**：2026-11-03 08:55
+- **说明**：automation exit 0；…                                                                     [100%] | 4 passed in 0.03s
 

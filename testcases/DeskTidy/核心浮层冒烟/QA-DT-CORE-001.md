@@ -15,7 +15,7 @@ version: 1
 status: active
 automation: python -m pytest "testcases/DeskTidy/核心浮层冒烟/test_QA_DT_CORE_001.py" -q
 last_run: PASS
-last_run_at: 2026-11-02 16:50
+last_run_at: 2026-11-03 08:55
 ---
 ## 测什么
 
@@ -76,6 +76,6 @@ DeskTidy 主进程应在本机运行；设置侧与浮条相关的搜索、保�
 ## 最终结果
 
 - **结果**：PASS
-- **时间**：2026-11-02 16:50
-- **说明**：automation exit 0；…                                                                      [100%] | 3 passed in 0.05s
+- **时间**：2026-11-03 08:55
+- **说明**：automation exit 0；…                                                                      [100%] | 3 passed in 0.03s
 

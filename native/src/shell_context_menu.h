@@ -13,6 +13,18 @@ struct ShellMenuExtra {
   bool checked = false;
 };
 
+// Cascading 「移动到分页」→ page → fence. `pages` = membership (empty → page 0).
+struct MoveFenceMenuTarget {
+  std::string id;
+  std::wstring title;
+  std::vector<int> pages;
+};
+// Returns chosen fence id, or empty if cancelled / no pick.
+std::string TrackMoveToPageThenFenceMenu(
+    HWND owner, POINT screen, const std::vector<std::wstring>& page_names,
+    const std::vector<MoveFenceMenuTarget>& fences,
+    const std::string& exclude_fence_id = {});
+
 // Fired with the canonical verb name (e.g. "rename", "refresh", "undo",
 // "newfolder", "paste"). For host-handled rename: when the user picks it
 // (no InvokeCommand). For other verbs: after InvokeCommand returns so

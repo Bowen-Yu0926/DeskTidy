@@ -15,7 +15,7 @@ version: 1
 status: active
 automation: python -m pytest "testcases/DeskTidy/公共浮层/test_QA_DT_PUB_003.py" -q
 last_run: PASS
-last_run_at: 2026-11-02 16:57
+last_run_at: 2026-11-03 08:55
 ---
 ## 测什么
 
@@ -71,6 +71,6 @@ last_run_at: 2026-11-02 16:57
 ## 最终结果
 
 - **结果**：PASS
-- **时间**：2026-11-02 16:57
-- **说明**：automation exit 0；…                                                                      [100%] | 3 passed in 0.06s
+- **时间**：2026-11-03 08:55
+- **说明**：automation exit 0；…                                                                      [100%] | 3 passed in 0.03s
 

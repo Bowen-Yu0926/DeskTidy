@@ -31,11 +31,10 @@ std::vector<std::wstring> OrganizePreviewVirtualPins(
 // ---------------------------------------------------------------------------
 // G4 — per-fence organize kinds (Python fence_rules.py).
 // ---------------------------------------------------------------------------
-// Classify a desktop item: "icon" (.lnk/.url/.exe) or "file" (everything else).
+// Classify a desktop item: "icon" (.lnk/.url/.exe/.bat/…) or "file".
 std::string OrganizeKindOfItem(const DesktopItem& item);
-// Move document files off software/常用 system fences onto system_docs (and
-// icons out of 文档). Returns how many pins were rewritten. Safe to call on
-// every organize / startup — does not touch user fences.
+// Legacy hook — always returns 0. Already-pinned fence icons are never
+// remounted by organize (Fences-class).
 int HealMisplacedSystemPins(PinMap* pins);
 // True when the item's kind is in the fence's organize_kinds. Empty = no rule.
 bool FenceAcceptsItem(const std::vector<std::string>& organize_kinds,

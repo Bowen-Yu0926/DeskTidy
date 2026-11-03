@@ -400,3 +400,80 @@ int TrackShellFolderBackgroundMenu(HWND owner, POINT screen,
   pcm->Release();
   return rc;
 }
+
+std::string TrackMoveToPageThenFenceMenu(
+    HWND owner, POINT screen, const std::vector<std::wstring>& page_names,
+    const std::vector<MoveFenceMenuTarget>& fences,
+    const std::string& exclude_fence_id) {
+  std::vector<std::wstring> names = page_names;
+  if (names.empty()) {
+    names = {L"工作", L"文档"};
+  }
+  if (names.size() > 12) {
+    names.resize(12);
+  }
+
+  // cmd id → fence id (1-based TrackPopupMenu ids).
+  std::vector<std::string> cmd_ids;
+  cmd_ids.emplace_back();  // slot 0 unused
+
+  HMENU root = CreatePopupMenu();
+  if (!root) {
+    return {};
+  }
+  for (size_t pi = 0; pi < names.size(); ++pi) {
+    HMENU sub = CreatePopupMenu();
+    if (!sub) {
+      continue;
+    }
+    int added = 0;
+    for (const auto& f : fences) {
+      if (f.id.empty()) {
+        continue;
+      }
+      if (!exclude_fence_id.empty() && f.id == exclude_fence_id) {
+        continue;
+      }
+      bool on_page = false;
+      if (f.pages.empty()) {
+        on_page = (pi == 0);
+      } else {
+        for (int p : f.pages) {
+          if (p == static_cast<int>(pi)) {
+            on_page = true;
+            break;
+          }
+        }
+      }
+      if (!on_page) {
+        continue;
+      }
+      const UINT id = static_cast<UINT>(cmd_ids.size());
+      if (id > 0x0FFF) {
+        break;
+      }
+      cmd_ids.push_back(f.id);
+      const std::wstring label =
+          f.title.empty() ? std::wstring(L"(未命名)") : f.title;
+      AppendMenuW(sub, MF_STRING, id, label.c_str());
+      ++added;
+    }
+    if (added == 0) {
+      AppendMenuW(sub, MF_STRING | MF_GRAYED, 0, L"该页无分区");
+    }
+    AppendMenuW(root, MF_POPUP, reinterpret_cast<UINT_PTR>(sub),
+                names[pi].c_str());
+  }
+
+  if (owner) {
+    SetForegroundWindow(owner);
+  }
+  const int cmd =
+      TrackPopupMenu(root, TPM_RETURNCMD | TPM_NONOTIFY, screen.x, screen.y, 0,
+                     owner ? owner : GetDesktopWindow(), nullptr);
+  DestroyMenu(root);
+  if (cmd <= 0 || cmd >= static_cast<int>(cmd_ids.size())) {
+    return {};
+  }
+  return cmd_ids[static_cast<size_t>(cmd)];
+}

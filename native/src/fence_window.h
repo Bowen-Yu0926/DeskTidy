@@ -11,10 +11,11 @@
 #include <string>
 #include <vector>
 
-// Target fence for the "move to fence" submenu (id + display title).
+// Target fence for cascading「移动到分页 → 分区」(id + title + page membership).
 struct FenceMoveTarget {
   std::string id;
   std::wstring title;
+  std::vector<int> pages;
 };
 
 class FenceWindow {
@@ -238,8 +239,8 @@ class FenceWindow {
   void RecycleItem(int index);
   void ShowItemProperties(int index);
   void ShowFenceMenu(POINT screen);
-  void ShowMoveToFenceMenu(POINT screen);
-  void ShowMoveToPageMenu(POINT screen);
+  // Cascading「移动到分页」→ page → fence.
+  void ShowMoveToPageFenceMenu(POINT screen);
   void SelectOnly(int index);
   void ToggleSelected(int index);
   void SelectRange(int index);

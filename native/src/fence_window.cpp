@@ -52,9 +52,8 @@ constexpr int kExtFenceRename = 5;
 constexpr int kExtFenceCollapse = 6;
 constexpr int kExtUnpin = 1;
 constexpr int kExtWhitelist = 2;
-constexpr int kExtMoveFence = 3;
-constexpr int kExtMovePage = 4;
-constexpr int kExtOpenNotes = 5;
+constexpr int kExtMovePage = 3;
+constexpr int kExtOpenNotes = 4;
 bool g_class_registered = false;
 
 std::wstring DesktopDirectory() {
@@ -2340,10 +2339,10 @@ void FenceWindow::ShowIconMenu(int index, POINT screen) {
   if (!paths.empty()) {
     whitelisted = IsWhitelisted(paths[0], LoadWhitelist());
   }
+  // Single entry「移动到分页」→ page → fence (not two flat move items).
   const std::vector<ShellMenuExtra> extras{
       {Tr("menu_unpin"), kExtUnpin},
       {whitelisted ? Tr("wl_remove_item") : Tr("wl_add_item"), kExtWhitelist},
-      {Tr("menu_move_fence"), kExtMoveFence},
       {Tr("menu_move_page"), kExtMovePage},
       {Tr("notes_open_in_notepad"), kExtOpenNotes},
   };
@@ -2366,12 +2365,8 @@ void FenceWindow::ShowIconMenu(int index, POINT screen) {
     }
     return;
   }
-  if (shell_cmd == kExtMoveFence) {
-    ShowMoveToFenceMenu(screen);
-    return;
-  }
   if (shell_cmd == kExtMovePage) {
-    ShowMoveToPageMenu(screen);
+    ShowMoveToPageFenceMenu(screen);
     return;
   }
   if (shell_cmd == kExtOpenNotes) {
@@ -2417,56 +2412,25 @@ void FenceWindow::ShowIconMenu(int index, POINT screen) {
   }
 }
 
-void FenceWindow::ShowMoveToFenceMenu(POINT screen) {
+void FenceWindow::ShowMoveToPageFenceMenu(POINT screen) {
   const auto paths = SelectedPaths();
-  if (paths.empty()) {
+  if (paths.empty() || !on_move_to_fence_) {
     return;
   }
-  std::vector<FenceMoveTarget> targets;
+  std::vector<MoveFenceMenuTarget> targets;
   if (on_query_fences_) {
     for (auto& t : on_query_fences_()) {
-      if (t.id != id_) {
-        targets.push_back(std::move(t));
-      }
+      MoveFenceMenuTarget m;
+      m.id = std::move(t.id);
+      m.title = std::move(t.title);
+      m.pages = std::move(t.pages);
+      targets.push_back(std::move(m));
     }
   }
-  HMENU menu = CreatePopupMenu();
-  for (size_t i = 0; i < targets.size(); ++i) {
-    const std::wstring label =
-        targets[i].title.empty() ? std::wstring(L"(未命名)") : targets[i].title;
-    AppendMenuW(menu, MF_STRING, static_cast<UINT>(1 + i), label.c_str());
-  }
-  if (targets.empty()) {
-    AppendMenuW(menu, MF_STRING | MF_GRAYED, 1, L"没有其它分区");
-  }
-  SetForegroundWindow(hwnd_);
-  const int cmd = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_NONOTIFY, screen.x,
-                                 screen.y, 0, hwnd_, nullptr);
-  DestroyMenu(menu);
-  if (cmd >= 1 && cmd <= static_cast<int>(targets.size()) && on_move_to_fence_) {
-    on_move_to_fence_(this, paths, targets[static_cast<size_t>(cmd - 1)].id);
-  }
-}
-
-void FenceWindow::ShowMoveToPageMenu(POINT screen) {
-  const auto paths = SelectedPaths();
-  if (paths.empty()) {
-    return;
-  }
-  if (page_names_.empty()) {
-    page_names_ = {L"工作", L"文档"};
-  }
-  HMENU menu = CreatePopupMenu();
-  for (size_t i = 0; i < page_names_.size() && i < 12; ++i) {
-    AppendMenuW(menu, MF_STRING, static_cast<UINT>(1 + i),
-                page_names_[i].c_str());
-  }
-  SetForegroundWindow(hwnd_);
-  const int cmd = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_NONOTIFY, screen.x,
-                                 screen.y, 0, hwnd_, nullptr);
-  DestroyMenu(menu);
-  if (cmd >= 1 && cmd <= static_cast<int>(page_names_.size()) && on_move_to_page_) {
-    on_move_to_page_(this, paths, cmd - 1);
+  const std::string fence_id = TrackMoveToPageThenFenceMenu(
+      hwnd_, screen, page_names_, targets, /*exclude_fence_id=*/id_);
+  if (!fence_id.empty()) {
+    on_move_to_fence_(this, paths, fence_id);
   }
 }
 

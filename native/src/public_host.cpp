@@ -637,25 +637,19 @@ void PublicHost::ShowBackgroundMenu(POINT screen) {
   }
 }
 
-void PublicHost::ShowMoveToPageMenu(POINT screen) {
+void PublicHost::ShowMoveToPageFenceMenu(POINT screen) {
   auto paths = SelectedPaths();
-  if (paths.empty()) {
+  if (paths.empty() || !on_move_to_fence_) {
     return;
   }
-  std::vector<std::wstring> names = page_names_;
-  if (names.empty()) {
-    names = {L"工作", L"文档"};
+  std::vector<MoveFenceMenuTarget> targets;
+  if (on_query_fences_) {
+    targets = on_query_fences_();
   }
-  HMENU menu = CreatePopupMenu();
-  for (size_t i = 0; i < names.size() && i < 12; ++i) {
-    AppendMenuW(menu, MF_STRING, static_cast<UINT>(1 + i), names[i].c_str());
-  }
-  SetForegroundWindow(hwnd_);
-  const int cmd = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_NONOTIFY, screen.x,
-                                 screen.y, 0, hwnd_, nullptr);
-  DestroyMenu(menu);
-  if (cmd >= 1 && cmd <= static_cast<int>(names.size()) && on_move_to_page_) {
-    on_move_to_page_(paths, cmd - 1);
+  const std::string fence_id =
+      TrackMoveToPageThenFenceMenu(hwnd_, screen, page_names_, targets);
+  if (!fence_id.empty()) {
+    on_move_to_fence_(paths, fence_id);
   }
 }
 
@@ -685,7 +679,7 @@ void PublicHost::ShowSlotMenu(int index, POINT screen) {
   const int shell_cmd =
       TrackShellContextMenu(hwnd_, screen, paths, extras, on_verb, nullptr);
   if (shell_cmd == kExtPublicMovePage) {
-    ShowMoveToPageMenu(screen);
+    ShowMoveToPageFenceMenu(screen);
     return;
   }
   if (shell_cmd == kExtPublicRefresh) {

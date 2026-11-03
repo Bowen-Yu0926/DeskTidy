@@ -15,7 +15,7 @@ version: 3
 status: active
 automation: python -m pytest "testcases/DeskTidy/桌面资源管理器对标/test_QA_DT_SH_005.py" -q
 last_run: PASS
-last_run_at: 2026-11-02 16:50
+last_run_at: 2026-11-03 08:55
 ---
 ## 测什么
 
@@ -55,6 +55,6 @@ Win11 24H2+ raised desktop 上，`UpdateLayeredWindow` 分区必须是 **Progman
 ## 最终结果
 
 - **结果**：PASS
-- **时间**：2026-11-02 16:50
-- **说明**：automation exit 0；…                                                                 [100%] | 8 passed in 0.04s
+- **时间**：2026-11-03 08:55
+- **说明**：automation exit 0；…                                                                 [100%] | 8 passed in 0.03s
 

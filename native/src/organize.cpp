@@ -204,59 +204,23 @@ bool NameMatchesExclude(const std::wstring& name, const std::wstring& pattern) {
 
 std::string OrganizeKindOfItem(const DesktopItem& item) {
   // Python item_organize_kind: .lnk/.url/.exe → "icon"; folders/others → "file".
+  // Also treat launchers/scripts as icon so 常用 pins (.bat/.cmd/.ps1) are not
+  // healed into 文档 after pin-skip organize.
   std::wstring name = item.name.empty() ? item.path : item.name;
   const std::wstring ext = LowerW(Extension(BaseName(name)));
-  if (item.is_link || ext == L".lnk" || ext == L".url" || ext == L".exe") {
+  if (item.is_link || ext == L".lnk" || ext == L".url" || ext == L".exe" ||
+      ext == L".bat" || ext == L".cmd" || ext == L".ps1" || ext == L".msi" ||
+      ext == L".com") {
     return "icon";
   }
   return "file";
 }
 
-namespace {
-
-DesktopItem ProbeFromPinKey(const std::wstring& path) {
-  DesktopItem probe;
-  probe.path = path;
-  const size_t slash = path.find_last_of(L"\\/");
-  probe.name =
-      (slash == std::wstring::npos) ? path : path.substr(slash + 1);
-  const std::wstring ext = LowerW(Extension(BaseName(probe.name)));
-  probe.is_link = ext == L".lnk" || ext == L".url";
-  return probe;
-}
-
-bool IsSoftwareSystemFence(const std::string& id) {
-  return id == "system_software" || id == "system_software_side" ||
-         id == "system_common";
-}
-
-}  // namespace
-
 int HealMisplacedSystemPins(PinMap* pins) {
-  // AIGC START
-  // Two-page model: files → 文档 (system_docs); icons → 常用 (system_common).
-  // PPT/docx wrongly left in「其他」after 一键整理 (skips already-pinned) or
-  // old software-side dumps stay stuck until「重新整理」— heal them here.
-  if (!pins) {
-    return 0;
-  }
-  int n = 0;
-  for (auto& kv : *pins) {
-    if (kv.first.find(L"::") != std::wstring::npos) {
-      continue;  // namespace icons stay on 常用
-    }
-    const DesktopItem probe = ProbeFromPinKey(kv.first);
-    const std::string kind = OrganizeKindOfItem(probe);
-    if (kind == "file" && IsSoftwareSystemFence(kv.second)) {
-      kv.second = "system_docs";
-      ++n;
-    } else if (kind == "icon" && kv.second == "system_docs") {
-      kv.second = "system_common";
-      ++n;
-    }
-  }
-  return n;
-  // AIGC END
+  // No-op: Fences-class「已经在分区的不参与整理」. Remounting pins after
+  // organize/boot fought user seats. Symbol kept for existing call sites.
+  (void)pins;
+  return 0;
 }
 
 bool FenceAcceptsItem(const std::vector<std::string>& organize_kinds,

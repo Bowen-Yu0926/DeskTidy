@@ -60,9 +60,10 @@ def test_public_menu_keeps_multiselect_and_move_page():
     assert "SelectOnly(index)" in menu
     assert "menu_move_page" in menu or "kExtPublicMovePage" in menu
     assert "SelectedPaths()" in menu
-    move = _fn(host, "void PublicHost::ShowMoveToPageMenu(", 900)
-    assert "SelectedPaths()" in move
-    assert "on_move_to_page_" in move
+    # Cascading page → fence (not flat move-to-page only)
+    move = _fn(host, "void PublicHost::ShowMoveToPageFenceMenu(", 900)
+    assert "TrackMoveToPageThenFenceMenu" in move
+    assert "on_move_to_fence_" in move
 
 
 def test_public_desktop_defaults_on():

@@ -634,9 +634,14 @@ void App::WireFence(FenceWindow* fence) {
   fence->SetQueryFences([this]() {
     std::vector<FenceMoveTarget> out;
     for (const auto& f : fences_) {
-      if (f) {
-        out.push_back({f->Id(), f->Title()});
+      if (!f) {
+        continue;
       }
+      FenceMoveTarget t;
+      t.id = f->Id();
+      t.title = f->Title();
+      t.pages = f->Pages().empty() ? std::vector<int>{f->Page()} : f->Pages();
+      out.push_back(std::move(t));
     }
     return out;
   });
@@ -1183,10 +1188,24 @@ bool App::Init(HINSTANCE instance) {
     float_placements_ = m;
     SaveFloatPlacements(float_placements_);
   });
-  public_host_.SetOnMoveToPage(
-      [this](const std::vector<std::wstring>& paths, int page) {
-        MoveDesktopItemsToPage(paths, page);
+  public_host_.SetOnMoveToFence(
+      [this](const std::vector<std::wstring>& paths, const std::string& fence_id) {
+        MoveDesktopItemsToFence(paths, fence_id);
       });
+  public_host_.SetQueryFences([this]() {
+    std::vector<MoveFenceMenuTarget> out;
+    for (const auto& f : fences_) {
+      if (!f) {
+        continue;
+      }
+      MoveFenceMenuTarget t;
+      t.id = f->Id();
+      t.title = f->Title();
+      t.pages = f->Pages().empty() ? std::vector<int>{f->Page()} : f->Pages();
+      out.push_back(std::move(t));
+    }
+    return out;
+  });
   search_.SetOnPathReplaced(
       [this](const std::wstring& from, const std::wstring& to) {
         RetargetPin(from, to);
@@ -1256,9 +1275,8 @@ bool App::Init(HINSTANCE instance) {
       pins_migrated = true;
     }
   }
-  if (HealMisplacedSystemPins(&pins_) > 0) {
-    pins_migrated = true;
-  }
+  // Do not HealMisplacedSystemPins here — already-pinned fence icons must stay
+  // where the user put them (Fences-class organize / boot).
   if (pins_migrated) {
     SavePins(pins_);
   }
@@ -5552,33 +5570,21 @@ void App::OnOrganizeDone(OrganizeJobResult* job) {
     applied = job->n;
     pins_ = std::move(job->pins);
   } else {
-    // Virtual organize only pins leftovers (Fences-class). Merge deltas onto
-    // the live map — never replace pins_ wholesale (that stomped manual drops).
-    // Exception: worker retargeted a pin that the user did not edit mid-job
-    // (e.g. PPT stuck in「其他」→ system_docs).
+    // Virtual organize only pins leftovers (Fences-class). Merge new pins onto
+    // the live map — never replace pins_ wholesale, never retarget anything
+    // already in a fence (已在分区的不参与整理).
     for (const auto& kv : job->pins) {
       const auto it = job->pins_at_start.find(kv.first);
       if (it != job->pins_at_start.end() && it->second == kv.second) {
         continue;  // unchanged from job start
       }
-      const std::string* live = FindPin(pins_, kv.first);
-      if (live) {
-        if (*live == kv.second) {
-          continue;
-        }
-        // Live still at job-start → safe to apply worker retarget.
-        if (it != job->pins_at_start.end() && *live == it->second) {
-          SetPin(&pins_, kv.first, kv.second);
-          ++applied;
-        }
-        continue;
+      if (FindPin(pins_, kv.first)) {
+        continue;  // already pinned — leave seat alone
       }
       SetPin(&pins_, kv.first, kv.second);
       ++applied;
     }
   }
-  // Belt-and-suspenders: files on software/常用 → 文档；icons on 文档 → 常用.
-  applied += HealMisplacedSystemPins(&pins_);
   delete job;
   LogLine(L"[organize] virtual quiet=%d reassign=%d pins_applied=%d",
           quiet ? 1 : 0, reassign ? 1 : 0, applied);

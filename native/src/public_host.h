@@ -4,6 +4,8 @@
 #include "display_geom.h"
 #include "float_placements.h"
 #include "ole_drag.h"
+#include "shell_context_menu.h"
+#include "shell_context_menu.h"
 
 #include <Windows.h>
 
@@ -49,10 +51,15 @@ class PublicHost {
       std::function<void(const FloatPlacementMap&)> fn) {
     on_placements_changed_ = std::move(fn);
   }
-  // Batch「移动到分页」— paths already selected (marquee / multi-select).
-  void SetOnMoveToPage(
-      std::function<void(const std::vector<std::wstring>&, int)> fn) {
-    on_move_to_page_ = std::move(fn);
+  // Cascading「移动到分页 → 分区」for multi-select / marquee.
+  void SetOnMoveToFence(
+      std::function<void(const std::vector<std::wstring>&,
+                         const std::string&)> fn) {
+    on_move_to_fence_ = std::move(fn);
+  }
+  void SetQueryFences(
+      std::function<std::vector<MoveFenceMenuTarget>()> fn) {
+    on_query_fences_ = std::move(fn);
   }
   void SetPageNames(std::vector<std::wstring> names) {
     page_names_ = std::move(names);
@@ -84,7 +91,7 @@ class PublicHost {
   void PersistSlotPlacements();
   void BeginOleDrag();
   void ShowSlotMenu(int index, POINT screen);
-  void ShowMoveToPageMenu(POINT screen);
+  void ShowMoveToPageFenceMenu(POINT screen);
   void ShowBackgroundMenu(POINT screen);
   void PasteClipboardFiles();
   void EnsureDropTarget();
@@ -150,5 +157,7 @@ class PublicHost {
   std::function<void()> on_paste_;
   std::function<DWORD(const std::vector<std::wstring>&)> on_paths_dropped_;
   std::function<void(const FloatPlacementMap&)> on_placements_changed_;
-  std::function<void(const std::vector<std::wstring>&, int)> on_move_to_page_;
+  std::function<void(const std::vector<std::wstring>&, const std::string&)>
+      on_move_to_fence_;
+  std::function<std::vector<MoveFenceMenuTarget>()> on_query_fences_;
 };
