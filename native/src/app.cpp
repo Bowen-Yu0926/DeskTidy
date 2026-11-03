@@ -4919,11 +4919,15 @@ void App::RefreshDesktopIcons() {
         extra.is_link = true;
         extra.name.resize(dot);
       }
-      SHFILEINFOW sfi{};
-      if (SHGetFileInfoW(path.c_str(), 0, &sfi, sizeof(sfi),
-                         SHGFI_DISPLAYNAME) &&
-          sfi.szDisplayName[0]) {
-        extra.name = sfi.szDisplayName;
+      // Match ScanDesktopItems: SHGetFileInfo DISPLAYNAME is ~1–5ms each —
+      // only resolve captions for shortcuts (file stem already usable).
+      if (extra.is_link) {
+        SHFILEINFOW sfi{};
+        if (SHGetFileInfoW(path.c_str(), 0, &sfi, sizeof(sfi),
+                           SHGFI_DISPLAYNAME) &&
+            sfi.szDisplayName[0]) {
+          extra.name = sfi.szDisplayName;
+        }
       }
       std::string target = kv.second;
       if (target == "system_software") {
@@ -4933,6 +4937,12 @@ void App::RefreshDesktopIcons() {
     }
   }
 
+  // Prefer in-memory prefs — LoadExcludePatterns() re-reads app_prefs.json
+  // from disk (portal fence × every RefreshDesktopIcons).
+  std::vector<std::wstring> excludes = prefs_.exclude_patterns;
+  if (excludes.empty()) {
+    excludes = DefaultExcludePatterns();
+  }
   for (auto& fence : fences_) {
     if (!fence) {
       continue;
@@ -4950,7 +4960,7 @@ void App::RefreshDesktopIcons() {
       }
     }
     if (portal_ok) {
-      fence->SetItems(ScanPortalItems(portal, LoadExcludePatterns()));
+      fence->SetItems(ScanPortalItems(portal, excludes));
       continue;
     }
     auto it = by_fence.find(fence->Id());
@@ -4982,6 +4992,7 @@ void App::RefreshDesktopIcons() {
 void App::RefreshIconGrids() {
   // P2-17: Explorer icon size / spacing changed — re-read the live grid metrics
   // and push them to every fence (public host re-queries inside SetItems).
+  InvalidateIconGridMetricsCache();
   const IconGridMetrics m = QueryIconGridMetrics();
   for (auto& fence : fences_) {
     if (fence) {
@@ -5276,8 +5287,9 @@ void App::OnDesktopContentRefresh() {
     RefreshDesktopIcons();
   }
   // Folder→Desktop copy churn can leave a mapped fence with an empty layered
-  // buffer or buried under DefView. Repaint visible page chrome and re-seat
-  // (Fences-class: membership settle ends with a visible partition).
+  // buffer or buried under DefView. Only re-Present when dirty / buried —
+  // SetItems already blitted membership changes (same-seat skip is the common
+  // watch-refresh path).
   for (auto& fence : fences_) {
     if (!fence || !fence->Hwnd()) {
       continue;
@@ -5286,7 +5298,10 @@ void App::OnDesktopContentRefresh() {
         !fence->VisibleOnPage(current_page_)) {
       continue;
     }
-    if (IsWindowVisible(fence->Hwnd()) && !IsIconic(fence->Hwnd())) {
+    if (!IsWindowVisible(fence->Hwnd()) || IsIconic(fence->Hwnd())) {
+      continue;
+    }
+    if (fence->LayerDirty() || !IsOverlayAboveDefView(fence->Hwnd())) {
       fence->RefreshLayer();
     }
   }
@@ -5504,9 +5519,11 @@ void App::OrganizeReassign() {
     ShowToast(L"正在整理，请稍候…");
     return;
   }
+  // Fences-class: same skip as 一键整理 — already-pinned fence icons stay put.
+  // Only loose public floats are (re)assigned. Keep the confirm copy honest.
   const std::wstring tip =
-      L"按当前分区规则重新分配桌面上的全部项目？\n\n"
-      L"已被你手动拖入某个分区的项目也会按规则重新归位。\n"
+      L"按当前分区规则整理桌面上的公共浮层图标？\n\n"
+      L"已钉进分区的图标不会被挪动。\n"
       L"只改分区归属，不移动、不删除任何文件。";
   if (!MistConfirm(settings_.Hwnd() ? settings_.Hwnd() : message_hwnd_,
                    L"重新整理", tip.c_str(), MistMsgTone::Warn)) {
@@ -5965,16 +5982,21 @@ LRESULT CALLBACK App::TrayWndProc(HWND hwnd, UINT msg, WPARAM wparam,
       if (wparam == kTimerRestore) {
         if (self->DesktopChromeMayRestack()) {
           // AIGC START
-          // Periodic keepalive (4s): re-upload ULW for mapped page fences.
-          // Attached+visible can still be fully transparent after SoftSeat
-          // FRAMECHANGED; IsOverlayAboveDefView stays true so Raise-only heal
-          // never runs — Present here restores icons without restacking.
+          // Periodic keepalive (4s): restack when buried. SoftSeat only uses
+          // FRAMECHANGED on real owner/style changes now — do NOT re-Present
+          // every healthy fence (was N× full ULW blit every 4s). Re-upload
+          // only dirty layers or when chrome is known unhealthy.
+          const bool unhealthy = !self->DesktopChromeHealthy();
           for (auto& fence : self->fences_) {
             if (!fence || !fence->Hwnd() ||
                 !fence->VisibleOnPage(self->current_page_)) {
               continue;
             }
-            if (IsWindowVisible(fence->Hwnd()) && !IsIconic(fence->Hwnd())) {
+            if (!IsWindowVisible(fence->Hwnd()) || IsIconic(fence->Hwnd())) {
+              continue;
+            }
+            if (fence->LayerDirty() || unhealthy ||
+                !IsOverlayAboveDefView(fence->Hwnd())) {
               fence->RefreshLayer();
             }
           }

@@ -9,6 +9,8 @@
 
 #include <algorithm>
 #include <cstring>
+#include <string>
+#include <unordered_set>
 #include <vector>
 
 #pragma comment(lib, "comctl32.lib")
@@ -80,20 +82,40 @@ void AppendFolder(const std::wstring& folder, std::vector<DesktopItem>* out) {
     DesktopItem item;
     item.path = folder + L"\\" + fd.cFileName;
     item.name = fd.cFileName;
-    item.is_link = EndsWithIgnoreCase(item.name, L".lnk");
-    if (item.is_link && item.name.size() > 4) {
-      item.name.resize(item.name.size() - 4);
-    }
-    SHFILEINFOW sfi{};
-    if (SHGetFileInfoW(item.path.c_str(), 0, &sfi, sizeof(sfi),
-                       SHGFI_DISPLAYNAME)) {
-      if (sfi.szDisplayName[0] != L'\0') {
+    item.is_link = EndsWithIgnoreCase(item.name, L".lnk") ||
+                   EndsWithIgnoreCase(item.name, L".url");
+    // SHGetFileInfo(DISPLAYNAME) is ~1–5ms per call. Ordinary files keep the
+    // FindFirst name (Fences-class); only resolve shell display names for
+    // shortcuts / internet shortcuts where the caption differs from the file.
+    if (item.is_link) {
+      if (EndsWithIgnoreCase(item.name, L".lnk") && item.name.size() > 4) {
+        item.name.resize(item.name.size() - 4);
+      } else if (EndsWithIgnoreCase(item.name, L".url") &&
+                 item.name.size() > 4) {
+        item.name.resize(item.name.size() - 4);
+      }
+      SHFILEINFOW sfi{};
+      if (SHGetFileInfoW(item.path.c_str(), 0, &sfi, sizeof(sfi),
+                         SHGFI_DISPLAYNAME) &&
+          sfi.szDisplayName[0] != L'\0') {
         item.name = sfi.szDisplayName;
       }
     }
     out->push_back(std::move(item));
   } while (FindNextFileW(h, &fd));
   FindClose(h);
+}
+
+std::wstring ScanDedupKey(const std::wstring& path) {
+  std::wstring key = path;
+  for (auto& c : key) {
+    if (c == L'/') {
+      c = L'\\';
+    } else if (c >= L'A' && c <= L'Z') {
+      c = static_cast<wchar_t>(c - L'A' + L'a');
+    }
+  }
+  return key;
 }
 
 std::wstring KnownFolder(REFKNOWNFOLDERID id) {
@@ -137,18 +159,16 @@ std::vector<DesktopItem> ScanDesktopItems() {
             [](const DesktopItem& a, const DesktopItem& b) {
               return _wcsicmp(a.name.c_str(), b.name.c_str()) < 0;
             });
+  // O(n) path dedupe (was nested O(n²) _wcsicmp walk).
+  std::unordered_set<std::wstring> seen;
+  seen.reserve(items.size() * 2 + 8);
   std::vector<DesktopItem> unique;
+  unique.reserve(items.size());
   for (auto& it : items) {
-    bool dup = false;
-    for (const auto& u : unique) {
-      if (_wcsicmp(u.path.c_str(), it.path.c_str()) == 0) {
-        dup = true;
-        break;
-      }
+    if (!seen.insert(ScanDedupKey(it.path)).second) {
+      continue;
     }
-    if (!dup) {
-      unique.push_back(std::move(it));
-    }
+    unique.push_back(std::move(it));
   }
   g_scan_cache = unique;
   g_scan_tick = now;

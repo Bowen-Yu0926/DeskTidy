@@ -517,7 +517,26 @@ void ScaleIconGridForDpi(IconGridMetrics* m, int old_dpi, int new_dpi) {
   m->icon_size = (std::max)(16, RoundScale(m->icon_size, k));
 }
 
+namespace {
+IconGridMetrics g_grid_cache{};
+ULONGLONG g_grid_tick = 0;
+bool g_grid_valid = false;
+// Public SetItems + Layout often query twice in one refresh — DefView walk +
+// SendMessage + registry IconSize is too heavy for every Layout tick.
+constexpr ULONGLONG kGridCacheTtlMs = 750;
+}  // namespace
+
+void InvalidateIconGridMetricsCache() {
+  g_grid_valid = false;
+  g_grid_tick = 0;
+}
+
 IconGridMetrics QueryIconGridMetrics() {
+  const ULONGLONG now = GetTickCount64();
+  if (g_grid_valid && now - g_grid_tick < kGridCacheTtlMs) {
+    return g_grid_cache;
+  }
+
   // Legacy fixed defaults — preserved when Explorer metrics are unavailable.
   IconGridMetrics out;
   const double scale = (std::max)(1.0, static_cast<double>(SystemDpi()) / 96.0);
@@ -554,6 +573,9 @@ IconGridMetrics QueryIconGridMetrics() {
   }
 
   if (native_w == 0 || native_h == 0) {
+    g_grid_cache = out;
+    g_grid_tick = now;
+    g_grid_valid = true;
     return out;  // keep legacy defaults
   }
 
@@ -579,6 +601,9 @@ IconGridMetrics QueryIconGridMetrics() {
   out.cell_h = (std::max)(48, target_h);
   const int min_caption = (std::max)(16, line_h);
   out.cell_h = (std::max)(out.icon_size + min_caption, out.cell_h);
+  g_grid_cache = out;
+  g_grid_tick = now;
+  g_grid_valid = true;
   return out;
 }
 

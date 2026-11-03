@@ -6,9 +6,10 @@
 
 | 模块 | 缩写 | 路由 | 菜单 | 后端入口 | 冒烟用例 |
 | 桌面资源管理器对标 | SH | — | 桌面/分区/浮动层 | public_host / fence_window / shell_clipboard / app OnDesktopPaste·OnDesktopDropPaths / ole_drag | QA-DT-SH-001 / QA-DT-SH-004 |
-| 公共浮层 | PUB | — | 浮动图标框选拖拽 | public_host BeginOleDrag / ole_drag ShellDoDragFiles | QA-DT-PUB-DRAG-001 |
+| 公共浮层 | PUB | — | 浮动图标框选拖拽 / 跨页迁页 | public_host BeginOleDrag / ShowSlotMenu / app MoveDesktopItemsToPage RebuildPublicItems | QA-DT-PUB-DRAG-001 / QA-DT-PUB-002 |
+| 桌面整理 | ORG | — | 一键整理 / 跳过已钉 | organize ShouldSkipVirtual / OrganizeApplyDefaultPins | QA-DT-ORG-001 |
 | 桌面分区图标 | FE | — | 分区钉选/拖拽重排/跨区 | fence_window / ole_drag / app TransferPins | QA-DT-FE-001 |
-| 桌面整理性能 | PF | — | 分区绘制/拖拽/粘贴热路径 | fence_window / public_host / shell_clipboard / app prune·trim | QA-DT-PF-001 |
+| 桌面整理性能 | PF | — | 分区绘制/拖拽/粘贴/刷新热路径 | fence_window / public_host / shell_clipboard / app prune·trim·RefreshDesktopIcons / display_geom | QA-DT-PF-001 … QA-DT-PF-004 |
 | 扩展工具 | TL | — | 计算器 / 桌面待办 / 壁纸 | tools_misc OpenCalculator WallpaperMenu / todo_window / app OpenTodos | QA-DT-TL-001 |
 | 截图录屏 | CAP | — | 区域截图 / 录屏 | capture_overlay / screen_record | QA-DT-CAP-001 |
 | Mist 提示 | MS | — | 系统提示/确认 | mist_msg / mist_webview / 各 UI MistAlert | QA-DT-MS-001 |

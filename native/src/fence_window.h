@@ -387,4 +387,13 @@ class FenceWindow {
   // True when pixels must be re-uploaded after the next Show (never ULW while
   // hidden — Win11 often leaves a blank layered surface after mapping).
   bool layer_dirty_ = true;
+  // Reused ULW back-buffer — CreateDIBSection every Present was a hot-path tax.
+  void ReleaseLayerBuffer();
+  bool EnsureLayerBuffer(int w, int h);
+  HDC layer_dc_ = nullptr;
+  HBITMAP layer_dib_ = nullptr;
+  HGDIOBJ layer_old_ = nullptr;
+  void* layer_bits_ = nullptr;
+  int layer_buf_w_ = 0;
+  int layer_buf_h_ = 0;
 };

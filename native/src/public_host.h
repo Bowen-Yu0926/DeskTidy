@@ -93,6 +93,8 @@ class PublicHost {
   void HideMarqueeBand();
   void ClearRubberBaseCache();
   bool EnsureRubberBaseCache(int w, int h);
+  void ReleasePresentBuffer();
+  bool EnsurePresentBuffer(int w, int h);
   bool SelectionFingerprint(std::vector<char>* out) const;
 
   void EnsureSelSize();
@@ -126,6 +128,13 @@ class PublicHost {
   void* rubber_base_bits_ = nullptr;
   int rubber_base_w_ = 0;
   int rubber_base_h_ = 0;
+  // Steady Present() back-buffer (marquee/rubber keep their own caches).
+  HDC present_dc_ = nullptr;
+  HBITMAP present_dib_ = nullptr;
+  HGDIOBJ present_old_ = nullptr;
+  void* present_bits_ = nullptr;
+  int present_w_ = 0;
+  int present_h_ = 0;
   ULONGLONG rubber_present_ms_ = 0;
   std::vector<char> rubber_sel_finger_;
   std::vector<char> selected_;

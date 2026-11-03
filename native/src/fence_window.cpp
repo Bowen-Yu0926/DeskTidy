@@ -325,6 +325,66 @@ bool FenceWindow::ResolveLayerSize(int* out_w, int* out_h) const {
   return true;
 }
 
+void FenceWindow::ReleaseLayerBuffer() {
+  if (layer_dc_ && layer_old_) {
+    SelectObject(layer_dc_, layer_old_);
+    layer_old_ = nullptr;
+  }
+  if (layer_dib_) {
+    DeleteObject(layer_dib_);
+    layer_dib_ = nullptr;
+  }
+  if (layer_dc_) {
+    DeleteDC(layer_dc_);
+    layer_dc_ = nullptr;
+  }
+  layer_bits_ = nullptr;
+  layer_buf_w_ = 0;
+  layer_buf_h_ = 0;
+}
+
+bool FenceWindow::EnsureLayerBuffer(int w, int h) {
+  if (w <= 0 || h <= 0) {
+    return false;
+  }
+  if (layer_dc_ && layer_dib_ && layer_bits_ && layer_buf_w_ == w &&
+      layer_buf_h_ == h) {
+    return true;
+  }
+  ReleaseLayerBuffer();
+  HDC screen = GetDC(nullptr);
+  if (!screen) {
+    return false;
+  }
+  HDC mem = CreateCompatibleDC(screen);
+  BITMAPINFO bmi{};
+  bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+  bmi.bmiHeader.biWidth = w;
+  bmi.bmiHeader.biHeight = -h;
+  bmi.bmiHeader.biPlanes = 1;
+  bmi.bmiHeader.biBitCount = 32;
+  bmi.bmiHeader.biCompression = BI_RGB;
+  void* bits = nullptr;
+  HBITMAP dib = CreateDIBSection(screen, &bmi, DIB_RGB_COLORS, &bits, nullptr, 0);
+  ReleaseDC(nullptr, screen);
+  if (!mem || !dib || !bits) {
+    if (dib) {
+      DeleteObject(dib);
+    }
+    if (mem) {
+      DeleteDC(mem);
+    }
+    return false;
+  }
+  layer_old_ = SelectObject(mem, dib);
+  layer_dc_ = mem;
+  layer_dib_ = dib;
+  layer_bits_ = bits;
+  layer_buf_w_ = w;
+  layer_buf_h_ = h;
+  return true;
+}
+
 void FenceWindow::PresentLayered() {
   if (!hwnd_) {
     return;
@@ -350,26 +410,15 @@ void FenceWindow::PresentLayered() {
     Gdiplus::GdiplusStartup(&gdi_token, &input, nullptr);
   }
 
-  BITMAPINFO bmi{};
-  bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-  bmi.bmiHeader.biWidth = w;
-  bmi.bmiHeader.biHeight = -h;
-  bmi.bmiHeader.biPlanes = 1;
-  bmi.bmiHeader.biBitCount = 32;
-  bmi.bmiHeader.biCompression = BI_RGB;
-  void* bits = nullptr;
-  HDC screen = GetDC(nullptr);
-  HDC mem = CreateCompatibleDC(screen);
-  HBITMAP dib = CreateDIBSection(screen, &bmi, DIB_RGB_COLORS, &bits, nullptr, 0);
-  if (!dib || !bits) {
-    if (dib) {
-      DeleteObject(dib);
-    }
-    DeleteDC(mem);
-    ReleaseDC(nullptr, screen);
+  if (!EnsureLayerBuffer(w, h)) {
     return;
   }
-  HGDIOBJ old = SelectObject(mem, dib);
+  HDC screen = GetDC(nullptr);
+  if (!screen) {
+    return;
+  }
+  HDC mem = layer_dc_;
+  void* bits = layer_bits_;
   std::memset(bits, 0, static_cast<size_t>(w) * static_cast<size_t>(h) * 4);
 
   const int radius = (std::max)(0, S(hwnd_, radius_));
@@ -467,9 +516,6 @@ void FenceWindow::PresentLayered() {
   UpdateOverlayLayered(hwnd_, screen, &origin, &size, mem, &src, 0, &blend,
                       ULW_ALPHA);
 
-  SelectObject(mem, old);
-  DeleteObject(dib);
-  DeleteDC(mem);
   ReleaseDC(nullptr, screen);
   layer_dirty_ = false;
 }
@@ -859,6 +905,7 @@ void FenceWindow::EnsureDropTarget() {
 
 void FenceWindow::Destroy() {
   ClearIcons();
+  ReleaseLayerBuffer();
   if (tip_) {
     DestroyWindow(tip_);
     tip_ = nullptr;
@@ -1204,6 +1251,12 @@ void FenceWindow::SetItems(std::vector<DesktopItem> items) {
     if (!same_seats) {
       layer_dirty_ = true;
     }
+    return;
+  }
+  // SoftSeat no longer FRAMECHANGEs on every raise — same seats keep a valid
+  // ULW buffer. Desktop-watch / organize used to force N× full blit even when
+  // membership was unchanged (Fences-class: only repaint on dirty content).
+  if (same_seats && !layer_dirty_) {
     return;
   }
   PresentLayered();

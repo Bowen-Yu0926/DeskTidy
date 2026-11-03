@@ -52,7 +52,10 @@ struct IconGridMetrics {
 };
 // Explorer DefView LVM spacing → SPI icon spacing → safe fallback, with
 // DPI/font-scaled comfort padding. Falls back to the legacy fixed values.
+// Hot-path cached (~750ms); call InvalidateIconGridMetricsCache before a
+// forced re-read (Explorer icon-size change / RefreshIconGrids).
 IconGridMetrics QueryIconGridMetrics();
+void InvalidateIconGridMetricsCache();
 // Scale metrics from one DPI to another (ratio round). No-op when equal.
 void ScaleIconGridForDpi(IconGridMetrics* m, int old_dpi, int new_dpi);
 // Minimum fence frame height for `rows` icon rows + header/pad chrome

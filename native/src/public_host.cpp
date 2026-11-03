@@ -267,6 +267,7 @@ void PublicHost::Destroy() {
   }
   marquee_hwnd_ = nullptr;
   ClearRubberBaseCache();
+  ReleasePresentBuffer();
   for (auto& s : slots_) {
     if (s.icon) {
       DestroyIcon(s.icon);
@@ -908,6 +909,66 @@ void PublicHost::SelectIntersecting(RECT client_rc) {
 }
 
 // AIGC START
+void PublicHost::ReleasePresentBuffer() {
+  if (present_dc_ && present_old_) {
+    SelectObject(present_dc_, present_old_);
+    present_old_ = nullptr;
+  }
+  if (present_dib_) {
+    DeleteObject(present_dib_);
+    present_dib_ = nullptr;
+  }
+  if (present_dc_) {
+    DeleteDC(present_dc_);
+    present_dc_ = nullptr;
+  }
+  present_bits_ = nullptr;
+  present_w_ = 0;
+  present_h_ = 0;
+}
+
+bool PublicHost::EnsurePresentBuffer(int w, int h) {
+  if (w <= 0 || h <= 0) {
+    return false;
+  }
+  if (present_dc_ && present_dib_ && present_bits_ && present_w_ == w &&
+      present_h_ == h) {
+    return true;
+  }
+  ReleasePresentBuffer();
+  HDC screen = GetDC(nullptr);
+  if (!screen) {
+    return false;
+  }
+  HDC mem = CreateCompatibleDC(screen);
+  BITMAPINFO bi{};
+  bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+  bi.bmiHeader.biWidth = w;
+  bi.bmiHeader.biHeight = -h;
+  bi.bmiHeader.biPlanes = 1;
+  bi.bmiHeader.biBitCount = 32;
+  bi.bmiHeader.biCompression = BI_RGB;
+  void* bits = nullptr;
+  HBITMAP dib = CreateDIBSection(screen, &bi, DIB_RGB_COLORS, &bits, nullptr, 0);
+  ReleaseDC(nullptr, screen);
+  if (!mem || !dib || !bits) {
+    if (dib) {
+      DeleteObject(dib);
+    }
+    if (mem) {
+      DeleteDC(mem);
+    }
+    return false;
+  }
+  present_old_ = SelectObject(mem, dib);
+  present_dc_ = mem;
+  present_dib_ = dib;
+  present_bits_ = bits;
+  present_w_ = w;
+  present_h_ = h;
+  return true;
+}
+
 void PublicHost::ClearRubberBaseCache() {
   if (rubber_base_dib_) {
     DeleteObject(rubber_base_dib_);
@@ -1731,27 +1792,16 @@ void PublicHost::Present() {
   GetWindowRect(hwnd_, &wr);
   const int w = (std::max)(1, static_cast<int>(wr.right - wr.left));
   const int h = (std::max)(1, static_cast<int>(wr.bottom - wr.top));
-  HDC screen = GetDC(nullptr);
-  HDC mem = CreateCompatibleDC(screen);
-  BITMAPINFO bi{};
-  bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-  bi.bmiHeader.biWidth = w;
-  bi.bmiHeader.biHeight = -h;
-  bi.bmiHeader.biPlanes = 1;
-  bi.bmiHeader.biBitCount = 32;
-  bi.bmiHeader.biCompression = BI_RGB;
-  void* bits = nullptr;
-  HBITMAP dib = CreateDIBSection(screen, &bi, DIB_RGB_COLORS, &bits, nullptr, 0);
-  if (!dib || !bits) {
-    if (dib) {
-      DeleteObject(dib);
-    }
-    DeleteDC(mem);
-    ReleaseDC(nullptr, screen);
+  if (!EnsurePresentBuffer(w, h)) {
     return;
   }
-  HGDIOBJ old = SelectObject(mem, dib);
-  std::memset(bits, 0, static_cast<size_t>(w) * static_cast<size_t>(h) * 4);
+  HDC screen = GetDC(nullptr);
+  if (!screen) {
+    return;
+  }
+  HDC mem = present_dc_;
+  std::memset(present_bits_, 0,
+              static_cast<size_t>(w) * static_cast<size_t>(h) * 4);
   Paint(mem, /*draw_selection=*/true, /*draw_rubber=*/false);
   POINT origin{wr.left, wr.top};
   SIZE size{w, h};
@@ -1762,8 +1812,5 @@ void PublicHost::Present() {
   blend.AlphaFormat = AC_SRC_ALPHA;
   UpdateOverlayLayered(hwnd_, screen, &origin, &size, mem, &src, 0, &blend,
                       ULW_ALPHA);
-  SelectObject(mem, old);
-  DeleteObject(dib);
-  DeleteDC(mem);
   ReleaseDC(nullptr, screen);
 }
