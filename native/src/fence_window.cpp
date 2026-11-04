@@ -151,10 +151,10 @@ Gdiplus::Bitmap* BuildPremultipliedIcon(HICON icon, int dest, BYTE opacity) {
       DeleteObject(ii.hbmMask);
     }
   }
-  // Cap at 2× the draw size: JUMBO masters (256px) otherwise produce a 256×256
-  // premultiplied bitmap per icon (~256KB ×3 opacity variants) and blow up the
-  // cache. 2× keeps downsample quality while bounding memory.
-  src = (std::max)(dest, (std::min)(src, dest * 2));
+  // Draw at the icon's native size (after jumbo trim), never below dest.
+  // Capping to dest*2 forced DrawIconEx's StretchBlt downscale — soft Chrome /
+  // Cursor. Cache only dest×dest; the native DIB is temporary.
+  src = (std::max)(dest, (std::min)(src, 256));
 
   BITMAPINFO bmi{};
   bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
@@ -180,36 +180,48 @@ Gdiplus::Bitmap* BuildPremultipliedIcon(HICON icon, int dest, BYTE opacity) {
   DrawIconEx(mem, 0, 0, icon, src, src, 0, nullptr, DI_NORMAL);
   auto* px = static_cast<BYTE*>(bits);
   const int n = src * src;
+  // DrawIconEx writes PARGB. Downscale: un-premultiply so bicubic sees straight
+  // color. 1:1: keep PARGB as-is (re-multiplying would darken).
   for (int i = 0; i < n; ++i) {
     BYTE* p = px + i * 4;
     BYTE a = p[3];
     if (a == 0 && (p[0] | p[1] | p[2])) {
-      a = 255;
+      a = 255;  // legacy 24bpp source with bogus 0 alpha
     }
-    if (opacity < 255) {
-      a = static_cast<BYTE>((a * opacity) / 255);
+    if (src != dest) {
+      if (a > 0 && a < 255) {
+        p[0] = static_cast<BYTE>((std::min)(255, (p[0] * 255) / a));
+        p[1] = static_cast<BYTE>((std::min)(255, (p[1] * 255) / a));
+        p[2] = static_cast<BYTE>((std::min)(255, (p[2] * 255) / a));
+      }
+      if (opacity < 255) {
+        a = static_cast<BYTE>((a * opacity) / 255);
+      }
+      p[3] = a;
+    } else if (opacity < 255) {
+      p[0] = static_cast<BYTE>((p[0] * opacity) / 255);
+      p[1] = static_cast<BYTE>((p[1] * opacity) / 255);
+      p[2] = static_cast<BYTE>((p[2] * opacity) / 255);
+      p[3] = static_cast<BYTE>((a * opacity) / 255);
     }
-    p[0] = static_cast<BYTE>((p[0] * a) / 255);
-    p[1] = static_cast<BYTE>((p[1] * a) / 255);
-    p[2] = static_cast<BYTE>((p[2] * a) / 255);
-    p[3] = a;
   }
-  // Copy into a bitmap that owns its pixels (cached across frames). Blit via
-  // SourceCopy into a PARGB target (same technique as pet_window sprite load —
-  // LockBits Write on PARGB can be flaky across GDI+ versions).
-  Gdiplus::Bitmap ref(src, src, src * 4, PixelFormat32bppPARGB,
-                      static_cast<BYTE*>(bits));
-  Gdiplus::Bitmap* out = new Gdiplus::Bitmap(src, src, PixelFormat32bppPARGB);
+  Gdiplus::Bitmap* out = new Gdiplus::Bitmap(dest, dest, PixelFormat32bppPARGB);
   {
     Gdiplus::Graphics g2(out);
-    // SourceCopy re-premultiplies PARGB in some GDI+ builds and corrupts the
-    // alpha (icons rendered as opaque boxes, "stacking" over neighbors). Clear
-    // to transparent then SourceOver copies the premultiplied pixels verbatim
-    // (same as pet_window sprite load).
     g2.Clear(Gdiplus::Color(0, 0, 0, 0));
-    g2.SetInterpolationMode(Gdiplus::InterpolationModeNearestNeighbor);
-    g2.SetPixelOffsetMode(Gdiplus::PixelOffsetModeNone);
-    g2.DrawImage(&ref, 0, 0, src, src);
+    if (src == dest) {
+      Gdiplus::Bitmap ref(src, src, src * 4, PixelFormat32bppPARGB,
+                          static_cast<BYTE*>(bits));
+      g2.SetInterpolationMode(Gdiplus::InterpolationModeNearestNeighbor);
+      g2.SetPixelOffsetMode(Gdiplus::PixelOffsetModeNone);
+      g2.DrawImage(&ref, 0, 0, dest, dest);
+    } else {
+      Gdiplus::Bitmap ref(src, src, src * 4, PixelFormat32bppARGB,
+                          static_cast<BYTE*>(bits));
+      g2.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
+      g2.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHalf);
+      g2.DrawImage(&ref, 0, 0, dest, dest);
+    }
   }
   SelectObject(mem, old);
   DeleteObject(dib);
@@ -273,7 +285,20 @@ void FenceWindow::DrawIconCached(Gdiplus::Graphics& g, HICON icon, int x, int y,
   } else {
     bmp = it->second;
   }
+  // 1:1 nearest; downscale (≤2× cache) with bilinear. Global HighQualityBicubic
+  // on PARGB uses negative weights and dark-fringe-blurs icons.
+  const Gdiplus::InterpolationMode prev = g.GetInterpolationMode();
+  const Gdiplus::PixelOffsetMode prev_px = g.GetPixelOffsetMode();
+  if (static_cast<int>(bmp->GetWidth()) == dest &&
+      static_cast<int>(bmp->GetHeight()) == dest) {
+    g.SetInterpolationMode(Gdiplus::InterpolationModeNearestNeighbor);
+    g.SetPixelOffsetMode(Gdiplus::PixelOffsetModeNone);
+  } else {
+    g.SetInterpolationMode(Gdiplus::InterpolationModeBilinear);
+  }
   g.DrawImage(bmp, x, y, dest, dest);
+  g.SetInterpolationMode(prev);
+  g.SetPixelOffsetMode(prev_px);
 }
 
 void FenceWindow::EnsureFonts(int title_px, int caption_px, int footer_px) {

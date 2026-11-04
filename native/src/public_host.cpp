@@ -77,8 +77,9 @@ Gdiplus::Bitmap* BuildPremultipliedIcon(HICON icon, int dest) {
       DeleteObject(ii.hbmMask);
     }
   }
-  // Cap at 2× the draw size (see fence_window BuildPremultipliedIcon).
-  src = (std::max)(dest, (std::min)(src, dest * 2));
+  // Match fence_window: native-size DrawIconEx, then bicubic to dest×dest.
+  // Never draw below dest; never cap to dest*2 (that used StretchBlt smear).
+  src = (std::max)(dest, (std::min)(src, 256));
 
   BITMAPINFO bmi{};
   bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
@@ -110,27 +111,32 @@ Gdiplus::Bitmap* BuildPremultipliedIcon(HICON icon, int dest) {
     if (a == 0 && (p[0] | p[1] | p[2])) {
       a = 255;
     }
-    p[0] = static_cast<BYTE>((p[0] * a) / 255);
-    p[1] = static_cast<BYTE>((p[1] * a) / 255);
-    p[2] = static_cast<BYTE>((p[2] * a) / 255);
-    p[3] = a;
+    if (src != dest) {
+      if (a > 0 && a < 255) {
+        p[0] = static_cast<BYTE>((std::min)(255, (p[0] * 255) / a));
+        p[1] = static_cast<BYTE>((std::min)(255, (p[1] * 255) / a));
+        p[2] = static_cast<BYTE>((std::min)(255, (p[2] * 255) / a));
+      }
+      p[3] = a;
+    }
   }
-  // Copy into a bitmap that owns its pixels (cached across frames). Blit via
-  // SourceCopy into a PARGB target (same technique as pet_window sprite load —
-  // LockBits Write on PARGB can be flaky across GDI+ versions).
-  Gdiplus::Bitmap ref(src, src, src * 4, PixelFormat32bppPARGB,
-                      static_cast<BYTE*>(bits));
-  Gdiplus::Bitmap* out = new Gdiplus::Bitmap(src, src, PixelFormat32bppPARGB);
+  Gdiplus::Bitmap* out = new Gdiplus::Bitmap(dest, dest, PixelFormat32bppPARGB);
   {
     Gdiplus::Graphics g2(out);
-    // SourceCopy re-premultiplies PARGB in some GDI+ builds and corrupts the
-    // alpha (icons rendered as opaque boxes, "stacking" over neighbors). Clear
-    // to transparent then SourceOver copies the premultiplied pixels verbatim
-    // (same as pet_window sprite load).
     g2.Clear(Gdiplus::Color(0, 0, 0, 0));
-    g2.SetInterpolationMode(Gdiplus::InterpolationModeNearestNeighbor);
-    g2.SetPixelOffsetMode(Gdiplus::PixelOffsetModeNone);
-    g2.DrawImage(&ref, 0, 0, src, src);
+    if (src == dest) {
+      Gdiplus::Bitmap ref(src, src, src * 4, PixelFormat32bppPARGB,
+                          static_cast<BYTE*>(bits));
+      g2.SetInterpolationMode(Gdiplus::InterpolationModeNearestNeighbor);
+      g2.SetPixelOffsetMode(Gdiplus::PixelOffsetModeNone);
+      g2.DrawImage(&ref, 0, 0, dest, dest);
+    } else {
+      Gdiplus::Bitmap ref(src, src, src * 4, PixelFormat32bppARGB,
+                          static_cast<BYTE*>(bits));
+      g2.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
+      g2.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHalf);
+      g2.DrawImage(&ref, 0, 0, dest, dest);
+    }
   }
   SelectObject(mem, old);
   DeleteObject(dib);
@@ -190,7 +196,14 @@ void PublicHost::DrawIconCached(Gdiplus::Graphics& g, HICON icon, int x, int y,
   } else {
     bmp = it->second;
   }
+  // Override Paint's HighQualityBicubic — PARGB 1:1 must stay nearest.
+  const Gdiplus::InterpolationMode prev = g.GetInterpolationMode();
+  const Gdiplus::PixelOffsetMode prev_px = g.GetPixelOffsetMode();
+  g.SetInterpolationMode(Gdiplus::InterpolationModeNearestNeighbor);
+  g.SetPixelOffsetMode(Gdiplus::PixelOffsetModeNone);
   g.DrawImage(bmp, x, y, dest, dest);
+  g.SetInterpolationMode(prev);
+  g.SetPixelOffsetMode(prev_px);
 }
 
 bool PublicHost::Create(HINSTANCE instance) {

@@ -5,6 +5,7 @@
 #include <CommCtrl.h>
 #include <ShlObj.h>
 #include <Shellapi.h>
+#include <Shobjidl.h>
 #include <commoncontrols.h>
 
 #include <algorithm>
@@ -19,6 +20,8 @@
 #include <vector>
 
 #pragma comment(lib, "comctl32.lib")
+#pragma comment(lib, "shell32.lib")
+#pragma comment(lib, "ole32.lib")
 
 namespace {
 
@@ -143,6 +146,58 @@ HICON IconFromImageList(int shil, int index) {
   HICON icon = nullptr;
   list->GetIcon(index, ILD_TRANSPARENT, &icon);
   list->Release();
+  return icon;
+}
+
+// Explorer-class extract: IShellItemImageFactory picks the right .ico frame for
+// the requested pixel size (avoids Jumbo→DrawIconEx→GDI+ soft downscale).
+HICON IconFromShellItemFactory(const std::wstring& path, int size_px) {
+  if (path.empty() || size_px <= 0) {
+    return nullptr;
+  }
+  IShellItem* item = nullptr;
+  HRESULT hr = SHCreateItemFromParsingName(path.c_str(), nullptr,
+                                           IID_PPV_ARGS(&item));
+  if (FAILED(hr) || !item) {
+    return nullptr;
+  }
+  IShellItemImageFactory* factory = nullptr;
+  hr = item->QueryInterface(IID_PPV_ARGS(&factory));
+  item->Release();
+  if (FAILED(hr) || !factory) {
+    return nullptr;
+  }
+  // Exact cell size via the shell's own scaler (Explorer parity). ICONONLY
+  // avoids document thumbnails. Fall back to BIGGERSIZEOK if the exact size
+  // cannot be produced (rare).
+  const int req = (std::max)(16, (std::min)(256, size_px));
+  SIZE sz{req, req};
+  HBITMAP hbmp = nullptr;
+  hr = factory->GetImage(sz, SIIGBF_ICONONLY, &hbmp);
+  if (FAILED(hr) || !hbmp) {
+    hr = factory->GetImage(sz, SIIGBF_ICONONLY | SIIGBF_BIGGERSIZEOK, &hbmp);
+  }
+  factory->Release();
+  if (FAILED(hr) || !hbmp) {
+    return nullptr;
+  }
+  BITMAP bm{};
+  if (GetObjectW(hbmp, sizeof(bm), &bm) != sizeof(bm) || bm.bmWidth <= 0) {
+    DeleteObject(hbmp);
+    return nullptr;
+  }
+  HBITMAP mask = CreateBitmap(bm.bmWidth, bm.bmHeight, 1, 1, nullptr);
+  if (!mask) {
+    DeleteObject(hbmp);
+    return nullptr;
+  }
+  ICONINFO ii{};
+  ii.fIcon = TRUE;
+  ii.hbmColor = hbmp;
+  ii.hbmMask = mask;
+  HICON icon = CreateIconIndirect(&ii);
+  DeleteObject(hbmp);
+  DeleteObject(mask);
   return icon;
 }
 
@@ -399,42 +454,44 @@ HICON LoadItemIcon(const std::wstring& path, int size_px) {
   }
 
   HICON master = nullptr;
-  SHFILEINFOW sfi{};
-  const DWORD_PTR ok = SHGetFileInfoW(
-      path.c_str(), 0, &sfi, sizeof(sfi), SHGFI_SYSICONINDEX);
-  if (!ok) {
-    // Fallback: stock large/small icon (often soft on HiDPI).
-    UINT flags = SHGFI_ICON | SHGFI_LARGEICON;
-    if (size_px < 28) {
-      flags = SHGFI_ICON | SHGFI_SMALLICON;
-    }
-    if (!SHGetFileInfoW(path.c_str(), 0, &sfi, sizeof(sfi), flags)) {
-      return nullptr;
-    }
-    master = TrimIconTransparentPadding(sfi.hIcon);
-  } else {
-    // Prefer a source larger than the draw size so DrawIconEx downscales sharp.
-    // JUMBO (256px) for anything >= 40px: trimming a 48px ExtraLarge icon then
-    // upscaling it back to the cell size was the source of the blur. Keeping
-    // the master at 256px means the trim still leaves an icon >= the cell.
-    const int order[] = {
-        size_px >= 40 ? SHIL_JUMBO : SHIL_EXTRALARGE,
-        SHIL_JUMBO,
-        SHIL_EXTRALARGE,
-        SHIL_LARGE,
-        SHIL_SMALL,
-    };
-    for (int shil : order) {
-      HICON icon = IconFromImageList(shil, sfi.iIcon);
-      if (icon) {
-        master = TrimIconTransparentPadding(icon);
-        break;
-      }
-    }
-    if (!master) {
+  // 1) Same pipeline Explorer uses for per-pixel icon views.
+  master = IconFromShellItemFactory(path, size_px);
+
+  if (!master) {
+    SHFILEINFOW sfi{};
+    const DWORD_PTR ok = SHGetFileInfoW(
+        path.c_str(), 0, &sfi, sizeof(sfi), SHGFI_SYSICONINDEX);
+    if (!ok) {
+      // Fallback: stock large/small icon (often soft on HiDPI).
       UINT flags = SHGFI_ICON | SHGFI_LARGEICON;
-      if (SHGetFileInfoW(path.c_str(), 0, &sfi, sizeof(sfi), flags)) {
-        master = TrimIconTransparentPadding(sfi.hIcon);
+      if (size_px < 28) {
+        flags = SHGFI_ICON | SHGFI_SMALLICON;
+      }
+      if (!SHGetFileInfoW(path.c_str(), 0, &sfi, sizeof(sfi), flags)) {
+        return nullptr;
+      }
+      master = TrimIconTransparentPadding(sfi.hIcon);
+    } else {
+      // Jumbo + trim: last resort when ShellItemImageFactory is unavailable.
+      const int order[] = {
+          size_px >= 40 ? SHIL_JUMBO : SHIL_EXTRALARGE,
+          SHIL_JUMBO,
+          SHIL_EXTRALARGE,
+          SHIL_LARGE,
+          SHIL_SMALL,
+      };
+      for (int shil : order) {
+        HICON icon = IconFromImageList(shil, sfi.iIcon);
+        if (icon) {
+          master = TrimIconTransparentPadding(icon);
+          break;
+        }
+      }
+      if (!master) {
+        UINT flags = SHGFI_ICON | SHGFI_LARGEICON;
+        if (SHGetFileInfoW(path.c_str(), 0, &sfi, sizeof(sfi), flags)) {
+          master = TrimIconTransparentPadding(sfi.hIcon);
+        }
       }
     }
   }
