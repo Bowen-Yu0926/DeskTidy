@@ -105,6 +105,8 @@ Native Win32 host — feature MVP map vs Python product.
 native\build.bat
 scripts\run_native.bat
 scripts\build_native_installer.bat
+scripts\release.bat                  :: version → installer → GitHub → site
+python scripts\release.py --bump     :: same, bump patch first
 ```
 
 ## Hotkeys (defaults; editable via tray)

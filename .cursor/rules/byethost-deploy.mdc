@@ -39,7 +39,18 @@ python scripts/upload_byethost.py --list           # 仅列远程目录
 - 站点：见 `.env.byethost` 的 `BYETHOST_SITE_URL`
 - 浏览器可能遇到 ByetHost 反欺诈中间页，刷新后正常；自动化 HTTP 探测可能空内容
 
+## 一键发版
+
+```text
+python scripts/release.py                  # 保版本：编安装包 → 改下载链 → gh release → ByetHost
+python scripts/release.py --bump           # 先升 patch 再发
+python scripts/release.py --dry-run        # 只打印步骤
+scripts\release.bat                        # 同上
+```
+
+仍可单步：`bump_version.py` / `build_native_installer.bat` / `upload_byethost.py`。
+
 ## 代理行为
 
 当用户要求发布/上传下载页时：直接读 `.env.byethost` 并运行 `upload_byethost.py`，无需再向用户要 FTP 密码（除非文件缺失或登录失败）。
-当用户要求上传/发布安装包时：用 `gh release` 发到 `DeskTidy-Releases`，并更新 `docs/desktidy.html` 下载链接后同步 ByetHost 页面。
+当用户要求上传/发布安装包时：优先 `python scripts/release.py`（或带 `--bump`）；等价于 `gh release` 发到 `DeskTidy-Releases`，并更新 `docs/desktidy.html` 后同步 ByetHost。
