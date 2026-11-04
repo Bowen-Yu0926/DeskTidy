@@ -84,6 +84,12 @@ class PetWindow {
   LRESULT HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam);
   void Paint(HDC hdc);
   void Present();
+  void ReleasePresentBuffer();
+  bool EnsurePresentBuffer(int w, int h);
+  // Cached left-facing flip of the current sprite frame (avoid
+  // CreateDIBSection×2 + per-pixel flip every Paint when facing left).
+  HDC EnsureFlipBuffer(HDC hdc, HBITMAP bmp, int bw, int bh);
+  void ReleaseFlipBuffer();
   // Rebuild + apply the sprite-shaped hit region (cached per frame).
   void ApplyHitRegion(const std::vector<BYTE>& alpha, int bw, int bh, int cw,
                       int ch);
@@ -237,8 +243,24 @@ class PetWindow {
   // ---- P1/P3/P4/P5/P6 additions ----
   DWORD last_tick_ms_ = 0;
   DWORD anim_accum_ms_ = 0;
+  DWORD last_soft_present_ms_ = 0;
   bool present_dirty_ = false;
   bool chrome_dirty_ = false;
+  // Reused ULW DIB (Fences-style layer buffer; avoid CreateDIBSection every tick).
+  HDC present_dc_ = nullptr;
+  HBITMAP present_dib_ = nullptr;
+  HGDIOBJ present_old_ = nullptr;
+  void* present_bits_ = nullptr;
+  int present_buf_w_ = 0;
+  int present_buf_h_ = 0;
+  // Left-facing flip cache (dst DIB held selected in flip_dc_).
+  HDC flip_dc_ = nullptr;
+  HBITMAP flip_dib_ = nullptr;
+  HGDIOBJ flip_old_ = nullptr;
+  void* flip_bits_ = nullptr;
+  HBITMAP flip_src_ = nullptr;  // source frame the cache was built from
+  int flip_w_ = 0;
+  int flip_h_ = 0;
   // Click vs drag (P3/P5)
   bool press_captured_ = false;
   POINT press_origin_{};

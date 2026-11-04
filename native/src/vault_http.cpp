@@ -9,10 +9,12 @@
 
 #include <cstdlib>
 #include <cstring>
+#include <cwctype>
 #include <fstream>
 #include <mutex>
 #include <sstream>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #pragma comment(lib, "winhttp.lib")
@@ -420,34 +422,62 @@ struct HttpResponse {
   std::string body;
 };
 
+// WinHTTP session 句柄（WinHttpOpen）可跨线程共享，提升为进程级单例，
+// 各 VaultClient 调用复用同一连接池，避免每次 Open/Close 重新握手。
+// request/connect 句柄仍每次新建（WinHTTP 文档：request handle 不可跨线程）。
+HINTERNET SharedWinHttpSession() {
+  static HINTERNET session = [] {
+    HINTERNET h = WinHttpOpen(kUserAgent, WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
+                              WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+    if (h) {
+      WinHttpSetTimeouts(h, 15000, 15000, 20000, 20000);
+    }
+    return h;
+  }();
+  return session;
+}
+
+// byethost __test cookie 进程级缓存：跨 VaultClient 复用，避免每次重新挑战。
+// 仅在尚未解出或服务端再次返回挑战页（Request 重试路径）时更新，保留过期重试语义。
+std::mutex g_cookie_mutex;
+std::string g_byethost_cookie;
+
+std::string CachedByethostCookie() {
+  std::lock_guard<std::mutex> lk(g_cookie_mutex);
+  return g_byethost_cookie;
+}
+
+void CacheByethostCookie(const std::string& v) {
+  if (v.empty()) {
+    return;
+  }
+  std::lock_guard<std::mutex> lk(g_cookie_mutex);
+  g_byethost_cookie = v;
+}
+
+// title+username 的查重键（不区分大小写，与 _wcsicmp 比较语义一致）。
+std::wstring CredFoldKey(const std::wstring& title, const std::wstring& user) {
+  auto fold = [](std::wstring s) {
+    for (auto& c : s) {
+      c = static_cast<wchar_t>(towlower(c));
+    }
+    return s;
+  };
+  return fold(title) + L"\n" + fold(user);
+}
+
 class VaultClient {
  public:
   explicit VaultClient(const std::wstring& api_base)
       : base_(NormalizeBase(api_base)) {}
 
-  ~VaultClient() {
-    if (session_) {
-      WinHttpCloseHandle(session_);
-    }
-  }
-
-  bool EnsureSession() {
-    if (session_) {
-      return true;
-    }
-    session_ = WinHttpOpen(kUserAgent, WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
-                           WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
-    if (!session_) {
-      return false;
-    }
-    WinHttpSetTimeouts(session_, 15000, 15000, 20000, 20000);
-    return true;
-  }
+  // session 为进程级单例，析构不再关闭（进程退出时由系统回收）。
+  bool EnsureSession() { return SharedWinHttpSession() != nullptr; }
 
   void SetToken(const std::wstring& token) { token_ = token; }
 
   bool EnsureByethost() {
-    if (!test_cookie_.empty()) {
+    if (!CachedByethostCookie().empty()) {
       return true;
     }
     HttpResponse resp;
@@ -456,7 +486,7 @@ class VaultClient {
     }
     const std::string tok = SolveByethostTestCookie(resp.body);
     if (!tok.empty()) {
-      test_cookie_ = tok;
+      CacheByethostCookie(tok);
     }
     return true;
   }
@@ -480,7 +510,7 @@ class VaultClient {
     }
     const std::string tok = SolveByethostTestCookie(out->body);
     if (!tok.empty()) {
-      test_cookie_ = tok;
+      CacheByethostCookie(tok);
       // Retry once after solving challenge page.
       if (out->body.find("aes.js") != std::string::npos ||
           out->body.find("This site requires Javascript") != std::string::npos ||
@@ -503,7 +533,7 @@ class VaultClient {
       return false;
     }
     HINTERNET conn =
-        WinHttpConnect(session_, parts.host.c_str(), parts.port, 0);
+        WinHttpConnect(SharedWinHttpSession(), parts.host.c_str(), parts.port, 0);
     if (!conn) {
       return false;
     }
@@ -527,10 +557,13 @@ class VaultClient {
       headers += token_;
       headers += L"\r\n";
     }
-    if (send_cookie && !test_cookie_.empty()) {
-      headers += L"Cookie: __test=";
-      headers += WidenUtf8(test_cookie_);
-      headers += L"\r\n";
+    if (send_cookie) {
+      const std::string cookie = CachedByethostCookie();
+      if (!cookie.empty()) {
+        headers += L"Cookie: __test=";
+        headers += WidenUtf8(cookie);
+        headers += L"\r\n";
+      }
     }
     WinHttpAddRequestHeaders(req, headers.c_str(), static_cast<DWORD>(-1),
                              WINHTTP_ADDREQ_FLAG_ADD);
@@ -576,8 +609,6 @@ class VaultClient {
 
   std::wstring base_;
   std::wstring token_;
-  std::string test_cookie_;
-  HINTERNET session_ = nullptr;
 };
 
 std::wstring MatchKey(const VaultHttpCredential& e) {
@@ -930,20 +961,72 @@ bool VaultHttpPushAll(const std::vector<VaultHttpCredential>& entries) {
   if (s.token.empty()) {
     return false;
   }
-  bool any_ok = true;
-  for (const auto& e : entries) {
-    if (e.title.empty() && e.username.empty()) {
-      continue;
-    }
-    if (!VaultHttpUpsertCredential(e.title, e.username, e.password, e.url,
-                                   e.note, e.pinned, e.sort_order)) {
-      any_ok = false;
+  VaultClient client(s.api_base);
+  client.SetToken(s.token);
+
+  // 一次拉取远端列表建立 title+username 索引，消除循环内 N 次列表 GET
+  // （与 Upsert 内部的单次 GET 查重语义对齐，故这里也用单次 Request）。
+  std::vector<VaultHttpCredential> remote;
+  bool have_remote = false;
+  {
+    HttpResponse list_resp;
+    if (client.Request(L"GET", L"credentials", nullptr, true, &list_resp) &&
+        JsonOkTrue(list_resp.body)) {
+      remote = ParseCredentialItems(list_resp.body);
+      have_remote = true;
     }
   }
-  // Delete remote rows that no longer exist locally (cloud mirror parity).
-  std::vector<VaultHttpCredential> remote;
-  if (VaultHttpListCredentialsEx(&remote)) {
+
+  bool any_ok = true;
+  if (have_remote) {
+    std::unordered_map<std::wstring, int> index;
+    index.reserve(remote.size());
     for (const auto& r : remote) {
+      index.emplace(CredFoldKey(r.title, r.username), r.id);
+    }
+    for (const auto& e : entries) {
+      if (e.title.empty() && e.username.empty()) {
+        continue;
+      }
+      const std::string payload = MakeCredBody(
+          e.title, e.username, e.password, e.url, e.note, e.pinned, e.sort_order);
+      const std::wstring key = CredFoldKey(e.title, e.username);
+      const auto it = index.find(key);
+      HttpResponse resp;
+      if (it != index.end() && it->second > 0) {
+        const std::wstring path = L"credentials/" + std::to_wstring(it->second);
+        if (!client.Request(L"PUT", path, &payload, true, &resp) ||
+            !JsonOkTrue(resp.body)) {
+          any_ok = false;
+        }
+      } else if (!client.Request(L"POST", L"credentials", &payload, true,
+                                 &resp) ||
+                 !JsonOkTrue(resp.body)) {
+        any_ok = false;
+      } else {
+        // 服务端返回新建条目 id，写回索引以保持本地重复条目的原去重语义。
+        int new_id = 0;
+        if (FindIntField(resp.body, "id", &new_id) && new_id > 0) {
+          index[key] = new_id;
+        }
+      }
+    }
+  } else {
+    // 首次列表拉取失败：回退原逐条 upsert，保持既有容错语义。
+    for (const auto& e : entries) {
+      if (e.title.empty() && e.username.empty()) {
+        continue;
+      }
+      if (!VaultHttpUpsertCredential(e.title, e.username, e.password, e.url,
+                                     e.note, e.pinned, e.sort_order)) {
+        any_ok = false;
+      }
+    }
+  }
+
+  // 删除远端中本地已删除的条目（cloud mirror parity）。
+  auto delete_missing = [&](const std::vector<VaultHttpCredential>& list) {
+    for (const auto& r : list) {
       bool found = false;
       for (const auto& e : entries) {
         if (_wcsicmp(e.title.c_str(), r.title.c_str()) == 0 &&
@@ -953,10 +1036,26 @@ bool VaultHttpPushAll(const std::vector<VaultHttpCredential>& entries) {
         }
       }
       if (!found && r.id > 0) {
-        if (!VaultHttpDeleteCredential(r.id)) {
+        const std::wstring path = L"credentials/" + std::to_wstring(r.id);
+        HttpResponse resp;
+        if (!client.Request(L"DELETE", path, nullptr, true, &resp) ||
+            !(JsonOkTrue(resp.body) || resp.status == 200 ||
+              resp.status == 204)) {
           any_ok = false;
         }
       }
+    }
+  };
+
+  if (have_remote) {
+    delete_missing(remote);
+  } else {
+    std::vector<VaultHttpCredential> after;
+    HttpResponse list_resp2;
+    if (RequestRetry(&client, L"GET", L"credentials", nullptr, true,
+                     &list_resp2) &&
+        JsonOkTrue(list_resp2.body)) {
+      delete_missing(ParseCredentialItems(list_resp2.body));
     }
   }
   return any_ok;
@@ -1005,8 +1104,12 @@ bool VaultHttpPushAllZk(const std::vector<VaultHttpCredential>& entries,
     }
   }
   // Delete remote rows absent from local (decrypt remote usernames to match).
+  // 内联复用同一 client，避免每条 DELETE 的 LoadSession + 新建 client/session。
   std::vector<VaultHttpCredential> remote;
-  if (VaultHttpListCredentialsEx(&remote)) {
+  HttpResponse list_resp;
+  if (RequestRetry(&client, L"GET", L"credentials", nullptr, true, &list_resp) &&
+      JsonOkTrue(list_resp.body)) {
+    remote = ParseCredentialItems(list_resp.body);
     for (auto& r : remote) {
       if (r.enc_ver == 1) {
         r.username = VaultDecryptField(r.username, key);
@@ -1022,7 +1125,11 @@ bool VaultHttpPushAllZk(const std::vector<VaultHttpCredential>& entries,
         }
       }
       if (!found && r.id > 0) {
-        if (!VaultHttpDeleteCredential(r.id)) {
+        const std::wstring path = L"credentials/" + std::to_wstring(r.id);
+        HttpResponse resp;
+        if (!client.Request(L"DELETE", path, nullptr, true, &resp) ||
+            !(JsonOkTrue(resp.body) || resp.status == 200 ||
+              resp.status == 204)) {
           any_ok = false;
         }
       }

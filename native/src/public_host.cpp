@@ -77,7 +77,8 @@ Gdiplus::Bitmap* BuildPremultipliedIcon(HICON icon, int dest) {
       DeleteObject(ii.hbmMask);
     }
   }
-  src = (std::max)(dest, (std::min)(src, 256));
+  // Cap at 2× the draw size (see fence_window BuildPremultipliedIcon).
+  src = (std::max)(dest, (std::min)(src, dest * 2));
 
   BITMAPINFO bmi{};
   bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
@@ -122,7 +123,11 @@ Gdiplus::Bitmap* BuildPremultipliedIcon(HICON icon, int dest) {
   Gdiplus::Bitmap* out = new Gdiplus::Bitmap(src, src, PixelFormat32bppPARGB);
   {
     Gdiplus::Graphics g2(out);
-    g2.SetCompositingMode(Gdiplus::CompositingModeSourceCopy);
+    // SourceCopy re-premultiplies PARGB in some GDI+ builds and corrupts the
+    // alpha (icons rendered as opaque boxes, "stacking" over neighbors). Clear
+    // to transparent then SourceOver copies the premultiplied pixels verbatim
+    // (same as pet_window sprite load).
+    g2.Clear(Gdiplus::Color(0, 0, 0, 0));
     g2.SetInterpolationMode(Gdiplus::InterpolationModeNearestNeighbor);
     g2.SetPixelOffsetMode(Gdiplus::PixelOffsetModeNone);
     g2.DrawImage(&ref, 0, 0, src, src);
@@ -162,10 +167,8 @@ void DrawExplorerCaption(Gdiplus::Graphics& g, const std::wstring& text,
 }  // namespace
 
 void PublicHost::ClearIconCache() {
-  for (auto& e : icon_cache_) {
-    if (e.bmp) {
-      delete e.bmp;
-    }
+  for (auto& kv : icon_cache_) {
+    delete kv.second;
   }
   icon_cache_.clear();
 }
@@ -175,19 +178,17 @@ void PublicHost::DrawIconCached(Gdiplus::Graphics& g, HICON icon, int x, int y,
   if (!icon || dest <= 0) {
     return;
   }
+  const IconCacheKey key{icon, dest};
+  auto it = icon_cache_.find(key);
   Gdiplus::Bitmap* bmp = nullptr;
-  for (const auto& e : icon_cache_) {
-    if (e.icon == icon && e.dest == dest) {
-      bmp = e.bmp;
-      break;
-    }
-  }
-  if (!bmp) {
+  if (it == icon_cache_.end()) {
     bmp = BuildPremultipliedIcon(icon, dest);
     if (!bmp) {
       return;
     }
-    icon_cache_.push_back({icon, dest, bmp});
+    icon_cache_.emplace(key, bmp);
+  } else {
+    bmp = it->second;
   }
   g.DrawImage(bmp, x, y, dest, dest);
 }
@@ -385,9 +386,8 @@ void PublicHost::SetPlacements(FloatPlacementMap placements) {
 }
 
 void PublicHost::SetItems(std::vector<DesktopItem> items) {
-  // Icon handles can be recycled after DestroyIcon, so drop the premultiplied
-  // bitmap cache before any icon is replaced/destroyed.
-  ClearIconCache();
+  // Premultiplied bitmap cache is keyed by HICON — clear only when icons are
+  // replaced/destroyed so same-seat desktop watches keep warm Present caches.
   std::vector<DesktopItem> before;
   before.reserve(slots_.size());
   std::unordered_map<std::wstring, HICON> reuse;
@@ -420,6 +420,7 @@ void PublicHost::SetItems(std::vector<DesktopItem> items) {
     }
     slots_.push_back(std::move(s));
   }
+  const bool destroyed_unused = !reuse.empty();
   for (auto& kv : reuse) {
     if (kv.second) {
       DestroyIcon(kv.second);
@@ -430,7 +431,27 @@ void PublicHost::SetItems(std::vector<DesktopItem> items) {
   for (const auto& s : slots_) {
     after.push_back(s.item);
   }
-  if (!loaded_any && DesktopItemListsIdentityEqual(before, after)) {
+  const bool same_seats =
+      !loaded_any && DesktopItemListsIdentityEqual(before, after);
+  // Evict only the cache entries bound to destroyed HICONs (removed items).
+  // Same-seat desktop watches keep their warm premultiplied bitmaps instead of
+  // a full cache flush on every unrelated item change.
+  if (destroyed_unused) {
+    for (auto& kv : reuse) {
+      if (!kv.second) {
+        continue;
+      }
+      for (auto it = icon_cache_.begin(); it != icon_cache_.end();) {
+        if (it->first.icon == kv.second) {
+          delete it->second;
+          it = icon_cache_.erase(it);
+        } else {
+          ++it;
+        }
+      }
+    }
+  }
+  if (same_seats) {
     // Same icons: keep selection, but reflow — blocked fence rects / placements
     // are applied just before SetItems in RebuildPublicItems.
     Layout();

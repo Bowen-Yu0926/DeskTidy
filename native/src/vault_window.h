@@ -4,7 +4,10 @@
 
 #include <Windows.h>
 
+#include <condition_variable>
 #include <functional>
+#include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -81,7 +84,7 @@ class VaultWindow {
   void DestroyWebView();
   void ResizeWebView();
   void NavigateHome();
-  void PushState(const std::wstring& generated_password = L"");
+  void PushState();
   void OnWebMessage(const std::wstring& json);
   void DispatchAction(const std::wstring& json);
   void OnWebReady();
@@ -97,8 +100,20 @@ class VaultWindow {
   void CloudSync();
   void StartCloudRefresh();
   // After local add/edit/delete/import: push mirror to cloud when logged in (P0-8).
+  // Debounced + single-flight: rapid edits coalesce into one push; a single
+  // detached worker serializes pushes and relays any change that arrives
+  // mid-push. Owns no `this` — the worker holds a shared state so it outlives
+  // the window safely.
   void ScheduleCloudPush();
-  void GeneratePassword(const std::wstring& length, const std::wstring& charset);
+  // Single-flight push worker state (owned via shared_ptr; worker outlives this).
+  struct CloudPushWorker {
+    std::mutex mu;
+    std::condition_variable cv;
+    std::vector<VaultHttpCredential> pending;
+    bool has_pending = false;
+    bool stopping = false;
+  };
+  void StartCloudPushWorker();
 
   int clipboard_clear_seconds_ = 30;
   HWND hwnd_ = nullptr;
@@ -117,4 +132,6 @@ class VaultWindow {
   POINT drag_start_{};
   VoidFn on_hide_;
   std::function<void(bool)> on_login_result_;
+  std::shared_ptr<CloudPushWorker> cloud_push_;
+  bool destroying_ = false;
 };

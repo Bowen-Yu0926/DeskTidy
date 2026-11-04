@@ -126,13 +126,16 @@ void PageBar::Destroy() {
   delete font_page_;
   delete font_util_;
   delete font_family_;
+  delete fmt_;
   font_on_ = font_page_ = font_util_ = nullptr;
   font_family_ = nullptr;
+  fmt_ = nullptr;
   fonts_scale_ = -1.f;
   if (hwnd_) {
     DestroyWindow(hwnd_);
     hwnd_ = nullptr;
   }
+  ReleaseLayerBuffer();
 }
 
 int PageBar::CardMargin() const {
@@ -945,27 +948,11 @@ void PageBar::Paint(HDC) {
   const int w = (std::max)(1, static_cast<int>(wr.right - wr.left));
   const int h = (std::max)(1, static_cast<int>(wr.bottom - wr.top));
   EnsureGdiplus();
-
-  BITMAPINFO bmi{};
-  bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-  bmi.bmiHeader.biWidth = w;
-  bmi.bmiHeader.biHeight = -h;
-  bmi.bmiHeader.biPlanes = 1;
-  bmi.bmiHeader.biBitCount = 32;
-  bmi.bmiHeader.biCompression = BI_RGB;
-  void* bits = nullptr;
-  HDC screen = GetDC(nullptr);
-  HDC mem = CreateCompatibleDC(screen);
-  HBITMAP dib = CreateDIBSection(screen, &bmi, DIB_RGB_COLORS, &bits, nullptr, 0);
-  if (!dib || !bits) {
-    if (dib) {
-      DeleteObject(dib);
-    }
-    DeleteDC(mem);
-    ReleaseDC(nullptr, screen);
+  if (!EnsureLayerBuffer(w, h)) {
     return;
   }
-  HGDIOBJ old = SelectObject(mem, dib);
+  HDC mem = layer_dc_;
+  void* bits = layer_bits_;
   std::memset(bits, 0, static_cast<size_t>(w) * static_cast<size_t>(h) * 4);
 
   {
@@ -976,12 +963,14 @@ void PageBar::Paint(HDC) {
     g.SetTextContrast(4);
 
     EnsureFonts();
-    Gdiplus::StringFormat fmt;
-    // Slightly centered in the chip (WeChat/dock feel); lock/rail keep side insets.
-    fmt.SetAlignment(Gdiplus::StringAlignmentCenter);
-    fmt.SetLineAlignment(Gdiplus::StringAlignmentCenter);
-    fmt.SetFormatFlags(Gdiplus::StringFormatFlagsNoWrap);
-    fmt.SetTrimming(Gdiplus::StringTrimmingEllipsisCharacter);
+    if (!fmt_) {
+      fmt_ = new Gdiplus::StringFormat();
+      // Slightly centered in the chip (WeChat/dock feel); lock/rail keep side insets.
+      fmt_->SetAlignment(Gdiplus::StringAlignmentCenter);
+      fmt_->SetLineAlignment(Gdiplus::StringAlignmentCenter);
+      fmt_->SetFormatFlags(Gdiplus::StringFormatFlagsNoWrap);
+      fmt_->SetTrimming(Gdiplus::StringTrimmingEllipsisCharacter);
+    }
 
     const BYTE ar = GetRValue(accent_);
     const BYTE ag = GetGValue(accent_);
@@ -1116,7 +1105,7 @@ void PageBar::Paint(HDC) {
             on ? *font_on_ : (utility ? *font_util_ : *font_page_);
         if (expand_t_ > 0.35f && text_w > 8.f) {
           g.DrawString(s.label.c_str(), -1, &font,
-                       Gdiplus::RectF(text_x, cy, text_w, bh), &fmt, &ink);
+                       Gdiplus::RectF(text_x, cy, text_w, bh), fmt_, &ink);
         }
         if (locked && expand_t_ > 0.45f) {
           const float lw = std::round(5.5f * font_scale_);
@@ -1196,7 +1185,7 @@ void PageBar::Paint(HDC) {
         const Gdiplus::Font& font = utility ? *font_util_ : *font_page_;
         if (text_w > 8.f) {
           g.DrawString(s.label.c_str(), -1, &font,
-                       Gdiplus::RectF(text_x, cy, text_w, bh), &fmt, &ink);
+                       Gdiplus::RectF(text_x, cy, text_w, bh), fmt_, &ink);
         }
         if (locked) {
           const float lw = 6.f;
@@ -1233,6 +1222,10 @@ void PageBar::Paint(HDC) {
     }
   }
 
+  HDC screen = GetDC(nullptr);
+  if (!screen) {
+    return;
+  }
   POINT origin{wr.left, wr.top};
   SIZE size{w, h};
   POINT src{0, 0};
@@ -1242,8 +1235,65 @@ void PageBar::Paint(HDC) {
   blend.AlphaFormat = AC_SRC_ALPHA;
   UpdateOverlayLayered(hwnd_, screen, &origin, &size, mem, &src, 0, &blend,
                       ULW_ALPHA);
-  SelectObject(mem, old);
-  DeleteObject(dib);
-  DeleteDC(mem);
   ReleaseDC(nullptr, screen);
+}
+
+void PageBar::ReleaseLayerBuffer() {
+  if (layer_dc_ && layer_old_) {
+    SelectObject(layer_dc_, layer_old_);
+    layer_old_ = nullptr;
+  }
+  if (layer_dib_) {
+    DeleteObject(layer_dib_);
+    layer_dib_ = nullptr;
+  }
+  if (layer_dc_) {
+    DeleteDC(layer_dc_);
+    layer_dc_ = nullptr;
+  }
+  layer_bits_ = nullptr;
+  layer_buf_w_ = 0;
+  layer_buf_h_ = 0;
+}
+
+bool PageBar::EnsureLayerBuffer(int w, int h) {
+  if (w <= 0 || h <= 0) {
+    return false;
+  }
+  if (layer_dc_ && layer_dib_ && layer_bits_ && layer_buf_w_ == w &&
+      layer_buf_h_ == h) {
+    return true;
+  }
+  ReleaseLayerBuffer();
+  HDC screen = GetDC(nullptr);
+  if (!screen) {
+    return false;
+  }
+  HDC mem = CreateCompatibleDC(screen);
+  BITMAPINFO bmi{};
+  bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+  bmi.bmiHeader.biWidth = w;
+  bmi.bmiHeader.biHeight = -h;
+  bmi.bmiHeader.biPlanes = 1;
+  bmi.bmiHeader.biBitCount = 32;
+  bmi.bmiHeader.biCompression = BI_RGB;
+  void* bits = nullptr;
+  HBITMAP dib = CreateDIBSection(screen, &bmi, DIB_RGB_COLORS, &bits, nullptr, 0);
+  ReleaseDC(nullptr, screen);
+  if (!mem || !dib || !bits) {
+    if (dib) {
+      DeleteObject(dib);
+    }
+    if (mem) {
+      DeleteDC(mem);
+    }
+    return false;
+  }
+  layer_old_ = SelectObject(mem, dib);
+  layer_dc_ = mem;
+  layer_dib_ = dib;
+  layer_bits_ = bits;
+  layer_buf_w_ = w;
+  layer_buf_h_ = h;
+  return true;
 }

@@ -9,6 +9,7 @@
 namespace Gdiplus {
 class FontFamily;
 class Font;
+class StringFormat;
 }  // namespace Gdiplus
 
 // Right-edge page chrome (Python PageIndicatorWidget): either a mist float
@@ -120,6 +121,9 @@ class PageBar {
   int SeparatorGap() const;
   int SlotTop(int index) const;
   int ContentHeight() const;
+  // Reused ULW back-buffer — avoid CreateDIBSection churn each Paint.
+  void ReleaseLayerBuffer();
+  bool EnsureLayerBuffer(int w, int h);
 
   HWND hwnd_ = nullptr;
   HWND tip_ = nullptr;
@@ -149,6 +153,7 @@ class PageBar {
   Gdiplus::Font* font_on_ = nullptr;
   Gdiplus::Font* font_page_ = nullptr;
   Gdiplus::Font* font_util_ = nullptr;
+  Gdiplus::StringFormat* fmt_ = nullptr;  // reused across animation frames
   float fonts_scale_ = -1.f;
   float expand_t_ = 0.f;       // current ease 0..1
   float expand_target_ = 0.f;  // hover wants 1, leave wants 0
@@ -171,4 +176,10 @@ class PageBar {
   PageFn on_toggle_page_lock_;
   std::vector<std::wstring> fence_titles_;
   std::function<void(int, int)> on_move_fence_to_page_;
+  HDC layer_dc_ = nullptr;
+  HBITMAP layer_dib_ = nullptr;
+  HGDIOBJ layer_old_ = nullptr;
+  void* layer_bits_ = nullptr;
+  int layer_buf_w_ = 0;
+  int layer_buf_h_ = 0;
 };

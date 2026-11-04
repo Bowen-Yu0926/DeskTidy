@@ -71,6 +71,9 @@ class DockWindow {
   void EnsureTooltip();
   void UpdateHoverTip(int index);
   void ApplyPaths(const std::vector<std::wstring>& paths);
+  // Reused ULW back-buffer — avoid CreateDIBSection churn each Present.
+  void ReleaseLayerBuffer();
+  bool EnsureLayerBuffer(int w, int h);
 
   HWND hwnd_ = nullptr;
   HWND tip_ = nullptr;
@@ -82,6 +85,12 @@ class DockWindow {
   std::vector<Slot> slots_;
   std::function<void(const std::wstring&, const std::wstring&)> on_path_replaced_;
   std::function<void(const std::wstring&)> on_removed_;
+  HDC layer_dc_ = nullptr;
+  HBITMAP layer_dib_ = nullptr;
+  HGDIOBJ layer_old_ = nullptr;
+  void* layer_bits_ = nullptr;
+  int layer_buf_w_ = 0;
+  int layer_buf_h_ = 0;
 };
 
 // P1-10: split a comma-separated path list (settings "ext_dock_items" input),

@@ -94,6 +94,7 @@ constexpr UINT kTimerReflowPublic = 53;
 constexpr UINT kTimerDesktopShell = 54;
 // Idle warm-paint for soft-parked (off-page) fences — one per tick.
 constexpr UINT kTimerWarmFences = 55;
+constexpr UINT kTimerWebViewWarm = 56;
 constexpr UINT kMsgVaultPullDone = WM_APP + 48;
 constexpr UINT kMsgOrganizeDone = WM_APP + 49;
 constexpr UINT kMsgDesktopBlankDown = WM_APP + 50;
@@ -1082,8 +1083,8 @@ bool App::Init(HINSTANCE instance) {
   todos_.Create(instance);
   search_.Create(instance);
   vault_.Create(instance);
-  // Prefetch WebView2 off the buoy-click path (cold start was hitching the UI).
-  vault_.WarmWebView();
+  // WebView2 warm is deferred to kTimerWebViewWarm (a few seconds after boot)
+  // so the vault browser process does not delay the desktop fences' first paint.
   vault_.SetOnHide([this]() { OnVaultHidden(); });
   vault_launcher_.Create(instance);
   vault_launcher_.SetOnActivate([this]() { OpenVault(); });
@@ -1382,6 +1383,9 @@ bool App::Init(HINSTANCE instance) {
   watch_timer_ = SetTimer(message_hwnd_, kTimerWatch, 2000, nullptr);
   // P2-1: low-frequency background trim (Python ~60s while tray/background).
   SetTimer(message_hwnd_, kTimerMemTrim, 60000, nullptr);
+  // Defer WebView2 warm so boot paints fences before browser processes spin up
+  // (todo/search stay lazy; vault + settings warm a few seconds later).
+  SetTimer(message_hwnd_, kTimerWebViewWarm, 3000, nullptr);
 
   CreateTrayIcon();
   ReregisterHotkeys();
@@ -1426,9 +1430,8 @@ bool App::Init(HINSTANCE instance) {
     PushExtensionSettings();
     PushHotkeyState();
   });
-  // Prefetch WebView only after layout + on_ready_ exist so the first ready
-  // push carries live pages / fence_cards (360-like settings never look empty).
-  settings_.WarmWebView();
+  // Settings WebView warm is deferred (kTimerWebViewWarm) so boot paints fences
+  // first; the first ready push still carries live pages / fence_cards.
   PushHotkeyState();
   ScheduleDesktopBandRestore();
   MigratePythonAutostartOnce();
@@ -3833,9 +3836,19 @@ void App::OnUpdateInstallDone(UpdateInstallResult* r) {
     return;
   }
   UpdateToastText(L"正在启动安装程序…", 10000);
-  std::wstring err;
-  if (!LaunchInstallerSilent(r->path, &err)) {
-    ShowToast(err + L"\n安装包路径：" + r->path);
+  // Launch + WaitForInputIdle run on a worker; completion lands back on
+  // kMsgUpdateInstallLaunched (never block the UI thread for 12s+).
+  StartInstallerLaunchAsync(message_hwnd_, r->path);
+}
+
+void App::OnUpdateInstallLaunched(UpdateInstallResult* r) {
+  if (!r) {
+    return;
+  }
+  std::unique_ptr<UpdateInstallResult> own(r);
+  if (!r->ok) {
+    std::wstring msg = r->error.empty() ? L"启动安装程序失败" : r->error;
+    ShowToast(msg + L"\n安装包路径：" + r->path);
     return;
   }
   UpdateToastText(L"正在安装新版本，请稍候…", 8000);
@@ -4974,6 +4987,25 @@ void App::RefreshDesktopIcons() {
   if (excludes.empty()) {
     excludes = DefaultExcludePatterns();
   }
+  // Parallel preload all pin icons before the SetItems loop so the paint path
+  // hits the process-wide cache instead of serial SHGetFileInfo + trim.
+  {
+    std::vector<std::pair<std::wstring, int>> icon_jobs;
+    for (const auto& fence : fences_) {
+      if (!fence || !fence->PortalPath().empty()) {
+        continue;  // portal fences scan separately below
+      }
+      const auto it = by_fence.find(fence->Id());
+      if (it == by_fence.end()) {
+        continue;
+      }
+      const int sz = fence->IconSizePx();
+      for (const auto& item : it->second) {
+        icon_jobs.emplace_back(item.path, sz);
+      }
+    }
+    PreloadIconsParallel(icon_jobs);
+  }
   for (auto& fence : fences_) {
     if (!fence) {
       continue;
@@ -5171,9 +5203,10 @@ void App::SetPage(int page) {
     }
     const FencePageGeometry geo = fence->GeometryForPage(current_page_);
     fence->ApplyPageGeometry(geo, /*present=*/false);
-    // Same path as desktop-click restore: map, raise above DefView, always paint.
-    fence->Show();
-    if (fence->Hwnd() && IsWindowVisible(fence->Hwnd()) &&
+    // Show() already re-presents when it maps/raises a hidden / iconic / buried
+    // / dirty fence. Only re-present the stay-visible multi-page case it skips
+    // (otherwise one page click redraws every arriving fence twice).
+    if (!fence->Show() && fence->Hwnd() && IsWindowVisible(fence->Hwnd()) &&
         !IsIconic(fence->Hwnd())) {
       fence->RefreshLayer();
     }
@@ -5998,6 +6031,14 @@ LRESULT CALLBACK App::TrayWndProc(HWND hwnd, UINT msg, WPARAM wparam,
       }
       return 0;
     case WM_TIMER:
+      if (wparam == kTimerWebViewWarm) {
+        KillTimer(hwnd, kTimerWebViewWarm);
+        // Deferred warm of the two most-used WebView2 panels; todo/search stay
+        // lazy (created on first Show) to keep the boot path browser-free.
+        self->vault_.WarmWebView();
+        self->settings_.WarmWebView();
+        return 0;
+      }
       if (wparam == kTimerRestore) {
         if (self->DesktopChromeMayRestack()) {
           // AIGC START
@@ -6042,7 +6083,7 @@ LRESULT CALLBACK App::TrayWndProc(HWND hwnd, UINT msg, WPARAM wparam,
       }
       if (wparam == kTimerPet) {
         self->pet_.Tick();
-        // P2-24: match Python idle throttle (33ms active / 100ms idle+away).
+        // P2-24: match Python idle throttle (33ms active / ~220ms idle+away).
         const UINT want =
             static_cast<UINT>((std::max)(16, self->pet_.WantedTickMs()));
         if (want != self->pet_tick_ms_) {
@@ -6239,6 +6280,10 @@ LRESULT CALLBACK App::TrayWndProc(HWND hwnd, UINT msg, WPARAM wparam,
       return 0;
     case kMsgUpdateInstallDone:
       self->OnUpdateInstallDone(reinterpret_cast<UpdateInstallResult*>(lparam));
+      return 0;
+    case kMsgUpdateInstallLaunched:
+      self->OnUpdateInstallLaunched(
+          reinterpret_cast<UpdateInstallResult*>(lparam));
       return 0;
     case kMsgUpdateProgress:
       self->OnUpdateProgress(static_cast<int>(wparam));

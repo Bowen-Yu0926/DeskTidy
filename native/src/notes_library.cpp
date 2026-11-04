@@ -13,6 +13,7 @@
 #include <cstring>
 #include <cwctype>
 #include <fstream>
+#include <mutex>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -173,11 +174,41 @@ bool ReadFileBytes(const std::wstring& path, std::string* out, size_t* out_size)
   return true;
 }
 
+// Last-write time of a directory (FindFirstFileW on the dir itself).
+FILETIME DirMtime(const std::wstring& dir) {
+  WIN32_FIND_DATAW fd{};
+  HANDLE h = FindFirstFileW(dir.c_str(), &fd);
+  if (h == INVALID_HANDLE_VALUE) {
+    FILETIME zero{};
+    return zero;
+  }
+  FILETIME ft = fd.ftLastWriteTime;
+  FindClose(h);
+  return ft;
+}
+
+struct DirStamp {
+  std::wstring path;
+  FILETIME mtime{};
+};
+
+// Process-level cache of the recursive file listing. Search runs on the UI
+// thread, but the mutex keeps it safe if a future caller detaches a thread.
+std::mutex g_notes_files_mutex;
+bool g_notes_files_valid = false;
+std::wstring g_notes_files_dir;
+std::vector<std::wstring> g_notes_files;
+std::vector<DirStamp> g_notes_dir_stamps;
+
 // Recursive listing of openable files (skips hidden/junk dirs and files).
 void WalkOpenable(const std::wstring& dir, int depth, int max_files,
-                  std::vector<std::wstring>* out) {
+                  std::vector<std::wstring>* out,
+                  std::vector<DirStamp>* stamps) {
   if (static_cast<int>(out->size()) >= max_files || depth > 12) {
     return;
+  }
+  if (stamps) {
+    stamps->push_back({dir, DirMtime(dir)});
   }
   WIN32_FIND_DATAW fd{};
   HANDLE h = FindFirstFileW(JoinPath(dir, L"*").c_str(), &fd);
@@ -200,7 +231,7 @@ void WalkOpenable(const std::wstring& dir, int depth, int max_files,
           low == L"assets") {
         continue;
       }
-      WalkOpenable(full, depth + 1, max_files, out);
+      WalkOpenable(full, depth + 1, max_files, out, stamps);
       continue;
     }
     if (!name.empty() && (name[0] == L'.' || name.rfind(L"_sess_", 0) == 0)) {
@@ -214,8 +245,30 @@ void WalkOpenable(const std::wstring& dir, int depth, int max_files,
 }
 
 std::vector<std::wstring> ListNoteFiles(const std::wstring& dir) {
+  {
+    std::lock_guard<std::mutex> lock(g_notes_files_mutex);
+    if (g_notes_files_valid && g_notes_files_dir == dir) {
+      bool changed = false;
+      for (const auto& s : g_notes_dir_stamps) {
+        const FILETIME mt = DirMtime(s.path);
+        if (CompareFileTime(&mt, &s.mtime) != 0) {
+          changed = true;
+          break;
+        }
+      }
+      if (!changed) {
+        return g_notes_files;
+      }
+    }
+  }
   std::vector<std::wstring> files;
-  WalkOpenable(dir, 0, 5000, &files);
+  std::vector<DirStamp> stamps;
+  WalkOpenable(dir, 0, 5000, &files, &stamps);
+  std::lock_guard<std::mutex> lock(g_notes_files_mutex);
+  g_notes_files_dir = dir;
+  g_notes_files = files;
+  g_notes_dir_stamps = std::move(stamps);
+  g_notes_files_valid = true;
   return files;
 }
 
@@ -358,8 +411,7 @@ void CopyDirRecursive(const std::wstring& src, const std::wstring& dst) {
 std::wstring LegacyNotesDir() { return JoinPath(NativeDataDir(), L"notes"); }
 
 // Configured notes folder; else prefer 文档\DeskTidy\notes when present; else exe\笔记.
-std::wstring ResolveNotesFolder() {
-  const AppPrefs prefs = LoadAppPrefs();
+std::wstring ResolveNotesFolder(const AppPrefs& prefs) {
   if (!prefs.notepad_folder.empty()) {
     return prefs.notepad_folder;
   }
@@ -371,9 +423,8 @@ std::wstring ResolveNotesFolder() {
 }
 
 // One-shot: copy legacy DeskTidyNative\notes into the configured folder.
-void MaybeMigrateNotes(const std::wstring& new_dir) {
-  AppPrefs prefs = LoadAppPrefs();
-  if (prefs.notes_migrated) {
+void MaybeMigrateNotes(const std::wstring& new_dir, AppPrefs* prefs) {
+  if (prefs->notes_migrated) {
     return;
   }
   if (DirHasEntries(new_dir)) {
@@ -387,8 +438,9 @@ void MaybeMigrateNotes(const std::wstring& new_dir) {
     return;
   }
   CopyDirRecursive(old_dir, new_dir);
-  prefs.notes_migrated = true;
-  SaveAppPrefs(prefs);
+  prefs->notes_migrated = true;
+  SaveAppPrefs(*prefs);
+  InvalidateNotesFileCache();
 }
 
 std::wstring PreviewOf(const std::wstring& line) {
@@ -411,6 +463,13 @@ std::wstring PreviewOf(const std::wstring& line) {
 
 }  // namespace
 
+void InvalidateNotesFileCache() {
+  std::lock_guard<std::mutex> lock(g_notes_files_mutex);
+  g_notes_files_valid = false;
+  g_notes_files.clear();
+  g_notes_dir_stamps.clear();
+}
+
 std::wstring DocumentsDeskTidyNotesDir() {
   PWSTR docs = nullptr;
   if (FAILED(SHGetKnownFolderPath(FOLDERID_Documents, 0, nullptr, &docs)) ||
@@ -423,10 +482,13 @@ std::wstring DocumentsDeskTidyNotesDir() {
 }
 
 std::wstring NotesLibraryDir(bool ensure) {
-  std::wstring dir = ResolveNotesFolder();
+  // Load prefs once per call — ResolveNotesFolder + MaybeMigrateNotes both
+  // used to call LoadAppPrefs() independently (2 disk reads + JSON parses).
+  AppPrefs prefs = LoadAppPrefs();
+  std::wstring dir = ResolveNotesFolder(prefs);
   if (ensure) {
     EnsureDirRecursive(dir);
-    MaybeMigrateNotes(dir);
+    MaybeMigrateNotes(dir, &prefs);
   }
   return dir;
 }
@@ -472,21 +534,44 @@ std::vector<NoteSearchHit> SearchNotesLibrary(const std::wstring& dir,
     if (!DecodeBytes(data, &text) || HasNul(text)) {
       continue;  // binary / undecodable
     }
-    // Split lines (LF or CRLF).
-    size_t i = 0;
+    // Split lines (LF or CRLF). For case-insensitive search, lowercase the
+    // whole decoded text once (a single LCMapStringW) instead of allocating a
+    // lowered copy per line. `text` keeps the original for the preview; `hay`
+    // is what we match against (== text when case_sensitive).
+    std::wstring text_low;
+    if (!case_sensitive) {
+      text_low = WideLower(text);
+    }
+    const std::wstring& hay = case_sensitive ? text : text_low;
+    size_t i = 0;  // offset into `text`
+    size_t j = 0;  // offset into `hay` (== i when case_sensitive)
     int line_no = 0;
     while (i <= text.size()) {
       size_t end = text.find(L'\n', i);
       if (end == std::wstring::npos) {
         end = text.size();
       }
-      std::wstring line = text.substr(i, end - i);
-      if (!line.empty() && line.back() == L'\r') {
-        line.pop_back();
+      size_t jend = hay.find(L'\n', j);
+      if (jend == std::wstring::npos) {
+        jend = hay.size();
       }
-      const std::wstring line_low = case_sensitive ? line : WideLower(line);
-      if (WideContains(line_low, q_low)) {
-        hits.push_back({path, line_no, PreviewOf(line)});
+      // Exclude a trailing '\r' from both the searched text and the preview.
+      size_t text_end = end;
+      if (text_end > i && text[text_end - 1] == L'\r') {
+        --text_end;
+      }
+      size_t hay_end = jend;
+      if (hay_end > j && hay[hay_end - 1] == L'\r') {
+        --hay_end;
+      }
+      bool hit = false;
+      if (hay_end > j) {
+        const size_t p = hay.find(q_low, j);
+        hit = (p != std::wstring::npos && p + q_low.size() <= hay_end);
+      }
+      if (hit) {
+        hits.push_back(
+            {path, line_no, PreviewOf(text.substr(i, text_end - i))});
         if (static_cast<int>(hits.size()) >= max_hits) {
           return hits;
         }
@@ -497,6 +582,7 @@ std::vector<NoteSearchHit> SearchNotesLibrary(const std::wstring& dir,
         break;
       }
       i = end + 1;
+      j = jend + 1;
     }
   }
   return hits;

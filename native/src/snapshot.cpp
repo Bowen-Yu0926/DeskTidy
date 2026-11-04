@@ -17,7 +17,9 @@
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <mutex>
 #include <sstream>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -62,26 +64,37 @@ void EnsureSnapGdiplus() {
 }
 
 int SnapPngEncoderClsid(CLSID* clsid) {
-  UINT num = 0, size = 0;
-  Gdiplus::GetImageEncodersSize(&num, &size);
-  if (!size || !clsid) {
+  if (!clsid) {
     return -1;
   }
-  auto* info = static_cast<Gdiplus::ImageCodecInfo*>(malloc(size));
-  if (!info) {
-    return -1;
-  }
-  Gdiplus::GetImageEncoders(num, size, info);
-  int found = -1;
-  for (UINT i = 0; i < num; ++i) {
-    if (wcscmp(info[i].MimeType, L"image/png") == 0) {
-      *clsid = info[i].Clsid;
-      found = static_cast<int>(i);
-      break;
+  // Process-level cache: enumerate GDI+ image encoders once (was malloc +
+  // full enumeration on every icon→PNG conversion).
+  static CLSID cached{};
+  static std::once_flag once;
+  std::call_once(once, []() {
+    UINT num = 0, size = 0;
+    Gdiplus::GetImageEncodersSize(&num, &size);
+    if (!size) {
+      return;
     }
+    auto* info = static_cast<Gdiplus::ImageCodecInfo*>(malloc(size));
+    if (!info) {
+      return;
+    }
+    Gdiplus::GetImageEncoders(num, size, info);
+    for (UINT i = 0; i < num; ++i) {
+      if (wcscmp(info[i].MimeType, L"image/png") == 0) {
+        cached = info[i].Clsid;
+        break;
+      }
+    }
+    free(info);
+  });
+  if (cached == CLSID{}) {
+    return -1;
   }
-  free(info);
-  return found;
+  *clsid = cached;
+  return 0;
 }
 
 std::string B64EncodeBytes(const BYTE* data, DWORD len) {
@@ -550,28 +563,45 @@ SnapshotCardData BuildSnapshotCard(const SnapshotInfo& info) {
   }
   // Resolve desktop paths once so free-icon thumbs can match by display name.
   const auto desktop_items = ScanDesktopItems();
+  // Pre-build a case-insensitive name/stem → path map (O(icons) once), then
+  // O(1) lookup per shell icon instead of an O(icons×shell) linear scan with
+  // per-item substring/rfind/_wcsicmp churn.
+  auto lower = [](std::wstring s) {
+    for (auto& c : s) {
+      if (c >= L'A' && c <= L'Z') {
+        c = static_cast<wchar_t>(c - L'A' + L'a');
+      }
+    }
+    return s;
+  };
+  std::unordered_map<std::wstring, std::wstring> name_to_path;
+  name_to_path.reserve(desktop_items.size() * 2);
+  for (const auto& it : desktop_items) {
+    // Same priority as the original linear scan: per item, full display name
+    // first, then extension-stripped file stem. First insertion wins.
+    std::wstring nm = lower(it.name);
+    if (!nm.empty()) {
+      name_to_path.emplace(std::move(nm), it.path);
+    }
+    const size_t slash = it.path.find_last_of(L"\\/");
+    std::wstring file = (slash == std::wstring::npos)
+                            ? it.path
+                            : it.path.substr(slash + 1);
+    const size_t dot = file.rfind(L'.');
+    if (dot != std::wstring::npos) {
+      file.resize(dot);
+    }
+    std::wstring stem = lower(file);
+    if (!stem.empty()) {
+      name_to_path.emplace(std::move(stem), it.path);
+    }
+  }
   auto path_for_shell_name = [&](const std::wstring& name) -> std::wstring {
     if (name.empty()) {
       return {};
     }
-    for (const auto& it : desktop_items) {
-      if (_wcsicmp(it.name.c_str(), name.c_str()) == 0) {
-        return it.path;
-      }
-      // .lnk display name may strip extension; also compare file stem.
-      const size_t slash = it.path.find_last_of(L"\\/");
-      std::wstring file = (slash == std::wstring::npos)
-                              ? it.path
-                              : it.path.substr(slash + 1);
-      const size_t dot = file.rfind(L'.');
-      if (dot != std::wstring::npos) {
-        file.resize(dot);
-      }
-      if (_wcsicmp(file.c_str(), name.c_str()) == 0) {
-        return it.path;
-      }
-    }
-    return {};
+    const auto it = name_to_path.find(lower(name));
+    return it == name_to_path.end() ? std::wstring() : it->second;
   };
 
   card.page_names = st.page_names;

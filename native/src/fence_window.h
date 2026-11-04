@@ -9,6 +9,7 @@
 
 #include <functional>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace Gdiplus {
@@ -84,7 +85,10 @@ class FenceWindow {
   void SetStyleId(const std::string& style_id);
   const std::string& StyleId() const { return style_id_; }
   FenceLayout CurrentLayout() const;
-  void Show();
+  // Returns true if this call re-uploaded pixels (PresentLayered) — i.e. the
+  // fence was hidden / iconic / buried-under-DefView / dirty. Callers that only
+  // need the current page painted (SetPage) can skip a redundant RefreshLayer.
+  bool Show();
   void Hide();
   // Temporary hide: hides the window without touching visible_/page geometry,
   // so page switches, the global show_fences toggle and the "stock desktop"
@@ -136,6 +140,7 @@ class FenceWindow {
   // Per-fence icon zoom percent (70..160). Persisted by app via layout field.
   void SetIconZoom(int percent);
   int IconZoom() const { return icon_zoom_percent_; }
+  int IconSizePx() const;
 
   // H1: manual pin order persistence.
   void SetPinOrder(std::vector<std::wstring> order);
@@ -274,7 +279,6 @@ class FenceWindow {
   int InsertIndexAt(int x, int y) const;
   void CommitReorder(int insert_index);
   // F4: icon zoom + geometry helpers.
-  int IconSizePx() const;
   int CellWidthPx() const;
   int CellHeightPx() const;
   void RebuildIconsForZoom();
@@ -396,13 +400,25 @@ class FenceWindow {
   // hidden — Win11 often leaves a blank layered surface after mapping).
   bool layer_dirty_ = true;
   // #1/#12 hot-path caches: premultiplied icon bitmaps + GDI+ fonts.
-  struct IconCacheEntry {
+  // O(1) hash lookup keyed by (HICON, dest, opacity).
+  struct IconCacheKey {
     HICON icon = nullptr;
     int dest = 0;
     BYTE opacity = 255;
-    Gdiplus::Bitmap* bmp = nullptr;  // owned
+    bool operator==(const IconCacheKey& o) const {
+      return icon == o.icon && dest == o.dest && opacity == o.opacity;
+    }
   };
-  std::vector<IconCacheEntry> icon_cache_;
+  struct IconCacheKeyHash {
+    std::size_t operator()(const IconCacheKey& k) const {
+      std::size_t h = std::hash<HICON>{}(k.icon);
+      h ^= std::hash<int>{}(k.dest) + 0x9e3779b9 + (h << 6) + (h >> 2);
+      h ^= std::hash<unsigned>{}(k.opacity) + 0x9e3779b9 + (h << 6) + (h >> 2);
+      return h;
+    }
+  };
+  std::unordered_map<IconCacheKey, Gdiplus::Bitmap*, IconCacheKeyHash>
+      icon_cache_;
   void ClearIconCache();
   void DrawIconCached(Gdiplus::Graphics& g, HICON icon, int x, int y, int dest,
                       BYTE opacity);

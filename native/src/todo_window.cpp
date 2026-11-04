@@ -522,7 +522,8 @@ bool TodoWindow::Create(HINSTANCE instance) {
   SetWindowLongPtrW(hwnd_, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(this));
   LoadGeo();
   Load();
-  CreateWebView();
+  // WebView2 is created lazily on first Show() — creating it during boot
+  // spun up a browser process that delayed the desktop fences from painting.
   return true;
 }
 

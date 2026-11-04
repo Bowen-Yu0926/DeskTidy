@@ -246,6 +246,16 @@ void InsertNormalizedRule(RuleMap* rules, const std::wstring& key,
 
 }  // namespace
 
+const std::wstring& RuleMap::FoldedKey(size_t i) const {
+  if (folded_.size() != order_.size()) {
+    folded_.resize(order_.size());
+  }
+  if (folded_[i].empty() && !order_[i].first.empty()) {
+    folded_[i] = FoldLower(order_[i].first);
+  }
+  return folded_[i];
+}
+
 std::wstring ExtOf(const std::wstring& path) {
   const size_t slash = path.find_last_of(L"\\/");
   const size_t dot = path.find_last_of(L'.');
@@ -467,26 +477,32 @@ std::string ResolveFenceId(const std::wstring& path, bool is_link,
   // extension priority; rule extensions are compared after str.lower()).
   {
     const std::wstring want_ext = FoldLower(ext);
+    size_t idx = 0;
     for (const auto& kv : rules) {
-      if (IsExtensionKey(kv.first) && FoldLower(kv.first) == want_ext) {
+      if (IsExtensionKey(kv.first) && rules.FoldedKey(idx) == want_ext) {
         return kv.second;
       }
+      ++idx;
     }
   }
   // Pass 2: filename rules — fnmatch OR substring (Python match_filename).
   const std::wstring lower_name = FoldLower(name);
+  size_t idx = 0;
   for (const auto& kv : rules) {
     if (IsExtensionKey(kv.first)) {
+      ++idx;
       continue;
     }
-    const std::wstring pat = FoldLower(kv.first);
+    const std::wstring& pat = rules.FoldedKey(idx);
     if (pat.empty()) {
+      ++idx;
       continue;
     }
     if (FnmatchImpl(lower_name.c_str(), pat.c_str()) ||
         lower_name.find(pat) != std::wstring::npos) {
       return kv.second;
     }
+    ++idx;
   }
   return is_link ? fallback_software : fallback_common;
 }
@@ -730,6 +746,11 @@ FilenameRulesMap LoadFilenameRules() {
   FilenameRulesMap filename_rules;
   LoadCategories(&fence_map, &filename_rules);
   return filename_rules;
+}
+
+void LoadCategoriesBoth(CategoryFenceMap* fence_map,
+                        FilenameRulesMap* filename_rules) {
+  LoadCategories(fence_map, filename_rules);
 }
 
 bool SaveCategoryFenceMap(const CategoryFenceMap& map) {

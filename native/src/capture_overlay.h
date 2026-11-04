@@ -81,7 +81,9 @@ class CaptureOverlay {
   bool UpdateDraft(POINT pt);
   void CommitDraft();
   HBITMAP CompositeAnnotatedCrop(const RECT& sel) const;
-  COLORREF SampleFrozen(int client_x, int client_y) const;
+  // mem: compatible DC with bkg_bmp_ already selected (caller creates it once
+  // per mosaic loop instead of per pixel).
+  COLORREF SampleFrozen(HDC mem, int client_x, int client_y) const;
 
   bool FreezeVirtualDesktop();
   void ReleaseFrozenFrame();

@@ -151,7 +151,10 @@ Gdiplus::Bitmap* BuildPremultipliedIcon(HICON icon, int dest, BYTE opacity) {
       DeleteObject(ii.hbmMask);
     }
   }
-  src = (std::max)(dest, (std::min)(src, 256));
+  // Cap at 2× the draw size: JUMBO masters (256px) otherwise produce a 256×256
+  // premultiplied bitmap per icon (~256KB ×3 opacity variants) and blow up the
+  // cache. 2× keeps downsample quality while bounding memory.
+  src = (std::max)(dest, (std::min)(src, dest * 2));
 
   BITMAPINFO bmi{};
   bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
@@ -199,7 +202,11 @@ Gdiplus::Bitmap* BuildPremultipliedIcon(HICON icon, int dest, BYTE opacity) {
   Gdiplus::Bitmap* out = new Gdiplus::Bitmap(src, src, PixelFormat32bppPARGB);
   {
     Gdiplus::Graphics g2(out);
-    g2.SetCompositingMode(Gdiplus::CompositingModeSourceCopy);
+    // SourceCopy re-premultiplies PARGB in some GDI+ builds and corrupts the
+    // alpha (icons rendered as opaque boxes, "stacking" over neighbors). Clear
+    // to transparent then SourceOver copies the premultiplied pixels verbatim
+    // (same as pet_window sprite load).
+    g2.Clear(Gdiplus::Color(0, 0, 0, 0));
     g2.SetInterpolationMode(Gdiplus::InterpolationModeNearestNeighbor);
     g2.SetPixelOffsetMode(Gdiplus::PixelOffsetModeNone);
     g2.DrawImage(&ref, 0, 0, src, src);
@@ -243,10 +250,8 @@ const std::unordered_set<std::wstring>& CutPathSet() {
 }  // namespace
 
 void FenceWindow::ClearIconCache() {
-  for (auto& e : icon_cache_) {
-    if (e.bmp) {
-      delete e.bmp;
-    }
+  for (auto& kv : icon_cache_) {
+    delete kv.second;
   }
   icon_cache_.clear();
 }
@@ -256,19 +261,17 @@ void FenceWindow::DrawIconCached(Gdiplus::Graphics& g, HICON icon, int x, int y,
   if (!icon || dest <= 0) {
     return;
   }
+  const IconCacheKey key{icon, dest, opacity};
+  auto it = icon_cache_.find(key);
   Gdiplus::Bitmap* bmp = nullptr;
-  for (const auto& e : icon_cache_) {
-    if (e.icon == icon && e.dest == dest && e.opacity == opacity) {
-      bmp = e.bmp;
-      break;
-    }
-  }
-  if (!bmp) {
+  if (it == icon_cache_.end()) {
     bmp = BuildPremultipliedIcon(icon, dest, opacity);
     if (!bmp) {
       return;
     }
-    icon_cache_.push_back({icon, dest, opacity, bmp});
+    icon_cache_.emplace(key, bmp);
+  } else {
+    bmp = it->second;
   }
   g.DrawImage(bmp, x, y, dest, dest);
 }
@@ -1155,9 +1158,9 @@ FenceLayout FenceWindow::CurrentLayout() const {
   return fl;
 }
 
-void FenceWindow::Show() {
+bool FenceWindow::Show() {
   if (!hwnd_) {
-    return;
+    return false;
   }
   // Callers (SetPage / RestoreDesktopChrome) already filter VisibleOnPage for
   // the *current* app page. Do not gate on page_ alone — that is only the
@@ -1191,7 +1194,9 @@ void FenceWindow::Show() {
   if (!was_visible || was_iconic || buried || layer_dirty_) {
     LayoutCells();
     PresentLayered();
+    return true;
   }
+  return false;
 }
 
 void FenceWindow::Hide() {
@@ -1292,9 +1297,9 @@ void FenceWindow::SetViewMode(const std::string& mode) {
 void FenceWindow::SetItems(std::vector<DesktopItem> items) {
   // Keep HICONs across refresh when the path set is stable (desktop watch /
   // organize often re-pushes the same pins). Avoid SHGetFileInfo storms.
-  // Icon handles can be recycled after DestroyIcon, so drop the premultiplied
-  // bitmap cache before any icon is replaced/destroyed.
-  ClearIconCache();
+  // Premultiplied bitmap cache is keyed by HICON — only drop it when icons
+  // are actually replaced/destroyed (same-seat refresh used to wipe it every
+  // watch tick and force cold Present).
   const std::vector<DesktopItem> before = ItemSnapshot();
   std::unordered_map<std::wstring, HICON> reuse;
   reuse.reserve(cells_.size());
@@ -1322,6 +1327,7 @@ void FenceWindow::SetItems(std::vector<DesktopItem> items) {
     }
     cells_.push_back(std::move(cell));
   }
+  const bool destroyed_unused = !reuse.empty();
   for (auto& kv : reuse) {
     if (kv.second) {
       DestroyIcon(kv.second);
@@ -1367,6 +1373,9 @@ void FenceWindow::SetItems(std::vector<DesktopItem> items) {
   // (「文档」page looked empty after folder→Desktop refresh storms).
   const bool same_seats =
       !loaded_any && DesktopItemListsIdentityEqual(before, ItemSnapshot());
+  if (!same_seats || destroyed_unused) {
+    ClearIconCache();
+  }
   if (!same_seats) {
     scroll_y_ = 0;
     selected_.assign(cells_.size(), 0);

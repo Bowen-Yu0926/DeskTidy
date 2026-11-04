@@ -639,9 +639,14 @@ std::wstring SettingsWindow::BuildStateJson() const {
   // U1 organize categories — read fresh from rule_store so the UI always shows
   // the persisted values (not whatever App may have staged in ext_).
   json += L",\"category_fence_map\":\"";
-  json += JsonEscape(SerializeCategoryFenceMap(LoadCategoryFenceMap()));
-  json += L"\",\"filename_rules\":\"";
-  json += JsonEscape(SerializeFilenameRules(LoadFilenameRules()));
+  {
+    CategoryFenceMap fence_map;
+    FilenameRulesMap filename_rules;
+    LoadCategoriesBoth(&fence_map, &filename_rules);  // single file read
+    json += JsonEscape(SerializeCategoryFenceMap(fence_map));
+    json += L"\",\"filename_rules\":\"";
+    json += JsonEscape(SerializeFilenameRules(filename_rules));
+  }
   json += L"\"";
   json += L",\"check_update_on_startup\":";
   json += flag(ext_.check_update_on_startup);
@@ -869,30 +874,6 @@ void SettingsWindow::PushState() {
   push_pending_ = false;
   std::wstring json = BuildStateJson();
   focus_sub_.clear();  // one-shot navigation hint
-
-  // Diagnostics: prove host still has live pages / snapshots after each push.
-  {
-    const std::wstring dump =
-        JoinPath(NativeDataDir(), L"last_settings_push.json");
-    std::ofstream out(dump, std::ios::binary | std::ios::trunc);
-    if (out) {
-      const std::string utf8 = NarrowUtf8(json);
-      out.write(utf8.data(), static_cast<std::streamsize>(utf8.size()));
-    }
-    const std::wstring meta =
-        JoinPath(NativeDataDir(), L"last_settings_push_meta.txt");
-    std::ofstream mout(meta, std::ios::binary | std::ios::trunc);
-    if (mout) {
-      const std::string line =
-          NarrowUtf8(L"pages=" + std::to_wstring(page_names_.size()) +
-                     L" fences=" + std::to_wstring(fence_names_.size()) +
-                     L" fence_cards=" +
-                     std::to_wstring(ext_.fence_cards.size()) +
-                     L" snapshots=" + std::to_wstring(ext_.snapshots.size()) +
-                     L" json_chars=" + std::to_wstring(json.size()) + L"\n");
-      mout.write(line.data(), static_cast<std::streamsize>(line.size()));
-    }
-  }
 
   // Dual delivery: PostWebMessage can be dropped when nested inside
   // WebMessageReceived; ExecuteScript(applyState) is the reliable path.

@@ -29,3 +29,8 @@ std::wstring DocumentsDeskTidyNotesDir();
 std::vector<NoteSearchHit> SearchNotesLibrary(
     const std::wstring& dir, const std::wstring& query, bool case_sensitive,
     int max_hits, int max_file_bytes);
+
+// Drop the cached note-file listing so the next search re-scans. Call after
+// any note create / delete / rename (the cached listing is keyed on directory
+// mtimes, so this is a belt-and-suspenders guard for coarse mtime filesystems).
+void InvalidateNotesFileCache();

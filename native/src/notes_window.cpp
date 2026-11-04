@@ -162,6 +162,7 @@ constexpr UINT_PTR kStatusTimer = 5;
 constexpr UINT_PTR kPersistTabsTimer = 6;
 constexpr UINT_PTR kGutterTimer = 7;
 constexpr UINT_PTR kSyncFilenameTimer = 8;
+constexpr UINT_PTR kTitleSyncTimer = 9;
 constexpr int kStatusBarH = 26;
 
 // P2-30: follow Windows app light/dark preference for MD preview chrome.
@@ -396,13 +397,18 @@ bool RecyclePathsQuiet(HWND /*owner*/, const std::vector<std::wstring>& paths) {
       op->GetAnyOperationsAborted(&aborted);
       op->Release();
       if (SUCCEEDED(hr) && !aborted) {
+        InvalidateNotesFileCache();
         return true;
       }
     } else {
       op->Release();
     }
   }
-  return RecyclePathsViaShellOp(paths);
+  const bool ok = RecyclePathsViaShellOp(paths);
+  if (ok) {
+    InvalidateNotesFileCache();
+  }
+  return ok;
 }
 
 bool RecyclePathQuiet(HWND owner, const std::wstring& path) {
@@ -3151,6 +3157,12 @@ void NotesWindow::SwitchToTab(int index, bool save_current) {
   if (index < 0 || index >= static_cast<int>(tab_paths_.size())) {
     return;
   }
+  // Drop any pending debounced title sync: the outgoing tab is flushed by the
+  // immediate SyncCurrentTabTitleHint() below, and a stray timer firing after
+  // tab_index_/edit_ repoint would read the wrong tab's body.
+  if (hwnd_) {
+    KillTimer(hwnd_, kTitleSyncTimer);
+  }
   const std::wstring incoming = tab_paths_[static_cast<size_t>(index)];
   const bool same_path =
       !path_.empty() &&
@@ -3283,6 +3295,7 @@ void NotesWindow::SeedBlankDraftTab() {
     std::ofstream out(path, std::ios::binary);
     out << u8"# \n\n";
   }
+  InvalidateNotesFileCache();
   tab_paths_.assign(1, path);
   tab_states_.assign(1, TabState{});
   tab_index_ = 0;
@@ -3660,6 +3673,7 @@ bool NotesWindow::HealEnglishUntitledPath(std::wstring* path_inout) {
   if (!TryRenameNoteFile(old_path, dest)) {
     return false;
   }
+  InvalidateNotesFileCache();
   NotifyShellFileRenamed(old_path, dest);
   *path_inout = dest;
   return true;
@@ -3749,6 +3763,7 @@ void NotesWindow::NewTab() {
     std::ofstream out(path, std::ios::binary);
     out << u8"# \n\n";
   }
+  InvalidateNotesFileCache();
   tab_paths_.push_back(path);
   EnsureTabStates();
   // Fresh draft: blank title seed, no inherited title_hint / caret.
@@ -5666,6 +5681,7 @@ void NotesWindow::OpenLibrary() {
   if (GetFileAttributesW(picked.c_str()) == INVALID_FILE_ATTRIBUTES) {
     std::ofstream out(picked, std::ios::binary);
     out << "";
+    InvalidateNotesFileCache();
   }
   OpenOrActivatePath(picked);
 }
@@ -7736,6 +7752,7 @@ bool NotesWindow::ApplySidebarRename(const std::wstring& path,
     }
     return false;
   }
+  InvalidateNotesFileCache();
   NotifyShellFileRenamed(path, new_path);
   RetargetNotePath(path, new_path);
   if (quiet) {
@@ -8959,15 +8976,20 @@ LRESULT NotesWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
         RefreshSidebarLabelForPath(path_);
         SchedulePersistTabs();
         ScheduleSyncFilenameToTitle();
-        PushNativeTitleToWeb();
+        // Debounce the WYSIWYG host-title push (O(doc) ComposeMarkdown + JS) —
+        // run once per input burst instead of on every keystroke.
+        SetTimer(hwnd_, kTitleSyncTimer, 200, nullptr);
         return 0;
       }
       if (LOWORD(wparam) == kEditId && HIWORD(wparam) == EN_CHANGE) {
         status_full_text_dirty_ = true;
         MarkDirty();
         // In WYSIWYG, title lives in title_edit_ — don't re-parse # from body.
+        // Debounce title sync: SetTimer replaces any pending timer, so the
+        // full-text GetWindowTextW + ExtractMarkdownTitle runs once per input
+        // burst instead of on every keystroke.
         if (!wysiwyg_) {
-          SyncCurrentTabTitleHint();
+          SetTimer(hwnd_, kTitleSyncTimer, 200, nullptr);
         }
         SetTimer(hwnd_, kGutterTimer, 60, nullptr);
         if (preview_) {
@@ -9161,6 +9183,12 @@ LRESULT NotesWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
       if (wparam == kGutterTimer) {
         KillTimer(hwnd_, kGutterTimer);
         RefreshGutter();
+        return 0;
+      }
+      if (wparam == kTitleSyncTimer) {
+        KillTimer(hwnd_, kTitleSyncTimer);
+        SyncCurrentTabTitleHint();
+        PushNativeTitleToWeb();  // WYSIWYG host title (no-op in markdown mode)
         return 0;
       }
       return 0;

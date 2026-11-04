@@ -8,8 +8,13 @@
 #include <commoncontrols.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cstring>
+#include <mutex>
+#include <objbase.h>
 #include <string>
+#include <thread>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -141,6 +146,40 @@ HICON IconFromImageList(int shil, int index) {
   return icon;
 }
 
+// Snap the continuous icon_zoom (70%..160%) to a fixed set of standard sizes,
+// so the process-wide cache cannot grow unboundedly as the zoom changes.
+int IconSizeBucket(int size_px) {
+  static constexpr int kBuckets[] = {16,  20,  24,  28,  32,  40,  48,
+                                     56,  64,  80,  96,  128, 192, 256};
+  int best = kBuckets[0];
+  int best_d = size_px > best ? size_px - best : best - size_px;
+  for (int b : kBuckets) {
+    const int d = size_px > b ? size_px - b : b - size_px;
+    if (d < best_d) {
+      best_d = d;
+      best = b;
+    }
+  }
+  return best;
+}
+
+// Process-wide master icon cache: maps "lowerpath@bucket" -> already-trimmed
+// master HICON. Values live for the process lifetime; callers only ever receive
+// a CopyIcon() clone and keep DestroyIcon() ownership semantics unchanged.
+// Mutex-guarded so PreloadIconsParallel can fill it from worker threads.
+std::unordered_map<std::wstring, HICON> g_master_icon_cache;
+std::mutex g_master_icon_cache_mutex;
+
+void DestroyMasterIconCache() {
+  std::lock_guard<std::mutex> lk(g_master_icon_cache_mutex);
+  for (auto& kv : g_master_icon_cache) {
+    if (kv.second) {
+      DestroyIcon(kv.second);
+    }
+  }
+  g_master_icon_cache.clear();
+}
+
 }  // namespace
 
 std::vector<DesktopItem> ScanDesktopItems() {
@@ -178,6 +217,11 @@ std::vector<DesktopItem> ScanDesktopItems() {
 void InvalidateDesktopScanCache() {
   g_scan_cache.clear();
   g_scan_tick = 0;
+  DestroyMasterIconCache();
+}
+
+void ClearItemIconCache() {
+  DestroyMasterIconCache();
 }
 
 // P2-18: crop sparse shell jumbo padding (Python _trim_icon_padding).
@@ -337,6 +381,24 @@ HICON LoadItemIcon(const std::wstring& path, int size_px) {
   if (path.empty()) {
     return nullptr;
   }
+
+  // Encode the source tier (JUMBO vs ExtraLarge) into the key: IconSizeBucket
+  // maps 36..44 into the same "40" bucket, so 39px (ExtraLarge) and 44px
+  // (JUMBO) would otherwise collide and a 44px request could hit a 48px master
+  // then upscale it back — the exact blur we removed.
+  const bool jumbo_source = size_px >= 40;
+  const std::wstring key =
+      ScanDedupKey(path) + L"@" + std::to_wstring(IconSizeBucket(size_px)) +
+      (jumbo_source ? L"j" : L"x");
+  {
+    std::lock_guard<std::mutex> lk(g_master_icon_cache_mutex);
+    const auto hit = g_master_icon_cache.find(key);
+    if (hit != g_master_icon_cache.end()) {
+      return CopyIcon(hit->second);
+    }
+  }
+
+  HICON master = nullptr;
   SHFILEINFOW sfi{};
   const DWORD_PTR ok = SHGetFileInfoW(
       path.c_str(), 0, &sfi, sizeof(sfi), SHGFI_SYSICONINDEX);
@@ -349,27 +411,90 @@ HICON LoadItemIcon(const std::wstring& path, int size_px) {
     if (!SHGetFileInfoW(path.c_str(), 0, &sfi, sizeof(sfi), flags)) {
       return nullptr;
     }
-    return TrimIconTransparentPadding(sfi.hIcon);
-  }
-
-  // Prefer a source larger than the draw size so DrawIconEx downscales sharp.
-  const int order[] = {
-      size_px >= 64 ? SHIL_JUMBO : SHIL_EXTRALARGE,
-      SHIL_JUMBO,
-      SHIL_EXTRALARGE,
-      SHIL_LARGE,
-      SHIL_SMALL,
-  };
-  for (int shil : order) {
-    HICON icon = IconFromImageList(shil, sfi.iIcon);
-    if (icon) {
-      return TrimIconTransparentPadding(icon);
+    master = TrimIconTransparentPadding(sfi.hIcon);
+  } else {
+    // Prefer a source larger than the draw size so DrawIconEx downscales sharp.
+    // JUMBO (256px) for anything >= 40px: trimming a 48px ExtraLarge icon then
+    // upscaling it back to the cell size was the source of the blur. Keeping
+    // the master at 256px means the trim still leaves an icon >= the cell.
+    const int order[] = {
+        size_px >= 40 ? SHIL_JUMBO : SHIL_EXTRALARGE,
+        SHIL_JUMBO,
+        SHIL_EXTRALARGE,
+        SHIL_LARGE,
+        SHIL_SMALL,
+    };
+    for (int shil : order) {
+      HICON icon = IconFromImageList(shil, sfi.iIcon);
+      if (icon) {
+        master = TrimIconTransparentPadding(icon);
+        break;
+      }
+    }
+    if (!master) {
+      UINT flags = SHGFI_ICON | SHGFI_LARGEICON;
+      if (SHGetFileInfoW(path.c_str(), 0, &sfi, sizeof(sfi), flags)) {
+        master = TrimIconTransparentPadding(sfi.hIcon);
+      }
     }
   }
 
-  UINT flags = SHGFI_ICON | SHGFI_LARGEICON;
-  if (SHGetFileInfoW(path.c_str(), 0, &sfi, sizeof(sfi), flags)) {
-    return TrimIconTransparentPadding(sfi.hIcon);
+  if (!master) {
+    return nullptr;
   }
-  return nullptr;
+  {
+    std::lock_guard<std::mutex> lk(g_master_icon_cache_mutex);
+    auto result = g_master_icon_cache.emplace(key, master);
+    if (!result.second) {
+      // Another worker already cached this icon — drop our duplicate.
+      DestroyIcon(master);
+      return CopyIcon(result.first->second);
+    }
+  }
+  return CopyIcon(master);
+}
+
+void PreloadIconsParallel(const std::vector<std::pair<std::wstring, int>>& jobs) {
+  if (jobs.empty()) {
+    return;
+  }
+  // Cap workers so boot stays bounded. SHGetImageList / IImageList::GetIcon are
+  // COM calls — each worker must init COM, otherwise the icon load can fail
+  // (CO_E_NOTINITIALIZED) and the preload silently degrades on some machines.
+  const unsigned hw = std::thread::hardware_concurrency();
+  const unsigned nthreads = (std::max)(1u, (std::min)(8u, hw ? hw : 4u));
+  std::atomic<size_t> next{0};
+  std::vector<std::thread> pool;
+  pool.reserve(nthreads);
+  auto worker = [&jobs, &next]() {
+    CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+    for (;;) {
+      const size_t i = next.fetch_add(1, std::memory_order_relaxed);
+      if (i >= jobs.size()) {
+        break;
+      }
+      HICON icon = LoadItemIcon(jobs[i].first, jobs[i].second);
+      if (icon) {
+        DestroyIcon(icon);  // cache keeps the master; our clone is disposable
+      }
+    }
+    CoUninitialize();
+  };
+  try {
+    for (unsigned t = 0; t < nthreads; ++t) {
+      pool.emplace_back(worker);
+    }
+  } catch (...) {
+    // Thread creation failed mid-way — join what we spawned before unwinding,
+    // otherwise the destructor of a joinable std::thread calls std::terminate.
+    for (auto& th : pool) {
+      if (th.joinable()) {
+        th.join();
+      }
+    }
+    throw;
+  }
+  for (auto& th : pool) {
+    th.join();
+  }
 }

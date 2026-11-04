@@ -22,6 +22,7 @@
 #include <Shellapi.h>
 
 #include <algorithm>
+#include <chrono>
 #include <fstream>
 #include <memory>
 #include <sstream>
@@ -542,6 +543,7 @@ bool VaultWindow::Create(HINSTANCE instance) {
   }
   SetWindowLongPtrW(hwnd_, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(this));
   ApplyBrandWindowIcons(hwnd_);
+  StartCloudPushWorker();
   Load();
   return true;
 }
@@ -697,7 +699,7 @@ void VaultWindow::OnWebReady() {
   PushState();
 }
 
-void VaultWindow::PushState(const std::wstring& generated_password) {
+void VaultWindow::PushState() {
   if (!webview_ || !web_ready_) {
     return;
   }
@@ -731,11 +733,6 @@ void VaultWindow::PushState(const std::wstring& generated_password) {
     json += L'}';
   }
   json += L']';
-  if (!generated_password.empty()) {
-    json += L",\"generated_password\":\"";
-    json += JsonEscape(generated_password);
-    json += L'"';
-  }
   json += L'}';
 
   auto* web = static_cast<ICoreWebView2*>(webview_);
@@ -787,9 +784,6 @@ void VaultWindow::DispatchAction(const std::wstring& json) {
     PushState();
   } else if (id == L"register") {
     CloudRegister();
-  } else if (id == L"generate") {
-    GeneratePassword(JsonStringField(json, L"length"),
-                     JsonStringField(json, L"charset"));
   } else if (id == L"copy_pass") {
     CopyPasswordAt(JsonIntField(json, L"index", -1));
   } else if (id == L"reveal_pass") {
@@ -873,9 +867,20 @@ void VaultWindow::DispatchAction(const std::wstring& json) {
 }
 
 void VaultWindow::Destroy() {
+  destroying_ = true;
   Save();
   ClearClipboardIfOurs();
   DestroyWebView();
+  // Stop the single-flight push worker (it owns the shared state, so it exits
+  // safely even after this window is gone).
+  if (cloud_push_) {
+    {
+      std::lock_guard<std::mutex> lk(cloud_push_->mu);
+      cloud_push_->stopping = true;
+    }
+    cloud_push_->cv.notify_all();
+    cloud_push_.reset();
+  }
   if (hwnd_) {
     DestroyWindow(hwnd_);
     hwnd_ = nullptr;
@@ -965,92 +970,6 @@ void VaultWindow::SetClipboardClearSeconds(int seconds) {
     seconds = 300;
   }
   clipboard_clear_seconds_ = seconds;
-}
-
-void VaultWindow::GeneratePassword(const std::wstring& length_arg,
-                                   const std::wstring& charset_arg) {
-  int len = length_arg.empty() ? 16 : _wtoi(length_arg.c_str());
-  if (len < 4) {
-    len = 4;
-  }
-  if (len > 128) {
-    len = 128;
-  }
-  std::wstring charset = charset_arg;
-  if (charset.empty()) {
-    charset = L"ULDS";
-  }
-  const bool want_upper = charset.find(L'U') != std::wstring::npos;
-  const bool want_lower = charset.find(L'L') != std::wstring::npos;
-  const bool want_digits = charset.find(L'D') != std::wstring::npos;
-  const bool want_symbols = charset.find(L'S') != std::wstring::npos;
-  if (!want_upper && !want_lower && !want_digits && !want_symbols) {
-    charset = L"ULDS";
-  }
-  // Same pools as Python generate_password (avoid_ambiguous=True).
-  const std::wstring amb = L"0O1lI|";
-  auto pool = [&](const std::wstring& src) {
-    std::wstring o;
-    for (wchar_t c : src) {
-      if (amb.find(c) == std::wstring::npos) {
-        o.push_back(c);
-      }
-    }
-    return o;
-  };
-  std::vector<std::wstring> pools;
-  if (charset.find(L'U') != std::wstring::npos) {
-    pools.push_back(pool(L"ABCDEFGHIJKLMNOPQRSTUVWXYZ"));
-  }
-  if (charset.find(L'L') != std::wstring::npos) {
-    pools.push_back(pool(L"abcdefghijklmnopqrstuvwxyz"));
-  }
-  if (charset.find(L'D') != std::wstring::npos) {
-    pools.push_back(pool(L"0123456789"));
-  }
-  if (charset.find(L'S') != std::wstring::npos) {
-    pools.push_back(pool(L"!#$%&()*+,-./:;<=>?@[]^_{}~"));
-  }
-  if (pools.empty()) {
-    return;
-  }
-  std::wstring alphabet;
-  for (const auto& p : pools) {
-    alphabet += p;
-  }
-  const int total = static_cast<int>(len);
-  BYTE* rnd = new BYTE[static_cast<size_t>(total) + 16];
-  HCRYPTPROV prov = 0;
-  if (!CryptAcquireContextW(&prov, nullptr, nullptr, PROV_RSA_FULL,
-                            CRYPT_VERIFYCONTEXT) ||
-      !CryptGenRandom(prov, static_cast<DWORD>(total + 16), rnd)) {
-    delete[] rnd;
-    if (prov) {
-      CryptReleaseContext(prov, 0);
-    }
-    return;
-  }
-  CryptReleaseContext(prov, 0);
-  auto pick = [&](const std::wstring& src, size_t& i) -> wchar_t {
-    const wchar_t c = src[rnd[i++] % src.size()];
-    return c;
-  };
-  size_t r = 0;
-  std::wstring result;
-  result.reserve(static_cast<size_t>(total));
-  for (const auto& p : pools) {
-    result.push_back(pick(p, r));
-  }
-  while (static_cast<int>(result.size()) < total) {
-    result.push_back(pick(alphabet, r));
-  }
-  // Fisher–Yates shuffle with the same PRNG bytes.
-  for (int i = static_cast<int>(result.size()) - 1; i > 0; --i) {
-    const int j = rnd[r++] % (i + 1);
-    std::swap(result[static_cast<size_t>(i)], result[static_cast<size_t>(j)]);
-  }
-  delete[] rnd;
-  PushState(result);
 }
 
 void VaultWindow::CopyFieldToClipboard(const std::wstring& value,
@@ -1548,8 +1467,52 @@ void VaultWindow::ScheduleCloudPush() {
   if (!VaultHttpLoggedIn()) {
     return;
   }
-  const std::vector<VaultHttpCredential> snapshot = SnapshotCredentials();
-  std::thread([snapshot]() { VaultHttpPushLocalMirror(snapshot); }).detach();
+  if (!cloud_push_) {
+    StartCloudPushWorker();
+  }
+  // Snapshot on the UI thread (entries_ is not touched off-thread).
+  std::vector<VaultHttpCredential> snapshot = SnapshotCredentials();
+  {
+    std::lock_guard<std::mutex> lk(cloud_push_->mu);
+    cloud_push_->pending = std::move(snapshot);
+    cloud_push_->has_pending = true;
+  }
+  cloud_push_->cv.notify_one();
+}
+
+void VaultWindow::StartCloudPushWorker() {
+  cloud_push_ = std::make_shared<CloudPushWorker>();
+  auto st = cloud_push_;
+  // Single-flight worker: serializes pushes; debounce coalesces rapid edits;
+  // any change that arrives mid-push is relayed afterwards. Never touches
+  // this / UI — holds only the shared state.
+  std::thread([st]() {
+    std::unique_lock<std::mutex> lk(st->mu);
+    for (;;) {
+      st->cv.wait(lk, [&] { return st->stopping || st->has_pending; });
+      if (st->stopping) {
+        break;
+      }
+      // Debounce: wait for a quiet window so rapid edits coalesce into one push.
+      while (!st->stopping && st->has_pending) {
+        if (st->cv.wait_for(lk, std::chrono::milliseconds(300)) ==
+            std::cv_status::timeout) {
+          break;
+        }
+      }
+      if (st->stopping) {
+        break;
+      }
+      if (!st->has_pending) {
+        continue;
+      }
+      std::vector<VaultHttpCredential> snapshot = std::move(st->pending);
+      st->has_pending = false;
+      lk.unlock();
+      VaultHttpPushLocalMirror(snapshot);
+      lk.lock();
+    }
+  }).detach();
 }
 
 void VaultWindow::CloudLogin() {
@@ -1901,6 +1864,26 @@ LRESULT VaultWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
         return 0;
       }
       break;
+    case WM_ACTIVATE: {
+      if (destroying_) {
+        break;  // DestroyWindow re-sends WA_INACTIVE — do not re-Hide/Save.
+      }
+      // 点击浮窗外部（桌面/其他窗口）自动收起。激活若转到本窗口 owned 的
+      // 模态对话框（MistAlert/PromptPassword 等，owner 链含 hwnd_）则保持打开。
+      if (LOWORD(wparam) == WA_INACTIVE) {
+        HWND next = reinterpret_cast<HWND>(lparam);
+        HWND owner = next;
+        while (owner) {
+          if (owner == hwnd_) {
+            return 0;
+          }
+          owner = GetWindow(owner, GW_OWNER);
+        }
+        Hide();
+        return 0;
+      }
+      break;
+    }
     case WM_CLOSE:
       Hide();
       return 0;

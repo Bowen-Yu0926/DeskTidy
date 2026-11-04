@@ -861,6 +861,20 @@ bool LaunchInstallerSilent(const std::wstring& path, std::wstring* err) {
   return true;
 }
 
+void StartInstallerLaunchAsync(HWND owner, const std::wstring& path) {
+  std::thread([owner, path]() {
+    auto* r = new UpdateInstallResult;
+    r->path = path;
+    std::wstring err;
+    r->ok = LaunchInstallerSilent(path, &err);
+    r->error = std::move(err);
+    if (!PostMessageW(owner, kMsgUpdateInstallLaunched, 0,
+                      reinterpret_cast<LPARAM>(r))) {
+      delete r;
+    }
+  }).detach();
+}
+
 void CheckForUpdates(HWND owner) {
   // Manual entry (tools_misc OpenUpdatePage): forced refresh + interactive UI.
   StartUpdateCheckAsync(owner, /*force=*/true, /*interactive=*/true);

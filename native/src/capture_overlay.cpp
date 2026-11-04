@@ -16,6 +16,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <unordered_set>
 #include <vector>
 
 #pragma comment(lib, "gdiplus.lib")
@@ -792,8 +793,8 @@ HBITMAP CaptureOverlay::CropSelectionBitmap(const RECT& sel) const {
   return out;
 }
 
-COLORREF CaptureOverlay::SampleFrozen(int client_x, int client_y) const {
-  if (!bkg_bmp_ || bkg_w_ <= 0) {
+COLORREF CaptureOverlay::SampleFrozen(HDC mem, int client_x, int client_y) const {
+  if (!mem || !bkg_bmp_ || bkg_w_ <= 0) {
     return RGB(128, 128, 128);
   }
   RECT rc{};
@@ -802,13 +803,7 @@ COLORREF CaptureOverlay::SampleFrozen(int client_x, int client_y) const {
   const int ch = (std::max)(1, static_cast<int>(rc.bottom - rc.top));
   const int fx = client_x * bkg_w_ / cw;
   const int fy = client_y * bkg_h_ / ch;
-  HDC screen = GetDC(nullptr);
-  HDC mem = CreateCompatibleDC(screen);
-  HGDIOBJ old = SelectObject(mem, bkg_bmp_);
   const COLORREF c = GetPixel(mem, fx, fy);
-  SelectObject(mem, old);
-  DeleteDC(mem);
-  ReleaseDC(nullptr, screen);
   return c == CLR_INVALID ? RGB(128, 128, 128) : c;
 }
 
@@ -1622,12 +1617,33 @@ void CaptureOverlay::DrawOneAnnotation(HDC hdc, const Annotation& a,
     }
   } else if (a.kind == Annotation::kMosaic) {
     const int block = (std::max)(6, a.width * 3);
+    // Sample the frozen frame from a single reusable DC (GetPixel only).
+    HDC screen = GetDC(nullptr);
+    HDC mem = bkg_bmp_ ? CreateCompatibleDC(screen) : nullptr;
+    HGDIOBJ old = mem ? SelectObject(mem, bkg_bmp_) : nullptr;
+    // Dragged mosaic points cluster on the same block — dedup so each block is
+    // sampled (slow GetPixel) and painted exactly once per repaint.
+    std::unordered_set<ULONGLONG> painted;
+    painted.reserve(a.points.size());
     for (const auto& pt : a.points) {
       const int gx = (pt.x / block) * block;
       const int gy = (pt.y / block) * block;
-      const COLORREF c = SampleFrozen(gx + block / 2, gy + block / 2);
+      const ULONGLONG key = (static_cast<ULONGLONG>(static_cast<DWORD>(gx))
+                             << 32) |
+                            static_cast<DWORD>(gy);
+      if (!painted.insert(key).second) {
+        continue;
+      }
+      const COLORREF c = SampleFrozen(mem, gx + block / 2, gy + block / 2);
       Gdiplus::SolidBrush br(GpColor(c));
       g.FillRectangle(&br, gx, gy, block, block);
+    }
+    if (mem) {
+      SelectObject(mem, old);
+      DeleteDC(mem);
+    }
+    if (screen) {
+      ReleaseDC(nullptr, screen);
     }
   } else if (a.kind == Annotation::kText) {
     const int px = 12 + a.width;
@@ -1714,12 +1730,27 @@ HBITMAP CaptureOverlay::CompositeAnnotatedCrop(const RECT& sel) const {
       }
     } else if (a.kind == Annotation::kMosaic) {
       const int block = (std::max)(6, a.width * 3);
+      // Reuse the existing screen DC; sample the frozen frame from one DC.
+      HDC sample = bkg_bmp_ ? CreateCompatibleDC(screen) : nullptr;
+      HGDIOBJ olds = sample ? SelectObject(sample, bkg_bmp_) : nullptr;
+      std::unordered_set<ULONGLONG> painted;
+      painted.reserve(a.points.size());
       for (const auto& pt : a.points) {
         const int gx = (pt.x / block) * block;
         const int gy = (pt.y / block) * block;
-        const COLORREF c = SampleFrozen(gx + block / 2, gy + block / 2);
+        const ULONGLONG key = (static_cast<ULONGLONG>(static_cast<DWORD>(gx))
+                               << 32) |
+                              static_cast<DWORD>(gy);
+        if (!painted.insert(key).second) {
+          continue;
+        }
+        const COLORREF c = SampleFrozen(sample, gx + block / 2, gy + block / 2);
         Gdiplus::SolidBrush br(GpColor(c));
         g.FillRectangle(&br, gx, gy, block, block);
+      }
+      if (sample) {
+        SelectObject(sample, olds);
+        DeleteDC(sample);
       }
     } else if (a.kind == Annotation::kText) {
       const int px = 12 + a.width;

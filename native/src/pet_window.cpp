@@ -500,6 +500,7 @@ void PetWindow::TryLoadSprite() {
 }
 
 void PetWindow::ClearFrames() {
+  ReleaseFlipBuffer();
   for (auto* hb : frames_) {
     if (hb) {
       DeleteObject(hb);
@@ -991,7 +992,9 @@ void PetWindow::SetPose(const std::wstring& pose) {
   anim_accum_ms_ = 0;
   present_dirty_ = true;
   chrome_dirty_ = true;
-  PersistPrefs();
+  // No PersistPrefs here: SetPose is also hit by transient state switches
+  // (walk↔idle follow-cursor, play/sleep/fall) — writing pet.json on every one
+  // of those was high-frequency disk churn. Persist only on explicit picks.
   if (hwnd_) {
     RebaseFloor();
     ApplyScaledWindowSize();
@@ -1876,6 +1879,7 @@ void PetWindow::ShowContextMenu(POINT screen) {
     walking_ = false;
     falling_ = false;
     SetPose(pose_names_[static_cast<size_t>(cmd - 100)]);
+    PersistPrefs();  // explicit pose pick — persist (SetPose no longer saves)
   } else if (cmd >= 200 &&
              cmd < 200 + static_cast<int>(character_ids_.size())) {
     SetCharacter(character_ids_[static_cast<size_t>(cmd - 200)]);
@@ -2726,6 +2730,163 @@ void PetWindow::EnsureDropTarget() {
   }
 }
 
+void PetWindow::ReleasePresentBuffer() {
+  if (present_dc_ && present_old_) {
+    SelectObject(present_dc_, present_old_);
+    present_old_ = nullptr;
+  }
+  if (present_dib_) {
+    DeleteObject(present_dib_);
+    present_dib_ = nullptr;
+  }
+  if (present_dc_) {
+    DeleteDC(present_dc_);
+    present_dc_ = nullptr;
+  }
+  present_bits_ = nullptr;
+  present_buf_w_ = 0;
+  present_buf_h_ = 0;
+}
+
+void PetWindow::ReleaseFlipBuffer() {
+  if (flip_dc_ && flip_old_) {
+    SelectObject(flip_dc_, flip_old_);
+    flip_old_ = nullptr;
+  }
+  if (flip_dc_) {
+    DeleteDC(flip_dc_);
+    flip_dc_ = nullptr;
+  }
+  if (flip_dib_) {
+    DeleteObject(flip_dib_);
+    flip_dib_ = nullptr;
+  }
+  flip_bits_ = nullptr;
+  flip_src_ = nullptr;
+  flip_w_ = 0;
+  flip_h_ = 0;
+}
+
+HDC PetWindow::EnsureFlipBuffer(HDC hdc, HBITMAP bmp, int bw, int bh) {
+  if (flip_dc_ && flip_dib_ && flip_bits_ && flip_src_ == bmp &&
+      flip_w_ == bw && flip_h_ == bh) {
+    return flip_dc_;
+  }
+  ReleaseFlipBuffer();
+  if (!bmp || bw <= 0 || bh <= 0) {
+    return nullptr;
+  }
+  HDC dc = CreateCompatibleDC(hdc);
+  BITMAPINFO bi{};
+  bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+  bi.bmiHeader.biWidth = bw;
+  bi.bmiHeader.biHeight = -bh;
+  bi.bmiHeader.biPlanes = 1;
+  bi.bmiHeader.biBitCount = 32;
+  bi.bmiHeader.biCompression = BI_RGB;
+  void* dst_bits = nullptr;
+  HBITMAP dst_dib =
+      CreateDIBSection(hdc, &bi, DIB_RGB_COLORS, &dst_bits, nullptr, 0);
+  if (!dc || !dst_dib || !dst_bits) {
+    if (dst_dib) {
+      DeleteObject(dst_dib);
+    }
+    if (dc) {
+      DeleteDC(dc);
+    }
+    return nullptr;
+  }
+  // Rebuild only (frame/facing/dim changed): copy the source frame into a
+  // top-down 32bpp DIB, mirror each row, keep the result selected in `dc`.
+  void* src_bits = nullptr;
+  HBITMAP src_dib =
+      CreateDIBSection(hdc, &bi, DIB_RGB_COLORS, &src_bits, nullptr, 0);
+  HDC src_frame = CreateCompatibleDC(hdc);
+  HDC src_dc = CreateCompatibleDC(hdc);
+  if (!src_dib || !src_bits || !src_frame || !src_dc) {
+    if (src_dib) {
+      DeleteObject(src_dib);
+    }
+    if (src_frame) {
+      DeleteDC(src_frame);
+    }
+    if (src_dc) {
+      DeleteDC(src_dc);
+    }
+    DeleteObject(dst_dib);
+    DeleteDC(dc);
+    return nullptr;
+  }
+  HGDIOBJ old_f = SelectObject(src_frame, bmp);
+  HGDIOBJ old_s = SelectObject(src_dc, src_dib);
+  BitBlt(src_dc, 0, 0, bw, bh, src_frame, 0, 0, SRCCOPY);
+  SelectObject(src_frame, old_f);
+  SelectObject(src_dc, old_s);
+  auto* s = static_cast<DWORD*>(src_bits);
+  auto* d = static_cast<DWORD*>(dst_bits);
+  for (int y = 0; y < bh; ++y) {
+    const DWORD* row = s + static_cast<size_t>(y) * bw;
+    DWORD* out = d + static_cast<size_t>(y) * bw;
+    for (int x = 0; x < bw; ++x) {
+      out[x] = row[bw - 1 - x];
+    }
+  }
+  DeleteObject(src_dib);
+  DeleteDC(src_frame);
+  DeleteDC(src_dc);
+  flip_old_ = SelectObject(dc, dst_dib);
+  flip_dc_ = dc;
+  flip_dib_ = dst_dib;
+  flip_bits_ = dst_bits;
+  flip_src_ = bmp;
+  flip_w_ = bw;
+  flip_h_ = bh;
+  return dc;
+}
+
+bool PetWindow::EnsurePresentBuffer(int w, int h) {
+  if (w <= 0 || h <= 0) {
+    return false;
+  }
+  if (present_dc_ && present_dib_ && present_bits_ && present_buf_w_ == w &&
+      present_buf_h_ == h) {
+    return true;
+  }
+  ReleasePresentBuffer();
+  HDC screen = GetDC(nullptr);
+  if (!screen) {
+    return false;
+  }
+  HDC mem = CreateCompatibleDC(screen);
+  BITMAPINFO bi{};
+  bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+  bi.bmiHeader.biWidth = w;
+  bi.bmiHeader.biHeight = -h;
+  bi.bmiHeader.biPlanes = 1;
+  bi.bmiHeader.biBitCount = 32;
+  bi.bmiHeader.biCompression = BI_RGB;
+  void* bits = nullptr;
+  HBITMAP dib =
+      CreateDIBSection(screen, &bi, DIB_RGB_COLORS, &bits, nullptr, 0);
+  ReleaseDC(nullptr, screen);
+  if (!mem || !dib || !bits) {
+    if (dib) {
+      DeleteObject(dib);
+    }
+    if (mem) {
+      DeleteDC(mem);
+    }
+    return false;
+  }
+  present_old_ = SelectObject(mem, dib);
+  present_dc_ = mem;
+  present_dib_ = dib;
+  present_bits_ = bits;
+  present_buf_w_ = w;
+  present_buf_h_ = h;
+  return true;
+}
+
 void PetWindow::Destroy() {
   if (buoy_) {
     DestroyWindow(buoy_);
@@ -2753,6 +2914,8 @@ void PetWindow::Destroy() {
     sprite_ = nullptr;
   }
   ClearFrames();
+  ReleasePresentBuffer();
+  ReleaseFlipBuffer();
 }
 
 void PetWindow::Show() {
@@ -2842,7 +3005,8 @@ int PetWindow::WantedTickMs() const {
   if (PtInRect(&rc, pt)) {
     return 33;
   }
-  return 100;
+  // Soft bob / ZZZ only — market desktop pets idle at ~4–5 Hz when unhovered.
+  return 220;
 }
 
 void PetWindow::Tick() {
@@ -2898,11 +3062,25 @@ void PetWindow::Tick() {
     chrome_dirty_ = false;
   }
 
-  // P2-22: breath/sway/FX need live Present even when the cel index is still.
+  // Soft bob / ZZZ need live Present when the cel index is still — but not at
+  // full tick rate. Cel changes, hearts, and dirty flags still Present ASAP.
   const bool live_fx = PoseNeedsLivePaint(character_, pose_);
-  if (present_dirty_ || frame_changed || hearts_active || had_hearts ||
-      live_fx) {
+  bool need_present =
+      present_dirty_ || frame_changed || hearts_active || had_hearts;
+  if (!need_present && live_fx) {
+    const DWORD soft_gap =
+        (pose_ == L"idle" || pose_ == L"sleep" || pose_ == L"perch") ? 200u
+                                                                     : 66u;
+    if (last_soft_present_ms_ == 0 ||
+        now - last_soft_present_ms_ >= soft_gap) {
+      need_present = true;
+    }
+  }
+  if (need_present) {
     Present();
+    if (live_fx) {
+      last_soft_present_ms_ = now;
+    }
   }
   present_dirty_ = false;
 }
@@ -3098,44 +3276,12 @@ void PetWindow::Paint(HDC hdc) {
       g.SetCompositingMode(Gdiplus::CompositingModeSourceOver);
       g.DrawImage(use, 0, bob_y, cw, ch);
     } else if (facing_ < 0) {
-      // Horizontal flip preserving PARGB (StretchBlt drops alpha).
-      BITMAPINFO bi{};
-      bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-      bi.bmiHeader.biWidth = bw;
-      bi.bmiHeader.biHeight = -bh;
-      bi.bmiHeader.biPlanes = 1;
-      bi.bmiHeader.biBitCount = 32;
-      bi.bmiHeader.biCompression = BI_RGB;
-      void* src_bits = nullptr;
-      void* dst_bits = nullptr;
-      HBITMAP src_dib =
-          CreateDIBSection(hdc, &bi, DIB_RGB_COLORS, &src_bits, nullptr, 0);
-      HBITMAP dst_dib =
-          CreateDIBSection(hdc, &bi, DIB_RGB_COLORS, &dst_bits, nullptr, 0);
-      if (src_dib && dst_dib && src_bits && dst_bits) {
-        HDC tmp = CreateCompatibleDC(hdc);
-        HGDIOBJ old_t = SelectObject(tmp, src_dib);
-        BitBlt(tmp, 0, 0, bw, bh, src, 0, 0, SRCCOPY);
-        SelectObject(tmp, old_t);
-        auto* s = static_cast<DWORD*>(src_bits);
-        auto* d = static_cast<DWORD*>(dst_bits);
-        for (int y = 0; y < bh; ++y) {
-          const DWORD* row = s + static_cast<size_t>(y) * bw;
-          DWORD* out = d + static_cast<size_t>(y) * bw;
-          for (int x = 0; x < bw; ++x) {
-            out[x] = row[bw - 1 - x];
-          }
-        }
-        SelectObject(tmp, dst_dib);
-        AlphaBlend(hdc, 0, bob_y, cw, ch, tmp, 0, 0, bw, bh, bf);
-        SelectObject(tmp, old_t);
-        DeleteDC(tmp);
-      }
-      if (src_dib) {
-        DeleteObject(src_dib);
-      }
-      if (dst_dib) {
-        DeleteObject(dst_dib);
+      // Horizontal flip preserving PARGB (StretchBlt drops alpha). The flipped
+      // DIB is cached per source frame + dimensions; only rebuilt when either
+      // changes (frame advance / facing flip), not every Paint.
+      HDC flip = EnsureFlipBuffer(hdc, bmp, bw, bh);
+      if (flip) {
+        AlphaBlend(hdc, 0, bob_y, cw, ch, flip, 0, 0, bw, bh, bf);
       }
     } else {
       AlphaBlend(hdc, 0, bob_y, cw, ch, src, 0, 0, bw, bh, bf);
@@ -3252,27 +3398,15 @@ void PetWindow::Present() {
   GetWindowRect(hwnd_, &wr);
   const int w = (std::max)(1, static_cast<int>(wr.right - wr.left));
   const int h = (std::max)(1, static_cast<int>(wr.bottom - wr.top));
-  HDC screen = GetDC(nullptr);
-  HDC mem = CreateCompatibleDC(screen);
-  BITMAPINFO bi{};
-  bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-  bi.bmiHeader.biWidth = w;
-  bi.bmiHeader.biHeight = -h;
-  bi.bmiHeader.biPlanes = 1;
-  bi.bmiHeader.biBitCount = 32;
-  bi.bmiHeader.biCompression = BI_RGB;
-  void* bits = nullptr;
-  HBITMAP dib =
-      CreateDIBSection(screen, &bi, DIB_RGB_COLORS, &bits, nullptr, 0);
-  if (!dib || !bits) {
-    if (dib) {
-      DeleteObject(dib);
-    }
-    DeleteDC(mem);
-    ReleaseDC(nullptr, screen);
+  if (!EnsurePresentBuffer(w, h)) {
     return;
   }
-  HGDIOBJ old = SelectObject(mem, dib);
+  HDC screen = GetDC(nullptr);
+  if (!screen) {
+    return;
+  }
+  HDC mem = present_dc_;
+  void* bits = present_bits_;
   std::memset(bits, 0, static_cast<size_t>(w) * static_cast<size_t>(h) * 4);
   Paint(mem);
   // GDI+ (ZZZ) writes straight alpha; ULW needs premultiplied — fix dark fringes.
@@ -3318,8 +3452,5 @@ void PetWindow::Present() {
     ApplyHitRegion(*alpha, sprite_w_, sprite_h_, w, h);
   }
 
-  SelectObject(mem, old);
-  DeleteObject(dib);
-  DeleteDC(mem);
   ReleaseDC(nullptr, screen);
 }

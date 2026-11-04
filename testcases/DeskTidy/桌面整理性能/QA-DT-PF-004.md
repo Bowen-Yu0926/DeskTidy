@@ -15,7 +15,7 @@ version: 1
 status: active
 automation: python -m pytest "testcases/DeskTidy/桌面整理性能/test_QA_DT_PF_004.py" -q
 last_run: PASS
-last_run_at: 2026-11-03 08:55
+last_run_at: 2026-11-03 17:17
 ---
 ## 测什么
 
@@ -81,6 +81,6 @@ last_run_at: 2026-11-03 08:55
 ## 最终结果
 
 - **结果**：PASS
-- **时间**：2026-11-03 08:55
-- **说明**：automation exit 0；…                                                                    [100%] | 5 passed in 0.04s
+- **时间**：2026-11-03 17:17
+- **说明**：automation exit 0；…                                                                    [100%] | 5 passed in 0.03s
 

@@ -35,6 +35,8 @@ constexpr wchar_t kHostClass[] = L"DeskTidyNativeSearchWeb";
 constexpr int kPanelW = 680;
 constexpr int kPanelH = 580;
 constexpr UINT kMsgSearchUi = WM_APP + 81;
+constexpr UINT kTimerDebounce = 1;
+constexpr UINT kDebounceMs = 180;
 
 struct SearchUiMsg {
   unsigned gen = 0;
@@ -174,8 +176,10 @@ bool NameContains(const std::wstring& name, const std::wstring& needle) {
 void SearchRecursive(const std::wstring& dir, const std::wstring& needle,
                      std::vector<std::wstring>* out, int* budget, int depth,
                      int max_depth, bool include_hidden,
-                     const std::unordered_set<std::wstring>* allowed_exts) {
-  if (!out || !budget || *budget <= 0 || needle.empty() || depth > max_depth) {
+                     const std::unordered_set<std::wstring>* allowed_exts,
+                     const std::atomic<unsigned>* gen_ptr, unsigned gen) {
+  if (!out || !budget || *budget <= 0 || needle.empty() || depth > max_depth ||
+      !gen_ptr || gen_ptr->load() != gen) {
     return;
   }
   const std::wstring pattern = dir + L"\\*";
@@ -185,6 +189,9 @@ void SearchRecursive(const std::wstring& dir, const std::wstring& needle,
     return;
   }
   do {
+    if (gen_ptr->load() != gen) {
+      break;
+    }
     if (fd.cFileName[0] == L'.' &&
         (fd.cFileName[1] == L'\0' ||
          (fd.cFileName[1] == L'.' && fd.cFileName[2] == L'\0'))) {
@@ -202,7 +209,7 @@ void SearchRecursive(const std::wstring& dir, const std::wstring& needle,
         continue;
       }
       SearchRecursive(full, needle, out, budget, depth + 1, max_depth,
-                      include_hidden, allowed_exts);
+                      include_hidden, allowed_exts, gen_ptr, gen);
     } else if (NameContains(name, needle) && ExtAllowed(name, allowed_exts)) {
       out->push_back(full);
       --(*budget);
@@ -448,7 +455,7 @@ bool SearchWindow::Create(HINSTANCE instance) {
     return false;
   }
   SetWindowLongPtrW(hwnd_, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(this));
-  CreateWebView();
+  // WebView2 created lazily on first Show() — see TodoWindow (boot latency).
   return true;
 }
 
@@ -776,7 +783,14 @@ void SearchWindow::OnWebMessage(const std::wstring& json) {
     if (json.find(L"\"types\"") != std::wstring::npos) {
       ParseTypesFromJson(json);
     }
-    RunSearch(query_);
+    // Debounce rapid keystrokes: cancel the pending timer and reschedule so the
+    // last query always runs; an empty query clears immediately (no scan cost).
+    KillTimer(hwnd_, kTimerDebounce);
+    if (query_.empty()) {
+      RunSearch(query_);
+    } else {
+      SetTimer(hwnd_, kTimerDebounce, kDebounceMs, nullptr);
+    }
   } else if (id == L"drives") {
     selected_drives_ = ParseJsonStringArray(json, L"drives", false);
     for (auto& d : selected_drives_) {
@@ -1047,7 +1061,7 @@ void SearchWindow::RunSearch(const std::wstring& needle) {
       if (batch.empty()) {
         int budget = remain;
         SearchRecursive(root, needle, &batch, &budget, 0, max_depth,
-                        include_hidden, allowed_ptr);
+                        include_hidden, allowed_ptr, &search_gen_, gen);
       }
       for (auto& p : batch) {
         if (hits.size() >= static_cast<size_t>(max_results)) {
@@ -1112,6 +1126,13 @@ LRESULT SearchWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
       }
       return 0;
     }
+    case WM_TIMER:
+      if (wparam == kTimerDebounce) {
+        KillTimer(hwnd_, kTimerDebounce);
+        RunSearch(query_);
+        return 0;
+      }
+      break;
     case WM_SIZE:
       ResizeWebView();
       return 0;

@@ -99,6 +99,7 @@ class App {
   void MaybeStartupUpdateCheck();
   void OnUpdateCheckDone(UpdateCheckResult* r);
   void OnUpdateInstallDone(UpdateInstallResult* r);
+  void OnUpdateInstallLaunched(UpdateInstallResult* r);
   void OnUpdateProgress(int pct);
   // Shared Yes/No/Cancel offer after a soft toast click or manual check.
   void PromptAvailableUpdate(const std::wstring& latest,

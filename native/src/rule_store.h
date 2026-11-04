@@ -49,6 +49,7 @@ class RuleMap {
   void clear() {
     order_.clear();
     index_.clear();
+    folded_.clear();
   }
 
   auto begin() { return order_.begin(); }
@@ -58,9 +59,15 @@ class RuleMap {
   auto cbegin() const { return order_.cbegin(); }
   auto cend() const { return order_.cend(); }
 
+  // Case-folded (locale-invariant lowercase) copy of the key at `i`, cached
+  // lazily so ResolveFenceId skips the per-file LCMapStringW fold of every
+  // rule key. Defined in rule_store.cpp.
+  const std::wstring& FoldedKey(size_t i) const;
+
  private:
   std::vector<value_type> order_;
   std::unordered_map<std::wstring, size_t> index_;
+  mutable std::vector<std::wstring> folded_;
 };
 
 std::wstring RuleFilePath();
@@ -80,6 +87,10 @@ using FilenameRulesMap =
 
 CategoryFenceMap LoadCategoryFenceMap();
 FilenameRulesMap LoadFilenameRules();
+// Load both maps from organize_categories.json in a single read (the two
+// single-map loaders each re-read + re-parse the whole file).
+void LoadCategoriesBoth(CategoryFenceMap* fence_map,
+                        FilenameRulesMap* filename_rules);
 bool SaveCategoryFenceMap(const CategoryFenceMap& map);
 bool SaveFilenameRules(const FilenameRulesMap& map);
 

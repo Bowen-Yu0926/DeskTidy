@@ -150,12 +150,23 @@ class PublicHost {
   ULONGLONG rubber_present_ms_ = 0;
   std::vector<char> rubber_sel_finger_;
   // #1 premultiplied icon bitmap cache (DrawIconAlpha was per-frame GDI alloc).
-  struct IconCacheEntry {
+  // O(1) hash lookup keyed by (HICON, dest) instead of a per-frame linear scan.
+  struct IconCacheKey {
     HICON icon = nullptr;
     int dest = 0;
-    Gdiplus::Bitmap* bmp = nullptr;  // owned
+    bool operator==(const IconCacheKey& o) const {
+      return icon == o.icon && dest == o.dest;
+    }
   };
-  std::vector<IconCacheEntry> icon_cache_;
+  struct IconCacheKeyHash {
+    std::size_t operator()(const IconCacheKey& k) const {
+      std::size_t h = std::hash<HICON>{}(k.icon);
+      h ^= std::hash<int>{}(k.dest) + 0x9e3779b9 + (h << 6) + (h >> 2);
+      return h;
+    }
+  };
+  std::unordered_map<IconCacheKey, Gdiplus::Bitmap*, IconCacheKeyHash>
+      icon_cache_;
   void ClearIconCache();
   void DrawIconCached(Gdiplus::Graphics& g, HICON icon, int x, int y, int dest);
   std::vector<char> selected_;

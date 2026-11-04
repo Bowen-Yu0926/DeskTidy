@@ -3,6 +3,7 @@
 #include <Windows.h>
 
 #include <string>
+#include <utility>
 #include <vector>
 
 struct DesktopItem {
@@ -25,3 +26,12 @@ void InvalidateDesktopScanCache();
 
 // High-res shell icon (Jumbo/ExtraLarge when available). Caller DestroyIcon.
 HICON LoadItemIcon(const std::wstring& path, int size_px = 48);
+
+// Parallel preload of item icons into the process-wide cache (worker threads).
+// Call before bulk SetItems so the paint path hits the cache instead of doing
+// serial SHGetFileInfo + transparent-padding trim on the UI thread.
+void PreloadIconsParallel(const std::vector<std::pair<std::wstring, int>>& jobs);
+
+// Drop the process-wide master icon cache (e.g. on shutdown). Safe to call
+// multiple times; leaves the cache empty.
+void ClearItemIconCache();

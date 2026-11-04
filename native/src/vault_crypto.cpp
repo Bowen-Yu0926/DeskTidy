@@ -9,6 +9,7 @@
 #include <wincrypt.h>
 
 #include <cstring>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -68,25 +69,48 @@ struct AuthInfo {
 bool GcmCrypt(bool encrypt, const std::vector<BYTE>& key,
               const BYTE* nonce, ULONG nonce_len, const BYTE* in, ULONG in_len,
               BYTE* tag, ULONG tag_len, std::vector<BYTE>* out) {
-  BCRYPT_ALG_HANDLE alg = nullptr;
-  if (BCryptOpenAlgorithmProvider(&alg, BCRYPT_AES_ALGORITHM, nullptr, 0) != 0) {
+  // Process-wide AES-GCM provider (key-independent, immutable). Opening the
+  // provider + setting GCM chaining mode per field was the dominant cost of a
+  // 4N-field vault sync (N records × 4 fields).
+  static BCRYPT_ALG_HANDLE alg = []() -> BCRYPT_ALG_HANDLE {
+    BCRYPT_ALG_HANDLE a = nullptr;
+    if (BCryptOpenAlgorithmProvider(&a, BCRYPT_AES_ALGORITHM, nullptr, 0) != 0) {
+      return nullptr;
+    }
+    const wchar_t* mode = BCRYPT_CHAIN_MODE_GCM;
+    if (BCryptSetProperty(
+            a, BCRYPT_CHAINING_MODE,
+            reinterpret_cast<PUCHAR>(const_cast<wchar_t*>(mode)),
+            static_cast<ULONG>((wcslen(mode) + 1) * sizeof(wchar_t)), 0) != 0) {
+      BCryptCloseAlgorithmProvider(a, 0);
+      return nullptr;
+    }
+    return a;
+  }();
+  if (!alg) {
     return false;
   }
-  const wchar_t* mode = BCRYPT_CHAIN_MODE_GCM;
-  if (BCryptSetProperty(alg, BCRYPT_CHAINING_MODE,
-                        reinterpret_cast<PUCHAR>(const_cast<wchar_t*>(mode)),
-                        static_cast<ULONG>((wcslen(mode) + 1) * sizeof(wchar_t)),
-                        0) != 0) {
-    BCryptCloseAlgorithmProvider(alg, 0);
-    return false;
-  }
-  BCRYPT_KEY_HANDLE hkey = nullptr;
-  if (BCryptGenerateSymmetricKey(
-          alg, &hkey, nullptr, 0,
-          const_cast<PUCHAR>(key.data()), static_cast<ULONG>(key.size()),
-          0) != 0) {
-    BCryptCloseAlgorithmProvider(alg, 0);
-    return false;
+
+  // Process-wide key-handle cache keyed by the last-used key bytes. The same
+  // derived key encrypts/decrypts every field in a batch, so rebuilding the
+  // handle only when the key actually changes keeps results identical while
+  // removing per-field BCryptGenerateSymmetricKey.
+  static BCRYPT_KEY_HANDLE hkey = nullptr;
+  static std::vector<BYTE> cached_key;
+  static std::mutex key_mutex;
+  std::lock_guard<std::mutex> lock(key_mutex);
+  if (hkey == nullptr || cached_key != key) {
+    if (hkey) {
+      BCryptDestroyKey(hkey);
+    }
+    hkey = nullptr;
+    cached_key = key;
+    if (BCryptGenerateSymmetricKey(
+            alg, &hkey, nullptr, 0, const_cast<PUCHAR>(key.data()),
+            static_cast<ULONG>(key.size()), 0) != 0) {
+      hkey = nullptr;
+      return false;
+    }
   }
   AuthInfo info{};
   info.cbSize = sizeof(info);
@@ -108,8 +132,6 @@ bool GcmCrypt(bool encrypt, const std::vector<BYTE>& key,
                        out->data(), static_cast<ULONG>(out->size()), &out_len,
                        0);
   }
-  BCryptDestroyKey(hkey);
-  BCryptCloseAlgorithmProvider(alg, 0);
   if (st != 0) {
     out->clear();
     return false;

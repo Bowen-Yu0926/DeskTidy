@@ -15,7 +15,11 @@ constexpr UINT kSwpNoMoveNoSizeNoActivate =
 
 DefViewHost g_cache{};
 ULONGLONG g_cache_tick = 0;
-constexpr ULONGLONG kCacheTtlMs = 2000;
+// DefView host 定位结果几乎不随 watch/keepalive 的 2s tick 变化；缓存 TTL
+// 提高到 8s，避免每个 tick 都全量 FindWindowW+FindWindowExW 扫描（最多 64 个
+// WorkerW）。窗口失效由命中前的 IsWindowAlive 兜底，主动失效由
+// InvalidateDefViewCache() 触发（页面切换 / chrome 不健康 / explorer 重建）。
+constexpr ULONGLONG kCacheTtlMs = 8000;
 
 HWND g_tracked_defview = nullptr;
 

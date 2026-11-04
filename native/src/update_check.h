@@ -9,6 +9,10 @@
 constexpr UINT kMsgUpdateCheckDone = WM_APP + 101;
 constexpr UINT kMsgUpdateInstallDone = WM_APP + 102;
 constexpr UINT kMsgUpdateProgress = WM_APP + 103;
+// Posted after the installer has been launched and waited-for-idle on a
+// background thread; lParam is a heap-allocated UpdateInstallResult* (reuses
+// `ok` + `error` + `path` fields) that the UI thread frees.
+constexpr UINT kMsgUpdateInstallLaunched = WM_APP + 104;
 
 // Current product version (matches version.rc FileVersion).
 std::wstring NativeProductVersion();
@@ -42,6 +46,12 @@ void StartUpdateInstallAsync(HWND owner);
 // Launch the downloaded installer (/SILENT keeps Inno progress UI).
 // Returns false + err on failure.
 bool LaunchInstallerSilent(const std::wstring& path, std::wstring* err);
+
+// Launch the installer on a background thread (so WaitForInputIdle/Sleep never
+// block the UI thread), then post kMsgUpdateInstallLaunched back to `owner`
+// with a heap-allocated UpdateInstallResult* (ok/error/path). Captures only
+// path + HWND, never `this`.
+void StartInstallerLaunchAsync(HWND owner, const std::wstring& path);
 
 // Legacy manual-check entry (tools_misc OpenUpdatePage): async + forced refresh.
 void CheckForUpdates(HWND owner);
