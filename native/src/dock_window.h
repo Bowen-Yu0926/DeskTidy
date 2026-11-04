@@ -15,6 +15,8 @@ class DockWindow {
   void Destroy();
   void Show();
   void Hide();
+  // Force re-upload of the layered pixels (Optimus / ULW-loss recovery).
+  void RefreshLayer();
   void SetVisible(bool on);
   HWND Hwnd() const { return hwnd_; }
   void SetItems(std::vector<DesktopItem> items);

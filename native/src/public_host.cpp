@@ -333,13 +333,6 @@ void PublicHost::Show() { SetVisible(true); }
 
 void PublicHost::Hide() { SetVisible(false); }
 
-void PublicHost::RefreshLayer() {
-  if (!hwnd_ || !IsWindowVisible(hwnd_) || IsIconic(hwnd_)) {
-    return;
-  }
-  Present();
-}
-
 void PublicHost::ApplyVisibility() {
   if (!hwnd_) {
     return;
@@ -1874,4 +1867,10 @@ void PublicHost::Present() {
   UpdateOverlayLayered(hwnd_, screen, &origin, &size, mem, &src, 0, &blend,
                       ULW_ALPHA);
   ReleaseDC(nullptr, screen);
+}
+
+void PublicHost::RefreshLayer() {
+  if (hwnd_ && IsWindowVisible(hwnd_) && !IsIconic(hwnd_)) {
+    Present();
+  }
 }

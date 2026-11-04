@@ -5086,10 +5086,10 @@ void App::RefreshOverlays() {
     page_bar_.RefreshLayer();
   }
   if (dock_.Hwnd() && IsWindowVisible(dock_.Hwnd())) {
-    dock_.Present();
+    dock_.RefreshLayer();
   }
   if (public_host_.Hwnd() && IsWindowVisible(public_host_.Hwnd())) {
-    public_host_.Present();
+    public_host_.RefreshLayer();
   }
 }
 

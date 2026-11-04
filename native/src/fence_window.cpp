@@ -1272,8 +1272,6 @@ void FenceWindow::AttachToDesktopLayer() {
   // AIGC END
 }
 
-void FenceWindow::RefreshLayer() { PresentLayered(); }
-
 void FenceWindow::WarmLayerOffscreen() {
   if (!hwnd_ || !IsWindow(hwnd_) || !layer_dirty_) {
     return;

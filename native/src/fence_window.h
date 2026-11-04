@@ -97,7 +97,6 @@ class FenceWindow {
   // double-click view cannot permanently clear a fence (P1-2 leaked into them).
   void HideTransient();
   void AttachToDesktopLayer();
-  void RefreshLayer();  // re-upload UpdateLayeredWindow pixels
   // Soft-park: content changed while HWND hidden — needs Present after Show.
   bool LayerDirty() const { return layer_dirty_; }
   // Paint off-screen then soft-hide so the first page visit is Show-only.

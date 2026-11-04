@@ -593,6 +593,12 @@ void DockWindow::Present() {
   ReleaseDC(nullptr, screen);
 }
 
+void DockWindow::RefreshLayer() {
+  if (hwnd_ && IsWindowVisible(hwnd_) && !IsIconic(hwnd_)) {
+    Present();
+  }
+}
+
 void DockWindow::ReleaseLayerBuffer() {
   if (layer_dc_ && layer_old_) {
     SelectObject(layer_dc_, layer_old_);

@@ -26,6 +26,8 @@ class PublicHost {
   void Destroy();
   void Show();
   void Hide();
+  // Force re-upload of the layered pixels (Optimus / ULW-loss recovery).
+  void RefreshLayer();
   void SetVisible(bool on);
   HWND Hwnd() const { return hwnd_; }
   bool HasItems() const { return !slots_.empty(); }
@@ -34,8 +36,6 @@ class PublicHost {
   void SetPlacements(FloatPlacementMap placements);
   void SetBlockedRects(std::vector<RECT> rects);
   void Reflow();
-  // Re-blit layered content (Win+D restore); no-op when hidden.
-  void RefreshLayer();
   void AttachToDesktopLayer();
   void SetOnPathReplaced(
       std::function<void(const std::wstring&, const std::wstring&)> fn) {
