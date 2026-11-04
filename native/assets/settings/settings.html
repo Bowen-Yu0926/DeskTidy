@@ -7,26 +7,28 @@
 <style>
   /* Mist palette — mirror src/ui/styles.py get_theme_palette("mist") (360 light rail) */
   :root {
-    --window: #EEF1F6;
-    --sidebar: #F5F7FA;
-    --sidebar-text: #1A2332;
-    --sidebar-muted: #64748B;
-    --sidebar-hover: rgba(29, 78, 216, 0.12);
-    --sidebar-active: rgba(29, 78, 216, 0.18);
-    --sidebar-line: rgba(29, 78, 216, 0.18);
-    --content: #F4F6F9;
+    --window: #F1F4F8;
+    --sidebar: #F7F9FC;
+    --sidebar-text: #172033;
+    --sidebar-muted: #66788C;
+    --sidebar-hover: rgba(47, 111, 237, 0.10);
+    --sidebar-active: rgba(47, 111, 237, 0.14);
+    --sidebar-line: rgba(47, 111, 237, 0.14);
+    --content: #F4F6FA;
     --card: #FFFFFF;
-    --border: #C9D2DE;
-    --text: #1A2332;
-    --muted: #64748B;
-    --accent: #1D4ED8;
-    --accent-soft: #E0E7FF;
-    --accent-hover: #1E40AF;
+    --border: rgba(15, 23, 42, 0.10);
+    --text: #172033;
+    --muted: #66788C;
+    --accent: #2F6FED;
+    --accent-soft: #EAF1FE;
+    --accent-hover: #255CD1;
     --primary: #16A34A;
     --primary-hover: #15803D;
-    --danger: #DC2626;
-    --inlay: #1D4ED8;
-    --nav-active: #1E3A8A;
+    --danger: #E5484D;
+    --inlay: #2F6FED;
+    --nav-active: #1D4FD8;
+    --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.04), 0 1px 3px rgba(15, 23, 42, 0.06);
+    --shadow-md: 0 4px 12px rgba(15, 23, 42, 0.08);
   }
   * { box-sizing: border-box; }
   html, body {
@@ -83,7 +85,7 @@
   }
   .account-card {
     display: none; margin: 0 2px; padding: 10px 10px;
-    border-radius: 10px; background: var(--card);
+    border-radius: 12px; background: var(--card);
     border: 1px solid var(--border); cursor: pointer;
   }
   .account-card.on { display: block; }
@@ -125,7 +127,9 @@
     padding: 14px 16px;
     margin-bottom: 14px;
     overflow: visible;
+    box-shadow: var(--shadow-sm);
   }
+  .card:hover { box-shadow: var(--shadow-md); }
   .card h3 {
     margin: 0; font-size: 15px; font-weight: 600; color: var(--text); letter-spacing: -0.1px;
   }
@@ -211,7 +215,8 @@
   }
   .kpi .tile {
     flex: 1; background: #F8FAFC; border: 1px solid var(--border);
-    border-radius: 10px; padding: 10px 14px;
+    border-radius: 12px; padding: 10px 14px;
+    box-shadow: var(--shadow-sm);
   }
   .kpi .value { font-size: 22px; font-weight: 800; color: var(--text); line-height: 1.1; }
   .kpi .label { color: var(--muted); font-size: 12px; margin-top: 2px; }
@@ -221,7 +226,7 @@
   .page-header-row .page-header { margin-bottom: 0; flex: 1; }
   .page-badge {
     margin-top: 4px; padding: 4px 10px; border-radius: 999px;
-    background: var(--accent-soft); color: #1E3A8A; font-size: 12px; font-weight: 700;
+    background: var(--accent-soft); color: var(--nav-active); font-size: 12px; font-weight: 700;
     white-space: nowrap;
   }
   .card-head {

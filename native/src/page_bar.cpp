@@ -370,6 +370,13 @@ void PageBar::Hide() {
   }
 }
 
+void PageBar::RefreshLayer() {
+  // Re-upload visible page-bar pixels (hybrid-GPU / ULW-loss recovery).
+  if (hwnd_ && IsWindowVisible(hwnd_)) {
+    Paint(nullptr);
+  }
+}
+
 void PageBar::SetPage(int page) {
   if (page_ == page) {
     return;

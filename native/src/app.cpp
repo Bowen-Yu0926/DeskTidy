@@ -95,6 +95,8 @@ constexpr UINT kTimerDesktopShell = 54;
 // Idle warm-paint for soft-parked (off-page) fences — one per tick.
 constexpr UINT kTimerWarmFences = 55;
 constexpr UINT kTimerWebViewWarm = 56;
+// Hybrid-GPU (Optimus) recovery: re-upload visible overlays after boot settles.
+constexpr UINT kTimerOverlayRefresh = 57;
 constexpr UINT kMsgVaultPullDone = WM_APP + 48;
 constexpr UINT kMsgOrganizeDone = WM_APP + 49;
 constexpr UINT kMsgDesktopBlankDown = WM_APP + 50;
@@ -1386,6 +1388,10 @@ bool App::Init(HINSTANCE instance) {
   // Defer WebView2 warm so boot paints fences before browser processes spin up
   // (todo/search stay lazy; vault + settings warm a few seconds later).
   SetTimer(message_hwnd_, kTimerWebViewWarm, 3000, nullptr);
+  // Hybrid-GPU (Optimus / AMD switchable) recovery: re-upload visible overlays
+  // a few times after boot to cover slow DWM composition across common machines.
+  overlay_refresh_left_ = 4;
+  SetTimer(message_hwnd_, kTimerOverlayRefresh, 1200, nullptr);
 
   CreateTrayIcon();
   ReregisterHotkeys();
@@ -1874,6 +1880,9 @@ void App::Shutdown() {
       KillTimer(message_hwnd_, kTimerPersistLayouts);
       KillTimer(message_hwnd_, kTimerReflowPublic);
       KillTimer(message_hwnd_, kTimerDesktopShell);
+      KillTimer(message_hwnd_, kTimerWarmFences);
+      KillTimer(message_hwnd_, kTimerWebViewWarm);
+      KillTimer(message_hwnd_, kTimerOverlayRefresh);
       vault_timer_ = 0;
       open_settings_vault_timer_ = 0;
       restore_timer_ = pet_timer_ = watch_timer_ = 0;
@@ -5064,6 +5073,26 @@ void App::RefreshIconGrids() {
   }
 }
 
+void App::RefreshOverlays() {
+  // Re-upload every visible layered overlay. Hybrid-GPU (Optimus/AMD switchable)
+  // and DWM reconnects (RDP / driver reset) drop previously uploaded pixels
+  // while the window stays "visible" — a fresh ULW blit recovers it.
+  for (auto& fence : fences_) {
+    if (fence) {
+      fence->RefreshLayer();
+    }
+  }
+  if (page_bar_.Hwnd() && IsWindowVisible(page_bar_.Hwnd())) {
+    page_bar_.RefreshLayer();
+  }
+  if (dock_.Hwnd() && IsWindowVisible(dock_.Hwnd())) {
+    dock_.Present();
+  }
+  if (public_host_.Hwnd() && IsWindowVisible(public_host_.Hwnd())) {
+    public_host_.Present();
+  }
+}
+
 void App::RebuildDockItems() {
   std::vector<DesktopItem> dock_items;
   // P1-10: prefer prefs_.dock_items (Python dock.items); legacy pin scan fallback.
@@ -6039,6 +6068,18 @@ LRESULT CALLBACK App::TrayWndProc(HWND hwnd, UINT msg, WPARAM wparam,
         self->settings_.WarmWebView();
         return 0;
       }
+      if (wparam == kTimerOverlayRefresh) {
+        // Re-upload visible overlays a few times after boot so hybrid-GPU
+        // (Optimus / AMD switchable) machines that lost the initial layered
+        // blit recover without a desktop click.
+        self->RefreshOverlays();
+        if (--self->overlay_refresh_left_ > 0) {
+          SetTimer(hwnd, kTimerOverlayRefresh, 1600, nullptr);
+        } else {
+          KillTimer(hwnd, kTimerOverlayRefresh);
+        }
+        return 0;
+      }
       if (wparam == kTimerRestore) {
         if (self->DesktopChromeMayRestack()) {
           // AIGC START
@@ -6485,6 +6526,14 @@ LRESULT CALLBACK App::TrayWndProc(HWND hwnd, UINT msg, WPARAM wparam,
       self->RebuildPublicItems();
       self->pet_.SetPages(self->page_names_, self->current_page_);
       self->PersistLayouts();
+      return 0;
+    }
+    case WM_DWMCOMPOSITIONCHANGED: {
+      // DWM reconnect (Optimus/AMD adapter switch, RDP, driver reset) drops
+      // previously uploaded layered pixels while windows stay "visible".
+      // Re-upload on a short delay so the compositor finishes re-initializing.
+      self->overlay_refresh_left_ = 2;
+      SetTimer(hwnd, kTimerOverlayRefresh, 400, nullptr);
       return 0;
     }
     case WM_SETTINGCHANGE: {

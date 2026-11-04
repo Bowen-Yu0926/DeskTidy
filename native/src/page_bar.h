@@ -34,6 +34,8 @@ class PageBar {
   void Destroy();
   void Show();
   void Hide();
+  // Force re-upload of the layered pixels (Optimus / ULW-loss recovery).
+  void RefreshLayer();
   HWND Hwnd() const { return hwnd_; }
   void SetPage(int page);
   void SetPageCount(int count);

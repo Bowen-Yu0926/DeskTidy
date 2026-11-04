@@ -66,6 +66,9 @@ class App {
   // been missing past the sticky grace (45s) so save-then-rewrite keeps them.
   void PruneStickyMissingPins();
   void RefreshIconGrids();
+  // Re-upload every visible layered overlay (fences/page-bar/dock/public-host).
+  // Called on boot recovery timer, DWM composition change and display change.
+  void RefreshOverlays();
   void AddFence();
   void AddFenceAtRect(const RECT& screen);
   void MoveDesktopItemsToFence(const std::vector<std::wstring>& paths,
@@ -236,6 +239,10 @@ class App {
   HWINEVENTHOOK fg_hook_ = nullptr;
   std::vector<std::thread> workers_;
   int band_restore_left_ = 0;
+  // Hybrid-GPU (Optimus/AMD switchable) overlay re-upload budget: re-Present
+  // visible layered windows a few times after boot so a lost initial blit
+  // recovers without a desktop click.
+  int overlay_refresh_left_ = 0;
   // Last known Win+D / Show Desktop band (DefView TOPMOST). Re-seat only on
   // transition — Rainmeter CheckDesktopState, not every settle tick.
   bool show_desktop_seated_ = false;

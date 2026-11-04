@@ -90,6 +90,8 @@ class FenceWindow {
   // need the current page painted (SetPage) can skip a redundant RefreshLayer.
   bool Show();
   void Hide();
+  // Force re-upload of the layered pixels (Optimus / ULW-loss recovery).
+  void RefreshLayer();
   // Temporary hide: hides the window without touching visible_/page geometry,
   // so page switches, the global show_fences toggle and the "stock desktop"
   // double-click view cannot permanently clear a fence (P1-2 leaked into them).

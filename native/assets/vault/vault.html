@@ -7,16 +7,18 @@
 <style>
   :root {
     --card: #FFFFFF;
-    --border: rgba(201, 210, 222, 0.55);
-    --border-solid: #C9D2DE;
-    --text: #1A2332;
-    --muted: #64748B;
-    --accent: #1D4ED8;
-    --accent-soft: #E0E7FF;
-    --accent-hover: rgba(29, 78, 216, 0.28);
-    --row-hover: rgba(224, 231, 255, 0.38);
+    --border: rgba(15, 23, 42, 0.10);
+    --border-solid: #C6CEDA;
+    --text: #172033;
+    --muted: #66788C;
+    --accent: #2F6FED;
+    --accent-soft: #EAF1FE;
+    --accent-hover: rgba(47, 111, 237, 0.20);
+    --row-hover: rgba(234, 241, 254, 0.5);
     --primary: #16A34A;
-    --danger: #EF4444;
+    --danger: #E5484D;
+    --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.04), 0 1px 3px rgba(15, 23, 42, 0.06);
+    --shadow-md: 0 4px 12px rgba(15, 23, 42, 0.08);
   }
   * { box-sizing: border-box; }
   html, body {
@@ -97,6 +99,7 @@
     padding: 10px;
     margin-bottom: 10px;
     position: relative;
+    box-shadow: var(--shadow-sm);
   }
   .row.pinned { border-color: var(--accent); box-shadow: inset 3px 0 0 var(--accent); }
   .row.dragging { opacity: 0.45; }
@@ -162,7 +165,7 @@
   }
   .field input {
     width: 100%; height: 32px; padding: 0 10px;
-    border: 1px solid var(--border-solid); border-radius: 6px; font: inherit;
+    border: 1px solid var(--border-solid); border-radius: 8px; font: inherit;
   }
   .strength { min-height: 14px; font-size: 12px; color: var(--muted); }
   .form-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 12px; }

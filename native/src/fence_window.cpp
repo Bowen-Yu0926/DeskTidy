@@ -673,6 +673,16 @@ void FenceWindow::PresentLayered() {
   layer_dirty_ = false;
 }
 
+void FenceWindow::RefreshLayer() {
+  // Re-upload visible fence pixels. Fixes hybrid-GPU (Optimus) machines where
+  // the initial UpdateLayeredWindow blit is lost after the driver/DWM swaps
+  // adapters — the fence window reports visible but renders blank until some
+  // other message triggers a re-Present.
+  if (hwnd_ && IsWindowVisible(hwnd_) && !IsIconic(hwnd_)) {
+    PresentLayered();
+  }
+}
+
 void FenceWindow::SetStyleId(const std::string& style_id) {
   style_id_ = NormalizeFenceStyleId(style_id);
   ApplyStyle();
@@ -3855,23 +3865,29 @@ void FenceWindow::Paint(HDC hdc) {
                          static_cast<Gdiplus::REAL>(label_top),
                          static_cast<Gdiplus::REAL>(label_w),
                          static_cast<Gdiplus::REAL>(label_h));
-    if (is_sel) {
+    Gdiplus::StringFormat* fmt = is_sel ? &sel_fmt : &grid_fmt;
+    Gdiplus::StringFormat ellipsis_fmt;
+    if (is_sel && label_h >= line_h * max_sel_lines) {
       // If still overflowing max lines, fall back to ellipsis on last line.
-      Gdiplus::StringFormat* fmt = &sel_fmt;
-      Gdiplus::StringFormat ellipsis_fmt;
-      if (label_h >= line_h * max_sel_lines) {
-        ellipsis_fmt.SetAlignment(Gdiplus::StringAlignmentCenter);
-        ellipsis_fmt.SetLineAlignment(Gdiplus::StringAlignmentNear);
-        ellipsis_fmt.SetTrimming(Gdiplus::StringTrimmingEllipsisCharacter);
-        ellipsis_fmt.SetFormatFlags(Gdiplus::StringFormatFlagsLineLimit);
-        fmt = &ellipsis_fmt;
-      }
-      g.DrawString(cell.item.name.c_str(), -1, caption_font_, label, fmt,
-                   &name_brush);
-    } else {
-      g.DrawString(cell.item.name.c_str(), -1, caption_font_, label, &grid_fmt,
-                   &name_brush);
+      ellipsis_fmt.SetAlignment(Gdiplus::StringAlignmentCenter);
+      ellipsis_fmt.SetLineAlignment(Gdiplus::StringAlignmentNear);
+      ellipsis_fmt.SetTrimming(Gdiplus::StringTrimmingEllipsisCharacter);
+      ellipsis_fmt.SetFormatFlags(Gdiplus::StringFormatFlagsLineLimit);
+      fmt = &ellipsis_fmt;
     }
+    // Soft caption shadow (readability on light wallpapers).
+    {
+      Gdiplus::SolidBrush cap_shadow(Gdiplus::Color(
+          light_panel_ ? 48 : 96,
+          light_panel_ ? 255 : 0, light_panel_ ? 255 : 0,
+          light_panel_ ? 255 : 0));
+      Gdiplus::RectF sb = label;
+      sb.Y += 1.f;
+      g.DrawString(cell.item.name.c_str(), -1, caption_font_, sb, fmt,
+                   &cap_shadow);
+    }
+    g.DrawString(cell.item.name.c_str(), -1, caption_font_, label, fmt,
+                 &name_brush);
   };
 
   // Idle cells first, then selected on top (expanded captions overlay neighbors).
