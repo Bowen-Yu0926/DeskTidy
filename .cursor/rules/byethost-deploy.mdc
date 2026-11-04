@@ -42,11 +42,13 @@ python scripts/upload_byethost.py --list           # 仅列远程目录
 ## 一键发版
 
 ```text
-python scripts/release.py                  # 保版本：编安装包 → 改下载链 → gh release → ByetHost
+python scripts/release.py                  # 保版本：编安装包 → sha256 → 改下载链 → gh release → ByetHost
 python scripts/release.py --bump           # 先升 patch 再发
 python scripts/release.py --dry-run        # 只打印步骤
 scripts\release.bat                        # 同上
 ```
+
+Release 必须附带 `DeskTidy_Setup_<VERSION>.exe.sha256`（正文也写 hash），否则应用内「检查更新」能发现版本但拒绝安装。
 
 仍可单步：`bump_version.py` / `build_native_installer.bat` / `upload_byethost.py`。
 

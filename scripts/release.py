@@ -13,6 +13,7 @@ Examples:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import re
 import shutil
 import subprocess
@@ -78,6 +79,38 @@ def build_installer(*, dry_run: bool) -> Path:
     return setup
 
 
+def write_sha256_sidecar(setup: Path, *, dry_run: bool) -> Path:
+    """Write `<setup>.sha256` next to the installer (updater FindChecksum)."""
+    sidecar = Path(str(setup) + ".sha256")
+    print(f"\n>> sha256 {setup.name}")
+    if dry_run:
+        return sidecar
+    digest = hashlib.sha256(setup.read_bytes()).hexdigest()
+    # Common digest formats the native updater's FindHex64 accepts.
+    sidecar.write_text(f"{digest}  {setup.name}\n", encoding="utf-8")
+    print(f"  {digest}")
+    print(f"  wrote {sidecar.name}")
+    return sidecar
+
+
+def notes_with_checksum(notes: str, setup: Path, sidecar: Path) -> str:
+    body = notes.strip() or f"DeskTidy release ({setup.name})"
+    digest = ""
+    if sidecar.is_file():
+        digest = re.search(r"[0-9a-fA-F]{64}", sidecar.read_text(encoding="utf-8"))
+        digest = digest.group(0) if digest else ""
+    if not digest and setup.is_file():
+        digest = hashlib.sha256(setup.read_bytes()).hexdigest()
+    if not digest:
+        return body
+    # Put the hex near the asset name so update_check FindSha256InText finds it
+    # even if the sidecar download fails.
+    block = f"{setup.name}\nsha256: {digest}"
+    if digest.lower() in body.lower() and setup.name in body:
+        return body
+    return f"{body.rstrip()}\n\n{block}\n"
+
+
 def update_download_links(version: str, *, dry_run: bool) -> None:
     if not DESKTIDY_HTML.is_file():
         raise SystemExit(f"missing {DESKTIDY_HTML}")
@@ -102,12 +135,20 @@ def update_download_links(version: str, *, dry_run: bool) -> None:
     DESKTIDY_HTML.write_text(updated, encoding="utf-8")
 
 
-def github_release(version: str, setup: Path, notes: str, *, dry_run: bool) -> None:
+def github_release(
+    version: str,
+    setup: Path,
+    sidecar: Path,
+    notes: str,
+    *,
+    dry_run: bool,
+) -> None:
     if shutil.which("gh") is None:
         raise SystemExit("gh CLI not found; install GitHub CLI or pass --no-github")
     tag = f"v{version}"
     title = f"DeskTidy {version}"
-    body = notes.strip() or f"DeskTidy {version}"
+    body = notes_with_checksum(notes, setup, sidecar)
+    assets = [str(setup), str(sidecar)]
     # Replace existing tag/release assets when re-running the same version.
     view = subprocess.run(
         ["gh", "release", "view", tag, "--repo", RELEASES_REPO],
@@ -122,7 +163,7 @@ def github_release(version: str, setup: Path, notes: str, *, dry_run: bool) -> N
                 "release",
                 "upload",
                 tag,
-                str(setup),
+                *assets,
                 "--repo",
                 RELEASES_REPO,
                 "--clobber",
@@ -151,7 +192,7 @@ def github_release(version: str, setup: Path, notes: str, *, dry_run: bool) -> N
                 "release",
                 "create",
                 tag,
-                str(setup),
+                *assets,
                 "--repo",
                 RELEASES_REPO,
                 "--title",
@@ -204,16 +245,20 @@ def main(argv: list[str] | None = None) -> int:
 
     version = sync_version(bump=args.bump, dry_run=args.dry_run)
     setup = build_installer(dry_run=args.dry_run)
+    sidecar = write_sha256_sidecar(setup, dry_run=args.dry_run)
     if not args.skip_docs:
         update_download_links(version, dry_run=args.dry_run)
     if not args.no_github:
-        github_release(version, setup, args.notes, dry_run=args.dry_run)
+        github_release(
+            version, setup, sidecar, args.notes, dry_run=args.dry_run
+        )
     if not args.no_site:
         upload_site(dry_run=args.dry_run)
 
     print("\nDone.")
     print(f"  version={version}")
     print(f"  setup={setup}")
+    print(f"  sha256={sidecar}")
     if not args.no_github:
         print(f"  release={DOWNLOAD_HOST}/v{version}/DeskTidy_Setup_{version}.exe")
     return 0
