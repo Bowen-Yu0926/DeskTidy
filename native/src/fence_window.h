@@ -311,7 +311,7 @@ class FenceWindow {
   int content_h_ = 0;
   std::string id_;
   std::wstring title_;
-  std::string style_id_ = "charcoal";
+  std::string style_id_ = "navy";
   COLORREF bg_ = RGB(42, 46, 53);
   COLORREF accent_ = RGB(76, 141, 255);
   COLORREF title_color_ = RGB(255, 255, 255);

@@ -4046,7 +4046,7 @@ void App::CreateFenceOnPage(int page, bool switch_to_page) {
   layout.page = page;
   layout.pages = {page};
   layout.organize_kinds = {"file"};
-  layout.style_id = prefs_.theme_id.empty() ? "charcoal" : prefs_.theme_id;
+  layout.style_id = prefs_.theme_id.empty() ? "navy" : prefs_.theme_id;
   if (!SpawnFence(layout)) {
     return;
   }
@@ -5761,7 +5761,7 @@ void App::AddFenceAtRect(const RECT& screen) {
   layout.h = (std::max)(120, static_cast<int>(screen.bottom - screen.top));
   layout.page = current_page_;
   layout.style_id =
-      prefs_.theme_id.empty() ? "charcoal" : prefs_.theme_id;
+      prefs_.theme_id.empty() ? "navy" : prefs_.theme_id;
   if (!SpawnFence(layout)) {
     return;
   }

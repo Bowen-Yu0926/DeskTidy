@@ -1326,12 +1326,12 @@
 </div>
 <script>
   const STYLE_COLORS = {
-    charcoal: { bg: '#2A2E35', accent: '#4C8DFF', text: '#FFFFFF' },
-    slate: { bg: '#3D4450', accent: '#7DD3FC', text: '#FFFFFF' },
-    frost: { bg: '#F4F6F8', accent: '#3B82F6', text: '#0F172A' },
-    mist_blue: { bg: '#C5E1F5', accent: '#1D7BB8', text: '#0F172A' },
-    forest: { bg: '#C8EBD6', accent: '#1E9B55', text: '#0F172A' },
-    sunset: { bg: '#F8D5B5', accent: '#E07A2F', text: '#0F172A' }
+    navy: { bg: '#202633', accent: '#4CC2FF', text: '#FFFFFF' },
+    graphite: { bg: '#2E3036', accent: '#64A0FF', text: '#FFFFFF' },
+    midnight: { bg: '#201A2E', accent: '#A578FF', text: '#FFFFFF' },
+    mica: { bg: '#F3F4F8', accent: '#2F6FED', text: '#161C28' },
+    latte: { bg: '#F2E7DA', accent: '#C07A4A', text: '#2B1E14' },
+    matcha: { bg: '#DEE7DA', accent: '#5E8C6A', text: '#1C261E' }
   };
 
   const state = {
@@ -1365,7 +1365,7 @@
     vault_api_base: 'https://bowen-yu0926.byethost10.com/desktidy-vault/',
     vault_refresh_hours: 2, vault_clipboard_clear_seconds: 30,
     lang: 'zh', app_version: '',
-    theme_id: 'charcoal', themes: [],
+    theme_id: 'navy', themes: [],
     ui_theme: 'mist', ui_themes: [],
     fence_cards: [], snapshots: [], snap_selected: -1,
     vault_items: [], vault_list_status: '',
@@ -1446,7 +1446,7 @@
     }
     return state.fences.map((name, i) => ({
       index: i, title: (name.split('·')[0] || name).trim(),
-      page: 0, style_id: state.theme_id || 'charcoal', opacity_pct: 70
+      page: 0, style_id: state.theme_id || 'navy', opacity_pct: 70
     }));
   }
 
@@ -1630,12 +1630,12 @@
       el.className = 'fence-tile' + (i === state.selected ? ' sel' : '');
       const title = c.title || ('分区 ' + (i + 1));
       const pct = Math.max(35, Math.min(100, Number(c.opacity_pct) || 70));
-      const sid = c.style_id || state.theme_id || 'charcoal';
-      const colors = STYLE_COLORS[sid] || STYLE_COLORS.charcoal;
+      const sid = c.style_id || state.theme_id || 'navy';
+      const colors = STYLE_COLORS[sid] || STYLE_COLORS.navy;
       const alpha = Math.max(0.35, Math.min(1, pct / 100));
       const chips = styles.map((t) => {
         const id = t.id || '';
-        const col = STYLE_COLORS[id] || STYLE_COLORS.charcoal;
+        const col = STYLE_COLORS[id] || STYLE_COLORS.navy;
         return '<button type="button" class="ft-chip' + (id === sid ? ' on' : '') +
           '" data-style="' + id + '" title="' + (t.name || id) +
           '" style="background:' + col.bg + '"></button>';
@@ -1736,10 +1736,10 @@
     const styles = Array.isArray(state.themes) && state.themes.length
       ? state.themes
       : Object.keys(STYLE_COLORS).map((id) => ({ id, name: id }));
-    const cur = state.theme_id || 'charcoal';
+    const cur = state.theme_id || 'navy';
     box.innerHTML = styles.map((t) => {
       const id = t.id || '';
-      const col = STYLE_COLORS[id] || STYLE_COLORS.charcoal;
+      const col = STYLE_COLORS[id] || STYLE_COLORS.navy;
       return '<button type="button" class="ft-chip' + (id === cur ? ' on' : '') +
         '" data-style="' + id + '" title="' + (t.name || id) +
         '" style="background:' + col.bg + '"></button>';
@@ -1888,7 +1888,7 @@
       desk.style.height = 'auto';
       const n = pageBoxes.length;
       pageBoxes.forEach((b, idx) => {
-        const colors = STYLE_COLORS[b.style_id] || STYLE_COLORS.charcoal;
+        const colors = STYLE_COLORS[b.style_id] || STYLE_COLORS.navy;
         const el = document.createElement('div');
         el.className = 'st-fence';
         const top = idx * (100 / n) + 2;
@@ -1933,7 +1933,7 @@
       h: Math.max(40, Number(b.h) || 80),
     }));
     pageBoxes.forEach((b, bi) => {
-      const colors = STYLE_COLORS[b.style_id] || STYLE_COLORS.charcoal;
+      const colors = STYLE_COLORS[b.style_id] || STYLE_COLORS.navy;
       const r = fenceRects[bi];
       const el = document.createElement('div');
       el.className = 'st-fence';

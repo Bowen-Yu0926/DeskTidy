@@ -408,7 +408,7 @@ void AddFence() {
   fl.w = kFenceDefaultW;
   fl.h = (std::max)(kFenceDefaultH, MinFenceHeightForIconRows(2));
   fl.page = g_edit_page;
-  fl.style_id = "charcoal";
+  fl.style_id = "navy";
   g_state->fences.push_back(fl);
   g_sel = {static_cast<int>(g_state->fences.size()) - 1};
 }

@@ -22,7 +22,7 @@ struct AppPrefs {
   // DirectShow microphone name. Empty skips audio.
   std::wstring record_mic;
   // Fence style preset (Python fence_style_preset). Legacy JSON key: theme_id.
-  std::string theme_id = "charcoal";
+  std::string theme_id = "navy";
   // Settings UI theme (Python theme): mist / graphite / sky / mint / lavender / peach.
   std::string ui_theme = "mist";
   // Extensions page (Python float-bar / feature toggles).

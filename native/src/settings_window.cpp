@@ -1183,7 +1183,7 @@ void SettingsWindow::DispatchAction(const std::wstring& json) {
     // Reuse theme_id path → ApplyThemeId (all fences + default preset).
     const std::wstring style = JsonStringField(json, L"value");
     on_ext_field_(L"theme_id",
-                  style.empty() ? WidenUtf8("charcoal") : style);
+                  style.empty() ? WidenUtf8("navy") : style);
   } else if (on_command_) {
     on_command_(id);
   }

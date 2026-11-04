@@ -574,7 +574,7 @@ AppState LoadAppStateFromPath(const std::wstring& path, bool inject_defaults) {
         fl.page = fl.pages[0];
       }
     }
-    fl.style_id = style_id.empty() ? "charcoal" : style_id;
+    fl.style_id = style_id.empty() ? "navy" : style_id;
     fl.portal_path = Widen(portal);
     fl.collapsed = collapsed;
     fl.position_locked = position_locked;
@@ -978,7 +978,7 @@ bool SaveAppState(const AppState& state) {
     }
     out << "],"
         << "\"style\":\""
-        << EscapeJson(f.style_id.empty() ? "charcoal" : f.style_id) << "\","
+        << EscapeJson(f.style_id.empty() ? "navy" : f.style_id) << "\","
         << "\"portal\":\"" << EscapeJson(Narrow(f.portal_path)) << "\","
         << "\"collapsed\":" << (f.collapsed ? "true" : "false") << ","
         << "\"position_locked\":"

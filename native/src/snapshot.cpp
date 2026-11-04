@@ -653,7 +653,7 @@ SnapshotCardData BuildSnapshotCard(const SnapshotInfo& info) {
       box.w = f.w;
       box.h = f.h;
       box.page = pg;
-      box.style_id = f.style_id.empty() ? "charcoal" : f.style_id;
+      box.style_id = f.style_id.empty() ? "navy" : f.style_id;
       box.collapsed = f.collapsed;
       box.icon_count = icon_count;
       box.pin_thumbs = thumbs;

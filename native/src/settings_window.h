@@ -119,7 +119,7 @@ class SettingsWindow {
     std::string lang = "zh";
     std::wstring app_version = L"0.0.0";
     // Fence style preset (legacy field name theme_id in JSON).
-    std::string theme_id = "charcoal";
+    std::string theme_id = "navy";
     std::string ui_theme = "mist";
     bool vault_logged_in = false;
     std::wstring vault_session_label;
@@ -133,7 +133,7 @@ class SettingsWindow {
       int index = 0;
       std::wstring title;
       int page = 0;
-      std::string style_id = "charcoal";
+      std::string style_id = "navy";
       int opacity_pct = 70;  // 35–100
       // Organize rule kinds: "icon" (软件) / "file" (文档). Empty = no rule.
       std::vector<std::string> organize_kinds;
@@ -150,7 +150,7 @@ class SettingsWindow {
       int w = 0;
       int h = 0;
       int page = 0;
-      std::string style_id = "charcoal";
+      std::string style_id = "navy";
       bool collapsed = false;
       int icon_count = 0;
       std::vector<std::string> pin_thumbs;

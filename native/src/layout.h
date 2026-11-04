@@ -59,7 +59,7 @@ struct FenceLayout {
   int page = 0;
   // P2-11: multi-page membership (Python fence["pages"]). Empty → {page}.
   std::vector<int> pages;
-  std::string style_id = "charcoal";
+  std::string style_id = "navy";
   std::wstring portal_path;
   // When true, window height is collapsed chrome; h still stores expanded height.
   bool collapsed = false;

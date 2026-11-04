@@ -17,7 +17,7 @@ struct SnapshotPreviewBox {
   int w = 0;
   int h = 0;
   int page = 0;
-  std::string style_id = "charcoal";
+  std::string style_id = "navy";
   bool collapsed = false;
   int icon_count = 0;  // pinned paths (virtual_items) in this fence
   // Small PNG data-URLs for in-fence pins (so thumbs show real icons).
