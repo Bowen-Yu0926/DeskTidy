@@ -6,29 +6,30 @@
 <title>确认</title>
 <style>
   :root {
-    --card: #ffffff;
-    --border: #d0d7e2;
-    --text: #1a1f27;
-    --muted: #4b5563;
-    --accent: #2563eb;
-    --accent-hover: #1d4ed8;
-    --accent-soft: #eff6ff;
-    --primary: #2563eb;
-    --primary-hover: #1d4ed8;
-    --danger: #dc2626;
-    --danger-hover: #b91c1c;
-    --danger-soft: #fef2f2;
-    --warn: #c2410c;
-    --warn-soft: #fff7ed;
-    --info: #2563eb;
-    --info-soft: #eff6ff;
-    --shadow: 0 16px 40px rgba(15, 23, 42, 0.18), 0 0 0 1px rgba(15, 23, 42, 0.06);
-    --radius: 12px;
+    --card: rgba(18, 24, 38, 0.94);
+    --border: rgba(255, 255, 255, 0.12);
+    --border-hover: rgba(255, 255, 255, 0.24);
+    --text: #F8FAFC;
+    --muted: #94A3B8;
+    --accent: #3B82F6;
+    --accent-hover: #60A5FA;
+    --accent-soft: rgba(59, 130, 246, 0.15);
+    --primary: #2563EB;
+    --primary-hover: #1D4ED8;
+    --danger: #EF4444;
+    --danger-hover: #DC2626;
+    --danger-soft: rgba(239, 68, 68, 0.20);
+    --warn: #F59E0B;
+    --warn-soft: rgba(245, 158, 11, 0.20);
+    --info: #3B82F6;
+    --info-soft: rgba(59, 130, 246, 0.20);
+    --shadow: 0 20px 50px rgba(0, 0, 0, 0.65), 0 0 0 1px rgba(255, 255, 255, 0.08);
+    --radius: 14px;
   }
   * { box-sizing: border-box; }
   html, body {
     margin: 0; height: 100%;
-    font-family: "Microsoft YaHei", "微软雅黑", "Microsoft YaHei UI", "Segoe UI", sans-serif;
+    font-family: "Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI", sans-serif;
     background: transparent; color: var(--text); font-size: 13px;
     -webkit-font-smoothing: antialiased;
   }
@@ -46,35 +47,39 @@
     background: var(--card);
     border: 1px solid var(--border);
     border-radius: var(--radius);
-    padding: 18px 18px 16px;
+    padding: 20px 20px 18px;
     box-shadow: var(--shadow);
     position: relative;
-    animation: mistIn 140ms ease-out;
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+    animation: mistIn 160ms cubic-bezier(0.16, 1, 0.3, 1);
   }
   @keyframes mistIn {
-    from { opacity: 0; transform: translateY(4px) scale(0.985); }
+    from { opacity: 0; transform: translateY(8px) scale(0.96); }
     to { opacity: 1; transform: none; }
   }
   #close {
-    position: absolute; top: 10px; right: 10px; width: 28px; height: 28px;
-    border: none; background: transparent; color: #6b7280; font-size: 18px;
+    position: absolute; top: 12px; right: 12px; width: 28px; height: 28px;
+    border: none; background: transparent; color: #94A3B8; font-size: 18px;
     border-radius: 8px; cursor: pointer; line-height: 1;
+    transition: all 120ms ease;
   }
-  #close:hover { background: #f3f4f6; color: var(--text); }
+  #close:hover { background: rgba(255, 255, 255, 0.10); color: #FFFFFF; }
   .head {
-    display: flex; gap: 12px; align-items: flex-start;
-    margin: 0 22px 0 0;
+    display: flex; gap: 14px; align-items: flex-start;
+    margin: 0 24px 0 0;
   }
   .badge {
     flex: 0 0 auto;
-    width: 36px; height: 36px; border-radius: 50%;
+    width: 38px; height: 38px; border-radius: 50%;
     display: grid; place-items: center;
     background: var(--info-soft); color: var(--info);
     margin-top: 1px;
+    box-shadow: 0 0 16px var(--info-soft);
   }
-  .badge svg { width: 18px; height: 18px; display: block; }
-  body.warn .badge { background: var(--warn-soft); color: var(--warn); }
-  body.danger .badge { background: var(--danger-soft); color: var(--danger); }
+  .badge svg { width: 20px; height: 20px; display: block; }
+  body.warn .badge { background: var(--warn-soft); color: var(--warn); box-shadow: 0 0 16px var(--warn-soft); }
+  body.danger .badge { background: var(--danger-soft); color: var(--danger); box-shadow: 0 0 16px var(--danger-soft); }
   .head-text { min-width: 0; flex: 1; }
   #title {
     margin: 0 0 6px; font-size: 16px; font-weight: 700; letter-spacing: 0;
@@ -90,58 +95,56 @@
   }
   .foot {
     display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap;
-    margin-top: 18px;
+    margin-top: 20px;
   }
   .btn {
     border: 1px solid var(--border);
-    background: #fff;
+    background: rgba(255, 255, 255, 0.06);
     border-radius: 8px;
     min-width: 76px;
     min-height: 32px;
-    padding: 6px 14px;
+    padding: 6px 15px;
     font: inherit;
     font-size: 13px;
     font-weight: 600;
     color: var(--text);
     cursor: pointer;
-    transition: background 100ms ease, border-color 100ms ease, color 100ms ease,
-                box-shadow 100ms ease;
+    transition: all 120ms ease;
   }
-  .btn:hover { background: #f3f4f6; border-color: #b8c0cc; }
-  .btn:active { background: #e5e7eb; }
+  .btn:hover { background: rgba(255, 255, 255, 0.12); border-color: var(--border-hover); }
+  .btn:active { transform: scale(0.98); }
   .btn:focus { outline: none; }
   .btn:focus-visible {
-    box-shadow: 0 0 0 2px #fff, 0 0 0 4px rgba(37, 99, 235, 0.45);
+    box-shadow: 0 0 0 2px #0F172A, 0 0 0 4px rgba(59, 130, 246, 0.6);
   }
   .btn.ghost {
-    background: #fff;
+    background: rgba(255, 255, 255, 0.05);
     border-color: var(--border);
+    color: #CBD5E1;
+  }
+  .btn.ghost:hover {
+    background: rgba(255, 255, 255, 0.10);
+    color: #FFFFFF;
   }
   .btn.primary {
-    background: var(--primary);
-    border-color: var(--primary);
-    color: #fff;
+    background: linear-gradient(135deg, #3B82F6 0%, #1D4ED8 100%);
+    border-color: rgba(96, 165, 250, 0.4);
+    color: #FFFFFF;
+    box-shadow: 0 2px 8px rgba(37, 99, 235, 0.35);
   }
   .btn.primary:hover {
-    background: var(--primary-hover);
-    border-color: var(--primary-hover);
-    color: #fff;
-  }
-  .btn.primary:focus-visible {
-    box-shadow: 0 0 0 2px #fff, 0 0 0 4px rgba(37, 99, 235, 0.45);
+    background: linear-gradient(135deg, #60A5FA 0%, #2563EB 100%);
+    box-shadow: 0 4px 14px rgba(37, 99, 235, 0.5);
   }
   .btn.danger {
-    background: var(--danger);
-    border-color: var(--danger);
-    color: #fff;
+    background: linear-gradient(135deg, #EF4444 0%, #B91C1C 100%);
+    border-color: rgba(248, 113, 113, 0.4);
+    color: #FFFFFF;
+    box-shadow: 0 2px 8px rgba(239, 68, 68, 0.35);
   }
   .btn.danger:hover {
-    background: var(--danger-hover);
-    border-color: var(--danger-hover);
-    color: #fff;
-  }
-  .btn.danger:focus-visible {
-    box-shadow: 0 0 0 2px #fff, 0 0 0 4px rgba(220, 38, 38, 0.45);
+    background: linear-gradient(135deg, #F87171 0%, #DC2626 100%);
+    box-shadow: 0 4px 14px rgba(239, 68, 68, 0.5);
   }
   #btn-no, #btn-cancel { display: none; }
   /* Confirm: 确定/删除 + 取消（市面删除确认，不用「是/否」） */

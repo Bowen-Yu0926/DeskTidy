@@ -22,13 +22,20 @@ HWND g_clear_above = nullptr;  // page-chip cloud etc. — keep speech above it
 std::function<void()> g_on_click;
 bool g_clickable = false;
 int g_ww = 280;
-int g_hh = 36;
+int g_hh = 38;
 
 int MeasureToastWidth(HDC hdc, const std::wstring& text) {
   RECT m{0, 0, 0, 0};
+  HFONT font = CreateFontW(-13, 0, 0, 0, FW_MEDIUM, FALSE, FALSE, FALSE,
+                           DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
+                           CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+                           DEFAULT_PITCH | FF_DONTCARE, L"Microsoft YaHei UI");
+  HGDIOBJ old_f = SelectObject(hdc, font);
   DrawTextW(hdc, text.c_str(), -1, &m, DT_CALCRECT | DT_SINGLELINE);
-  const int need = (m.right - m.left) + 24;
-  return (std::max)(280, (std::min)(need, 520));
+  SelectObject(hdc, old_f);
+  DeleteObject(font);
+  const int need = (m.right - m.left) + 36;
+  return (std::max)(280, (std::min)(need, 540));
 }
 
 void PlaceToastWindow(HWND hwnd, HWND anchor, HWND clear_above) {
@@ -65,6 +72,8 @@ void PlaceToastWindow(HWND hwnd, HWND anchor, HWND clear_above) {
     y = work.top + 28;
   }
   SetWindowPos(hwnd, nullptr, x, y, ww, hh, SWP_NOZORDER | SWP_NOACTIVATE);
+  HRGN rgn = CreateRoundRectRgn(0, 0, ww + 1, hh + 1, 16, 16);
+  SetWindowRgn(hwnd, rgn, TRUE);
 }
 
 void ArmDismissTimer(HWND hwnd, UINT ms) {
@@ -100,27 +109,48 @@ LRESULT CALLBACK ToastProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
         return 0;
       }
       break;
+    case WM_ERASEBKGND:
+      return 1;
     case WM_PAINT: {
       PAINTSTRUCT ps{};
       HDC hdc = BeginPaint(hwnd, &ps);
       RECT rc{};
       GetClientRect(hwnd, &rc);
-      HBRUSH br = CreateSolidBrush(RGB(255, 252, 245));
-      FillRect(hdc, &rc, br);
-      DeleteObject(br);
-      HPEN pen = CreatePen(PS_SOLID, 1, RGB(210, 190, 150));
+
+      // Deep space acrylic capsule background with glow border
+      HBRUSH br = CreateSolidBrush(RGB(20, 25, 36));
+      HPEN pen = CreatePen(PS_SOLID, 1,
+                           g_clickable ? RGB(59, 130, 246) : RGB(62, 76, 106));
+      HGDIOBJ old_br = SelectObject(hdc, br);
       HGDIOBJ old_pen = SelectObject(hdc, pen);
-      HGDIOBJ old_br = SelectObject(hdc, GetStockObject(NULL_BRUSH));
-      Rectangle(hdc, rc.left, rc.top, rc.right, rc.bottom);
-      SelectObject(hdc, old_br);
+      RoundRect(hdc, rc.left, rc.top, rc.right, rc.bottom, 16, 16);
       SelectObject(hdc, old_pen);
+      SelectObject(hdc, old_br);
       DeleteObject(pen);
+      DeleteObject(br);
+
+      // Subtle top inner specular rim
+      HPEN glow = CreatePen(PS_SOLID, 1, RGB(78, 96, 132));
+      HGDIOBJ old_glow = SelectObject(hdc, glow);
+      MoveToEx(hdc, rc.left + 16, rc.top + 1, nullptr);
+      LineTo(hdc, rc.right - 16, rc.top + 1);
+      SelectObject(hdc, old_glow);
+      DeleteObject(glow);
+
+      HFONT font = CreateFontW(-13, 0, 0, 0, FW_MEDIUM, FALSE, FALSE, FALSE,
+                               DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
+                               CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+                               DEFAULT_PITCH | FF_DONTCARE,
+                               L"Microsoft YaHei UI");
+      HGDIOBJ old_f = SelectObject(hdc, font);
       SetBkMode(hdc, TRANSPARENT);
-      SetTextColor(hdc, g_clickable ? RGB(30, 90, 180) : RGB(40, 36, 30));
+      SetTextColor(hdc, g_clickable ? RGB(96, 165, 250) : RGB(241, 245, 255));
       RECT text = rc;
-      InflateRect(&text, -8, -4);
+      InflateRect(&text, -12, -4);
       DrawTextW(hdc, g_text.c_str(), -1, &text,
                 DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+      SelectObject(hdc, old_f);
+      DeleteObject(font);
       EndPaint(hwnd, &ps);
       return 0;
     }

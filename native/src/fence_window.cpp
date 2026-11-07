@@ -599,11 +599,14 @@ void FenceWindow::PresentLayered() {
       g.FillRectangle(&fill, 0, 0, rw, rh);
     }
     // Soft header wash only (Fences-style: no left accent stripe).
+    const int header_h = S(hwnd_, kHeaderH0);
+    const bool rounded = rr > 2 && rr < rw && rr < rh;
     {
-      const bool rounded = rr > 2 && rr < rw && rr < rh;
-      const int header_h = S(hwnd_, kHeaderH0);
-      Gdiplus::SolidBrush wash(Gdiplus::Color(
-          light_panel_ ? 72 : 28, 255, 255, 255));
+      // Glossy vertical gradient wash for frosted glass depth
+      Gdiplus::LinearGradientBrush wash(
+          Gdiplus::Point(0, 0), Gdiplus::Point(0, header_h),
+          Gdiplus::Color(light_panel_ ? 75 : 38, 255, 255, 255),
+          Gdiplus::Color(light_panel_ ? 35 : 16, 255, 255, 255));
       if (rounded) {
         g.SetClip(&path);
         g.FillRectangle(&wash, 0, 0, rw, header_h);
@@ -612,8 +615,42 @@ void FenceWindow::PresentLayered() {
         g.FillRectangle(&wash, 0, 0, rw, header_h);
       }
     }
+
+    // Luminous separator bar between header and content
+    if (h > header_h + 2) {
+      Gdiplus::Color mid_col = light_panel_
+          ? Gdiplus::Color(35, 15, 23, 42)
+          : Gdiplus::Color(48, 240, 248, 255);
+      Gdiplus::Color trans_col(0, mid_col.GetR(), mid_col.GetG(), mid_col.GetB());
+      Gdiplus::LinearGradientBrush sep(
+          Gdiplus::Point(0, header_h), Gdiplus::Point(rw, header_h),
+          trans_col, trans_col);
+      Gdiplus::Color colors[3] = {trans_col, mid_col, trans_col};
+      Gdiplus::REAL positions[3] = {0.0f, 0.5f, 1.0f};
+      sep.SetInterpolationColors(colors, positions, 3);
+      Gdiplus::Pen sep_pen(&sep, 1.0f);
+      g.DrawLine(&sep_pen, 0, header_h, rw, header_h);
+    }
+
+    // Subtle specular inner rim along the very top edge
+    {
+      Gdiplus::Color rim_mid = light_panel_
+          ? Gdiplus::Color(55, 255, 255, 255)
+          : Gdiplus::Color(70, 255, 255, 255);
+      Gdiplus::Color rim_ends(0, 255, 255, 255);
+      Gdiplus::LinearGradientBrush top_rim(
+          Gdiplus::Point(0, 1), Gdiplus::Point(rw, 1),
+          rim_ends, rim_ends);
+      Gdiplus::Color rim_colors[3] = {rim_ends, rim_mid, rim_ends};
+      Gdiplus::REAL rim_pos[3] = {0.0f, 0.5f, 1.0f};
+      top_rim.SetInterpolationColors(rim_colors, rim_pos, 3);
+      Gdiplus::Pen rim_pen(&top_rim, 1.0f);
+      const int inset = rounded ? radius : 2;
+      g.DrawLine(&rim_pen, inset, 1, rw - inset, 1);
+    }
+
     COLORREF border = light_panel_ ? RGB(15, 23, 42) : RGB(255, 255, 255);
-    const BYTE ba = light_panel_ ? 48 : 40;
+    const BYTE ba = light_panel_ ? 42 : 36;
     Gdiplus::Pen edge(Gdiplus::Color(ba, GetRValue(border), GetGValue(border),
                                      GetBValue(border)),
                       1.0f);
@@ -3842,6 +3879,18 @@ void FenceWindow::Paint(HDC hdc) {
       return Gdiplus::PointF(
           (r.left + r.right) * 0.5f, (r.top + r.bottom) * 0.5f);
     };
+    auto draw_btn_backing = [&](const RECT& r) {
+      if (r.right > r.left) {
+        const auto c = mid(r);
+        const float br = (std::min)(11.0f, (r.bottom - r.top) * 0.44f);
+        Gdiplus::SolidBrush chip_bg(Gdiplus::Color(
+            light_panel_ ? 16 : 24, 255, 255, 255));
+        g.FillEllipse(&chip_bg, c.X - br, c.Y - br, br * 2.0f, br * 2.0f);
+      }
+    };
+    draw_btn_backing(collapse_rc);
+    draw_btn_backing(lock_rc);
+    draw_btn_backing(dissolve_rc);
     // Collapse chevron
     if (collapse_rc.right > collapse_rc.left) {
       const auto c = mid(collapse_rc);

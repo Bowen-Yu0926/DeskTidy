@@ -1024,18 +1024,24 @@ void PageBar::Paint(HDC) {
       Gdiplus::LinearGradientBrush fill(
           Gdiplus::PointF(card_x, card_y),
           Gdiplus::PointF(card_x, card_y + card_h),
-          Gdiplus::Color(245, 255, 255, 255),
-          Gdiplus::Color(238, 244, 247, 252));
+          Gdiplus::Color(230, 20, 26, 38),
+          Gdiplus::Color(245, 12, 16, 26));
       g.FillPath(&fill, &card);
-      Gdiplus::Pen rim(Gdiplus::Color(70, 148, 163, 184), 1.f);
+      Gdiplus::Pen rim(Gdiplus::Color(75, 140, 180, 240), 1.f);
       g.DrawPath(&rim, &card);
       if (expand_t_ < 0.55f) {
+        const float nose_alpha = 140.f + expand_t_ * 100.f;
+        Gdiplus::SolidBrush glow(Gdiplus::Color(
+            static_cast<BYTE>(nose_alpha * 0.4f), ar, ag, ab));
+        g.FillRectangle(&glow,
+                        Gdiplus::RectF(card_x, card_y + card_rad - 2.f,
+                                       5.f * font_scale_,
+                                       card_h - card_rad * 2.f + 4.f));
         Gdiplus::SolidBrush nose(Gdiplus::Color(
-            static_cast<BYTE>(90 + static_cast<int>(expand_t_ * 80)), ar, ag,
-            ab));
+            static_cast<BYTE>(nose_alpha), ar, ag, ab));
         g.FillRectangle(&nose,
                         Gdiplus::RectF(card_x + 1.f, card_y + card_rad,
-                                       3.f * font_scale_,
+                                       2.5f * font_scale_,
                                        card_h - card_rad * 2.f));
       }
 
@@ -1130,23 +1136,23 @@ void PageBar::Paint(HDC) {
                                          4.8f * font_scale_));
         }
       } else {
-        // Discrete bookmark tabs (flush right edge).
+        // Discrete bookmark tabs (flush right edge) - Modern Frosted Acrylic
         Gdiplus::Color top;
         Gdiplus::Color bottom;
         if (on) {
-          top = Gdiplus::Color(255, 224, 231, 255);
-          bottom = Gdiplus::Color(255, 210, 220, 252);
+          top = Gdiplus::Color(235, 24, 30, 46);
+          bottom = Gdiplus::Color(245, 16, 20, 32);
         } else if (hover) {
-          top = Gdiplus::Color(255, 255, 255, 255);
-          bottom = Gdiplus::Color(255, 232, 238, 255);
+          top = Gdiplus::Color(225, 32, 40, 58);
+          bottom = Gdiplus::Color(235, 22, 28, 42);
         } else {
-          top = Gdiplus::Color(255, 255, 255, 255);
-          bottom = Gdiplus::Color(255, 248, 250, 252);
+          top = Gdiplus::Color(195, 18, 22, 34);
+          bottom = Gdiplus::Color(215, 14, 18, 28);
         }
         Gdiplus::LinearGradientBrush body(
             Gdiplus::PointF(cx, cy), Gdiplus::PointF(cx, cy + bh), top,
             bottom);
-        const float rad = (std::min)(10.f * font_scale_, bh * 0.42f);
+        const float rad = (std::min)(11.f * font_scale_, bh * 0.44f);
         Gdiplus::GraphicsPath path;
         path.AddArc(cx, cy, rad * 2, rad * 2, 180, 90);
         path.AddLine(cx + rad, cy, cx + bw, cy);
@@ -1154,54 +1160,95 @@ void PageBar::Paint(HDC) {
         path.AddLine(cx + bw, cy + bh, cx + rad, cy + bh);
         path.AddArc(cx, cy + bh - rad * 2, rad * 2, rad * 2, 90, 90);
         path.CloseFigure();
+
+        // Subtle ambient shadow
         {
           Gdiplus::GraphicsPath shadow;
-          shadow.AddArc(cx + 1.f, cy + 1.5f, rad * 2, rad * 2, 180, 90);
-          shadow.AddLine(cx + rad + 1.f, cy + 1.5f, cx + bw + 1.f, cy + 1.5f);
-          shadow.AddLine(cx + bw + 1.f, cy + 1.5f, cx + bw + 1.f,
-                         cy + bh + 1.5f);
-          shadow.AddLine(cx + bw + 1.f, cy + bh + 1.5f, cx + rad + 1.f,
-                         cy + bh + 1.5f);
-          shadow.AddArc(cx + 1.f, cy + bh - rad * 2 + 1.5f, rad * 2, rad * 2, 90,
-                        90);
+          shadow.AddArc(cx - 1.f, cy + 1.5f, rad * 2, rad * 2, 180, 90);
+          shadow.AddLine(cx + rad - 1.f, cy + 1.5f, cx + bw, cy + 1.5f);
+          shadow.AddLine(cx + bw, cy + 1.5f, cx + bw, cy + bh + 2.f);
+          shadow.AddLine(cx + bw, cy + bh + 2.f, cx + rad - 1.f, cy + bh + 2.f);
+          shadow.AddArc(cx - 1.f, cy + bh - rad * 2 + 2.f, rad * 2, rad * 2, 90, 90);
           shadow.CloseFigure();
-          Gdiplus::SolidBrush shade(Gdiplus::Color(36, 15, 23, 42));
+          Gdiplus::SolidBrush shade(Gdiplus::Color(45, 0, 0, 0));
           g.FillPath(&shade, &shadow);
         }
+
         g.FillPath(&body, &path);
-        if (on || hover) {
-          Gdiplus::Pen rim(Gdiplus::Color(on ? 40 : 55, ar, ag, ab), 0.85f);
+
+        // Accent wash overlay for active tab
+        if (on) {
+          Gdiplus::SolidBrush tint(Gdiplus::Color(45, ar, ag, ab));
+          g.FillPath(&tint, &path);
+        }
+
+        // 1px subtle border rim
+        if (on) {
+          Gdiplus::Pen rim(Gdiplus::Color(170, ar, ag, ab), 1.2f);
+          g.DrawPath(&rim, &path);
+        } else if (hover) {
+          Gdiplus::Pen rim(Gdiplus::Color(110, ar, ag, ab), 1.0f);
+          g.DrawPath(&rim, &path);
+        } else {
+          Gdiplus::Pen rim(Gdiplus::Color(55, 255, 255, 255), 0.85f);
           g.DrawPath(&rim, &path);
         }
-        if (on) {
-          const float rail_h = (std::max)(11.f, bh - 16.f);
-          Gdiplus::SolidBrush rail(Gdiplus::Color(255, ar, ag, ab));
-          g.FillRectangle(&rail, cx + 5.f, cy + (bh - rail_h) * 0.5f, 2.2f,
-                          rail_h);
+
+        // Top specular highlight line
+        {
+          Gdiplus::GraphicsPath spec;
+          spec.AddArc(cx + 1.f, cy + 1.f, rad * 2 - 2.f, rad * 2 - 2.f, 180, 90);
+          spec.AddLine(cx + rad, cy + 1.f, cx + bw, cy + 1.f);
+          Gdiplus::Pen spec_pen(Gdiplus::Color(on ? 100 : (hover ? 70 : 40), 255, 255, 255), 1.0f);
+          g.DrawPath(&spec_pen, &spec);
         }
+
+        // Glowing active rail
+        if (on) {
+          const float rail_h = (std::max)(12.f, bh - 14.f);
+          const float rail_x = cx + 4.5f;
+          const float rail_y = cy + (bh - rail_h) * 0.5f;
+          // Outer bloom
+          Gdiplus::Pen glow(Gdiplus::Color(90, ar, ag, ab), 3.8f);
+          glow.SetLineCap(Gdiplus::LineCapRound, Gdiplus::LineCapRound, Gdiplus::DashCapRound);
+          g.DrawLine(&glow, rail_x, rail_y + 1.5f, rail_x, rail_y + rail_h - 1.5f);
+          // Inner core
+          Gdiplus::SolidBrush rail(Gdiplus::Color(255, ar, ag, ab));
+          g.FillRectangle(&rail, rail_x - 1.2f, rail_y, 2.4f, rail_h);
+        }
+
         // Center label in the tab body; leave room for active rail + lock.
-        const float rail_reserve = on ? 8.f : 0.f;
+        const float rail_reserve = on ? 9.f : 0.f;
         const float lock_reserve = locked ? 14.f : 0.f;
         const float side = 6.f;
         const float text_x = cx + side + rail_reserve;
         const float text_w = bw - side * 2.f - rail_reserve - lock_reserve;
-        Gdiplus::SolidBrush ink(
-            on ? Gdiplus::Color(255, ar, ag, ab)
-               : Gdiplus::Color(255, utility ? 100 : 15, utility ? 116 : 23,
-                                utility ? 139 : 42));
-        const Gdiplus::Font& font = utility ? *font_util_ : *font_page_;
+
+        // Soft text shadow for maximum readability
         if (text_w > 8.f) {
+          Gdiplus::SolidBrush shadow_ink(Gdiplus::Color(140, 0, 0, 0));
+          const Gdiplus::Font& font = utility ? *font_util_ : *font_page_;
+          g.DrawString(s.label.c_str(), -1, &font,
+                       Gdiplus::RectF(text_x, cy + 1.f, text_w, bh), fmt_, &shadow_ink);
+          Gdiplus::SolidBrush ink(
+              on ? Gdiplus::Color(255, 255, 255, 255)
+                 : (hover ? Gdiplus::Color(255, 240, 245, 255)
+                          : (utility ? Gdiplus::Color(200, 160, 180, 205)
+                                     : Gdiplus::Color(220, 210, 222, 240))));
           g.DrawString(s.label.c_str(), -1, &font,
                        Gdiplus::RectF(text_x, cy, text_w, bh), fmt_, &ink);
         }
+
         if (locked) {
           const float lw = 6.f;
           const float lx = cx + bw - 11.f;
           const float ly = cy + (bh - 9.f) * 0.5f;
-          Gdiplus::Pen shackle(Gdiplus::Color(255, ar, ag, ab), 1.f);
+          const Gdiplus::Color lock_c(on ? Gdiplus::Color(255, ar, ag, ab)
+                                         : Gdiplus::Color(180, 180, 200, 225));
+          Gdiplus::Pen shackle(lock_c, 1.f);
           g.DrawArc(&shackle, Gdiplus::RectF(lx + 1.f, ly, lw - 2.f, 3.4f),
                     180.f, 180.f);
-          Gdiplus::SolidBrush lock_body(Gdiplus::Color(255, ar, ag, ab));
+          Gdiplus::SolidBrush lock_body(lock_c);
           g.FillRectangle(&lock_body,
                           Gdiplus::RectF(lx, ly + 2.8f, lw, 5.2f));
         }

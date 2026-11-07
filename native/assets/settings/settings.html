@@ -202,7 +202,7 @@
     width: 16px; height: 16px; border-radius: 50%; background: #fff;
     box-shadow: 0 1px 3px rgba(0,0,0,0.18); transition: transform 0.15s;
   }
-  .toggle input:checked { background: var(--accent); }
+  .toggle input:checked { background: var(--accent); box-shadow: 0 0 10px rgba(47, 111, 237, 0.45); }
   .toggle input:checked::after { transform: translateX(16px); }
   .preview {
     border: 1px solid var(--border); border-radius: 12px; min-height: 88px;
@@ -393,10 +393,11 @@
   .global-style-label { font-size: 13px; font-weight: 800; color: var(--text); }
   .global-style-row .ft-chips { display: flex; flex-wrap: wrap; gap: 6px; }
   .global-style-row .ft-chip {
-    width: 26px; height: 20px; border-radius: 6px; border: 1px solid var(--border);
-    cursor: pointer; padding: 0;
+    width: 28px; height: 22px; border-radius: 6px; border: 1px solid rgba(0,0,0,0.15);
+    cursor: pointer; padding: 0; transition: transform 0.15s ease, box-shadow 0.15s ease;
   }
-  .global-style-row .ft-chip.on { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .global-style-row .ft-chip:hover { transform: translateY(-1px); box-shadow: 0 2px 6px rgba(0,0,0,0.15); }
+  .global-style-row .ft-chip.on { outline: 2px solid var(--accent); outline-offset: 1px; box-shadow: 0 0 8px rgba(47, 111, 237, 0.45); }
   .global-style-row .hint { margin: 0; }
   .fence-columns {
     display: flex; gap: 12px; flex: 1; min-height: 320px; align-items: stretch;
@@ -1336,6 +1337,10 @@
 <script>
   const STYLE_COLORS = {
     navy: { bg: '#202633', accent: '#4CC2FF', text: '#FFFFFF' },
+    cyberpunk: { bg: '#101422', accent: '#00F0FF', text: '#FFFFFF' },
+    aurora: { bg: '#11201D', accent: '#00FFAB', text: '#FFFFFF' },
+    sunset: { bg: '#241422', accent: '#FF5C8A', text: '#FFFFFF' },
+    obsidian: { bg: '#13151C', accent: '#94A3B8', text: '#FFFFFF' },
     graphite: { bg: '#2E3036', accent: '#64A0FF', text: '#FFFFFF' },
     midnight: { bg: '#201A2E', accent: '#A578FF', text: '#FFFFFF' },
     mica: { bg: '#F3F4F8', accent: '#2F6FED', text: '#161C28' },
