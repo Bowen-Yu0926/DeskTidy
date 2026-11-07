@@ -43,7 +43,7 @@ constexpr int kIconSize0 = 40;  // match Python FenceIconItem.DEFAULT_ICON_SIZE
 constexpr int kListRowH0 = 28;
 constexpr int kListIcon0 = 20;
 constexpr int kDragThreshold = 6;
-constexpr int kEdge = 8;
+constexpr int kEdge = 6;
 // DeskTidy extras prepended to the hosted shell menu (ids 1..99).
 constexpr int kExtFenceRefresh = 1;
 constexpr int kExtFenceHide = 2;
@@ -1845,7 +1845,9 @@ int FenceWindow::HitTestScrollbar(int x, int y) const {
   RECT rc{};
   GetClientRect(hwnd_, &rc);
   const int header = S(hwnd_, kHeaderH0);
-  if (x < rc.right - 8 || x >= rc.right) {
+  // Keep scrollbar clear of the east resize strip ([rc.right - kEdge, rc.right))
+  const int edge = kEdge;
+  if (x < rc.right - edge - 7 || x >= rc.right - edge) {
     return 0;
   }
   const int track_top = header + 2;
@@ -3366,7 +3368,20 @@ LRESULT FenceWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
           return 0;
         }
       }
-      // Scrollbar wins over the east resize strip when content overflows.
+      // Resize edge takes absolute precedence over inner scrollbar on border strips
+      const Edge edge = HitTestEdge(press_client_.x, press_client_.y);
+      const int icon = HitTestIcon(press_client_.x, press_client_.y);
+      if (edge != Edge::None && icon < 0) {
+        ClearSelection();
+        resizing_ = true;
+        resize_edge_ = edge;
+        GetWindowRect(hwnd_, &resize_start_rc_);
+        GetCursorPos(&resize_start_pt_);
+        SetCapture(hwnd_);
+        return 0;
+      }
+
+      // Scrollbar handling (clear of resize strip)
       const int sb = HitTestScrollbar(press_client_.x, press_client_.y);
       if (sb == 1) {
         thumb_dragging_ = true;
@@ -3392,8 +3407,7 @@ LRESULT FenceWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
         ScrollbarPage(press_client_.y < thumb_y ? -1 : 1);
         return 0;
       }
-      const Edge edge = HitTestEdge(press_client_.x, press_client_.y);
-      const int icon = HitTestIcon(press_client_.x, press_client_.y);
+
       const bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
       // Explorer / Fences: click empty panel (or header/edge) clears selection.
       // Ctrl keeps selection for additive rubber-band.
@@ -3946,7 +3960,8 @@ void FenceWindow::Paint(HDC hdc) {
     if (thumb_y + thumb_h > track_top + track_h) {
       thumb_y = track_top + track_h - thumb_h;
     }
-    RECT thumb{rc.right - 7, thumb_y, rc.right - 3, thumb_y + thumb_h};
+    const int edge = kEdge;
+    RECT thumb{rc.right - edge - 6, thumb_y, rc.right - edge - 2, thumb_y + thumb_h};
     HBRUSH thumb_br = CreateSolidBrush(accent_);
     FillRect(hdc, &thumb, thumb_br);
     DeleteObject(thumb_br);
