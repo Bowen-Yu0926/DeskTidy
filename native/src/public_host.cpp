@@ -782,9 +782,15 @@ void PublicHost::Layout() {
     max_b = (std::max)(max_b, sc.bottom);
   }
   const int pad = (std::max)(48, cell_w / 2);
-  const RECT host_rc = {
-      static_cast<LONG>(min_l - pad), static_cast<LONG>(min_t - pad),
-      static_cast<LONG>(max_r + pad), static_cast<LONG>(max_b + pad)};
+  const RECT work = PrimaryWorkArea();
+  // Invariant: float host bounds must NEVER bleed into the taskbar or outside work area
+  LONG hl = (std::max)(work.left, static_cast<LONG>(min_l - pad));
+  LONG ht = (std::max)(work.top, static_cast<LONG>(min_t - pad));
+  LONG hr = (std::min)(work.right, static_cast<LONG>(max_r + pad));
+  LONG hb = (std::min)(work.bottom, static_cast<LONG>(max_b + pad));
+  if (hr < hl + cell_w) hr = (std::min)(work.right, hl + cell_w);
+  if (hb < ht + cell_h) hb = (std::min)(work.bottom, ht + cell_h);
+  const RECT host_rc = {hl, ht, hr, hb};
   const int origin_x = host_rc.left;
   const int origin_y = host_rc.top;
   const int w =
@@ -1544,6 +1550,12 @@ LRESULT PublicHost::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
     ScreenToClient(hwnd_, &client);
     if (HitTest(client.x, client.y) >= 0) {
       return HTCLIENT;
+    }
+    // Invariant: Never intercept clicks outside the work area (e.g. taskbar, multi-mon borders)
+    const RECT work = PrimaryWorkArea();
+    if (pt.y >= work.bottom || pt.y < work.top || pt.x < work.left ||
+        pt.x >= work.right) {
+      return HTTRANSPARENT;
     }
     // Pass clicks through fence frames under our bounding box so partitions
     // stay clickable (host spans min→max float cells and often overlaps).

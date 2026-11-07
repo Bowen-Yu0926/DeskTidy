@@ -284,15 +284,13 @@ std::vector<FenceLayout> DefaultLayouts() {
   const int ah = (std::max)(240, static_cast<int>(work.bottom - work.top));
   const int dpi = SystemDpi();
   const int gap = MulDiv(10, dpi, 96);
-  const int margin_x = MulDiv(10, dpi, 96);
-  const int margin_y = MulDiv(8, dpi, 96);
   const int pad = MulDiv(10, dpi, 96);
 
   const IconGridMetrics grid = QueryIconGridMetrics();
   const int cell_w = (std::max)(64, grid.cell_w);
-  const int cell_h = (std::max)(64, grid.cell_h);
 
-  const int usable_w = (std::max)(280, aw - margin_x * 2 - gap);
+  // 工作区分页横向100%铺满屏幕：去除两端外留白，常用与其它左右拼接占满全宽aw
+  const int usable_w = (std::max)(280, aw - gap);
   const int total_cols = (std::max)(6, (usable_w - pad * 4) / cell_w);
 
   // 比例约 1.25:1（常用分配 ~56% 列数，其他分配 ~44% 列数），确保两侧均有足够列宽容纳图标
@@ -304,8 +302,9 @@ std::vector<FenceLayout> DefaultLayouts() {
   if (right_w < pad * 2 + side_cols * cell_w) {
     right_w = pad * 2 + side_cols * cell_w;
   }
-  if (left_w + gap + right_w > aw - margin_x * 2) {
-    right_w = (std::max)(pad * 2 + 2 * cell_w, aw - margin_x * 2 - gap - left_w);
+  // 保持两分区+间隙严格横向铺满主工作区全宽
+  if (left_w + gap + right_w != aw) {
+    right_w = aw - left_w - gap;
   }
 
   // 高度：自适应容纳完整图标行数 + header + pad + footer，绝不切断半个图标
@@ -318,8 +317,8 @@ std::vector<FenceLayout> DefaultLayouts() {
   FenceLayout common;
   common.id = "system_common";
   common.title = L"常用";
-  common.x = work.left + margin_x;
-  common.y = work.top + margin_y;
+  common.x = work.left;
+  common.y = work.top;
   common.w = left_w;
   common.h = row_h;
   common.page = 0;
@@ -329,8 +328,8 @@ std::vector<FenceLayout> DefaultLayouts() {
   FenceLayout side;
   side.id = "system_software_side";
   side.title = L"其他";
-  side.x = work.left + margin_x + left_w + gap;
-  side.y = work.top + margin_y;
+  side.x = work.left + left_w + gap;
+  side.y = work.top;
   side.w = right_w;
   side.h = row_h;
   side.page = 0;

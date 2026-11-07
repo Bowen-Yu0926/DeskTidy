@@ -521,24 +521,12 @@ void RaiseOverlayInDesktopBand(HWND hwnd) {
   }
 
   const UINT flags = kSwpNoMoveNoSizeNoActivate | SWP_NOREDRAW;
-  // Ride DefView TOPMOST only when show-desktop is real (no live fullscreen
-  // cover). Otherwise TOPMOST just floats fences over the game — not Fences.
-  const bool show_desktop =
-      IsShowDesktopActive() && !HasVisibleFullscreenCover();
   const LONG_PTR ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
   const bool self_topmost = (ex & WS_EX_TOPMOST) != 0;
 
-  if (show_desktop) {
-    if (!self_topmost) {
-      SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, flags);
-    }
-    SetWindowPos(hwnd, HWND_TOP, 0, 0, 0, 0, flags);
-    if (want_show) {
-      ShowOverlayNoActivate(hwnd);
-    }
-    return;
-  }
-
+  // Root architectural invariant: Desktop overlays MUST NEVER be WS_EX_TOPMOST.
+  // The Taskbar (Shell_TrayWnd) is WS_EX_TOPMOST; elevating desktop overlays to TOPMOST
+  // causes them to sit above the taskbar and swallow mouse events.
   if (self_topmost) {
     SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, flags);
   }
