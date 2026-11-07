@@ -2915,10 +2915,14 @@ void App::RebuildPublicItems() {
   }
   // AIGC START
   // Work-area float host must not swallow page bar / dock / pet.
-  if (!pet_visible_) {
+  if (page_bar_.Hwnd() && IsWindowVisible(page_bar_.Hwnd())) {
     push_hwnd_block(page_bar_.Hwnd(), 4);
-  } else {
+  }
+  if (pet_visible_ && pet_.Hwnd()) {
     push_hwnd_block(pet_.Hwnd(), 4);
+    if (pet_.PagesHwnd()) {
+      push_hwnd_block(pet_.PagesHwnd(), 4);
+    }
   }
   if (dock_visible_) {
     push_hwnd_block(dock_.Hwnd(), 4);
@@ -3628,9 +3632,16 @@ void App::SeatAllFencesUnderApps() {
   }
   if (pet_visible_ && pet_.Hwnd()) {
     seat(pet_.Hwnd());
+    if (pet_.PagesHwnd()) {
+      seat(pet_.PagesHwnd());
+    }
+    if (pet_.MenuHwnd()) {
+      seat(pet_.MenuHwnd());
+    }
   }
   const bool pet_hosts = pet_visible_ && pet_.ShowPageBubbles();
-  if (!pet_hosts && prefs_.show_page_indicator && page_bar_.Hwnd()) {
+  const bool show_page_bar = !pet_hosts && prefs_.show_page_indicator;
+  if (show_page_bar && page_bar_.Hwnd()) {
     seat(page_bar_.Hwnd());
   }
   // Honor the user's show/hide-icons intent (Ctrl+Shift+H). Do not force
@@ -3740,10 +3751,14 @@ void App::ReflowPublicFloats() {
     }
   }
   // AIGC START
-  if (!pet_visible_) {
+  if (page_bar_.Hwnd() && IsWindowVisible(page_bar_.Hwnd())) {
     push_hwnd_block(page_bar_.Hwnd(), 4);
-  } else {
+  }
+  if (pet_visible_ && pet_.Hwnd()) {
     push_hwnd_block(pet_.Hwnd(), 4);
+    if (pet_.PagesHwnd()) {
+      push_hwnd_block(pet_.PagesHwnd(), 4);
+    }
   }
   if (dock_visible_) {
     push_hwnd_block(dock_.Hwnd(), 4);
@@ -5278,11 +5293,17 @@ void App::ApplyPageVisibility() {
       fence->HideTransient();
     }
   }
-  if (pet_visible_) {
-    page_bar_.Hide();
-  } else {
+  const bool pet_hosts = pet_visible_ && pet_.ShowPageBubbles();
+  const bool show_page_bar = !pet_hosts && prefs_.show_page_indicator;
+  if (show_page_bar) {
     page_bar_.SetPage(current_page_);
     page_bar_.Show();
+    if (page_bar_.Hwnd()) {
+      RaiseOverlayInDesktopBand(page_bar_.Hwnd());
+      page_bar_.RefreshLayer();
+    }
+  } else {
+    page_bar_.Hide();
   }
   if (dock_visible_ &&
       (!dock_.Hwnd() || !IsWindowVisible(dock_.Hwnd()))) {
@@ -5306,8 +5327,10 @@ void App::SetPage(int page) {
   if (page > max_page) {
     page = max_page;
   }
+  const bool pet_hosts = pet_visible_ && pet_.ShowPageBubbles();
+  const bool show_page_bar = !pet_hosts && prefs_.show_page_indicator;
   if (page == current_page_) {
-    if (!pet_visible_) {
+    if (show_page_bar) {
       page_bar_.SetPage(current_page_);
     }
     // AIGC START
@@ -5321,7 +5344,7 @@ void App::SetPage(int page) {
   }
   current_page_ = page;
   // Selection paint only — do not Attach/Relayout the edge bar (page flash).
-  if (!pet_visible_) {
+  if (show_page_bar) {
     page_bar_.SetPage(current_page_);
   }
   pet_.SetPages(page_names_, current_page_);
@@ -5356,11 +5379,28 @@ void App::SetPage(int page) {
     }
   }
 
-  // Chrome: paint/selection only — never restack on page click.
-  if (pet_visible_) {
-    page_bar_.Hide();
-  } else {
+  // Ensure desktop controls (Dock, Pet, PetPages, PageBar) sit above fences in Desktop Band.
+  if (dock_visible_ && dock_.Hwnd()) {
+    RaiseOverlayInDesktopBand(dock_.Hwnd());
+  }
+  if (pet_visible_ && pet_.Hwnd()) {
+    RaiseOverlayInDesktopBand(pet_.Hwnd());
+    if (pet_.PagesHwnd()) {
+      RaiseOverlayInDesktopBand(pet_.PagesHwnd());
+    }
+    if (pet_.MenuHwnd()) {
+      RaiseOverlayInDesktopBand(pet_.MenuHwnd());
+    }
+  }
+
+  if (show_page_bar) {
     page_bar_.Show();
+    if (page_bar_.Hwnd()) {
+      RaiseOverlayInDesktopBand(page_bar_.Hwnd());
+      page_bar_.RefreshLayer();
+    }
+  } else {
+    page_bar_.Hide();
   }
 
   // Defer pet nudge + float reflow off the click path (sync SetWindowPos flash).
@@ -5584,7 +5624,13 @@ bool App::DesktopChromeHealthy() const {
   if (pet_visible_ && pet_.Hwnd() && !mapped_attached(pet_.Hwnd())) {
     return false;
   }
-  if (!pet_visible_ && page_bar_.Hwnd() &&
+  if (pet_visible_ && pet_.PagesHwnd() &&
+      !mapped_attached(pet_.PagesHwnd())) {
+    return false;
+  }
+  const bool pet_hosts = pet_visible_ && pet_.ShowPageBubbles();
+  const bool show_page_bar = !pet_hosts && prefs_.show_page_indicator;
+  if (show_page_bar && page_bar_.Hwnd() &&
       !mapped_attached(page_bar_.Hwnd())) {
     return false;
   }
@@ -5675,14 +5721,25 @@ void App::RestoreDesktopChrome() {
   }
   if (pet_visible_ && pet_.Hwnd()) {
     reattach(pet_.Hwnd());
+    if (pet_.PagesHwnd()) {
+      reattach(pet_.PagesHwnd());
+    }
+    if (pet_.MenuHwnd()) {
+      reattach(pet_.MenuHwnd());
+    }
     // SoftSeat/Raise blank ULW while IsWindowVisible stays TRUE — same as
     // fences/public_host RefreshLayer after reattach.
     if (IsWindowVisible(pet_.Hwnd()) && !IsIconic(pet_.Hwnd())) {
       pet_.RefreshLayer();
     }
   }
-  if (!pet_visible_ && page_bar_.Hwnd()) {
+  const bool pet_hosts = pet_visible_ && pet_.ShowPageBubbles();
+  const bool show_page_bar = !pet_hosts && prefs_.show_page_indicator;
+  if (show_page_bar && page_bar_.Hwnd()) {
     reattach(page_bar_.Hwnd());
+    if (IsWindowVisible(page_bar_.Hwnd()) && !IsIconic(page_bar_.Hwnd())) {
+      page_bar_.RefreshLayer();
+    }
   }
   if (public_visible_ && public_host_.Hwnd()) {
     reattach(public_host_.Hwnd());

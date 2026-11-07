@@ -24,6 +24,8 @@ class PetWindow {
   void Hide();
   void SetVisible(bool on);
   HWND Hwnd() const { return hwnd_; }
+  HWND PagesHwnd() const { return pages_; }
+  HWND MenuHwnd() const { return menu_; }
   void AttachToDesktopLayer();
   // Re-upload ULW after SoftSeat/Raise (same cure as FenceWindow::RefreshLayer).
   void RefreshLayer();

@@ -1958,6 +1958,12 @@ void PetWindow::NudgeClearOfFenceBottoms(
     }
     const int fence_top = fr.top;
     const int fence_bottom = fr.bottom;
+    POINT fence_mid{(fr.left + fr.right) / 2, (fr.top + fr.bottom) / 2};
+    const RECT fence_work = WorkAreaAtPoint(fence_mid);
+    if (fence_bottom >= fence_work.bottom - 16) {
+      // Full-height / maximized fence reaching work area bottom — cannot nudge below.
+      continue;
+    }
     if (chrome_bottom <= fence_top || chrome_top >= fence_bottom) {
       continue;
     }
@@ -3242,6 +3248,16 @@ void PetWindow::AttachToDesktopLayer() {
   // AIGC START
   if (!AttachOverlayToDesktop(hwnd_, true)) {
     ForceAttachOverlayToDesktop(hwnd_, true);
+  }
+  if (pages_) {
+    if (!AttachOverlayToDesktop(pages_, true)) {
+      ForceAttachOverlayToDesktop(pages_, true);
+    }
+  }
+  if (menu_) {
+    if (!AttachOverlayToDesktop(menu_, true)) {
+      ForceAttachOverlayToDesktop(menu_, true);
+    }
   }
   // AIGC END
 }
