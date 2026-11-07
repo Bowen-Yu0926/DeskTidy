@@ -325,8 +325,11 @@ bool IsExplorerDesktopForeground() {
       if (wcscmp(cls, L"Progman") == 0 || wcscmp(cls, L"WorkerW") == 0 ||
           wcscmp(cls, L"SHELLDLL_DefView") == 0 ||
           wcscmp(cls, L"SysListView32") == 0 ||
+          wcscmp(cls, L"DirectUIHWND") == 0 ||
           wcscmp(cls, L"Shell_TrayWnd") == 0 ||
           wcscmp(cls, L"Shell_SecondaryTrayWnd") == 0 ||
+          wcscmp(cls, L"XamlExplorerHostIslandWindow") == 0 ||
+          wcscmp(cls, L"Windows.UI.Composition.DesktopWindowContentBridge") == 0 ||
           wcsncmp(cls, L"DeskTidy", 8) == 0) {
         return true;
       }
@@ -417,8 +420,11 @@ bool IsShellFullscreenClass(HWND hwnd) {
   return wcscmp(cls, L"Progman") == 0 || wcscmp(cls, L"WorkerW") == 0 ||
          wcscmp(cls, L"SHELLDLL_DefView") == 0 ||
          wcscmp(cls, L"SysListView32") == 0 ||
+         wcscmp(cls, L"DirectUIHWND") == 0 ||
          wcscmp(cls, L"Shell_TrayWnd") == 0 ||
          wcscmp(cls, L"Shell_SecondaryTrayWnd") == 0 ||
+         wcscmp(cls, L"XamlExplorerHostIslandWindow") == 0 ||
+         wcscmp(cls, L"Windows.UI.Composition.DesktopWindowContentBridge") == 0 ||
          wcscmp(cls, L"Windows.UI.Core.CoreWindow") == 0;
 }
 

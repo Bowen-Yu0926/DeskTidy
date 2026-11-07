@@ -32,6 +32,7 @@ bool ClassIsDesktop(const wchar_t* cls) {
   return wcscmp(cls, L"Progman") == 0 || wcscmp(cls, L"WorkerW") == 0 ||
          wcscmp(cls, L"SHELLDLL_DefView") == 0 ||
          wcscmp(cls, L"SysListView32") == 0 ||
+         wcscmp(cls, L"DirectUIHWND") == 0 ||
          wcscmp(cls, L"DesktopWindowContentBridge") == 0 ||
          wcscmp(cls, L"Windows.UI.Composition.DesktopWindowContentBridge") ==
              0;

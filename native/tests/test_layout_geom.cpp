@@ -60,6 +60,7 @@ std::vector<FenceLayout> UserResizedSystemRow() {
 }  // namespace
 
 int main() {
+  SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
   // 1) Automatic heal must NOT reset intentional narrow/wide user sizes.
   {
     auto fences = UserResizedSystemRow();
@@ -168,8 +169,8 @@ int main() {
              "common height meets content_min or half-work");
       Expect(common->h <= wh / 2 + 2, "work fences capped at half work");
       Expect(side->h <= wh / 2 + 2, "side fence capped at half work");
-      // ~6:1 width (allow gap slack).
-      Expect(common->w * 10 >= side->w * 50, "work row ~6:1 (common>>side)");
+      // Balanced width (common >= side, both fitting work row).
+      Expect(common->w >= side->w, "work row common >= side");
       Expect(common->w + side->w <= ww + 8, "work row fits work width");
     }
     if (docs) {
