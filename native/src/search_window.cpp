@@ -680,7 +680,7 @@ void SearchWindow::PushProgress(int pct, const std::wstring& status,
   }
   json += L'}';
   auto* web = static_cast<ICoreWebView2*>(webview_);
-  web->PostWebMessageAsString(json.c_str());
+  // Single channel (ExecuteScript) — PostWebMessage drops under nested callbacks.
   std::wstring script =
       L"(function(){try{var m=" + json +
       L";if(typeof window.applyState==='function'){window.applyState(m);}"
@@ -745,7 +745,7 @@ void SearchWindow::PushState(const std::wstring& status) {
   }
   json += L"]}";
   auto* web = static_cast<ICoreWebView2*>(webview_);
-  web->PostWebMessageAsString(json.c_str());
+  // Single channel (ExecuteScript) — PostWebMessage drops under nested callbacks.
   std::wstring script =
       L"(function(){try{var m=" + json +
       L";if(typeof window.applyState==='function'){window.applyState(m);}"

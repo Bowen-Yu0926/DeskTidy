@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include "ole_drag.h"
 #include "pet_ledges.h"
@@ -25,6 +25,8 @@ class PetWindow {
   void SetVisible(bool on);
   HWND Hwnd() const { return hwnd_; }
   void AttachToDesktopLayer();
+  // Re-upload ULW after SoftSeat/Raise (same cure as FenceWindow::RefreshLayer).
+  void RefreshLayer();
   void Tick();
   // P2-24: 33ms when active/hovered, 100ms when idle pose and pointer away.
   int WantedTickMs() const;
@@ -106,6 +108,8 @@ class PetWindow {
   int FrameIntervalMs(const std::wstring& pose) const;
   int ScaledW() const;
   int ScaledH() const;
+  // Integer cell multiplier for pixehood (crisp nearest upscale).
+  int PixelDisplayMul() const;
   // Ground clearance: DPI-scaled floor + sprite fraction (display-adaptivity).
   int GroundMarginPx() const;
   // Bubble-to-head gap so the pointer tip never sits on hair.
@@ -122,6 +126,10 @@ class PetWindow {
   void Say(const char* action);
   void AdvanceFrames(DWORD elapsed_ms, DWORD now, bool* frame_changed);
   void StepPhysics(DWORD elapsed_ms);
+  // Drag chrome: Detach+TOPMOST while moving (Progman-owned blanks mid-drag);
+  // SoftSeat + double Present on drop (no SetWindowRgn).
+  void BeginDragFloat();
+  void EndDragFloat();
   void EndDrag(POINT release);
   void RebaseFloor();
   bool RectVisibleOnAnyMonitor(const RECT& rc) const;
@@ -158,6 +166,10 @@ class PetWindow {
   int anim_tick_ = 0;
   int base_y_ = 0;
   bool dragging_ = false;
+  // Pose at drag start — restore after gentle drop (sleep keeps tree).
+  std::wstring pose_before_drag_;
+  // Sleep ping-pong direction (+1 / -1) so tree cels don't hard-cut 7→0.
+  int sleep_anim_dir_ = 1;
   POINT drag_offset_{};
   struct DragSample {
     DWORD tick = 0;
@@ -207,7 +219,10 @@ class PetWindow {
   int mask_gen_ = -1;
   int mask_gen_counter_ = 0;
   std::vector<std::vector<BYTE>> frames_alpha_;
+  // Full BGRA PARGB cels (HBITMAP round-trips drop alpha → ULW blank pet).
+  std::vector<std::vector<BYTE>> frames_pargb_;
   std::vector<BYTE> sprite_alpha_;
+  std::vector<BYTE> sprite_pargb_;
   int sprite_h_ = 0;
   std::vector<HBITMAP> frames_;
   int frame_i_ = 0;

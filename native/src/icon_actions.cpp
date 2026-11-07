@@ -120,11 +120,12 @@ bool MoveOrCopyFileIntoDir(HWND owner, const std::wstring& src,
   if (name.empty()) {
     return false;
   }
-  // Already inside dest_dir: return the source itself. Without this,
-  // UniqueDestPath sees the file occupying its own name and hands back
-  // "name (2)", so re-dropping a file onto its own portal folder silently
-  // renamed it (Python shutil path returns early the same way).
-  {
+  // Same folder handling depends on the op:
+  //  - MOVE into its own folder is a no-op (re-dropping a file onto its own
+  //    portal folder must not rename it via UniqueDestPath's "name (2)").
+  //  - COPY into its own folder must still create a duplicate ("name - 副本"),
+  //    otherwise Ctrl+C → paste-on-desktop reported success but showed nothing.
+  if (move) {
     const size_t slash = src.find_last_of(L"\\/");
     const std::wstring parent =
         slash == std::wstring::npos ? std::wstring() : src.substr(0, slash);

@@ -76,9 +76,14 @@ class PathDropTarget : public IDropTarget {
     dest_fn_ = std::move(fn);
   }
   // Optional highlight callback (true on accepted DragEnter, false on
-  // DragLeave/Drop) — reused for the fence drop-highlight overlay.
+  // DragLeave/Drop) — legacy whole-target flash; prefer SetDragOverFn.
   void SetHighlightFn(std::function<void(bool)> fn) {
     highlight_fn_ = std::move(fn);
+  }
+  // Live cursor feedback while dragging over this target (insert bar /
+  // recycle-icon hover). `active` is false on Leave/Drop.
+  void SetDragOverFn(std::function<void(POINTL screen_pt, bool active)> fn) {
+    drag_over_fn_ = std::move(fn);
   }
 
   // IUnknown
@@ -105,17 +110,21 @@ class PathDropTarget : public IDropTarget {
   std::wstring ActiveDestDir() const;
   DWORD ResolveFileEffect(DWORD key_state, DWORD allowed,
                           const std::wstring& sample_src) const;
+  void NotifyDragOver(POINTL pt, bool active);
 
   LONG ref_ = 1;
   HWND hwnd_ = nullptr;
   DropFn on_drop_;
   PinDropFn on_pin_drop_;
   std::function<void(bool)> highlight_fn_;
+  std::function<void(POINTL, bool)> drag_over_fn_;
   std::function<FileDropSemantics()> semantics_fn_;
   std::function<std::wstring()> dest_fn_;
   FileDropSemantics semantics_ = FileDropSemantics::Physical;
   std::wstring dest_dir_;
   std::wstring sample_src_;
+  std::wstring pin_src_;
+  std::vector<std::wstring> pin_paths_;
   bool accept_ = false;
   bool pin_mode_ = false;
 };

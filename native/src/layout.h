@@ -133,7 +133,7 @@ std::string MakeFenceId();
 int HealFenceLayouts(std::vector<FenceLayout>* fences);
 // Collapse runaway "\\\\" sequences from corrupt pin_order JSON (keep UNC \\).
 std::wstring NormalizeStoredPath(const std::wstring& path);
-// Page-0 常用/其他 row back to ~2/3 + ~1/3 when badly stretched; docs height
+// Page-0 常用/其他 row back to ~6:1 when badly stretched; docs fills work area
 // floor. Keeps fence ids / titles / pins. Returns how many fences moved/resized.
 // Explicit "修复布局" only — never call from automatic load/heal.
 int RestoreSystemFenceProportions(std::vector<FenceLayout>* fences);

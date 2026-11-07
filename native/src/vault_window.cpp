@@ -42,8 +42,8 @@ constexpr wchar_t kHostClass[] = L"DeskTidyNativeVaultWeb";
 constexpr UINT_PTR kClipTimer = 70;
 constexpr UINT kMsgLoginDone = WM_APP + 71;
 constexpr UINT kMsgSyncDone = WM_APP + 72;
-constexpr int kPanelW = 420;
-constexpr int kPanelH = 480;
+constexpr int kPanelW = 460;
+constexpr int kPanelH = 560;
 
 struct SyncOutcome {
   bool ok = false;
@@ -736,7 +736,9 @@ void VaultWindow::PushState() {
   json += L'}';
 
   auto* web = static_cast<ICoreWebView2*>(webview_);
-  web->PostWebMessageAsString(json.c_str());
+  // Single channel: ExecuteScript only. PostWebMessageAsString is dropped when
+  // nested inside another message callback (double IPC), which left the panel
+  // empty on some machines.
   std::wstring script =
       L"(function(){try{var m=" + json +
       L";if(typeof window.applyState==='function'){window.applyState(m);}"

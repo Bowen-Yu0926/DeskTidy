@@ -296,6 +296,19 @@ bool IsHostsPath(const std::wstring& path) {
   return _wcsicmp(FileBaseName(path).c_str(), L"hosts") == 0;
 }
 
+// Typora-class chrome (title strip / WW / title→filename) — .md only.
+bool PathIsMarkdownFile(const std::wstring& path) {
+  if (path.size() >= 3 &&
+      _wcsicmp(path.c_str() + path.size() - 3, L".md") == 0) {
+    return true;
+  }
+  if (path.size() >= 9 &&
+      _wcsicmp(path.c_str() + path.size() - 9, L".markdown") == 0) {
+    return true;
+  }
+  return false;
+}
+
 bool IsOpenablePath(const std::wstring& path) {
   if (IsHostsPath(path)) {
     return true;
@@ -1034,7 +1047,8 @@ void NotesWindow::SetFontFace(const std::wstring& face) {
 }
 
 void NotesWindow::EnsureFontControls() {
-  if (!hwnd_ || (font_face_combo_ && font_size_combo_)) {
+  if (!hwnd_ || (font_face_combo_ && font_size_combo_ && font_smaller_btn_ &&
+                 font_bigger_btn_)) {
     return;
   }
   HINSTANCE inst = GetModuleHandleW(nullptr);
@@ -1051,6 +1065,8 @@ void NotesWindow::EnsureFontControls() {
                    reinterpret_cast<LPARAM>(L"微软雅黑"));
       SendMessageW(font_face_combo_, CB_ADDSTRING, 0,
                    reinterpret_cast<LPARAM>(L"宋体"));
+      // Default face: 微软雅黑 (index 0).
+      SendMessageW(font_face_combo_, CB_SETCURSEL, 0, 0);
     }
   }
   if (!font_size_combo_) {
@@ -1071,6 +1087,23 @@ void NotesWindow::EnsureFontControls() {
       }
     }
   }
+  // Same command IDs as View · 放大/缩小 — BN_CLICKED hits kMenuBigger/Smaller.
+  if (!font_smaller_btn_) {
+    font_smaller_btn_ = CreateWindowExW(
+        0, L"BUTTON", L"A-",
+        WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | BS_PUSHBUTTON | BS_CENTER,
+        0, 0, 28, 24, hwnd_,
+        reinterpret_cast<HMENU>(static_cast<INT_PTR>(kMenuSmaller)), inst,
+        nullptr);
+  }
+  if (!font_bigger_btn_) {
+    font_bigger_btn_ = CreateWindowExW(
+        0, L"BUTTON", L"A+",
+        WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | BS_PUSHBUTTON | BS_CENTER,
+        0, 0, 28, 24, hwnd_,
+        reinterpret_cast<HMENU>(static_cast<INT_PTR>(kMenuBigger)), inst,
+        nullptr);
+  }
   if (ui_font_) {
     const WPARAM font = reinterpret_cast<WPARAM>(ui_font_);
     if (font_face_combo_) {
@@ -1078,6 +1111,12 @@ void NotesWindow::EnsureFontControls() {
     }
     if (font_size_combo_) {
       SendMessageW(font_size_combo_, WM_SETFONT, font, TRUE);
+    }
+    if (font_smaller_btn_) {
+      SendMessageW(font_smaller_btn_, WM_SETFONT, font, TRUE);
+    }
+    if (font_bigger_btn_) {
+      SendMessageW(font_bigger_btn_, WM_SETFONT, font, TRUE);
     }
   }
   SyncFontControls();
@@ -1094,18 +1133,17 @@ void NotesWindow::SyncFontControls() {
   if (font_size_combo_) {
     wchar_t buf[8];
     swprintf_s(buf, L"%d", font_pt_);
-    const int idx = static_cast<int>(
+    int idx = static_cast<int>(
         SendMessageW(font_size_combo_, CB_FINDSTRINGEXACT, static_cast<WPARAM>(-1),
                      reinterpret_cast<LPARAM>(buf)));
-    if (idx != CB_ERR) {
-      if (SendMessageW(font_size_combo_, CB_GETCURSEL, 0, 0) != idx) {
-        SendMessageW(font_size_combo_, CB_SETCURSEL, idx, 0);
-      }
-    } else {
-      // Odd size from Ctrl+/- — show nearest by inserting temporarily unused.
-      SendMessageW(font_size_combo_, CB_SETCURSEL,
-                   static_cast<WPARAM>(-1), 0);
-      SetWindowTextW(font_size_combo_, buf);
+    if (idx == CB_ERR) {
+      // CBS_DROPDOWNLIST cannot display values absent from the list (A± / Ctrl+/-).
+      idx = static_cast<int>(SendMessageW(font_size_combo_, CB_ADDSTRING, 0,
+                                          reinterpret_cast<LPARAM>(buf)));
+    }
+    if (idx != CB_ERR &&
+        SendMessageW(font_size_combo_, CB_GETCURSEL, 0, 0) != idx) {
+      SendMessageW(font_size_combo_, CB_SETCURSEL, idx, 0);
     }
   }
 }
@@ -1245,6 +1283,12 @@ void NotesWindow::ApplyUiFonts() {
   }
   if (font_size_combo_) {
     SendMessageW(font_size_combo_, WM_SETFONT, font, TRUE);
+  }
+  if (font_smaller_btn_) {
+    SendMessageW(font_smaller_btn_, WM_SETFONT, font, TRUE);
+  }
+  if (font_bigger_btn_) {
+    SendMessageW(font_bigger_btn_, WM_SETFONT, font, TRUE);
   }
   ApplyTitleFont();
 }
@@ -1485,15 +1529,7 @@ void NotesWindow::BuildAccelerators() {
 }
 
 bool NotesWindow::PathLooksMarkdown() const {
-  if (path_.size() >= 3 &&
-      _wcsicmp(path_.c_str() + path_.size() - 3, L".md") == 0) {
-    return true;
-  }
-  if (path_.size() >= 9 &&
-      _wcsicmp(path_.c_str() + path_.size() - 9, L".markdown") == 0) {
-    return true;
-  }
-  return false;
+  return PathIsMarkdownFile(path_);
 }
 
 bool NotesWindow::PathLooksTextish() const {
@@ -1504,7 +1540,13 @@ bool NotesWindow::PathLooksTextish() const {
     return true;
   }
   const std::wstring sfx = LowerSuffix(path_);
-  if (sfx.empty() || sfx == L".rtf") {
+  // Extensionless (hosts / LICENSE / Dockerfile): always plain text — never
+  // EM_STREAMOUT RTF. Saving hosts as RTF after a mistaken rename left the
+  // system file unusable.
+  if (sfx.empty()) {
+    return true;
+  }
+  if (sfx == L".rtf") {
     return false;
   }
   return IsOpenableSuffix(sfx);
@@ -2116,14 +2158,7 @@ void NotesWindow::OpenOrActivatePath(const std::wstring& path) {
   tab_paths_.push_back(norm);
   EnsureTabStates();
   // Opened .md defaults to editable preview (matches Typora / DeskNote product).
-  {
-    const bool md =
-        (norm.size() >= 3 &&
-         _wcsicmp(norm.c_str() + norm.size() - 3, L".md") == 0) ||
-        (norm.size() >= 9 &&
-         _wcsicmp(norm.c_str() + norm.size() - 9, L".markdown") == 0);
-    tab_states_.back().wysiwyg = md;
-  }
+  tab_states_.back().wysiwyg = PathIsMarkdownFile(norm);
   RebuildTabControl();
   SwitchToTab(static_cast<int>(tab_paths_.size()) - 1, false);
   if (sidebar_visible_) {
@@ -2391,21 +2426,26 @@ std::wstring NotesWindow::NoteDisplayName(const std::wstring& path,
       ext = leaf.substr(dot);  // includes '.'
     }
   }
+  const bool md = PathIsMarkdownFile(path);
   const std::wstring key = NormalizePathKey(path);
-  for (size_t i = 0; i < tab_paths_.size(); ++i) {
-    if (_wcsicmp(NormalizePathKey(tab_paths_[i]).c_str(), key.c_str()) != 0) {
-      continue;
+  // Title-as-name is Markdown-only (Typora). Plain files keep Explorer names.
+  if (md) {
+    for (size_t i = 0; i < tab_paths_.size(); ++i) {
+      if (_wcsicmp(NormalizePathKey(tab_paths_[i]).c_str(), key.c_str()) !=
+          0) {
+        continue;
+      }
+      // Only trust the synced title_hint — never Toast cache here. After
+      // delete→seed 未命名, cache still holds the recycled note's H1 and would
+      // paint「测试」on the new draft in the file tree (tab stem stayed 未命名).
+      if (i < tab_states_.size() && !tab_states_[i].title_hint.empty()) {
+        name = tab_states_[i].title_hint;
+      }
+      break;
     }
-    // Only trust the synced title_hint — never Toast cache here. After
-    // delete→seed 未命名, cache still holds the recycled note's H1 and would
-    // paint「测试」on the new draft in the file tree (tab stem stayed 未命名).
-    if (i < tab_states_.size() && !tab_states_[i].title_hint.empty()) {
-      name = tab_states_[i].title_hint;
+    if (name.empty() && peek_disk && !path.empty()) {
+      name = PeekMarkdownTitleFromDisk(path);
     }
-    break;
-  }
-  if (name.empty() && peek_disk && !path.empty()) {
-    name = PeekMarkdownTitleFromDisk(path);
   }
   if (name.empty()) {
     const size_t slash = path.find_last_of(L"\\/");
@@ -2446,6 +2486,19 @@ void NotesWindow::SyncCurrentTabTitleHint() {
       tab_index_ >= static_cast<int>(tab_states_.size())) {
     return;
   }
+  auto& st = tab_states_[static_cast<size_t>(tab_index_)];
+  // Non-Markdown: Explorer/Notepad — tab/tree show real filename, never H1.
+  if (!PathLooksMarkdown()) {
+    if (st.title_hint.empty()) {
+      return;
+    }
+    st.title_hint.clear();
+    RefreshCurrentTabLabel();
+    RefreshTitle();
+    RefreshSidebarLabelForPath(path_);
+    SchedulePersistTabs();
+    return;
+  }
   std::wstring hint;
   if (wysiwyg_ && title_edit_) {
     // Native title is authoritative in WW — parsing body-only RichEdit after
@@ -2466,7 +2519,6 @@ void NotesWindow::SyncCurrentTabTitleHint() {
     }
     hint = ExtractMarkdownTitle(md);
   }
-  auto& st = tab_states_[static_cast<size_t>(tab_index_)];
   if (st.title_hint == hint) {
     return;
   }
@@ -3430,6 +3482,33 @@ bool NotesWindow::SyncFilenameToTitle() {
   }
   if (loading_ || path_.empty()) {
     return false;
+  }
+  // Title ↔ filename is Markdown / Typora behavior only — never for hosts,
+  // .txt, or other Explorer-opened plain files.
+  if (!PathLooksMarkdown()) {
+    return false;
+  }
+  // Typora only auto-renames notes you own — never system/external files.
+  if (IsHostsPath(path_)) {
+    return false;
+  }
+  {
+    const std::wstring key = NormalizePathKey(path_);
+    auto under = [&](const std::wstring& root) {
+      if (root.empty()) {
+        return false;
+      }
+      const std::wstring r = NormalizePathKey(root);
+      if (key.size() < r.size() ||
+          _wcsnicmp(key.c_str(), r.c_str(), r.size()) != 0) {
+        return false;
+      }
+      return key.size() == r.size() || key[r.size()] == L'\\';
+    };
+    if (!under(NotesLibraryDir(false)) &&
+        !under(DocumentsDeskTidyNotesDir())) {
+      return false;
+    }
   }
   EnsureTabStates();
   if (tab_index_ < 0 ||
@@ -4631,20 +4710,72 @@ void NotesWindow::InsertSoftLineBreak() {
   }
   CHARRANGE cr{};
   SendMessageW(edit_, EM_EXGETSEL, 0, reinterpret_cast<LPARAM>(&cr));
+  // Notepad-class: leave text after the caret on this line. Open a blank line
+  // below and park the caret at the same *visual* X (YaHei / CJK — char
+  // count spaces do not line up).
   const LONG line =
       static_cast<LONG>(SendMessageW(edit_, EM_EXLINEFROMCHAR, 0, cr.cpMin));
   const LONG line_start =
       static_cast<LONG>(SendMessageW(edit_, EM_LINEINDEX, line, 0));
-  int col = static_cast<int>(cr.cpMin - line_start);
-  if (col < 0) {
-    col = 0;
+  const LRESULT caret_lr =
+      SendMessageW(edit_, EM_POSFROMCHAR, static_cast<WPARAM>(cr.cpMin), 0);
+  const int target_x = static_cast<short>(LOWORD(caret_lr));
+  LONG line_len = static_cast<LONG>(
+      SendMessageW(edit_, EM_LINELENGTH, static_cast<WPARAM>(line_start), 0));
+  if (line_len < 0) {
+    line_len = 0;
   }
-  // Markdown hard break (two trailing spaces) then pad so caret stays on the
-  // same column on the next line (Typora-class Shift+Enter).
-  std::wstring insert = PathLooksMarkdown() ? L"  \r\n" : L"\r\n";
-  insert.append(static_cast<size_t>(col), L' ');
-  SendMessageW(edit_, EM_REPLACESEL, TRUE,
-               reinterpret_cast<LPARAM>(insert.c_str()));
+  LONG insert_at = line_start + line_len;
+  const LONG next_line =
+      static_cast<LONG>(SendMessageW(edit_, EM_LINEINDEX, line + 1, 0));
+  if (next_line > line_start && insert_at > next_line) {
+    insert_at = next_line;
+  }
+  if (next_line < 0) {
+    GETTEXTLENGTHEX gtl{};
+    gtl.flags = GTL_DEFAULT | GTL_PRECISE | GTL_NUMCHARS;
+    gtl.codepage = 1200;
+    const LONG total = static_cast<LONG>(SendMessageW(
+        edit_, EM_GETTEXTLENGTHEX, reinterpret_cast<WPARAM>(&gtl), 0));
+    if (total > insert_at) {
+      insert_at = total;
+    }
+  }
+  CHARRANGE at{insert_at, insert_at};
+  SendMessageW(edit_, EM_EXSETSEL, 0, reinterpret_cast<LPARAM>(&at));
+  SendMessageW(edit_, EM_REPLACESEL, TRUE, reinterpret_cast<LPARAM>(L"\r\n"));
+  CHARRANGE now{};
+  SendMessageW(edit_, EM_EXGETSEL, 0, reinterpret_cast<LPARAM>(&now));
+  const LRESULT line_lr =
+      SendMessageW(edit_, EM_POSFROMCHAR, static_cast<WPARAM>(now.cpMin), 0);
+  const int start_x = static_cast<short>(LOWORD(line_lr));
+  int space_cx = 8;
+  if (HDC hdc = GetDC(edit_)) {
+    HFONT font = reinterpret_cast<HFONT>(SendMessageW(edit_, WM_GETFONT, 0, 0));
+    HGDIOBJ old = font ? SelectObject(hdc, font) : nullptr;
+    SIZE sz{};
+    if (GetTextExtentPoint32W(hdc, L" ", 1, &sz) && sz.cx > 0) {
+      space_cx = sz.cx;
+    }
+    if (old) {
+      SelectObject(hdc, old);
+    }
+    ReleaseDC(edit_, hdc);
+  }
+  int n = 0;
+  if (space_cx > 0 && target_x > start_x) {
+    n = (target_x - start_x + space_cx / 2) / space_cx;
+  }
+  if (n > 200) {
+    n = 200;
+  }
+  if (n > 0) {
+    const std::wstring pad(static_cast<size_t>(n), L' ');
+    SendMessageW(edit_, EM_REPLACESEL, TRUE,
+                 reinterpret_cast<LPARAM>(pad.c_str()));
+  }
+  SendMessageW(edit_, EM_SCROLLCARET, 0, 0);
+  SetFocus(edit_);
   MarkDirty();
 }
 
@@ -5244,6 +5375,10 @@ void NotesWindow::ApplyWysiwygVisibility() {
   if (!edit_) {
     return;
   }
+  // Non-Markdown must never keep WW / title chrome (Explorer/Notepad parity).
+  if (wysiwyg_ && !PathLooksMarkdown()) {
+    wysiwyg_ = false;
+  }
   if (wysiwyg_) {
     EnsureTitleEdit();
     if (title_edit_) {
@@ -5313,6 +5448,14 @@ void NotesWindow::RaiseTitleEdit() {
     SetWindowPos(font_size_combo_, HWND_TOP, 0, 0, 0, 0,
                  SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
   }
+  if (font_smaller_btn_ && IsWindowVisible(font_smaller_btn_)) {
+    SetWindowPos(font_smaller_btn_, HWND_TOP, 0, 0, 0, 0,
+                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+  }
+  if (font_bigger_btn_ && IsWindowVisible(font_bigger_btn_)) {
+    SetWindowPos(font_bigger_btn_, HWND_TOP, 0, 0, 0, 0,
+                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+  }
 }
 
 void NotesWindow::ApplyTitleFont() {
@@ -5339,7 +5482,7 @@ void NotesWindow::ApplyTitleFont() {
   title_font_ = CreateFontW(height, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
                             DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
                             CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
-                            VARIABLE_PITCH | FF_SWISS, L"Segoe UI");
+                            VARIABLE_PITCH | FF_SWISS, L"Microsoft YaHei");
   if (title_font_) {
     SendMessageW(title_edit_, WM_SETFONT, reinterpret_cast<WPARAM>(title_font_),
                  TRUE);
@@ -5842,10 +5985,10 @@ void NotesWindow::LayoutClient() {
   const int stage_h = (std::max)(40, stage_b - stage_t);
 
   const bool md_preview =
-      preview_ && PathLooksMarkdown() && !wysiwyg_ && !focus_;
+      preview_ && looks_md && !wysiwyg_ && !focus_;
   // Native title is immediate; Toast ContentReady only gates the body surface.
-  const bool wysiwyg_live = wysiwyg_ && web_.ContentReady();
-  const bool show_native_title = wysiwyg_ && PathLooksMarkdown() && !toast_;
+  const bool wysiwyg_live = wysiwyg_ && looks_md && web_.ContentReady();
+  const bool show_native_title = wysiwyg_ && looks_md && !toast_;
   HDC hdc_pad = GetDC(hwnd_);
   const int dpi_pad = hdc_pad ? GetDeviceCaps(hdc_pad, LOGPIXELSY) : 96;
   if (hdc_pad) {
@@ -5856,17 +5999,65 @@ void NotesWindow::LayoutClient() {
   const int face_w = MulDiv(108, dpi_pad, 96);
   const int size_w = MulDiv(56, dpi_pad, 96);
   const int combo_h = MulDiv(24, dpi_pad, 96);
-  // WW: font face/size live in Toast toolbar. Plain RichEdit keeps native combos.
-  const bool show_font_bar = !toast_ && !wysiwyg_;
+  // Style chrome is Markdown-only. WW uses Toast toolbar; MD source keeps
+  // native face/size. Plain files (hosts/.txt) match Notepad — no strip.
+  const bool show_font_bar = looks_md && !toast_ && !wysiwyg_;
   if (show_font_bar) {
     EnsureFontControls();
   }
+  const int btn_w = MulDiv(26, dpi_pad, 96);
+  const int btn_gap = MulDiv(4, dpi_pad, 96);
+  const int step_w = btn_w * 2 + btn_gap;
+  const int font_tools_w =
+      show_font_bar ? (face_w + font_gap + size_w + font_gap + step_w) : 0;
+  auto place_font_tools = [&](int combo_y) {
+    if (!font_face_combo_ || !font_size_combo_) {
+      return;
+    }
+    const int bigger_x = stage_l + stage_w - title_pad_x - btn_w;
+    const int smaller_x = bigger_x - btn_gap - btn_w;
+    const int size_x = smaller_x - font_gap - size_w;
+    const int face_x = size_x - font_gap - face_w;
+    MoveWindow(font_face_combo_, face_x, combo_y, face_w, combo_h + 180, TRUE);
+    MoveWindow(font_size_combo_, size_x, combo_y, size_w, combo_h + 220, TRUE);
+    ShowWindow(font_face_combo_, SW_SHOW);
+    ShowWindow(font_size_combo_, SW_SHOW);
+    if (font_smaller_btn_) {
+      MoveWindow(font_smaller_btn_, smaller_x, combo_y, btn_w, combo_h, TRUE);
+      ShowWindow(font_smaller_btn_, SW_SHOW);
+      SetWindowPos(font_smaller_btn_, HWND_TOP, 0, 0, 0, 0,
+                   SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    }
+    if (font_bigger_btn_) {
+      MoveWindow(font_bigger_btn_, bigger_x, combo_y, btn_w, combo_h, TRUE);
+      ShowWindow(font_bigger_btn_, SW_SHOW);
+      SetWindowPos(font_bigger_btn_, HWND_TOP, 0, 0, 0, 0,
+                   SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    }
+    SetWindowPos(font_face_combo_, HWND_TOP, 0, 0, 0, 0,
+                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    SetWindowPos(font_size_combo_, HWND_TOP, 0, 0, 0, 0,
+                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+  };
+  auto hide_font_tools = [&]() {
+    if (font_face_combo_) {
+      ShowWindow(font_face_combo_, SW_HIDE);
+    }
+    if (font_size_combo_) {
+      ShowWindow(font_size_combo_, SW_HIDE);
+    }
+    if (font_smaller_btn_) {
+      ShowWindow(font_smaller_btn_, SW_HIDE);
+    }
+    if (font_bigger_btn_) {
+      ShowWindow(font_bigger_btn_, SW_HIDE);
+    }
+  };
   int body_t = stage_t;
   int body_h = stage_h;
   if (show_native_title) {
     EnsureTitleEdit();
     const int title_h = TitleChromeHeight();
-    const int font_tools_w = show_font_bar ? (face_w + font_gap + size_w) : 0;
     const int title_w =
         (std::max)(40, stage_w - title_pad_x * 2 - font_tools_w -
                            (font_tools_w ? font_gap : 0));
@@ -5875,21 +6066,8 @@ void NotesWindow::LayoutClient() {
                  TRUE);
       ShowWindow(title_edit_, SW_SHOW);
     }
-    if (show_font_bar && font_face_combo_ && font_size_combo_) {
-      const int combo_y =
-          stage_t + (std::max)(0, (title_h - combo_h) / 2);
-      const int size_x = stage_l + stage_w - title_pad_x - size_w;
-      const int face_x = size_x - font_gap - face_w;
-      MoveWindow(font_face_combo_, face_x, combo_y, face_w, combo_h + 180,
-                 TRUE);
-      MoveWindow(font_size_combo_, size_x, combo_y, size_w, combo_h + 220,
-                 TRUE);
-      ShowWindow(font_face_combo_, SW_SHOW);
-      ShowWindow(font_size_combo_, SW_SHOW);
-      SetWindowPos(font_face_combo_, HWND_TOP, 0, 0, 0, 0,
-                   SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-      SetWindowPos(font_size_combo_, HWND_TOP, 0, 0, 0, 0,
-                   SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    if (show_font_bar) {
+      place_font_tools(stage_t + (std::max)(0, (title_h - combo_h) / 2));
     }
     // Gap under title for a 1px rule (painted in WM_PAINT).
     body_t = stage_t + title_h + MulDiv(6, dpi_pad, 96);
@@ -5898,36 +6076,18 @@ void NotesWindow::LayoutClient() {
     if (title_edit_) {
       ShowWindow(title_edit_, SW_HIDE);
     }
-    // Plain editor: font strip above the body (Word / Notepad++ class).
-    if (show_font_bar && font_face_combo_ && font_size_combo_) {
+    // MD source: font strip above the body. Non-md: full-bleed editor.
+    if (show_font_bar) {
       const int bar_h = combo_h + MulDiv(8, dpi_pad, 96);
-      const int combo_y = stage_t + MulDiv(4, dpi_pad, 96);
-      const int size_x = stage_l + stage_w - title_pad_x - size_w;
-      const int face_x = size_x - font_gap - face_w;
-      MoveWindow(font_face_combo_, face_x, combo_y, face_w, combo_h + 180,
-                 TRUE);
-      MoveWindow(font_size_combo_, size_x, combo_y, size_w, combo_h + 220,
-                 TRUE);
-      ShowWindow(font_face_combo_, SW_SHOW);
-      ShowWindow(font_size_combo_, SW_SHOW);
+      place_font_tools(stage_t + MulDiv(4, dpi_pad, 96));
       body_t = stage_t + bar_h;
       body_h = (std::max)(40, stage_b - body_t);
-    } else if (font_face_combo_ || font_size_combo_) {
-      if (font_face_combo_) {
-        ShowWindow(font_face_combo_, SW_HIDE);
-      }
-      if (font_size_combo_) {
-        ShowWindow(font_size_combo_, SW_HIDE);
-      }
+    } else {
+      hide_font_tools();
     }
   }
   if (!show_font_bar) {
-    if (font_face_combo_) {
-      ShowWindow(font_face_combo_, SW_HIDE);
-    }
-    if (font_size_combo_) {
-      ShowWindow(font_size_combo_, SW_HIDE);
-    }
+    hide_font_tools();
   }
   if (wysiwyg_live) {
     if (edit_) {
@@ -5949,7 +6109,7 @@ void NotesWindow::LayoutClient() {
       web_.Resize();
     }
     RaiseTitleEdit();
-  } else if (wysiwyg_) {
+  } else if (wysiwyg_ && looks_md) {
     // Body staging only — title already in title_edit_.
     if (preview_web_.Host()) {
       preview_web_.Hide();
@@ -5985,11 +6145,12 @@ void NotesWindow::LayoutClient() {
     }
     if (edit_) {
       EnsureGutter();
-      LayoutGutter(stage_l, stage_t, stage_h);
+      // Respect font-bar offset for MD source; plain files use full stage.
+      LayoutGutter(stage_l, body_t, body_h);
       const int edit_left = stage_l + (gutter_ ? gutter_width_ : 0);
       ShowWindow(edit_, SW_SHOW);
-      MoveWindow(edit_, edit_left, stage_t,
-                 (std::max)(40, stage_l + stage_w - edit_left), stage_h, TRUE);
+      MoveWindow(edit_, edit_left, body_t,
+                 (std::max)(40, stage_l + stage_w - edit_left), body_h, TRUE);
       RefreshGutter();
     } else if (gutter_) {
       ShowWindow(gutter_, SW_HIDE);
@@ -7697,6 +7858,14 @@ bool NotesWindow::ApplySidebarRename(const std::wstring& path,
                                      const std::wstring& new_stem_raw,
                                      bool quiet) {
   if (path.empty()) {
+    return false;
+  }
+  // Never rename the system hosts file (or any hosts basename) — content lines
+  // must not become the filename.
+  if (IsHostsPath(path)) {
+    if (!quiet) {
+      MistAlert(hwnd_, L"重命名", L"系统 hosts 文件不能改名。", MistMsgTone::Warn);
+    }
     return false;
   }
   std::wstring new_stem = new_stem_raw;

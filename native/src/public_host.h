@@ -28,6 +28,11 @@ class PublicHost {
   void Hide();
   // Force re-upload of the layered pixels (Optimus / ULW-loss recovery).
   void RefreshLayer();
+  // Suppress UpdateLayeredWindow (OLE unpin stack paints poison Win11 ULW).
+  void BeginDeferPresent();
+  void EndDeferPresent();
+  // Remap desktop seat + reset WS_EX_LAYERED + Present (post-OLE reveal).
+  void ForceRemapPresent();
   void SetVisible(bool on);
   HWND Hwnd() const { return hwnd_; }
   bool HasItems() const { return !slots_.empty(); }
@@ -37,6 +42,8 @@ class PublicHost {
   void SetBlockedRects(std::vector<RECT> rects);
   void Reflow();
   void AttachToDesktopLayer();
+  // Write current Layout seats back into placements_ (+ on_placements_changed).
+  void PersistSlotPlacements();
   void SetOnPathReplaced(
       std::function<void(const std::wstring&, const std::wstring&)> fn) {
     on_path_replaced_ = std::move(fn);
@@ -93,7 +100,6 @@ class PublicHost {
   void ApplyVisibility();
   int HitTest(int x, int y) const;
   void ReorderTo(int from, int to);
-  void PersistSlotPlacements();
   void BeginOleDrag();
   void ShowSlotMenu(int index, POINT screen);
   void ShowMoveToPageFenceMenu(POINT screen);
@@ -127,6 +133,10 @@ class PublicHost {
   HWND marquee_hwnd_ = nullptr;
   PathDropTarget* drop_target_ = nullptr;
   bool want_visible_ = false;
+  // Win11: UpdateLayeredWindow while hidden → blank after Show until click.
+  // Mirror FenceWindow — only ULW when mapped; mark dirty otherwise.
+  bool layer_dirty_ = true;
+  bool defer_present_ = false;
   IconGridMetrics metrics_{};
   std::wstring title_ = L"桌面图标";
   int drag_from_ = -1;

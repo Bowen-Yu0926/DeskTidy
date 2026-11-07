@@ -124,8 +124,11 @@ class App {
   void ToggleAutostart();
   void RestoreDesktopChrome();
   void EditRules();
-  // `drop` optional: when set (drag-out unpin), float lands near that screen point.
+  // `drop` unused for seating — floats auto-pack into free desktop grid seats
+  // (avoid fences), Fences-class tidy after drag-out / menu unpin.
   void UnpinPath(const std::wstring& path, const POINT* drop = nullptr);
+  void UnpinPaths(const std::vector<std::wstring>& paths,
+                  const POINT* drop = nullptr);
   void RetargetPin(const std::wstring& from, const std::wstring& to);
   // P1-13: move pins from `src` fence to `dst` fence (pin_order tail), persist,
   // refresh both fences. Returns false (no mutation) for src==dst / missing dst.
@@ -138,6 +141,9 @@ class App {
   void RestoreLayoutSnapshot();
   void OpenMinutes();
   void RebuildPublicItems();
+  // Post-OLE unpin: ForceAttach + Present after the drag loop settles.
+  void ScheduleRevealPublicFloats();
+  void RevealPublicFloatsNow();
   void StartRegionCapture();
   void ShowHotkeys();
   void EditHotkeys();
@@ -243,6 +249,13 @@ class App {
   // visible layered windows a few times after boot so a lost initial blit
   // recovers without a desktop click.
   int overlay_refresh_left_ = 0;
+  int reveal_public_left_ = 0;
+  // Throttle for RefreshOverlays: min gap between full ULW sweeps (ms). Guards
+  // against WM_DWMCOMPOSITIONCHANGED storms (driver flap reconnects DWM rapidly).
+  ULONGLONG last_overlay_refresh_ = 0;
+  // Manual paste/drop already refreshed; suppress the trailing SHChangeNotify
+  // debounced refresh so a single copy doesn't rescan the grid 2-3 times.
+  ULONGLONG last_manual_refresh_ = 0;
   // Last known Win+D / Show Desktop band (DefView TOPMOST). Re-seat only on
   // transition — Rainmeter CheckDesktopState, not every settle tick.
   bool show_desktop_seated_ = false;

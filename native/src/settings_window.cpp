@@ -875,9 +875,9 @@ void SettingsWindow::PushState() {
   std::wstring json = BuildStateJson();
   focus_sub_.clear();  // one-shot navigation hint
 
-  // Dual delivery: PostWebMessage can be dropped when nested inside
-  // WebMessageReceived; ExecuteScript(applyState) is the reliable path.
-  web->PostWebMessageAsString(json.c_str());
+  // Single channel: ExecuteScript(applyState) is the reliable path.
+  // PostWebMessageAsString is dropped when nested inside WebMessageReceived,
+  // which left the fence/page list empty on some machines.
   const std::wstring script =
       L"(function(){try{var s=\"" + EscapeJsStringLiteral(json) +
       L"\";var m=JSON.parse(s);"

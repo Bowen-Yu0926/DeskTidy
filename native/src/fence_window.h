@@ -35,6 +35,8 @@ class FenceWindow {
   // `drop` is cursor screen pos when unpinning from a drag; otherwise cursor.
   using UnpinFn =
       std::function<void(FenceWindow*, const std::wstring& path, POINT drop)>;
+  using UnpinManyFn = std::function<void(
+      FenceWindow*, const std::vector<std::wstring>& paths, POINT drop)>;
   using PathReplaceFn =
       std::function<void(const std::wstring& from, const std::wstring& to)>;
   using PageFn = std::function<void(FenceWindow*, int page)>;
@@ -105,6 +107,7 @@ class FenceWindow {
   void SetOnPathsDropped(PathsFn fn) { on_paths_dropped_ = std::move(fn); }
   void SetOnDragDone(DragDoneFn fn) { on_drag_done_ = std::move(fn); }
   void SetOnUnpin(UnpinFn fn) { on_unpin_ = std::move(fn); }
+  void SetOnUnpinMany(UnpinManyFn fn) { on_unpin_many_ = std::move(fn); }
   void SetOnPathReplaced(PathReplaceFn fn) {
     on_path_replaced_ = std::move(fn);
   }
@@ -133,8 +136,10 @@ class FenceWindow {
   // P1-12: fired once when a pin-transfer drag ends (Drop/Escape) — hides the
   // floating drop hint owned by App.
   void SetOnPinDragEnd(DragDoneFn fn) { on_pin_drag_end_ = std::move(fn); }
-  // P1-12: drop-target highlight (inner stroke + translucent overlay).
+  // Legacy whole-fence flash (prefer OLE insert/recycle preview).
   void SetDropHighlight(bool on);
+  void UpdateOleDropPreview(int x, int y);
+  void ClearOleDropPreview();
   void SetOnGeometryMoved(GeometryMovedFn fn) {
     on_geometry_moved_ = std::move(fn);
   }
@@ -250,6 +255,10 @@ class FenceWindow {
   void ShowIconMenu(int index, POINT screen);
   void RenameItem(int index);
   void RecycleItem(int index);
+  // Drop onto hosted Recycle Bin pin → FO_DELETE (not pin-into-fence).
+  bool IsRecycleBinIconAt(int x, int y) const;
+  // Returns true when paths were sent to the Recycle Bin.
+  bool RecycleDroppedPaths(std::vector<std::wstring> paths);
   void ShowItemProperties(int index);
   void ShowFenceMenu(POINT screen);
   // Cascading「移动到分页」→ page → fence.
@@ -330,6 +339,7 @@ class FenceWindow {
   PathsFn on_paths_dropped_;
   DragDoneFn on_drag_done_;
   UnpinFn on_unpin_;
+  UnpinManyFn on_unpin_many_;
   PathReplaceFn on_path_replaced_;
   PageFn on_set_page_;
   RenameFn on_rename_;
@@ -384,7 +394,12 @@ class FenceWindow {
   int drag_insert_ = -1;   // live insert indicator position
   bool drag_left_ = false;  // pointer has left the client area
   POINT drag_pt_{};         // client cursor while icon_dragging_ (ghost)
-  // P1-12: fence-level drop-target highlight (DragEnter on / DragLeave+Drop off).
+  // OLE inbound drop preview (Explorer / desktop / other fence).
+  bool drop_preview_ = false;
+  bool drop_over_recycle_ = false;
+  int drop_insert_ = -1;
+  POINT drop_pt_{};
+  // Legacy whole-fence flash — kept off; insert bar replaces it.
   bool drop_highlight_ = false;
   // F4 icon zoom.
   int icon_zoom_percent_ = 100;

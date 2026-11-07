@@ -3,8 +3,8 @@ html, body {
   margin: 0;
   padding: 0;
   background: #ffffff;
-  color: #1f2937;
-  font-family: "Segoe UI", "Microsoft YaHei UI", sans-serif;
+  color: #1a1f27;
+  font-family: "Microsoft YaHei", "微软雅黑", "Microsoft YaHei UI", "Segoe UI", sans-serif;
   font-size: 14px;
   line-height: 1.55;
 }
@@ -25,8 +25,17 @@ html, body {
 }
 .markdown-body h1 {
   font-size: 1.7em;
-  border-bottom: 1px solid #e5e7eb;
+  border-bottom: 1px solid #9ca3af;
   padding-bottom: 0.25em;
+}
+.markdown-body ul {
+  list-style: disc;
+}
+.markdown-body ul > li::marker {
+  color: #4b5563;
+}
+.markdown-body ol > li::marker {
+  color: #4b5563;
 }
 .markdown-body h2 { font-size: 1.4em; }
 .markdown-body h3 { font-size: 1.2em; }
@@ -50,8 +59,8 @@ html, body {
 .markdown-body blockquote {
   margin: 0.6em 0;
   padding: 0.2em 0.9em;
-  border-left: 3px solid #93c5fd;
-  color: #4b5563;
+  border-left: 3px solid #6b7280;
+  color: #374151;
   background: #f8fafc;
 }
 .markdown-body table { border-collapse: collapse; margin: 0.8em 0; }
@@ -62,7 +71,7 @@ html, body {
 .markdown-body a { color: #2563eb; }
 .markdown-body hr {
   border: none;
-  border-top: 1px solid #e5e7eb;
+  border-top: 1px solid #9ca3af;
   margin: 1.2em 0;
 }
 .markdown-body .task-list-item { list-style: none; }

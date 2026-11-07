@@ -310,6 +310,8 @@ class NotesWindow {
   HWND mode_strip_ = nullptr;  // Top-right 预览/编辑 toggle chip.
   HWND font_face_combo_ = nullptr;  // 微软雅黑 / 宋体
   HWND font_size_combo_ = nullptr;
+  HWND font_smaller_btn_ = nullptr;  // A− beside size
+  HWND font_bigger_btn_ = nullptr;   // A+
   HMENU menu_ = nullptr;
   HFONT font_ = nullptr;
   HFONT ui_font_ = nullptr;       // Segoe UI — chrome

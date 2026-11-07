@@ -87,9 +87,16 @@ int main() {
   // 3) Explicit proportion restore still available for "修复布局".
   {
     auto fences = UserResizedSystemRow();
+    // Far from ~6:1 (常用 swallowed the row) — must trigger restore.
+    fences[0].w = 1800;
+    fences[0].page_geometries[0].w = 1800;
+    fences[1].w = 80;
+    fences[1].x = 1820;
+    fences[1].page_geometries[0].w = 80;
+    fences[1].page_geometries[0].x = 1820;
     const int n = RestoreSystemFenceProportions(&fences);
     Expect(n > 0, "explicit restore detects skewed row");
-    Expect(fences[0].w != 1631 || fences[1].w != 275,
+    Expect(fences[0].w != 1800 || fences[1].w != 80,
            "explicit restore changes skewed sizes");
   }
 
@@ -135,18 +142,39 @@ int main() {
            "heal keeps intentional ~80% height");
   }
 
-  // 7) DefaultLayouts honor content_min and stay within half work.
+  // 7) DefaultLayouts: work row ~6:1 + content_min; docs fills work area.
   {
     const auto defaults = DefaultLayouts();
-    Expect(!defaults.empty(), "DefaultLayouts non-empty");
+    Expect(defaults.size() >= 3, "DefaultLayouts has work+docs fences");
     const RECT work = PrimaryWorkArea();
+    const int ww = (std::max)(1, static_cast<int>(work.right - work.left));
     const int wh = (std::max)(1, static_cast<int>(work.bottom - work.top));
     const int content_min = MinFenceHeightForIconRows(2);
+    const FenceLayout* common = nullptr;
+    const FenceLayout* side = nullptr;
+    const FenceLayout* docs = nullptr;
     for (const auto& f : defaults) {
-      Expect(f.h >= content_min || f.h >= wh / 2,
-             "default fence height meets content_min or half-work cap");
-      Expect(f.h <= wh / 2 + 2, "default fence height capped at half work");
-      Expect(f.w >= kFenceMinW, "default fence width >= min");
+      if (f.id == "system_common") {
+        common = &f;
+      } else if (f.id == "system_software_side") {
+        side = &f;
+      } else if (f.id == "system_docs") {
+        docs = &f;
+      }
+    }
+    Expect(common && side && docs, "system fences present");
+    if (common && side) {
+      Expect(common->h >= content_min || common->h >= wh / 2,
+             "common height meets content_min or half-work");
+      Expect(common->h <= wh / 2 + 2, "work fences capped at half work");
+      Expect(side->h <= wh / 2 + 2, "side fence capped at half work");
+      // ~6:1 width (allow gap slack).
+      Expect(common->w * 10 >= side->w * 50, "work row ~6:1 (common>>side)");
+      Expect(common->w + side->w <= ww + 8, "work row fits work width");
+    }
+    if (docs) {
+      Expect(docs->w * 100 >= ww * 95, "docs fills work width");
+      Expect(docs->h * 100 >= wh * 95, "docs fills work height");
     }
   }
 

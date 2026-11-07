@@ -277,9 +277,9 @@ void NormalizePageNames(std::vector<std::wstring>* names) {
 }
 
 std::vector<FenceLayout> DefaultLayouts() {
-  // Match Python system_defaults: 工作页「常用」~2/3 +「其他」~1/3；文档页全宽「文档」。
-  // Height = max(design ratio, two-row icon content_min), capped at half work
-  // (display-adaptivity / Fences-class: small logical heights must still fit).
+  // Fresh install: 工作页「常用」:「其他」≈6:1 宽；文档页「文档」铺满工作区。
+  // Work-row height = max(design ratio, two-row icon content_min), capped at
+  // half work (display-adaptivity / Fences-class).
   const RECT work = PrimaryWorkArea();
   const int aw = (std::max)(320, static_cast<int>(work.right - work.left));
   const int ah = (std::max)(240, static_cast<int>(work.bottom - work.top));
@@ -288,10 +288,13 @@ std::vector<FenceLayout> DefaultLayouts() {
   const int content_min = MinFenceHeightForIconRows(2, &grid);
   const int row_h =
       (std::min)(ah / 2, (std::max)(content_min, ah * 400 / 1032));
-  const int docs_h =
-      (std::min)(ah / 2, (std::max)(content_min, ah * 360 / 1032));
-  const int left_w = (std::max)(160, (std::min)(aw * 2 / 3, aw - gap - 120));
-  const int right_w = (std::max)(120, aw - left_w - gap);
+  // 6:1 of the usable width after the inter-fence gap.
+  const int usable = (std::max)(280, aw - gap);
+  int left_w = (std::max)(160, usable * 6 / 7);
+  int right_w = (std::max)(120, usable - left_w);
+  if (left_w + gap + right_w > aw) {
+    left_w = (std::max)(160, aw - gap - right_w);
+  }
 
   std::vector<FenceLayout> out;
   FenceLayout common;
@@ -321,7 +324,7 @@ std::vector<FenceLayout> DefaultLayouts() {
   docs.x = work.left;
   docs.y = work.top;
   docs.w = aw;
-  docs.h = docs_h;
+  docs.h = ah;  // 铺满工作区（宽+高）
   docs.page = 1;
   docs.organize_kinds = {"file"};
   out.push_back(docs);
@@ -1238,11 +1241,12 @@ int RestoreSystemFenceProportions(std::vector<FenceLayout>* fences) {
   FenceLayout def_common = defaults[0];
   FenceLayout def_side = defaults[1];
   FenceLayout def_docs = defaults.size() > 2 ? defaults[2] : FenceLayout{};
-  // Skewed when「常用」ate most of the top row (market: ~2/3 + ~1/3).
+  // Skewed when far from default ~6:1 (常用 ate the row / 其他 vanished).
   const int row_w =
       (std::max)(1, common->w + side->w +
                         (std::max)(0, side->x - (common->x + common->w)));
-  const bool skewed = common->w * 100 >= row_w * 78 || side->w * 100 <= row_w * 18;
+  const bool skewed =
+      common->w * 100 >= row_w * 92 || side->w * 100 <= row_w * 8;
   const RECT work = PrimaryWorkArea();
   const int ah = (std::max)(1, static_cast<int>(work.bottom - work.top));
   // Full-bleed height from display-scale corruption — same restore as skew.
@@ -1272,10 +1276,12 @@ int RestoreSystemFenceProportions(std::vector<FenceLayout>* fences) {
     }
   }
   if (docs && def_docs.w > 0) {
-    // Full-width docs strip that collapsed too short → restore default height.
+    // Docs default is full work area. Restore when collapsed short, or when
+    // taller than the work area (hotplug corruption) — do not punish intentional
+    // mid-size user layouts.
     const int aw = (std::max)(1, static_cast<int>(work.right - work.left));
     if ((docs->w * 100 >= aw * 90 && docs->h + 40 < def_docs.h) ||
-        docs->h * 100 >= ah * 75) {
+        docs->h > ah) {
       docs->x = def_docs.x;
       docs->y = def_docs.y;
       docs->w = def_docs.w;

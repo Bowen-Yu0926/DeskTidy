@@ -1,4 +1,4 @@
-﻿#include "pet_window.h"
+#include "pet_window.h"
 
 #include "desktop_shell.h"
 #include "pet_lines.h"
@@ -32,7 +32,9 @@ namespace {
 constexpr ULONGLONG kLedgeCacheTtlMs = 1000;
 constexpr wchar_t kClassName[] = L"DeskTidyNativePet";
 constexpr int kSize = 72;
-constexpr int kSpriteMaxW = 180;
+// Soft pets cap width so HiDPI bitmaps stay light. Pixel pets skip this cap
+// (integer-cell art must not be resampled down before nearest upscale).
+constexpr int kSpriteMaxW = 220;
 constexpr int kPageChipH = 26;
 constexpr int kPagePointer = 5;
 constexpr int kPageGap = 6;
@@ -71,8 +73,13 @@ bool IsHoodieFamily(const std::wstring& character) {
   return character == L"hoodie" || character == L"pixehood";
 }
 
+// 有「睡觉/打盹」动作的角色：卫衣家族 + 白衣剑仙（倚剑打盹）。
+bool HasSleepAction(const std::wstring& character) {
+  return IsHoodieFamily(character) || character == L"xianjian";
+}
+
 bool IsPixelArtCharacter(const std::wstring& character) {
-  return character == L"pixehood";
+  return character == L"pixehood" || character == L"gufeng";
 }
 
 bool PoseSkipsMotion(const std::wstring& character, const std::wstring& pose) {
@@ -95,6 +102,10 @@ PetMotion ComputePetMotion(const std::wstring& character,
     return m;
   }
   const float t = static_cast<float>(frame) / 10.f;
+  // 剑仙睡觉含树干：整体 bob 会让树「飘」——帧内呼吸已够，跳过位移。
+  if (character == L"xianjian" && (pose == L"sleep" || pose == L"lie")) {
+    return m;
+  }
   const bool soft_sleep =
       (IsHoodieFamily(character) || character == L"voyage") &&
       (pose == L"sleep" || pose == L"lie");
@@ -407,49 +418,75 @@ void SortFrameFilesNumeric(std::vector<std::wstring>* files) {
 }  // namespace
 
 namespace {
-// Pull the alpha channel out of a GDI+ bitmap (GDI HBITMAP round-trips flatten
-// alpha, so the pet hit-region has to be captured here at load time).
-std::vector<BYTE> ExtractAlphaMap(Gdiplus::Bitmap& bmp, int w, int h) {
-  std::vector<BYTE> out;
-  if (w <= 0 || h <= 0) {
-    return out;
+// Lock PARGB BGRA rows out of a GDI+ bitmap. HBITMAP round-trips flatten
+// alpha (see pet_window.h) — ULW must use these pixels, not GetHBITMAP.
+bool ExtractPargb(Gdiplus::Bitmap& bmp, int w, int h, std::vector<BYTE>* pargb,
+                  std::vector<BYTE>* alpha) {
+  if (!pargb || w <= 0 || h <= 0) {
+    return false;
   }
   Gdiplus::BitmapData bd{};
   Gdiplus::Rect area(0, 0, w, h);
-  // Premultiplied source keeps its alpha byte as-is; ARGB conversion is only a
-  // fallback since GDI+ rejects some PARGB->ARGB LockBits requests.
   Gdiplus::Status st =
       bmp.LockBits(&area, Gdiplus::ImageLockModeRead, PixelFormat32bppPARGB, &bd);
-  if (st != Gdiplus::Ok || !bd.Scan0) {
+  const bool locked_pargb = (st == Gdiplus::Ok && bd.Scan0);
+  if (!locked_pargb) {
     st = bmp.LockBits(&area, Gdiplus::ImageLockModeRead, PixelFormat32bppARGB,
                       &bd);
   }
   if (st != Gdiplus::Ok || !bd.Scan0) {
-    LogLineA("[pet] mask LockBits failed st=%d", static_cast<int>(st));
-    return out;
+    LogLineA("[pet] PARGB LockBits failed st=%d", static_cast<int>(st));
+    return false;
   }
-  out.resize(static_cast<size_t>(w) * static_cast<size_t>(h));
+  const size_t n = static_cast<size_t>(w) * static_cast<size_t>(h);
+  pargb->assign(n * 4, 0);
+  if (alpha) {
+    alpha->assign(n, 0);
+  }
   const BYTE* base = static_cast<const BYTE*>(bd.Scan0);
   int nonzero = 0;
   for (int y = 0; y < h; ++y) {
     const BYTE* row = base + static_cast<size_t>(y) * bd.Stride;
+    BYTE* dst = pargb->data() + static_cast<size_t>(y) * w * 4;
     for (int x = 0; x < w; ++x) {
-      const BYTE a = row[static_cast<size_t>(x) * 4 + 3];
-      out[static_cast<size_t>(y) * w + x] = a;
+      const BYTE* p = row + static_cast<size_t>(x) * 4;
+      BYTE b = p[0], g = p[1], r = p[2], a = p[3];
+      // ARGB LockBits fallback: premultiply for ULW_ALPHA.
+      if (!locked_pargb && a < 255) {
+        if (a == 0) {
+          b = g = r = 0;
+        } else {
+          b = static_cast<BYTE>((b * a) / 255);
+          g = static_cast<BYTE>((g * a) / 255);
+          r = static_cast<BYTE>((r * a) / 255);
+        }
+      }
+      dst[x * 4 + 0] = b;
+      dst[x * 4 + 1] = g;
+      dst[x * 4 + 2] = r;
+      dst[x * 4 + 3] = a;
+      if (alpha) {
+        (*alpha)[static_cast<size_t>(y) * w + x] = a;
+      }
       if (a) {
         ++nonzero;
       }
     }
   }
   bmp.UnlockBits(&bd);
-  // B3: ExtractAlphaMap runs on every pose load (SetPose) and each cel — the
-  // per-cel log flooded the file every few seconds. Log the first capture only.
   static bool logged_first = false;
   if (!logged_first) {
     LogLineA("[pet] mask alpha %dx%d nonzero=%d", w, h, nonzero);
     logged_first = true;
   }
-  return out;
+  return nonzero > 0;
+}
+
+std::vector<BYTE> ExtractAlphaMap(Gdiplus::Bitmap& bmp, int w, int h) {
+  std::vector<BYTE> pargb;
+  std::vector<BYTE> alpha;
+  ExtractPargb(bmp, w, h, &pargb, &alpha);
+  return alpha;
 }
 }  // namespace
 
@@ -488,13 +525,19 @@ void PetWindow::TryLoadSprite() {
       g.Clear(Gdiplus::Color(0, 0, 0, 0));
       g.DrawImage(&src, 0, 0, sprite_w_, sprite_h_);
     }
-    sprite_alpha_ = ExtractAlphaMap(scaled, sprite_w_, sprite_h_);
+    std::vector<BYTE> pargb;
+    std::vector<BYTE> alpha;
+    if (!ExtractPargb(scaled, sprite_w_, sprite_h_, &pargb, &alpha)) {
+      continue;
+    }
+    sprite_pargb_ = std::move(pargb);
+    sprite_alpha_ = std::move(alpha);
     HBITMAP hb = nullptr;
     scaled.GetHBITMAP(Gdiplus::Color(0, 0, 0, 0), &hb);
     if (hb) {
       sprite_ = hb;
-      break;
     }
+    break;
   }
   Gdiplus::GdiplusShutdown(token);
 }
@@ -508,6 +551,7 @@ void PetWindow::ClearFrames() {
   }
   frames_.clear();
   frames_alpha_.clear();
+  frames_pargb_.clear();
   ++mask_gen_counter_;
   frame_i_ = 0;
   dissolve_ = 0;
@@ -629,9 +673,11 @@ void PetWindow::LoadPrefs() {
   load_actions(L"hoodie", "actions_hoodie");
   load_actions(L"voyage", "actions_voyage");
   load_actions(L"pixehood", "actions_pixehood");
+  load_actions(L"xianjian", "actions_xianjian");
   EnsureDefaultActions(L"hoodie");
   EnsureDefaultActions(L"voyage");
   EnsureDefaultActions(L"pixehood");
+  EnsureDefaultActions(L"xianjian");
 }
 
 void PetWindow::PersistPrefs() {
@@ -658,6 +704,7 @@ void PetWindow::PersistPrefs() {
       << ",\n  \"actions_hoodie\":\"" << join_acts(L"hoodie")
       << "\",\n  \"actions_voyage\":\"" << join_acts(L"voyage")
       << "\",\n  \"actions_pixehood\":\"" << join_acts(L"pixehood")
+      << "\",\n  \"actions_xianjian\":\"" << join_acts(L"xianjian")
       << "\"\n}\n";
   AtomicWriteUtf8File(JoinPath(NativeDataDir(), L"pet.json"), out.str());
 }
@@ -666,7 +713,10 @@ void PetWindow::EnsureDefaultActions(const std::wstring& character) {
   if (enabled_actions_.count(character) && !enabled_actions_[character].empty()) {
     return;
   }
-  if (IsHoodieFamily(character)) {
+  if (character == L"xianjian") {
+    // 无「息」/闭目养神：休息只保留倚树打盹。
+    enabled_actions_[character] = {"pet", "sleep", "fall"};
+  } else if (HasSleepAction(character)) {
     enabled_actions_[character] = {"pet", "wait", "sleep", "fall"};
   } else {
     enabled_actions_[character] = {"pet", "wait", "fall"};
@@ -679,9 +729,16 @@ bool PetWindow::ActionEnabled(const std::wstring& character,
   if (action == "pet" || action == "fall" || action == "hide") {
     return true;
   }
+  // 剑仙产品面去掉「息」；旧 pet.json 若仍带 wait 也当作关闭。
+  if (character == L"xianjian" && action == "wait") {
+    return false;
+  }
   auto it = enabled_actions_.find(character);
   if (it == enabled_actions_.end()) {
-    if (IsHoodieFamily(character)) {
+    if (character == L"xianjian") {
+      return action == "sleep";
+    }
+    if (HasSleepAction(character)) {
       return action == "wait" || action == "sleep";
     }
     return action == "wait";
@@ -694,9 +751,24 @@ std::vector<std::string> PetWindow::EnabledActions(
     const std::wstring& character) const {
   auto it = enabled_actions_.find(character);
   if (it != enabled_actions_.end() && !it->second.empty()) {
-    return it->second;
+    if (character == L"xianjian") {
+      std::vector<std::string> out;
+      for (const auto& a : it->second) {
+        if (a != "wait") {
+          out.push_back(a);
+        }
+      }
+      if (!out.empty()) {
+        return out;
+      }
+    } else {
+      return it->second;
+    }
   }
-  if (IsHoodieFamily(character)) {
+  if (character == L"xianjian") {
+    return {"pet", "sleep", "fall"};
+  }
+  if (HasSleepAction(character)) {
     return {"pet", "wait", "sleep", "fall"};
   }
   return {"pet", "wait", "fall"};
@@ -734,6 +806,9 @@ void PetWindow::SetEnabledActions(const std::wstring& character,
 std::vector<std::pair<std::string, std::wstring>> PetWindow::SettingsActionOptions(
     const std::wstring& character) const {
   // Settings UI only — 摸摸/跌落 always on and hidden (Python).
+  if (character == L"xianjian") {
+    return {{"sleep", L"倚树打盹"}};
+  }
   if (IsHoodieFamily(character)) {
     return {{"wait", L"玩手机"}, {"sleep", L"睡觉"}};
   }
@@ -804,9 +879,8 @@ void PetWindow::LoadCharacters() {
       push_unique(name.substr(0, under));
     } while (FindNextFileW(h, &fd));
     FindClose(h);
-    if (!character_ids_.empty()) {
-      break;
-    }
+    // Keep scanning every root — a user pet in NativeDataDir\pets must not hide
+    // the built-in characters in assets\pets (previously showed only one).
   }
   if (character_ids_.empty()) {
     character_ids_.push_back(L"hoodie");
@@ -958,33 +1032,43 @@ void PetWindow::SetPose(const std::wstring& pose) {
     }
     int w = static_cast<int>(src.GetWidth());
     int h = static_cast<int>(src.GetHeight());
-    if (w > kSpriteMaxW) {
-      h = h * kSpriteMaxW / w;
-      w = kSpriteMaxW;
+    // Unify soft-pet HEIGHT (not width) so every character renders the same
+    // size at a given zoom — previously a 220px width cap made hoodie ~263px
+    // tall but a full-body xianjian ~230px tall (pets looked different-sized).
+    if (!IsPixelArtCharacter(character_)) {
+      constexpr int kSpriteMaxH = 280;
+      if (h > kSpriteMaxH) {
+        w = w * kSpriteMaxH / h;
+        h = kSpriteMaxH;
+      }
     }
     Gdiplus::Bitmap scaled(w, h, PixelFormat32bppPARGB);
     {
       Gdiplus::Graphics g(&scaled);
       g.Clear(Gdiplus::Color(0, 0, 0, 0));
       // Pixel pets must stay nearest-neighbor or color blocks smear.
-      g.SetInterpolationMode(
-          IsPixelArtCharacter(character_)
-              ? Gdiplus::InterpolationModeNearestNeighbor
-              : Gdiplus::InterpolationModeHighQualityBicubic);
-      g.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHalf);
+      const bool pixel = IsPixelArtCharacter(character_);
+      g.SetInterpolationMode(pixel ? Gdiplus::InterpolationModeNearestNeighbor
+                                   : Gdiplus::InterpolationModeHighQualityBicubic);
+      g.SetPixelOffsetMode(pixel ? Gdiplus::PixelOffsetModeNone
+                                 : Gdiplus::PixelOffsetModeHalf);
+      g.SetSmoothingMode(Gdiplus::SmoothingModeNone);
       g.DrawImage(&src, 0, 0, w, h);
     }  // destroy Graphics before LockBits (GDI+ refuses while it is alive)
-    const std::vector<BYTE> alpha = ExtractAlphaMap(scaled, w, h);
+    std::vector<BYTE> pargb;
+    std::vector<BYTE> alpha;
+    if (!ExtractPargb(scaled, w, h, &pargb, &alpha)) {
+      continue;
+    }
     HBITMAP hb = nullptr;
     scaled.GetHBITMAP(Gdiplus::Color(0, 0, 0, 0), &hb);
-    if (hb) {
-      frames_.push_back(hb);
-      frames_alpha_.push_back(alpha);
-      sprite_w_ = w;
-      sprite_h_ = h;
-      if (pose == L"idle") {
-        base_sprite_h_ = h;
-      }
+    frames_.push_back(hb);  // may be null; Paint uses frames_pargb_
+    frames_alpha_.push_back(std::move(alpha));
+    frames_pargb_.push_back(std::move(pargb));
+    sprite_w_ = w;
+    sprite_h_ = h;
+    if (pose == L"idle") {
+      base_sprite_h_ = h;
     }
   }
   Gdiplus::GdiplusShutdown(token);
@@ -1076,10 +1160,12 @@ int PetWindow::FrameIntervalMs(const std::wstring& pose) const {
     return 66;
   }
   if (pose == L"wait") {
-    return voyage ? 660 : 264;
+    // 玩手机/刷手机：略放慢，动作更易辨认（原 264 / voyage 660）。
+    return voyage ? 900 : 380;
   }
   if (pose == L"sleep") {
-    return 132;
+    // 剑仙睡姿含树景：稍慢一档，与呼吸 bob 同步，避免树干跳帧。
+    return character_ == L"xianjian" ? 200 : 132;
   }
   if (pose == L"hold") {
     return 132;
@@ -1088,17 +1174,41 @@ int PetWindow::FrameIntervalMs(const std::wstring& pose) const {
     return voyage ? 132 : 330;
   }
   if (pose == L"play") {
-    return voyage ? 594 : 99;  // happy/play cheer cadence
+    // 抚摸/点击摸摸：剑仙从容颔首浅笑，动作舒缓到 ~250ms/帧（每个动作可辨）。
+    return voyage ? 594 : 250;
   }
   return 99;  // idle
 }
 
+int PetWindow::PixelDisplayMul() const {
+  if (!IsPixelArtCharacter(character_) || sprite_w_ <= 0) {
+    return 1;
+  }
+  const float dpi = current_dpi_ > 0 ? current_dpi_ / 96.0f : 1.0f;
+  // 32–36 cell sprites read tiny at 1× — default ~2×, snap to integer cells
+  // so nearest-neighbor stays chunky (desktop-mascot / Shimeji class).
+  int mul = static_cast<int>(std::lround(size_scale_ * dpi * 2.f));
+  if (mul < 1) {
+    mul = 1;
+  }
+  if (mul > 5) {
+    mul = 5;
+  }
+  return mul;
+}
+
 int PetWindow::ScaledW() const {
+  if (IsPixelArtCharacter(character_) && sprite_w_ > 0) {
+    return (std::max)(24, sprite_w_ * PixelDisplayMul());
+  }
   const float dpi = current_dpi_ > 0 ? current_dpi_ / 96.0f : 1.0f;
   return (std::max)(24, static_cast<int>(std::lround(sprite_w_ * size_scale_ * dpi)));
 }
 
 int PetWindow::ScaledH() const {
+  if (IsPixelArtCharacter(character_) && sprite_h_ > 0) {
+    return (std::max)(24, sprite_h_ * PixelDisplayMul());
+  }
   const float dpi = current_dpi_ > 0 ? current_dpi_ / 96.0f : 1.0f;
   return (std::max)(24, static_cast<int>(std::lround(sprite_h_ * size_scale_ * dpi)));
 }
@@ -1114,10 +1224,14 @@ int PetWindow::GroundMarginPx() const {
 }
 
 int PetWindow::PageHeadClearancePx(int pet_h) const {
+  // Gap from bubble pointer tip to sprite crown. Was 22%/36–80 — left a tall
+  // empty band above 剑仙/soft pets (user: 空白太多). Keep a small floor so the
+  // tip never sits on hair (display-adaptivity), but stay tight like market
+  // desktop-pet chrome.
   const int dpi = current_dpi_ > 0 ? current_dpi_ : SystemDpi();
-  int clear = pet_h * 22 / 100;
-  const int lo = ScalePxForDpi(36, dpi);
-  const int hi = ScalePxForDpi(80, dpi);
+  int clear = pet_h * 10 / 100;
+  const int lo = ScalePxForDpi(12, dpi);
+  const int hi = ScalePxForDpi(36, dpi);
   clear = (std::max)(lo, (std::min)(hi, clear));
   return clear;
 }
@@ -1192,7 +1306,7 @@ void PetWindow::EnterHappy(DWORD now) {
   }
   happy_active_ = true;
   const bool voyage = _wcsicmp(character_.c_str(), L"voyage") == 0;
-  state_until_ms_ = now + (voyage ? 3200 : 2000);
+  state_until_ms_ = now + (voyage ? 3200 : 3000);
   LogLine(L"[pet] click→happy pose=%s hearts=%d", pose_.c_str(),
           static_cast<int>(hearts_.size()));
   Say("pet");
@@ -1204,14 +1318,24 @@ void PetWindow::EnterSleep(DWORD now) {
   climbing_ = false;
   on_ledge_ = false;
   if (HasPose(L"sleep")) {
+    sleep_anim_dir_ = 1;
     SetPose(L"sleep");
   }
-  state_until_ms_ = now + 10000 + static_cast<DWORD>(rand() % 8000);
+  // 剑仙倚树略长一档（约 18–30s）；其它角色约 14–24s。
+  const DWORD base = character_ == L"xianjian" ? 18000u : 14000u;
+  const DWORD span = character_ == L"xianjian" ? 12000u : 10000u;
+  state_until_ms_ = now + base + static_cast<DWORD>(rand() % span);
   LogLine(L"[pet] idle→sleep");
   Say("sleep");
 }
 
 void PetWindow::EnterWait(DWORD now) {
+  // 剑仙「休息」应对齐倚树打盹素材；闭目站立 wait 无树，用户会觉得没在睡觉。
+  if (character_ == L"xianjian" && ActionEnabled(character_, "sleep") &&
+      HasPose(L"sleep")) {
+    EnterSleep(now);
+    return;
+  }
   walking_ = false;
   falling_ = false;
   climbing_ = false;
@@ -1263,6 +1387,11 @@ void PetWindow::ChooseNextAfterIdle(DWORD now) {
   }
   if (roll >= chance) {
     ScheduleIdle(now);
+    return;
+  }
+  // 剑仙休息固定倚树；卫衣等仍 wait/sleep 轮换（玩手机 ↔ 睡觉）。
+  if (character_ == L"xianjian" && sleep_on) {
+    EnterSleep(now);
     return;
   }
   if (wait_on && sleep_on) {
@@ -1396,6 +1525,15 @@ void PetWindow::AdvanceFrames(DWORD elapsed_ms, DWORD, bool* frame_changed) {
     }
     return;
   }
+  // 剑仙 sleep：树必须固定同一棵。多 cel 会换树干，冻结在 frame 0，
+  // 呼吸感交给 Paint 里的 Zzz（不换素材）。
+  if (pose_ == L"sleep" && character_ == L"xianjian") {
+    if (frame_i_ != 0) {
+      frame_i_ = 0;
+      *frame_changed = true;
+    }
+    return;
+  }
   // Hard cut only: GDI+ HBITMAP + ColorMatrix crossfade left black fringes
   // on transparent edges (layered UpdateLayeredWindow).
   frame_i_ = (frame_i_ + steps) % n;
@@ -1440,7 +1578,8 @@ void PetWindow::StepPhysics(DWORD elapsed_ms) {
       if (HasPose(L"walk") && pose_ != L"walk") {
         SetPose(L"walk");
       }
-      MoveOverlayScreen(hwnd_, static_cast<int>(pos_x_), static_cast<int>(pos_y_));
+      // ULW Present moves the window — avoid MoveOverlayScreen (SetWindowPos wipe).
+      present_dirty_ = true;
       chrome_dirty_ = true;
     } else if (HasPose(L"idle") && pose_ != L"idle") {
       SetPose(L"idle");
@@ -1464,7 +1603,7 @@ void PetWindow::StepPhysics(DWORD elapsed_ms) {
       walking_ = true;
       vel_x_ = 44.f * static_cast<float>(walk_dir_);
     }
-    MoveOverlayScreen(hwnd_, static_cast<int>(pos_x_), static_cast<int>(pos_y_));
+    present_dirty_ = true;
     return;
   }
 
@@ -1490,7 +1629,7 @@ void PetWindow::StepPhysics(DWORD elapsed_ms) {
       return;
     }
     pos_y_ = static_cast<float>(ledge_top_ - hh);
-    MoveOverlayScreen(hwnd_, static_cast<int>(pos_x_), static_cast<int>(pos_y_));
+    present_dirty_ = true;
     return;
   }
 
@@ -1524,7 +1663,7 @@ void PetWindow::StepPhysics(DWORD elapsed_ms) {
         vel_x_ *= 0.72f;
       }
     }
-    MoveOverlayScreen(hwnd_, static_cast<int>(pos_x_), static_cast<int>(pos_y_));
+    present_dirty_ = true;
     return;
   }
 
@@ -1538,27 +1677,8 @@ void PetWindow::StepPhysics(DWORD elapsed_ms) {
       pos_x_ = (std::max)(static_cast<float>(work.left),
                           (std::min)(pos_x_, static_cast<float>(work.right - ww)));
     }
-    if (climb_cooldown_ == 0) {
-      // Reuse the last EnumWindows scan within the TTL window; refresh only
-      // when it expires so climb probing doesn't re-enumerate every tick.
-      const ULONGLONG now = GetTickCount64();
-      if (now - ledge_cache_ms_ >= kLedgeCacheTtlMs) {
-        ledge_cache_ = ListWindowLedges(hwnd_, 8);
-        ledge_cache_ms_ = now;
-      }
-      const int mid = static_cast<int>(pos_x_) + ww / 2;
-      for (const auto& L : ledge_cache_) {
-        if (L.y >= base_y_ - 20) {
-          continue;
-        }
-        if (mid >= L.x && mid <= L.x + L.width && base_y_ - L.y < 220) {
-          StartClimb();
-          return;
-        }
-      }
-      climb_cooldown_ = 20;
-    }
-    MoveOverlayScreen(hwnd_, static_cast<int>(pos_x_), base_y_);
+    pos_y_ = static_cast<float>(base_y_);
+    present_dirty_ = true;
     return;
   }
 }
@@ -1595,12 +1715,17 @@ void PetWindow::EndDrag(POINT release) {
   }
   const float speed = std::sqrt(vx * vx + vy * vy);
   if (speed >= kThrowMinPxPerSec) {
+    EndDragFloat();
     StartThrow(vx, vy);
+    Present();
     return;
   }
 
-  RECT rc{};
-  GetWindowRect(hwnd_, &rc);
+  // Prefer pos_ (ULW-updated during drag) over GetWindowRect — region/TOPMOST
+  // paths can leave Win32 rect stale relative to the layered blit origin.
+  RECT rc{static_cast<LONG>(pos_x_), static_cast<LONG>(pos_y_),
+          static_cast<LONG>(pos_x_) + ScaledW(),
+          static_cast<LONG>(pos_y_) + ScaledH()};
   // Snap near screen edges (Python snap_geometry, 24 px). P1-15: use the work
   // area of the monitor under the pet, so a secondary-monitor drop stays there
   // instead of being pulled back to the primary monitor.
@@ -1627,13 +1752,41 @@ void PetWindow::EndDrag(POINT release) {
   pos_y_ = static_cast<float>(rc.top);
   RebaseFloor();
   if (rc.top < base_y_ - 24) {
+    EndDragFloat();
     StartThrow(0.f, 80.f);  // dropped above floor → fall (Python)
+    Present();
     return;
   }
   base_y_ = work.bottom - (rc.bottom - rc.top) - GroundMarginPx();
   pos_y_ = static_cast<float>(base_y_);
   PersistPrefs();
-  ScheduleIdle(now);
+  const std::wstring restore = pose_before_drag_;
+  pose_before_drag_.clear();
+  walking_ = false;
+  falling_ = false;
+  climbing_ = false;
+  on_ledge_ = false;
+  // Pose restore before EndDragFloat so SetPose's ApplyScaledWindowSize wipe
+  // is covered by the final double-Present in EndDragFloat.
+  if (restore == L"sleep" && HasPose(L"sleep") &&
+      ActionEnabled(character_, "sleep")) {
+    sleep_anim_dir_ = 1;
+    if (pose_ != L"sleep") {
+      SetPose(L"sleep");
+    }
+    const DWORD base = character_ == L"xianjian" ? 18000u : 14000u;
+    const DWORD span = character_ == L"xianjian" ? 12000u : 10000u;
+    state_until_ms_ = now + base + static_cast<DWORD>(rand() % span);
+  } else if (restore == L"wait" && HasPose(L"wait") &&
+             ActionEnabled(character_, "wait")) {
+    if (pose_ != L"wait") {
+      SetPose(L"wait");
+    }
+    state_until_ms_ = now + 12000 + static_cast<DWORD>(rand() % 10000);
+  } else if (pose_ != L"idle" && HasPose(L"idle")) {
+    ScheduleIdle(now);
+  }
+  EndDragFloat();
   chrome_dirty_ = true;
   if (pages_) {
     PlacePages();
@@ -1763,8 +1916,8 @@ void PetWindow::NudgeClearOfFenceBottoms(
     return;
   }
   pos_y_ = static_cast<float>(need_y);
-  MoveOverlayScreen(hwnd_, static_cast<int>(pos_x_), need_y);
   present_dirty_ = true;
+  Present();
   PlacePages();
   PlaceMenu();
   PersistPrefs();
@@ -1786,10 +1939,8 @@ void PetWindow::StartThrow(float vx, float vy) {
   happy_active_ = false;
   vel_x_ = (std::max)(-kThrowMaxPxPerSec, (std::min)(kThrowMaxPxPerSec, vx));
   vel_y_ = (std::max)(-kThrowMaxPxPerSec, (std::min)(kThrowMaxPxPerSec, vy));
-  RECT rc{};
-  GetWindowRect(hwnd_, &rc);
-  pos_x_ = static_cast<float>(rc.left);
-  pos_y_ = static_cast<float>(rc.top);
+  // Keep pos_ (drag/ULW origin). GetWindowRect after SoftSeat/region is the
+  // hit-region bbox and would yank the pet or leave Present painting off-box.
   RebaseFloor();
   if (HasPose(L"fall")) {
     SetPose(L"fall");
@@ -1831,7 +1982,6 @@ void PetWindow::ShowContextMenu(POINT screen) {
   AppendMenuW(menu, MF_STRING | (follow_cursor_ ? MF_CHECKED : 0), 5,
               follow_cursor_ ? L"取消跟随光标" : L"跟随光标");
   AppendMenuW(menu, MF_STRING, 1, L"走走");
-  AppendMenuW(menu, MF_STRING, 4, L"攀上窗台");
   AppendMenuW(menu, MF_STRING, 2, L"跌落");
   AppendMenuW(menu, MF_STRING, 3, L"待机");
   SetForegroundWindow(hwnd_);
@@ -1856,9 +2006,6 @@ void PetWindow::ShowContextMenu(POINT screen) {
   } else if (cmd == 1) {
     follow_cursor_ = false;
     StartWalk();
-  } else if (cmd == 4) {
-    follow_cursor_ = false;
-    StartClimb();
   } else if (cmd == 2) {
     follow_cursor_ = false;
     StartFall();
@@ -1958,7 +2105,7 @@ void PetWindow::CreateBuoy(HINSTANCE instance) {
   buoy_ = CreateWindowExW(
       WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_LAYERED,
       L"DeskTidyNativePetBuoy", L"PetBuoy", WS_POPUP, work.left + 12,
-      work.bottom - 44, 132, 28, nullptr, nullptr, instance, this);
+      work.bottom - 44, 88, 28, nullptr, nullptr, instance, this);
   if (!buoy_) {
     return;
   }
@@ -2287,17 +2434,16 @@ void PetWindow::PlacePages() {
     ShowWindow(pages_, SW_HIDE);
     return;
   }
-  RECT rc{};
-  GetWindowRect(hwnd_, &rc);
+  // Use pos_/Scaled* — GetWindowRect lags ULW-only moves and left bubbles
+  // stranded where the pet used to be after a blanking drop (see recording).
+  const int pet_w = ScaledW();
+  const int pet_h = ScaledH();
   int w = 80;
   int h = kPageChipH + kPagePointer + 4;
   LayoutChrome(nullptr, &w, &h);
-  const int pet_w = rc.right - rc.left;
-  const int pet_h = rc.bottom - rc.top;
-  // Keep pointer tips clear of hoodie hair (display-adaptivity / Fences chrome).
   const int head_clear = PageHeadClearancePx(pet_h);
-  const int x = rc.left + (pet_w - w) / 2;
-  const int y = rc.top - h - head_clear;
+  const int x = static_cast<int>(pos_x_) + (pet_w - w) / 2;
+  const int y = static_cast<int>(pos_y_) - h - head_clear;
   SetWindowPos(pages_, nullptr, x, y, w, h,
                SWP_NOACTIVATE | SWP_NOZORDER | SWP_SHOWWINDOW);
   PaintPages(nullptr);
@@ -2424,10 +2570,10 @@ void PetWindow::PaintBuoy(HDC hdc) {
   HBRUSH bg = CreateSolidBrush(RGB(28, 32, 40));
   FillRect(hdc, &rc, bg);
   DeleteObject(bg);
-  const wchar_t* labels[] = {L"走", L"爬", L"落"};
+  const wchar_t* labels[] = {L"走", L"落"};
   SetBkMode(hdc, TRANSPARENT);
   SetTextColor(hdc, RGB(230, 230, 230));
-  for (int i = 0; i < 3; ++i) {
+  for (int i = 0; i < 2; ++i) {
     RECT r{i * 44 + 2, 2, (i + 1) * 44 - 2, rc.bottom - 2};
     HBRUSH b = CreateSolidBrush(RGB(55, 70, 90));
     FillRect(hdc, &r, b);
@@ -2460,8 +2606,6 @@ LRESULT CALLBACK PetWindow::BuoyProc(HWND hwnd, UINT msg, WPARAM wparam,
     const int x = GET_X_LPARAM(lparam);
     if (x < 44) {
       self->StartWalk();
-    } else if (x < 88) {
-      self->StartClimb();
     } else {
       self->StartFall();
     }
@@ -2504,11 +2648,9 @@ void PetWindow::PlaceMenu() {
     ShowWindow(menu_, SW_HIDE);
     return;
   }
-  RECT rc{};
-  GetWindowRect(hwnd_, &rc);
-  const int pet_h = rc.bottom - rc.top;
+  const int pet_h = ScaledH();
   // Python: ⋯ hugs sprite shoulder, not the crown.
-  const int menu_y = rc.top + (std::max)(8, pet_h / 5);
+  const int menu_y = static_cast<int>(pos_y_) + (std::max)(8, pet_h / 5);
   const int cols = 2;
   const int n_actions = static_cast<int>(VisibleMenuIndices().size());
   const int rows = (std::max)(1, (n_actions + cols - 1) / cols);
@@ -2519,7 +2661,7 @@ void PetWindow::PlaceMenu() {
   // Grow to the RIGHT of the pet so actions never cover hair.
   const int w = menu_open_ ? kMenuBtn + 4 + panel_w : kMenuBtn;
   const int h = menu_open_ ? (std::max)(kMenuBtn, panel_h) : kMenuBtn;
-  const int x = rc.right - kMenuBtn - 2;
+  const int x = static_cast<int>(pos_x_) + ScaledW() - kMenuBtn - 2;
   SetWindowPos(menu_, nullptr, x, menu_y, w, h,
                SWP_NOACTIVATE | SWP_NOZORDER | SWP_SHOWWINDOW);
   PaintMenu(nullptr);
@@ -2529,10 +2671,12 @@ void PetWindow::PaintMenu(HDC) {
   if (!menu_) {
     return;
   }
+  // 白衣剑仙：摸 / 眠(倚树打盹) / 落 / 隐（无「息」）。
+  const bool xj = _wcsicmp(character_.c_str(), L"xianjian") == 0;
   const wchar_t* glyphs[kMenuActions] = {
       L"摸",
       pose_ == L"wait" ? L"起" : L"游",
-      pose_ == L"sleep" ? L"起" : L"睡",
+      pose_ == L"sleep" ? L"起" : (xj ? L"眠" : L"睡"),
       L"落",
       L"隐",
   };
@@ -2927,9 +3071,9 @@ void PetWindow::Show() {
     ShowWindow(hwnd_, SW_SHOWNOACTIVATE);
   }
   AttachToDesktopLayer();
-  if (!was) {
-    Present();
-  }
+  // SoftSeat/Raise wipe UpdateLayeredWindow pixels even when already mapped —
+  // always re-blit (fence Show does the same; skipping left a blank pet).
+  Present();
   // Buoy (走/爬/落) is superseded by the ⋯ action menu, matching Python.
   if (pages_) {
     if (!IsWindowVisible(pages_)) {
@@ -2989,19 +3133,54 @@ void PetWindow::AttachToDesktopLayer() {
   // AIGC END
 }
 
+void PetWindow::RefreshLayer() {
+  if (!hwnd_ || !IsWindowVisible(hwnd_) || IsIconic(hwnd_)) {
+    return;
+  }
+  // ULW pptDst + Scaled size in Present() reseats without SetWindowPos wipe.
+  Present();
+}
+
+void PetWindow::BeginDragFloat() {
+  if (!hwnd_) {
+    return;
+  }
+  // Clear hit-region for the drag so GetWindowRect stays full sprite size.
+  // No SetWindowPos — ULW pptDst+SIZE in Present reseats without wiping.
+  SetWindowRgn(hwnd_, nullptr, FALSE);
+  if (mask_rgn_) {
+    DeleteObject(mask_rgn_);
+    mask_rgn_ = nullptr;
+  }
+  Present();
+}
+
+void PetWindow::EndDragFloat() {
+  if (!hwnd_) {
+    return;
+  }
+  if (!IsAttachedToDesktop(hwnd_)) {
+    AttachToDesktopLayer();
+  }
+  Present();
+  present_dirty_ = true;
+}
+
 int PetWindow::WantedTickMs() const {
   if (!hwnd_ || !IsWindowVisible(hwnd_) || dragging_) {
     return 33;
   }
-  const bool idle_pose =
-      pose_ == L"idle" || pose_ == L"sleep" || pose_ == L"perch";
-  if (!idle_pose) {
+  // wait = 站立 — same cadence as idle (was 33ms and felt stuttery/blank).
+  const bool quiet_pose = pose_ == L"idle" || pose_ == L"sleep" ||
+                          pose_ == L"perch" || pose_ == L"wait";
+  if (!quiet_pose) {
     return 33;
   }
   POINT pt{};
   GetCursorPos(&pt);
-  RECT rc{};
-  GetWindowRect(hwnd_, &rc);
+  const RECT rc{static_cast<LONG>(pos_x_), static_cast<LONG>(pos_y_),
+                static_cast<LONG>(pos_x_) + ScaledW(),
+                static_cast<LONG>(pos_y_) + ScaledH()};
   if (PtInRect(&rc, pt)) {
     return 33;
   }
@@ -3037,18 +3216,22 @@ void PetWindow::Tick() {
 
   bool frame_changed = false;
   if (dragging_) {
-    // P5: hold pose while dragging; no physics/anim; bubbles hidden.
-    if (pose_ != L"hold" && HasPose(L"hold")) {
+    // Hoodie/voyage: grab "hold" cels. 剑仙 hold 无树且近乎静帧 — 拖时保持原
+    // pose（睡觉树景/idle 呼吸）并继续播帧，避免「拖一下动画没了」。
+    const bool use_hold =
+        HasPose(L"hold") && character_ != L"xianjian";
+    if (use_hold && pose_ != L"hold") {
       SetPose(L"hold");
     }
+    AdvanceFrames(elapsed, now, &frame_changed);
     if (chrome_dirty_) {
       PlacePages();
       PlaceMenu();
       chrome_dirty_ = false;
     }
-    if (present_dirty_ || hearts_active || had_hearts) {
-      Present();
-    }
+    // MoveOverlayScreen / Raise wipe ULW — must re-blit every drag tick,
+    // not only when the cel index changes (else pet goes blank mid-drag).
+    Present();
     present_dirty_ = false;
     return;
   }
@@ -3068,9 +3251,12 @@ void PetWindow::Tick() {
   bool need_present =
       present_dirty_ || frame_changed || hearts_active || had_hearts;
   if (!need_present && live_fx) {
+    // Standing poses (idle/wait/sleep/perch): ~5 Hz. Active walk/play: ~15 Hz.
     const DWORD soft_gap =
-        (pose_ == L"idle" || pose_ == L"sleep" || pose_ == L"perch") ? 200u
-                                                                     : 66u;
+        (pose_ == L"idle" || pose_ == L"sleep" || pose_ == L"perch" ||
+         pose_ == L"wait")
+            ? 200u
+            : 66u;
     if (last_soft_present_ms_ == 0 ||
         now - last_soft_present_ms_ >= soft_gap) {
       need_present = true;
@@ -3131,10 +3317,9 @@ LRESULT PetWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
       dragging_ = false;
       drag_sample_n_ = 0;
       drag_sample_i_ = 0;
-      RECT rc{};
-      GetWindowRect(hwnd_, &rc);
-      drag_offset_.x = pt.x - rc.left;
-      drag_offset_.y = pt.y - rc.top;
+      // Offset from authoritative sprite origin (not region bbox GetWindowRect).
+      drag_offset_.x = pt.x - static_cast<int>(pos_x_);
+      drag_offset_.y = pt.y - static_cast<int>(pos_y_);
       PushDragSample(pt);
       SetCapture(hwnd_);
       return 0;
@@ -3151,28 +3336,33 @@ LRESULT PetWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
             return 0;
           }
           dragging_ = true;
+          pose_before_drag_ = pose_;
           last_interact_ms_ = GetTickCount();
           chrome_dirty_ = true;
           SetCursor(LoadCursor(nullptr, IDC_HAND));
           if (pages_) {
             PlacePages();  // hide bubbles while dragging (Python)
           }
-          AttachToDesktopLayer();
+          BeginDragFloat();
         }
         SetCursor(LoadCursor(nullptr, IDC_SIZEALL));
         const int new_x = pt.x - drag_offset_.x;
-        // P1-14: face the drag direction as the pet is pulled left/right.
-        if (new_x != static_cast<int>(pos_x_)) {
-          const int f = new_x > static_cast<int>(pos_x_) ? 1 : -1;
-          if (f != facing_) {
-            facing_ = f;
-            present_dirty_ = true;
+        const int new_y = pt.y - drag_offset_.y;
+        if (new_x != static_cast<int>(pos_x_) ||
+            new_y != static_cast<int>(pos_y_)) {
+          // P1-14: face the drag direction as the pet is pulled left/right.
+          if (new_x != static_cast<int>(pos_x_)) {
+            const int f = new_x > static_cast<int>(pos_x_) ? 1 : -1;
+            if (f != facing_) {
+              facing_ = f;
+            }
           }
+          pos_x_ = static_cast<float>(new_x);
+          pos_y_ = static_cast<float>(new_y);
+          PushDragSample(pt);
+          // ULW pptDst moves — SetWindowPos here blanks + doubles work with Tick.
+          Present();
         }
-        MoveOverlayScreen(hwnd_, new_x, pt.y - drag_offset_.y);
-        pos_x_ = static_cast<float>(new_x);
-        pos_y_ = static_cast<float>(pt.y - drag_offset_.y);
-        PushDragSample(pt);
       }
       return 0;
     case WM_LBUTTONUP: {
@@ -3195,6 +3385,15 @@ LRESULT PetWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
       ReleaseCapture();
       return 0;
     }
+    case WM_CAPTURECHANGED:
+      if (dragging_) {
+        POINT cur{};
+        GetCursorPos(&cur);
+        EndDrag(cur);
+      } else {
+        press_captured_ = false;
+      }
+      return 0;
     case WM_RBUTTONUP: {
       POINT pt{GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
       ClientToScreen(hwnd_, &pt);
@@ -3230,20 +3429,24 @@ LRESULT PetWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
 }
 
 void PetWindow::Paint(HDC hdc) {
-  RECT rc{};
-  GetClientRect(hwnd_, &rc);
-  const int cw = (rc.right - rc.left) > 0 ? (rc.right - rc.left) : 1;
-  const int ch = (rc.bottom - rc.top) > 0 ? (rc.bottom - rc.top) : 1;
+  // Sprite geometry only — never GetClientRect (region/SoftSeat can shrink it
+  // and leave an empty ULW upload while the pet "stands").
+  const int cw = (std::max)(1, ScaledW());
+  const int ch = (std::max)(1, ScaledH());
 
-  HBITMAP bmp = nullptr;
+  const BYTE* pargb = nullptr;
   int bw = sprite_w_;
   int bh = sprite_h_;
-  if (!frames_.empty()) {
+  if (!frames_pargb_.empty()) {
     const int idx =
-        (std::min)(frame_i_, static_cast<int>(frames_.size()) - 1);
-    bmp = frames_[static_cast<size_t>(idx)];
-  } else if (sprite_) {
-    bmp = sprite_;
+        (std::min)(frame_i_, static_cast<int>(frames_pargb_.size()) - 1);
+    const auto& cel = frames_pargb_[static_cast<size_t>(idx)];
+    if (static_cast<int>(cel.size()) >= bw * bh * 4) {
+      pargb = cel.data();
+    }
+  } else if (!sprite_pargb_.empty() &&
+             static_cast<int>(sprite_pargb_.size()) >= bw * bh * 4) {
+    pargb = sprite_pargb_.data();
   }
 
   // Soft bob: integer Y offset only. No scale/rotate/FX overlays — those left
@@ -3251,62 +3454,58 @@ void PetWindow::Paint(HDC hdc) {
   const PetMotion motion = ComputePetMotion(character_, pose_, anim_tick_);
   const int bob_y = static_cast<int>(std::lround(motion.bob));
 
-  if (bmp) {
-    HDC src = CreateCompatibleDC(hdc);
-    HGDIOBJ old = SelectObject(src, bmp);
-    BLENDFUNCTION bf{};
-    bf.BlendOp = AC_SRC_OVER;
-    bf.SourceConstantAlpha = 255;
-    bf.AlphaFormat = AC_SRC_ALPHA;
-    if (IsPixelArtCharacter(character_)) {
-      // AlphaBlend bilinear-smears chunky pixels — nearest-neighbor via GDI+.
-      Gdiplus::Bitmap held(bmp, nullptr);
-      Gdiplus::Bitmap flipped(bw, bh, PixelFormat32bppPARGB);
-      Gdiplus::Bitmap* use = &held;
-      if (facing_ < 0) {
-        Gdiplus::Graphics fg(&flipped);
-        fg.Clear(Gdiplus::Color(0, 0, 0, 0));
-        fg.ScaleTransform(-1.f, 1.f);
-        fg.DrawImage(&held, -bw, 0, bw, bh);
-        use = &flipped;
-      }
-      Gdiplus::Graphics g(hdc);
-      g.SetInterpolationMode(Gdiplus::InterpolationModeNearestNeighbor);
-      g.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHalf);
-      g.SetCompositingMode(Gdiplus::CompositingModeSourceOver);
-      g.DrawImage(use, 0, bob_y, cw, ch);
-    } else if (facing_ < 0) {
-      // Horizontal flip preserving PARGB (StretchBlt drops alpha). The flipped
-      // DIB is cached per source frame + dimensions; only rebuilt when either
-      // changes (frame advance / facing flip), not every Paint.
-      HDC flip = EnsureFlipBuffer(hdc, bmp, bw, bh);
-      if (flip) {
-        AlphaBlend(hdc, 0, bob_y, cw, ch, flip, 0, 0, bw, bh, bf);
-      }
-    } else {
-      AlphaBlend(hdc, 0, bob_y, cw, ch, src, 0, 0, bw, bh, bf);
+  EnsureGdiplus();
+  if (pargb && bw > 0 && bh > 0) {
+    // Draw from load-time PARGB bytes — GetHBITMAP loses alpha (header note),
+    // which made AlphaBlend/ULW upload a fully transparent pet while page
+    // bubbles (GDI+ chips) kept showing.
+    Gdiplus::Bitmap held(bw, bh, bw * 4, PixelFormat32bppPARGB,
+                         const_cast<BYTE*>(pargb));
+    Gdiplus::Bitmap flipped(bw, bh, PixelFormat32bppPARGB);
+    Gdiplus::Bitmap* use = &held;
+    if (facing_ < 0) {
+      Gdiplus::Graphics fg(&flipped);
+      fg.Clear(Gdiplus::Color(0, 0, 0, 0));
+      fg.SetInterpolationMode(Gdiplus::InterpolationModeNearestNeighbor);
+      fg.SetPixelOffsetMode(Gdiplus::PixelOffsetModeNone);
+      fg.SetSmoothingMode(Gdiplus::SmoothingModeNone);
+      fg.ScaleTransform(-1.f, 1.f);
+      fg.DrawImage(&held, -bw, 0, bw, bh);
+      use = &flipped;
     }
-    SelectObject(src, old);
-    DeleteDC(src);
+    Gdiplus::Graphics g(hdc);
+    const bool pixel = IsPixelArtCharacter(character_);
+    g.SetInterpolationMode(pixel ? Gdiplus::InterpolationModeNearestNeighbor
+                                 : Gdiplus::InterpolationModeHighQualityBicubic);
+    g.SetPixelOffsetMode(pixel ? Gdiplus::PixelOffsetModeNone
+                               : Gdiplus::PixelOffsetModeHalf);
+    g.SetSmoothingMode(Gdiplus::SmoothingModeNone);
+    g.SetCompositingMode(Gdiplus::CompositingModeSourceOver);
+    g.DrawImage(use, 0, bob_y, cw, ch);
   } else {
     Gdiplus::Graphics g(hdc);
     g.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
     Gdiplus::SolidBrush body(Gdiplus::Color(230, 120, 200, 140));
     Gdiplus::Pen outline(Gdiplus::Color(255, 40, 80, 50), 2.0f);
-    g.FillEllipse(&body, 8, 10, rc.right - 16, rc.bottom - 16);
-    g.DrawEllipse(&outline, 8, 10, rc.right - 16, rc.bottom - 16);
+    g.FillEllipse(&body, 8, 10, cw - 16, ch - 16);
+    g.DrawEllipse(&outline, 8, 10, cw - 16, ch - 16);
     Gdiplus::SolidBrush eye(Gdiplus::Color(255, 20, 20, 20));
     g.FillEllipse(&eye, 24, 28, 10, 10);
     g.FillEllipse(&eye, 40, 28, 10, 10);
   }
 
-  // Hearts: stamp premultiplied pixels into the layered DIB via GDI+ then
-  // Present()'s premultiply pass; keep tiny and opaque enough to avoid haze.
+  // Sleep Zzz (esp. 剑仙 fixed-tree sleep — no cel swap, Zzz carries life).
+  if (pose_ == L"sleep" || pose_ == L"lie") {
+    Gdiplus::Graphics gz(hdc);
+    PaintZzz(gz, cw, ch, anim_tick_, character_);
+  }
+
+  // Hearts: stamp into the layered DIB via GDI+; Present() premultiplies.
   if (!hearts_.empty()) {
     const DWORD now = GetTickCount();
     Gdiplus::Graphics g(hdc);
     g.SetSmoothingMode(Gdiplus::SmoothingModeNone);
-    g.SetCompositingMode(Gdiplus::CompositingModeSourceCopy);
+    g.SetCompositingMode(Gdiplus::CompositingModeSourceOver);
     for (const auto& h : hearts_) {
       const float age = static_cast<float>(now - h.born) / 1000.0f;
       const int alpha =
@@ -3328,14 +3527,20 @@ void PetWindow::ApplyHitRegion(const std::vector<BYTE>& alpha, int bw, int bh,
   if (!hwnd_ || alpha.empty() || bw <= 0 || bh <= 0 || cw <= 0 || ch <= 0) {
     return;
   }
+  // 拖拽中保持全窗口可拖（hit-region 已在 BeginDragFloat 清空）。此时若
+  // SetWindowRgn，会紧跟 UpdateLayeredWindow 之后，在 Win11 上使分层位图空白
+  // （拖拽中宠物消失的根源）。
+  if (dragging_) {
+    return;
+  }
   if (alpha.size() < static_cast<size_t>(bw) * static_cast<size_t>(bh)) {
     return;
   }
+  // Cache hit: region already installed — do NOT re-SetWindowRgn. Re-applying
+  // after UpdateLayeredWindow blanks the layered bitmap on Win11 (pet vanishes
+  // right after drag drop / SoftSeat).
   if (mask_rgn_ && mask_w_ == cw && mask_h_ == ch && mask_facing_ == facing_ &&
       mask_index_ == frame_i_ && mask_gen_ == mask_gen_counter_) {
-    HRGN copy = CreateRectRgn(0, 0, 0, 0);
-    CombineRgn(copy, mask_rgn_, mask_rgn_, RGN_COPY);
-    SetWindowRgn(hwnd_, copy, FALSE);
     return;
   }
 
@@ -3394,10 +3599,31 @@ void PetWindow::Present() {
   if (!hwnd_) {
     return;
   }
-  RECT wr{};
-  GetWindowRect(hwnd_, &wr);
-  const int w = (std::max)(1, static_cast<int>(wr.right - wr.left));
-  const int h = (std::max)(1, static_cast<int>(wr.bottom - wr.top));
+  // ULW-only path: never SetWindowPos here. SetWindowPos clears the layered
+  // bitmap (blank pet) and was also thrashing the desktop band → jank while
+  // standing. Position/size are carried by UpdateLayeredWindow pptDst+SIZE.
+  // No SetWindowRgn either — ULW_ALPHA already hit-tests by alpha.
+  const int w = (std::max)(1, ScaledW());
+  const int h = (std::max)(1, ScaledH());
+  const int ox = static_cast<int>(pos_x_);
+  const int oy = static_cast<int>(pos_y_);
+
+  if (mask_rgn_) {
+    SetWindowRgn(hwnd_, nullptr, FALSE);
+    DeleteObject(mask_rgn_);
+    mask_rgn_ = nullptr;
+  }
+
+  // Win11: SoftSeat/Raise can leave WS_EX_LAYERED with a dead ULW surface.
+  // Toggle layered (while keeping mapped) so the next blit sticks — same
+  // repair as PublicHost::ForceRemapPresent, without a hide flash.
+  {
+    const LONG_PTR ex = GetWindowLongPtrW(hwnd_, GWL_EXSTYLE);
+    if ((ex & WS_EX_LAYERED) == 0) {
+      SetWindowLongPtrW(hwnd_, GWL_EXSTYLE, ex | WS_EX_LAYERED);
+    }
+  }
+
   if (!EnsurePresentBuffer(w, h)) {
     return;
   }
@@ -3409,7 +3635,8 @@ void PetWindow::Present() {
   void* bits = present_bits_;
   std::memset(bits, 0, static_cast<size_t>(w) * static_cast<size_t>(h) * 4);
   Paint(mem);
-  // GDI+ (ZZZ) writes straight alpha; ULW needs premultiplied — fix dark fringes.
+  // GDI+ → HDC writes straight alpha; ULW_ALPHA needs premultiplied. Soft
+  // presents are already throttled (~5 Hz idle), so a full pass is fine.
   {
     auto* px = static_cast<BYTE*>(bits);
     const size_t n = static_cast<size_t>(w) * static_cast<size_t>(h);
@@ -3419,7 +3646,6 @@ void PetWindow::Present() {
       if (a == 0) {
         p[0] = p[1] = p[2] = 0;
       } else if (a < 255) {
-        // Only touch pixels that look un-premultiplied (channel > alpha).
         if (p[0] > a || p[1] > a || p[2] > a) {
           p[0] = static_cast<BYTE>((p[0] * a) / 255);
           p[1] = static_cast<BYTE>((p[1] * a) / 255);
@@ -3428,28 +3654,24 @@ void PetWindow::Present() {
       }
     }
   }
-  POINT origin{wr.left, wr.top};
+  POINT origin{ox, oy};
   SIZE size{w, h};
   POINT src{0, 0};
   BLENDFUNCTION blend{};
   blend.BlendOp = AC_SRC_OVER;
   blend.SourceConstantAlpha = 255;
   blend.AlphaFormat = AC_SRC_ALPHA;
-  UpdateOverlayLayered(hwnd_, screen, &origin, &size, mem, &src, 0, &blend,
-                      ULW_ALPHA);
-
-  // P0-12: shape HWND to the sprite's own alpha (Python QRegion mask). The
-  // composited DIB loses alpha through GDI+ SourceOver, so read the source
-  // frame instead of the buffer we just blitted.
-  const std::vector<BYTE>* alpha = nullptr;
-  if (!frames_alpha_.empty()) {
-    const int idx = (std::min)(frame_i_, static_cast<int>(frames_alpha_.size()) - 1);
-    alpha = &frames_alpha_[static_cast<size_t>(idx)];
-  } else if (!sprite_alpha_.empty()) {
-    alpha = &sprite_alpha_;
-  }
-  if (alpha && !getenv("DT_NOMASK")) {
-    ApplyHitRegion(*alpha, sprite_w_, sprite_h_, w, h);
+  if (!UpdateOverlayLayered(hwnd_, screen, &origin, &size, mem, &src, 0, &blend,
+                            ULW_ALPHA)) {
+    // Dead layered surface: reset WS_EX_LAYERED once and retry (PublicHost).
+    const LONG_PTR ex = GetWindowLongPtrW(hwnd_, GWL_EXSTYLE);
+    SetWindowLongPtrW(hwnd_, GWL_EXSTYLE, ex & ~WS_EX_LAYERED);
+    SetWindowLongPtrW(hwnd_, GWL_EXSTYLE, ex | WS_EX_LAYERED);
+    if (!UpdateOverlayLayered(hwnd_, screen, &origin, &size, mem, &src, 0,
+                              &blend, ULW_ALPHA)) {
+      LogLine(L"[pet] UpdateLayeredWindow failed err=%lu size=%dx%d",
+              GetLastError(), w, h);
+    }
   }
 
   ReleaseDC(nullptr, screen);

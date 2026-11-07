@@ -114,7 +114,10 @@ bool SoftSeatToOwner(HWND hwnd, HWND owner, bool show) {
   }
   const int w = screen.right - screen.left;
   const int h = screen.bottom - screen.top;
-  UINT flags = SWP_NOACTIVATE | SWP_NOZORDER;
+  // SWP_NOREDRAW: FRAMECHANGED alone still retargets owner; skipping redraw
+  // avoids an extra DWM clear of UpdateLayeredWindow pixels (pet/fence blank
+  // after Peek-style Detach→SoftSeat). Caller must Present/RefreshLayer after.
+  UINT flags = SWP_NOACTIVATE | SWP_NOZORDER | SWP_NOREDRAW;
   if (need_frame) {
     flags |= SWP_FRAMECHANGED;
   }

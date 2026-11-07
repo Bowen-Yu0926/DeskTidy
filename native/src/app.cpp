@@ -97,12 +97,15 @@ constexpr UINT kTimerWarmFences = 55;
 constexpr UINT kTimerWebViewWarm = 56;
 // Hybrid-GPU (Optimus) recovery: re-upload visible overlays after boot settles.
 constexpr UINT kTimerOverlayRefresh = 57;
+// After fence→desktop unpin: Present must run off the OLE stack (see Reveal).
+constexpr UINT kTimerRevealPublic = 58;
 constexpr UINT kMsgVaultPullDone = WM_APP + 48;
 constexpr UINT kMsgOrganizeDone = WM_APP + 49;
 constexpr UINT kMsgDesktopBlankDown = WM_APP + 50;
 constexpr UINT kMsgDesktopPaste = WM_APP + 51;
 constexpr UINT kMsgShellNotify = WM_APP + 52;
 constexpr UINT kMsgHideOffPage = WM_APP + 53;
+constexpr UINT kMsgRevealPublic = WM_APP + 54;
 constexpr DWORD kTrayOpenDebounceMs = 450;
 // Min interval between full DisplayFingerprint() recomputes on the 2s watch
 // tick. WM_DISPLAYCHANGE handles real topology changes immediately; this is
@@ -578,6 +581,14 @@ void App::WireFence(FenceWindow* fence) {
           f->RemovePinOrder({path});
         }
         UnpinPath(path, &drop);
+      });
+  fence->SetOnUnpinMany(
+      [this](FenceWindow* f, const std::vector<std::wstring>& paths,
+             POINT drop) {
+        if (f) {
+          f->RemovePinOrder(paths);
+        }
+        UnpinPaths(paths, &drop);
       });
   fence->SetOnPathReplaced(
       [this](const std::wstring& from, const std::wstring& to) {
@@ -1883,6 +1894,7 @@ void App::Shutdown() {
       KillTimer(message_hwnd_, kTimerWarmFences);
       KillTimer(message_hwnd_, kTimerWebViewWarm);
       KillTimer(message_hwnd_, kTimerOverlayRefresh);
+      KillTimer(message_hwnd_, kTimerRevealPublic);
       vault_timer_ = 0;
       open_settings_vault_timer_ = 0;
       restore_timer_ = pet_timer_ = watch_timer_ = 0;
@@ -3331,9 +3343,24 @@ void App::OnDesktopPaste() {
   }
   for (const auto& p : landed) {
     SuppressOrganizePath(p);
+    LogLine(L"[paste] landed: %s", p.c_str());
   }
   InvalidateDesktopScanCache();
   RefreshDesktopIcons();
+  {
+    const auto scan = ScanDesktopItems();
+    bool found = false;
+    for (const auto& it : scan) {
+      if (!landed.empty() && it.path == landed[0]) {
+        found = true;
+        break;
+      }
+    }
+    LogLine(L"[paste] scan=%u found_new=%d public_has=%d public_visible=%d",
+            static_cast<unsigned>(scan.size()), found ? 1 : 0,
+            public_host_.HasItems() ? 1 : 0, public_visible_ ? 1 : 0);
+  }
+  last_manual_refresh_ = GetTickCount64();  // suppress trailing SHChangeNotify rescan
   ShowToast(L"已粘贴 " + std::to_wstring(n) + L" 项到桌面");
 }
 
@@ -4467,30 +4494,97 @@ DWORD App::HandleIncomingPaths(FenceWindow* fence,
 }
 
 void App::UnpinPath(const std::wstring& path, const POINT* drop) {
-  // Keep the float out of auto-organize for a long window — 12s was too short
-  // and watch ticks re-pinned icons the user just dragged back to the desktop.
-  SuppressOrganizePath(path, 24.0 * 3600.0);
-  ClearPin(&pins_, path);
-  BumpPinsEpoch();
-  SavePins(pins_);
-  POINT pt{};
-  if (drop) {
-    pt = *drop;
-  } else {
-    GetCursorPos(&pt);
+  UnpinPaths(std::vector<std::wstring>{path}, drop);
+}
+
+void App::ScheduleRevealPublicFloats() {
+  if (!message_hwnd_) {
+    RevealPublicFloatsNow();
+    return;
   }
-  // Menu unpin with (0,0) drop used to park the float at screen origin — the
-  // public-host chrome then looked like a top-left「黑影」. Prefer cursor.
-  if (pt.x == 0 && pt.y == 0) {
-    GetCursorPos(&pt);
+  // Post-OLE remount once; timer only re-blits (no Hide/layered toggle).
+  KillTimer(message_hwnd_, kTimerRevealPublic);
+  reveal_public_left_ = 1;
+  PostMessageW(message_hwnd_, kMsgRevealPublic, 0, 0);
+  SetTimer(message_hwnd_, kTimerRevealPublic, 120, nullptr);
+}
+
+void App::RevealPublicFloatsNow() {
+  if (icons_visible_intent_) {
+    public_host_.EndDeferPresent();
+    return;
   }
-  UpsertFloatPlacement(&float_placements_, path, current_page_, pt);
-  SaveFloatPlacements(float_placements_);
+  public_visible_ = true;
+  if (!public_host_.HasItems()) {
+    public_host_.EndDeferPresent();
+    InvalidateDesktopScanCache();
+    RefreshDesktopIcons();
+  }
+  if (!public_host_.HasItems()) {
+    public_host_.EndDeferPresent();
+    LogLine(L"[public] reveal: still no float items after refresh");
+    return;
+  }
+  // Hidden layered reset + one Show+Present (see ForceRemapPresent).
+  public_host_.ForceRemapPresent();
+}
+
+void App::UnpinPaths(const std::vector<std::wstring>& paths,
+                     const POINT* /*drop*/) {
+  if (paths.empty()) {
+    return;
+  }
+  // Fences-class: ignore drop pixel — clear seats and let PublicHost::Layout
+  // pack into free grid cells (skip fence rects). Do NOT Present on this
+  // stack: ULW during OLE teardown stays blank until the next click Present.
+  bool pins_changed = false;
+  bool floats_changed = false;
+  std::vector<std::pair<std::wstring, int>> icon_jobs;
+  icon_jobs.reserve(paths.size());
+  const IconGridMetrics grid = QueryIconGridMetrics();
+  for (const auto& path : paths) {
+    if (path.empty()) {
+      continue;
+    }
+    // Keep the float out of auto-organize for a long window — 12s was too short
+    // and watch ticks re-pinned icons the user just dragged back to the desktop.
+    SuppressOrganizePath(path, 24.0 * 3600.0);
+    ClearPin(&pins_, path);
+    pins_changed = true;
+    if (GetFileAttributesW(path.c_str()) == INVALID_FILE_ATTRIBUTES) {
+      EraseFloatPlacement(&float_placements_, path);
+      floats_changed = true;
+      continue;
+    }
+    SetFloatPage(&float_placements_, path, current_page_, /*page_local=*/false);
+    auto it = float_placements_.find(NormalizePinKey(path));
+    if (it != float_placements_.end()) {
+      it->second.has_pos = false;
+      it->second.path = path;
+    }
+    floats_changed = true;
+    icon_jobs.emplace_back(path, grid.icon_size);
+  }
+  if (pins_changed) {
+    BumpPinsEpoch();
+    SavePins(pins_);
+  }
+  if (floats_changed) {
+    SaveFloatPlacements(float_placements_);
+  }
   HidePinDragHint();
-  RefreshDesktopIcons();
-  if (public_visible_ && public_host_.Hwnd()) {
-    public_host_.AttachToDesktopLayer();
+  if (!icon_jobs.empty()) {
+    PreloadIconsParallel(icon_jobs);
   }
+  public_host_.BeginDeferPresent();
+  InvalidateDesktopScanCache();
+  RefreshDesktopIcons();
+  if (public_host_.HasItems()) {
+    public_host_.PersistSlotPlacements();
+  }
+  LogLine(L"[public] unpin defer-present paths=%d has_items=%d",
+          static_cast<int>(paths.size()), public_host_.HasItems() ? 1 : 0);
+  ScheduleRevealPublicFloats();
 }
 
 void App::RetargetPin(const std::wstring& from, const std::wstring& to) {
@@ -5037,8 +5131,11 @@ void App::RefreshDesktopIcons() {
     }
     auto it = by_fence.find(fence->Id());
     if (it != by_fence.end()) {
+      LogLine(L"[fence] %s setitems=%u", fence->Title().c_str(),
+              static_cast<unsigned>(it->second.size()));
       fence->SetItems(std::move(it->second));
     } else {
+      LogLine(L"[fence] %s setitems=0", fence->Title().c_str());
       fence->SetItems({});
     }
   }
@@ -5059,6 +5156,17 @@ void App::RefreshDesktopIcons() {
   // Do not WarmLayerOffscreen here — Show/-32000/Hide races SetPage and can
   // leave off-page fences IsWindowVisible (ghost under apps). Hide instead.
   HideOffPageFences();
+  {
+    int visible = 0;
+    for (const auto& f : fences_) {
+      if (f && f->Hwnd() && IsWindowVisible(f->Hwnd())) {
+        ++visible;
+      }
+    }
+    LogLine(L"[fence] %u fences, %d visible, page=%d, hidden=%d, peek=%d",
+            static_cast<unsigned>(fences_.size()), visible, current_page_,
+            fences_hidden_ ? 1 : 0, peek_active_ ? 1 : 0);
+  }
 }
 
 void App::RefreshIconGrids() {
@@ -5074,6 +5182,13 @@ void App::RefreshIconGrids() {
 }
 
 void App::RefreshOverlays() {
+  // Throttle: WM_DWMCOMPOSITIONCHANGED fires in bursts on hybrid-GPU adapter
+  // flapping — a full sweep of every overlay per event would peg the UI thread.
+  const ULONGLONG now = GetTickCount64();
+  if (now - last_overlay_refresh_ < 600) {
+    return;
+  }
+  last_overlay_refresh_ = now;
   // Re-upload every visible layered overlay. Hybrid-GPU (Optimus/AMD switchable)
   // and DWM reconnects (RDP / driver reset) drop previously uploaded pixels
   // while the window stays "visible" — a fresh ULW blit recovers it.
@@ -5365,6 +5480,12 @@ void App::ScheduleDesktopContentRefresh() {
   if (!message_hwnd_) {
     return;
   }
+  // OnDesktopPaste already did an immediate RefreshDesktopIcons — skip the
+  // trailing SHChangeNotify rescan (2-3 redundant full grid rescans made the
+  // paste feel like the icons flickered in/out for a second).
+  if (GetTickCount64() - last_manual_refresh_ < 2500) {
+    return;
+  }
   // Coalesce multi-file CREATE/UPDATEDIR bursts from a folder→Desktop drop
   // (Fences-style: one rescan after the shell settles, not per-item).
   KillTimer(message_hwnd_, kTimerDesktopShell);
@@ -5547,12 +5668,23 @@ void App::RestoreDesktopChrome() {
   }
   if (pet_visible_ && pet_.Hwnd()) {
     reattach(pet_.Hwnd());
+    // SoftSeat/Raise blank ULW while IsWindowVisible stays TRUE — same as
+    // fences/public_host RefreshLayer after reattach.
+    if (IsWindowVisible(pet_.Hwnd()) && !IsIconic(pet_.Hwnd())) {
+      pet_.RefreshLayer();
+    }
   }
   if (!pet_visible_ && page_bar_.Hwnd()) {
     reattach(page_bar_.Hwnd());
   }
   if (public_visible_ && public_host_.Hwnd()) {
     reattach(public_host_.Hwnd());
+    // Same as fences: SoftSeat/Raise can leave a mapped host with an empty
+    // ULW buffer (visible hit-test, blank pixels) until the next click Present.
+    if (public_host_.HasItems() && IsWindowVisible(public_host_.Hwnd()) &&
+        !IsIconic(public_host_.Hwnd())) {
+      public_host_.RefreshLayer();
+    }
   }
   show_desktop_seated_ = show_desktop;
 }
@@ -6016,6 +6148,9 @@ LRESULT CALLBACK App::TrayWndProc(HWND hwnd, UINT msg, WPARAM wparam,
     case kMsgHideOffPage:
       self->HideOffPageFences();
       return 0;
+    case kMsgRevealPublic:
+      self->RevealPublicFloatsNow();
+      return 0;
     case kMsgShellNotify: {
       // SHCNRF_NewDelivery: lock, then debounce a single membership refresh.
       // Defense in depth: ignore UPDATEITEM even if an older register mask
@@ -6253,6 +6388,15 @@ LRESULT CALLBACK App::TrayWndProc(HWND hwnd, UINT msg, WPARAM wparam,
             }
           }
         }
+        return 0;
+      }
+      if (wparam == kTimerRevealPublic) {
+        KillTimer(hwnd, kTimerRevealPublic);
+        // Quiet re-blit only — full ForceRemapPresent here would flash.
+        if (!self->icons_visible_intent_ && self->public_host_.HasItems()) {
+          self->public_host_.RefreshLayer();
+        }
+        self->reveal_public_left_ = 0;
         return 0;
       }
       if (wparam == kTimerReflowPublic) {
@@ -6532,7 +6676,9 @@ LRESULT CALLBACK App::TrayWndProc(HWND hwnd, UINT msg, WPARAM wparam,
       // DWM reconnect (Optimus/AMD adapter switch, RDP, driver reset) drops
       // previously uploaded layered pixels while windows stay "visible".
       // Re-upload on a short delay so the compositor finishes re-initializing.
-      self->overlay_refresh_left_ = 2;
+      // Use max() so a DWM event never truncates the boot recovery budget.
+      self->overlay_refresh_left_ =
+          (std::max)(self->overlay_refresh_left_, 2);
       SetTimer(hwnd, kTimerOverlayRefresh, 400, nullptr);
       return 0;
     }

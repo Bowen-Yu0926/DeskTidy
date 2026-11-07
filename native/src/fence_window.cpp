@@ -627,37 +627,6 @@ void FenceWindow::PresentLayered() {
 
   Paint(mem);
 
-  // P1-12: drop-target highlight — 2px inner accent stroke + translucent
-  // overlay, drawn on top of content (reuses the rounded panel path).
-  if (drop_highlight_) {
-    Gdiplus::Graphics hg(mem);
-    hg.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
-    hg.SetPixelOffsetMode(Gdiplus::PixelOffsetModeNone);
-    hg.ResetTransform();
-    Gdiplus::GraphicsPath path;
-    const int rr = radius * 2;
-    const int rw = (std::max)(1, w - 1);
-    const int rh = (std::max)(1, h - 1);
-    if (rr > 2 && rr < rw && rr < rh) {
-      path.AddArc(0, 0, rr, rr, 180, 90);
-      path.AddArc(rw - rr, 0, rr, rr, 270, 90);
-      path.AddArc(rw - rr, rh - rr, rr, rr, 0, 90);
-      path.AddArc(0, rh - rr, rr, rr, 90, 90);
-      path.CloseFigure();
-    } else {
-      path.AddRectangle(Gdiplus::Rect(0, 0, rw, rh));
-    }
-    Gdiplus::SolidBrush fill(Gdiplus::Color(
-        48, GetRValue(accent_), GetGValue(accent_), GetBValue(accent_)));
-    hg.FillPath(&fill, &path);
-    Gdiplus::Pen edge(
-        Gdiplus::Color(230, GetRValue(accent_), GetGValue(accent_),
-                       GetBValue(accent_)),
-        2.0f);
-    edge.SetLineJoin(Gdiplus::LineJoinRound);
-    hg.DrawPath(&edge, &path);
-  }
-
   GetWindowRect(hwnd_, &wr);
   POINT origin{wr.left, wr.top};
   SIZE size{w, h};
@@ -699,17 +668,20 @@ void FenceWindow::SetOpacity(int opacity) {
 
 int FenceWindow::IconSizePx() const {
   if (view_mode_ == "list") {
-    return S(hwnd_, kListIcon0);
+    return S(hwnd_, kListIcon0);  // kListIcon0 is a 96-dpi design value.
   }
-  return S(hwnd_, MulDiv(grid_metrics_.icon_size, icon_zoom_percent_, 100));
+  // grid_metrics_ is already physical px (queried from the DPI-aware desktop
+  // ListView / registry). Re-scaling by DPI/96 double-counts and inflates icons
+  // on scaled displays (150% laptops showed oversized / clipped icons).
+  return MulDiv(grid_metrics_.icon_size, icon_zoom_percent_, 100);
 }
 
 int FenceWindow::CellWidthPx() const {
-  return S(hwnd_, MulDiv(grid_metrics_.cell_w, icon_zoom_percent_, 100));
+  return MulDiv(grid_metrics_.cell_w, icon_zoom_percent_, 100);
 }
 
 int FenceWindow::CellHeightPx() const {
-  return S(hwnd_, MulDiv(grid_metrics_.cell_h, icon_zoom_percent_, 100));
+  return MulDiv(grid_metrics_.cell_h, icon_zoom_percent_, 100);
 }
 
 void FenceWindow::SetIconZoom(int percent) {
@@ -824,10 +796,47 @@ void FenceWindow::RemovePinOrder(const std::vector<std::wstring>& paths) {
 }
 
 void FenceWindow::SetDropHighlight(bool on) {
+  // Whole-fence wash replaced by insert-bar / recycle-icon preview.
+  if (!on) {
+    ClearOleDropPreview();
+    return;
+  }
   if (drop_highlight_ == on) {
     return;
   }
   drop_highlight_ = on;
+  if (hwnd_) {
+    PresentLayered();
+  }
+}
+
+void FenceWindow::UpdateOleDropPreview(int x, int y) {
+  const bool recycle = IsRecycleBinIconAt(x, y);
+  const int insert = recycle ? -1 : InsertIndexAt(x, y);
+  if (drop_preview_ && drop_over_recycle_ == recycle &&
+      drop_insert_ == insert && drop_pt_.x == x && drop_pt_.y == y) {
+    return;
+  }
+  drop_preview_ = true;
+  drop_over_recycle_ = recycle;
+  drop_insert_ = insert;
+  drop_pt_ = {x, y};
+  drop_highlight_ = false;
+  if (hwnd_) {
+    PresentLayered();
+  }
+}
+
+void FenceWindow::ClearOleDropPreview() {
+  if (!drop_preview_ && !drop_highlight_ && !drop_over_recycle_ &&
+      drop_insert_ < 0) {
+    return;
+  }
+  drop_preview_ = false;
+  drop_over_recycle_ = false;
+  drop_insert_ = -1;
+  drop_pt_ = {};
+  drop_highlight_ = false;
   if (hwnd_) {
     PresentLayered();
   }
@@ -1029,12 +1038,20 @@ void FenceWindow::EnsureDropTarget() {
       new PathDropTarget(
           [this](const std::vector<std::wstring>& paths,
                  DWORD proposed) -> DWORD {
+            // Fences/Explorer: drop on Recycle Bin icon deletes, never pins
+            // into the fence that hosts the bin (desktop batch-drag bug).
+            POINT pt{};
+            GetCursorPos(&pt);
+            ScreenToClient(hwnd_, &pt);
+            if (IsRecycleBinIconAt(pt.x, pt.y)) {
+              return RecycleDroppedPaths(
+                         std::vector<std::wstring>(paths))
+                         ? DROPEFFECT_MOVE
+                         : DROPEFFECT_NONE;
+            }
             if (on_paths_dropped_at_) {
               // F1: derive insertion index from the drop point (cursor is still
               // at the drop location when PathDropTarget::Drop fires).
-              POINT pt{};
-              GetCursorPos(&pt);
-              ScreenToClient(hwnd_, &pt);
               const int at = InsertIndexAt(pt.x, pt.y);
               return on_paths_dropped_at_(this, paths, at);
             }
@@ -1045,17 +1062,48 @@ void FenceWindow::EnsureDropTarget() {
           },
           [this](const std::wstring& src, const std::vector<std::wstring>& paths,
                  bool commit) -> DWORD {
+            POINT pt{};
+            GetCursorPos(&pt);
+            ScreenToClient(hwnd_, &pt);
+            if (IsRecycleBinIconAt(pt.x, pt.y)) {
+              if (!commit) {
+                return DROPEFFECT_MOVE;
+              }
+              return RecycleDroppedPaths(
+                         std::vector<std::wstring>(paths))
+                         ? DROPEFFECT_MOVE
+                         : DROPEFFECT_NONE;
+            }
             if (on_pin_drop_) {
               return on_pin_drop_(this, src, paths, commit);
             }
             return DROPEFFECT_NONE;
           });
-  drop_target_->SetHighlightFn(
-      [this](bool on) { SetDropHighlight(on); });
+  drop_target_->SetHighlightFn([this](bool on) {
+    if (!on) {
+      ClearOleDropPreview();
+    }
+  });
+  drop_target_->SetDragOverFn([this](POINTL spt, bool active) {
+    if (!active) {
+      ClearOleDropPreview();
+      return;
+    }
+    POINT pt{spt.x, spt.y};
+    ScreenToClient(hwnd_, &pt);
+    UpdateOleDropPreview(pt.x, pt.y);
+  });
   // AIGC START
   // Plain fence = virtual pin (COPY so Explorer keeps the source). Portal =
-  // physical import with Explorer volume/modifier rules.
+  // physical import with Explorer volume/modifier rules. Hovering the hosted
+  // Recycle Bin advertises MOVE (delete) like Explorer.
   drop_target_->SetFileDropSemanticsProvider([this]() {
+    POINT pt{};
+    GetCursorPos(&pt);
+    ScreenToClient(hwnd_, &pt);
+    if (IsRecycleBinIconAt(pt.x, pt.y)) {
+      return FileDropSemantics::PreferMove;
+    }
     return portal_path_.empty() ? FileDropSemantics::VirtualPin
                                 : FileDropSemantics::Physical;
   });
@@ -2231,6 +2279,17 @@ void FenceWindow::FinishManualIconDrag(int x, int y) {
     return;
   }
   if (y >= S(hwnd_, kHeaderH0)) {
+    // Dropped onto the Recycle Bin icon → recycle (delete) instead of reorder.
+    if (IsRecycleBinIconAt(x, y)) {
+      std::vector<std::wstring> paths = std::move(drag_paths_);
+      drag_paths_.clear();
+      drag_indices_.clear();
+      drag_insert_ = -1;
+      drag_left_ = false;
+      PresentLayered();
+      RecycleDroppedPaths(std::move(paths));
+      return;
+    }
     const int at = InsertIndexAt(x, y);
     CommitReorder(at);
   }
@@ -2239,6 +2298,42 @@ void FenceWindow::FinishManualIconDrag(int x, int y) {
   drag_insert_ = -1;
   drag_left_ = false;
   PresentLayered();
+}
+
+bool FenceWindow::IsRecycleBinIconAt(int x, int y) const {
+  const int over = HitTestIcon(x, y);
+  if (over < 0 || over >= static_cast<int>(cells_.size())) {
+    return false;
+  }
+  const std::wstring clsid =
+      GetLnkNamespaceClsid(cells_[static_cast<size_t>(over)].item.path);
+  return clsid == L"{645FF040-5081-101B-9F08-00AA002F954E}";
+}
+
+bool FenceWindow::RecycleDroppedPaths(std::vector<std::wstring> paths) {
+  if (paths.empty()) {
+    return false;
+  }
+  const bool ok = RecycleShellPaths(hwnd_, paths) == IconFsResult::Ok;
+  if (ok) {
+    POINT drop{};
+    GetCursorPos(&drop);
+    // Drop may include paths not pinned here (desktop float / other fence);
+    // on_unpin_ ClearPins globally and RemovePinOrder is a no-op when absent.
+    RemovePinOrder(paths);
+    for (const auto& p : paths) {
+      if (on_unpin_) {
+        on_unpin_(this, p, drop);
+      }
+    }
+  }
+  if (on_pin_drag_end_) {
+    on_pin_drag_end_(this);
+  }
+  if (on_drag_done_) {
+    on_drag_done_(this);
+  }
+  return ok;
 }
 
 int FenceWindow::InsertIndexAt(int x, int y) const {
@@ -2338,14 +2433,21 @@ void FenceWindow::CommitDragOutPins(std::vector<std::wstring> paths) {
   // desktop/public release, or OLE MOVE (Recycle / move-to-folder). Sharing
   // to WeChat (COPY) or Esc cancel must keep the pin (old code unpinned on
   // every non-fence drop → icons reappeared on the desktop).
+  PinDragResult result = PinDragResult::KeptInFence;
   if (!paths.empty()) {
-    const PinDragResult result = ShellDoDragPins(paths, Widen(id_));
+    result = ShellDoDragPins(paths, Widen(id_));
+    LogLine(L"[fence] drag-out done paths=%d result=%d",
+            static_cast<int>(paths.size()), static_cast<int>(result));
     if (result == PinDragResult::Unpinned) {
       RemovePinOrder(paths);
       POINT drop{};
       GetCursorPos(&drop);
-      for (const auto& p : paths) {
-        if (on_unpin_) {
+      // Fences-class: cascade from the drop seat — same POINT for every path
+      // used to clamp into one left-edge stack after multi-unpin.
+      if (on_unpin_many_) {
+        on_unpin_many_(this, paths, drop);
+      } else if (on_unpin_) {
+        for (const auto& p : paths) {
           on_unpin_(this, p, drop);
         }
       }
@@ -2356,6 +2458,13 @@ void FenceWindow::CommitDragOutPins(std::vector<std::wstring> paths) {
   }
   if (on_drag_done_) {
     on_drag_done_(this);
+  }
+  // KeptInFence only: OLE can leave a blank ULW while cells remain, and
+  // SetItems same_seats skips Present. Skip after Unpinned — on_drag_done
+  // already refreshed membership; an extra blit flashed the fence.
+  if (result == PinDragResult::KeptInFence && hwnd_ &&
+      IsWindowVisible(hwnd_) && !IsIconic(hwnd_)) {
+    PresentLayered();
   }
 }
 
@@ -3759,6 +3868,18 @@ void FenceWindow::Paint(HDC hdc) {
   // Resolve the cut set once per Present instead of per cell (was O(cell×cut)).
   const auto& cut_set = CutPathSet();
 
+  // Pre-build caption brushes once per Present (avoid per-cell GDI+ churn).
+  Gdiplus::SolidBrush name_brush_normal(
+      Gdiplus::Color(255, GetRValue(caption_color_), GetGValue(caption_color_),
+                     GetBValue(caption_color_)));
+  Gdiplus::SolidBrush name_brush_cut(
+      Gdiplus::Color(kCutOpacity, GetRValue(caption_color_),
+                     GetGValue(caption_color_), GetBValue(caption_color_)));
+  Gdiplus::SolidBrush cap_shadow(
+      Gdiplus::Color(light_panel_ ? 48 : 96,
+                     light_panel_ ? 255 : 0, light_panel_ ? 255 : 0,
+                     light_panel_ ? 255 : 0));
+
   auto paint_cell = [&](size_t i, bool selected_pass) {
     if (i >= cells_.size()) {
       return;
@@ -3773,7 +3894,9 @@ void FenceWindow::Paint(HDC hdc) {
     if (b.bottom < header || b.top > rc.bottom) {
       return;
     }
+    // Short-circuit: no cut/ghost set → skip the per-cell lowercase+alloc.
     const bool is_cut =
+        !cut_set.empty() &&
         cut_set.find(LowerPath(cell.item.path)) != cut_set.end();
     bool is_drag_src = false;
     if (icon_dragging_) {
@@ -3791,10 +3914,8 @@ void FenceWindow::Paint(HDC hdc) {
     // (Explorer / Fences-style; same opacity as cut ghost).
     const BYTE icon_op =
         (is_cut || is_drag_src) ? kCutOpacity : 255;
-    Gdiplus::SolidBrush name_brush(
-        Gdiplus::Color((is_cut || is_drag_src) ? kCutOpacity : 255,
-                       GetRValue(caption_color_), GetGValue(caption_color_),
-                       GetBValue(caption_color_)));
+    Gdiplus::SolidBrush* name_brush =
+        (is_cut || is_drag_src) ? &name_brush_cut : &name_brush_normal;
     if (list) {
       if (is_sel) {
         PaintSelectionChrome(g, b.left + 2, b.top + 1, b.right - 2,
@@ -3814,7 +3935,7 @@ void FenceWindow::Paint(HDC hdc) {
                            static_cast<Gdiplus::REAL>(lw),
                            static_cast<Gdiplus::REAL>(b.bottom - b.top));
       g.DrawString(cell.item.name.c_str(), -1, caption_font_, label, &list_fmt,
-                   &name_brush);
+                   name_brush);
       return;
     }
 
@@ -3875,17 +3996,13 @@ void FenceWindow::Paint(HDC hdc) {
     }
     // Soft caption shadow (readability on light wallpapers).
     {
-      Gdiplus::SolidBrush cap_shadow(Gdiplus::Color(
-          light_panel_ ? 48 : 96,
-          light_panel_ ? 255 : 0, light_panel_ ? 255 : 0,
-          light_panel_ ? 255 : 0));
       Gdiplus::RectF sb = label;
       sb.Y += 1.f;
       g.DrawString(cell.item.name.c_str(), -1, caption_font_, sb, fmt,
                    &cap_shadow);
     }
     g.DrawString(cell.item.name.c_str(), -1, caption_font_, label, fmt,
-                 &name_brush);
+                 name_brush);
   };
 
   // Idle cells first, then selected on top (expanded captions overlay neighbors).
@@ -3916,9 +4033,39 @@ void FenceWindow::Paint(HDC hdc) {
     }
   }
 
-  // F2: insert bar ≈ icon length (not full fence / full cell).
-  if (icon_dragging_ && !drag_left_ && drag_insert_ >= 0) {
-    const int insert = (std::min)(drag_insert_, static_cast<int>(cells_.size()));
+  // Recycle Bin hover (OLE inbound): accent the bin cell only — not the fence.
+  if (drop_preview_ && drop_over_recycle_) {
+    const int over = HitTestIcon(drop_pt_.x, drop_pt_.y);
+    if (over >= 0 && over < static_cast<int>(cells_.size())) {
+      const RECT& b = cells_[static_cast<size_t>(over)].bounds;
+      Gdiplus::SolidBrush fill(Gdiplus::Color(
+          72, GetRValue(accent_), GetGValue(accent_), GetBValue(accent_)));
+      g.FillRectangle(&fill, static_cast<INT>(b.left),
+                      static_cast<INT>(b.top),
+                      static_cast<INT>(b.right - b.left),
+                      static_cast<INT>(b.bottom - b.top));
+      Gdiplus::Pen edge(
+          Gdiplus::Color(230, GetRValue(accent_), GetGValue(accent_),
+                         GetBValue(accent_)),
+          2.0f);
+      g.DrawRectangle(&edge, static_cast<INT>(b.left),
+                      static_cast<INT>(b.top),
+                      static_cast<INT>(b.right - b.left - 1),
+                      static_cast<INT>(b.bottom - b.top - 1));
+    }
+  }
+
+  // F2 / OLE: insert bar ≈ icon length (manual reorder or external drop).
+  const bool show_insert =
+      (icon_dragging_ && !drag_left_ && drag_insert_ >= 0) ||
+      (drop_preview_ && !drop_over_recycle_ && drop_insert_ >= 0);
+  if (show_insert) {
+    const int raw_insert =
+        (icon_dragging_ && !drag_left_) ? drag_insert_ : drop_insert_;
+    const int insert =
+        (std::min)(raw_insert, static_cast<int>(cells_.size()));
+    const POINT tip =
+        (icon_dragging_ && !drag_left_) ? drag_pt_ : drop_pt_;
     Gdiplus::Pen pen(Gdiplus::Color(235, GetRValue(accent_), GetGValue(accent_),
                                     GetBValue(accent_)),
                      2.0f);
@@ -3935,8 +4082,8 @@ void FenceWindow::Paint(HDC hdc) {
                         : (header + pad);
       int mid_x = ref ? (ref->left + ref->right) / 2
                       : (rc.left + pad + cell_w / 2);
-      if (drag_pt_.x > 0) {
-        mid_x = drag_pt_.x;
+      if (tip.x > 0) {
+        mid_x = tip.x;
       }
       g.DrawLine(&pen, mid_x - bar / 2, y, mid_x + bar / 2, y);
     } else {
@@ -3945,8 +4092,8 @@ void FenceWindow::Paint(HDC hdc) {
                         : (rc.left + pad);
       int mid_y = ref ? (ref->top + 4 + icon / 2)
                       : (header + pad + icon / 2);
-      if (drag_pt_.y > header) {
-        mid_y = drag_pt_.y;
+      if (tip.y > header) {
+        mid_y = tip.y;
       }
       g.DrawLine(&pen, x, mid_y - bar / 2, x, mid_y + bar / 2);
     }

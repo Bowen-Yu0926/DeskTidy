@@ -21,14 +21,15 @@ from PIL import Image, ImageEnhance, ImageFilter
 
 CHAR_ID = "pixehood"
 # Logical pixel columns — lower = chunkier / cleaner.
-GRID_W = 32
-# Exact integer scale → crisp blocks (32×5 = 160).
+GRID_W = 36
+# Exact integer scale → crisp blocks (36×5 = 180).
 PIXEL_SCALE = 5
 OUT_W = GRID_W * PIXEL_SCALE
-PALETTE_COLORS = 10
-ALPHA_CUT = 160
-# Outline adds a heavy dark fringe; off by default for a cleaner read.
-ADD_OUTLINE = False
+PALETTE_COLORS = 12
+ALPHA_CUT = 140
+# 1px (grid) dark outline → thick silhouette after NEAREST upscale; desktop
+# wallpapers otherwise swallow flat gray sprites.
+ADD_OUTLINE = True
 
 
 def _content_bbox(im: Image.Image) -> tuple[int, int, int, int]:
@@ -66,10 +67,11 @@ def _contrast_prep(im: Image.Image) -> Image.Image:
     im = im.convert("RGBA")
     alpha = im.split()[-1]
     rgb = im.convert("RGB")
-    rgb = ImageEnhance.Contrast(rgb).enhance(1.55)
-    rgb = ImageEnhance.Color(rgb).enhance(1.25)
-    rgb = ImageEnhance.Sharpness(rgb).enhance(1.4)
-    rgb = rgb.filter(ImageFilter.UnsharpMask(radius=1.5, percent=160, threshold=1))
+    rgb = ImageEnhance.Contrast(rgb).enhance(1.85)
+    rgb = ImageEnhance.Color(rgb).enhance(1.45)
+    rgb = ImageEnhance.Brightness(rgb).enhance(1.06)
+    rgb = ImageEnhance.Sharpness(rgb).enhance(1.55)
+    rgb = rgb.filter(ImageFilter.UnsharpMask(radius=1.5, percent=180, threshold=1))
     out = rgb.convert("RGBA")
     out.putalpha(alpha)
     return out

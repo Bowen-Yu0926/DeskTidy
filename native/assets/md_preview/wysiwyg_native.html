@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>deskNote WYSIWYG</title>
-  <!-- font-toolbar-v4: span mark plugin + selection restore; no raw HTML paste -->
+  <!-- font-toolbar-v6: A± injects missing size so <select> never blanks -->
   <!-- Kick Toast download ASAP (do not block title chrome on 160KB CSS).
        Must use -all (self-contained). Plain toastui-editor.min.js expects
        external ProseMirror modules and leaves the body stuck pending. -->
@@ -69,7 +69,7 @@
       border: none;
       outline: none;
       background: transparent;
-      font-family: "Segoe UI", "Microsoft YaHei UI", sans-serif;
+      font-family: "Microsoft YaHei", "微软雅黑", "Microsoft YaHei UI", sans-serif;
       /* Relative size so 125%/150% DPI still reads as a title, not a poster. */
       font-size: clamp(18px, 1.25rem + 0.35vw, 26px);
       font-weight: 650;
@@ -145,6 +145,49 @@
       min-height: 100%;
       box-sizing: border-box;
       line-height: 1.7;
+      /* Toast defaults (#222 / #ccc bullets / #eee hr) read washed-out on white. */
+      color: #1a1f27;
+    }
+    .toastui-editor-contents p,
+    .toastui-editor-contents li,
+    .toastui-editor-contents ul,
+    .toastui-editor-contents ol,
+    .toastui-editor-contents table {
+      color: #1a1f27;
+    }
+    .toastui-editor-contents h1,
+    .toastui-editor-contents h2,
+    .toastui-editor-contents h3,
+    .toastui-editor-contents h4,
+    .toastui-editor-contents h5,
+    .toastui-editor-contents h6 {
+      color: #111827;
+    }
+    .toastui-editor-contents h1 {
+      border-bottom-color: #6b7280;
+    }
+    .toastui-editor-contents h2 {
+      border-bottom-color: #9ca3af;
+    }
+    .toastui-editor-contents ul > li::before {
+      background-color: #4b5563 !important;
+    }
+    .toastui-editor-contents ol > li::before {
+      color: #4b5563 !important;
+    }
+    .toastui-editor-contents hr {
+      border-top: 1px solid #9ca3af !important;
+    }
+    .toastui-editor-contents blockquote {
+      border-left-color: #9ca3af;
+      color: #374151;
+    }
+    .toastui-editor-contents blockquote p,
+    .toastui-editor-contents blockquote ul {
+      color: #374151;
+    }
+    .toastui-editor-contents del {
+      color: #6b7280;
     }
     /* Sibling of Toast toolbar inside #toolbar-host — sits after CB row. */
     #toolbar-host > .desknote-font-tools,
@@ -156,7 +199,7 @@
       gap: 6px;
       margin: 0 10px 0 0;
       padding: 0 0 0 10px;
-      border-left: 1px solid #e2e6ec;
+      border-left: 1px solid #c0c6d0;
       height: 46px;
       box-sizing: border-box;
       visibility: visible !important;
@@ -165,14 +208,14 @@
       z-index: 5;
     }
     body.theme-dark .desknote-font-tools {
-      border-left-color: #3a3a3a;
+      border-left-color: #4a4a4a;
     }
     .desknote-font-tools select {
       height: 26px;
-      border: 1px solid #d8dde5;
+      border: 1px solid #b4bcc8;
       border-radius: 4px;
-      background: #fff;
-      color: #2b3038;
+      background: #f4f5f7;
+      color: #1a1f27;
       font-size: 12px;
       padding: 0 6px;
       outline: none;
@@ -180,7 +223,7 @@
     }
     body.theme-dark .desknote-font-tools select {
       background: #2a2a2a;
-      border-color: #444;
+      border-color: #555;
       color: #e8e8e8;
     }
     .desknote-font-tools select.desknote-font-face {
@@ -190,6 +233,33 @@
     .desknote-font-tools select.desknote-font-size {
       min-width: 52px;
       width: 56px;
+    }
+    .desknote-font-tools button.desknote-font-step {
+      height: 26px;
+      min-width: 28px;
+      padding: 0 6px;
+      border: 1px solid #b4bcc8;
+      border-radius: 4px;
+      background: #f4f5f7;
+      color: #1a1f27;
+      font-size: 12px;
+      font-family: "Microsoft YaHei", "微软雅黑", sans-serif;
+      line-height: 1;
+      cursor: pointer;
+    }
+    .desknote-font-tools button.desknote-font-step:hover {
+      background: #e8ebf0;
+    }
+    .desknote-font-tools button.desknote-font-step:active {
+      background: #d6dce4;
+    }
+    body.theme-dark .desknote-font-tools button.desknote-font-step {
+      background: #2a2a2a;
+      border-color: #555;
+      color: #e8e8e8;
+    }
+    body.theme-dark .desknote-font-tools button.desknote-font-step:hover {
+      background: #333;
     }
   </style>
 </head>
@@ -620,11 +690,39 @@
     } catch (e) {}
   }
 
-  // Shift+Enter → next line, same column (Typora / RichEdit). Toast WW has no
-  // hardBreak node and maps Shift-Enter→Enter; host steals the key and calls us.
-  // We split the textblock (new paragraph) then pad spaces to keep the column.
+  // Shift+Enter (Notepad-class): blank line below, caret at the *visual*
+  // column (pixel X) — char-count spaces mis-align under YaHei / CJK.
+  // Never split at the caret (trailing text stays on the original line).
+  var softBreakGuardUntil = 0;
+  var softBreakMeasureCanvas = null;
+  function measureSpaceWidth(view, pos) {
+    try {
+      var dom = view.domAtPos(pos);
+      var el =
+        dom && dom.node
+          ? dom.node.nodeType === 3
+            ? dom.node.parentElement
+            : dom.node
+          : view.dom;
+      var cs = window.getComputedStyle(el || view.dom);
+      if (!softBreakMeasureCanvas) {
+        softBreakMeasureCanvas = document.createElement("canvas");
+      }
+      var ctx = softBreakMeasureCanvas.getContext("2d");
+      ctx.font =
+        cs.font ||
+        (cs.fontStyle + " " + cs.fontWeight + " " + cs.fontSize + " " +
+          cs.fontFamily);
+      var w = ctx.measureText(" ").width;
+      if (w > 0.5) return w;
+    } catch (e) {}
+    return 8;
+  }
   function insertSoftLineBreak() {
     if (!editor) return false;
+    var now = Date.now();
+    if (now < softBreakGuardUntil) return true;
+    softBreakGuardUntil = now + 80;
     function markChanged() {
       mdDirty = true;
       signalDirty();
@@ -636,38 +734,80 @@
         var state = view.state;
         var tr = state.tr;
         if (!state.selection.empty) {
-          tr = tr.deleteSelection();
+          tr.deleteSelection();
         }
         var $from = tr.selection.$from;
-        var col = $from.parentOffset;
         if ($from.parent && $from.parent.isTextblock) {
-          tr = tr.split($from.pos);
-          view.dispatch(tr.scrollIntoView());
-          if (col > 0 && typeof editor.insertText === "function") {
-            editor.insertText(new Array(col + 1).join(" "));
+          var caretPos = tr.selection.from;
+          var targetLeft = 0;
+          try {
+            targetLeft = view.coordsAtPos(caretPos).left;
+          } catch (eC) {
+            targetLeft = 0;
           }
+          var schema = state.schema;
+          var para = schema.nodes.paragraph || $from.parent.type;
+          var after = $from.after($from.depth);
+          var newBlock = para.createAndFill() || para.create();
+          tr.insert(after, newBlock);
+          var startPos = after + 1;
+          var Sel = state.selection.constructor;
+          if (Sel && typeof Sel.create === "function") {
+            tr.setSelection(Sel.create(tr.doc, startPos));
+          } else if (Sel && typeof Sel.near === "function") {
+            tr.setSelection(Sel.near(tr.doc.resolve(startPos), 1));
+          }
+          view.dispatch(tr.scrollIntoView());
+          // Pad by pixel X so YaHei / CJK lines line up with the old caret.
+          try {
+            var pos0 = view.state.selection.from;
+            var startLeft = view.coordsAtPos(pos0).left;
+            var dx = targetLeft - startLeft;
+            if (dx > 1) {
+              var sw = measureSpaceWidth(view, pos0);
+              var n = Math.max(0, Math.round(dx / sw));
+              // Clamp runaway pads (tiny space width / zoom glitches).
+              if (n > 200) n = 200;
+              if (n > 0) {
+                view.dispatch(
+                  view.state.tr
+                    .insertText(new Array(n + 1).join(" "))
+                    .scrollIntoView()
+                );
+              }
+            }
+          } catch (ePad) {}
           markChanged();
+          view.focus();
           return true;
         }
       } catch (e0) {}
     }
-    // Fallbacks when split is unavailable.
-    try {
-      if (document.execCommand("insertParagraph")) {
-        markChanged();
-        return true;
-      }
-    } catch (e1) {}
-    try {
-      if (typeof editor.insertText === "function") {
-        editor.insertText("\n");
-        markChanged();
-        return true;
-      }
-    } catch (e2) {}
     return false;
   }
   window.__desknoteSoftBreak = insertSoftLineBreak;
+
+  function bindSoftBreakKeys() {
+    var root = document.getElementById("editor") || document.body;
+    if (!root || root.__desknoteSoftBound) return;
+    root.__desknoteSoftBound = true;
+    root.addEventListener(
+      "keydown",
+      function (e) {
+        if (e.key !== "Enter" || !e.shiftKey || e.ctrlKey || e.altKey ||
+            e.metaKey) {
+          return;
+        }
+        e.preventDefault();
+        e.stopPropagation();
+        if (typeof e.stopImmediatePropagation === "function") {
+          e.stopImmediatePropagation();
+        }
+        insertSoftLineBreak();
+      },
+      true
+    );
+  }
 
   function bindTitleField() {
     titleEl = document.getElementById("note-title");
@@ -700,16 +840,31 @@
           : "Microsoft YaHei";
     }
     if (sizeEl) {
-      var want = String(editorFontPt);
+      // <select> blanks when value is not in options (A± can hit 9/13/…).
+      var want = String(Math.max(8, Math.min(48, Number(editorFontPt) || 12)));
       var found = false;
       for (var i = 0; i < sizeEl.options.length; i++) {
         if (sizeEl.options[i].value === want) {
-          sizeEl.value = want;
           found = true;
           break;
         }
       }
-      if (!found) sizeEl.value = want;
+      if (!found) {
+        var opt = document.createElement("option");
+        opt.value = want;
+        opt.textContent = want;
+        var inserted = false;
+        var nWant = Number(want);
+        for (var j = 0; j < sizeEl.options.length; j++) {
+          if (Number(sizeEl.options[j].value) > nWant) {
+            sizeEl.insertBefore(opt, sizeEl.options[j]);
+            inserted = true;
+            break;
+          }
+        }
+        if (!inserted) sizeEl.appendChild(opt);
+      }
+      sizeEl.value = want;
     }
   }
 
@@ -729,6 +884,7 @@
       'font-family:"' + safe + '","Microsoft YaHei","微软雅黑",sans-serif;' +
       "font-size:" + editorFontPt + "pt;" +
       "line-height:1.7;" +
+      "color:#1a1f27;" +
       "}";
     syncFontToolbarControls();
   }
@@ -870,6 +1026,22 @@
     setDefaultEditorFont(face, pt);
   }
 
+  function bumpEditorFontSize(delta) {
+    var next = Math.max(8, Math.min(48, (Number(editorFontPt) || 12) + delta));
+    applyFontToSelection(editorFontFace, next, "size");
+    post({ type: "fontPrefs", face: editorFontFace, pt: next });
+  }
+
+  function bindFontStepButton(btn, delta) {
+    if (!btn || btn.getAttribute("data-bound") === "1") return;
+    btn.setAttribute("data-bound", "1");
+    btn.addEventListener("mousedown", rememberWwSelection);
+    btn.addEventListener("click", function (e) {
+      e.preventDefault();
+      bumpEditorFontSize(delta);
+    });
+  }
+
   function ensureFontToolbar() {
     var host = document.getElementById("toolbar-host");
     if (!host) return false;
@@ -879,6 +1051,16 @@
       if (existing.parentElement !== host) {
         host.appendChild(existing);
       }
+      // Upgrade older toolbar markup that lacked A+/A−.
+      if (!document.getElementById("desknote-font-bigger")) {
+        existing.insertAdjacentHTML(
+          "beforeend",
+          '<button type="button" id="desknote-font-smaller" class="desknote-font-step" title="减小字号">A-</button>' +
+            '<button type="button" id="desknote-font-bigger" class="desknote-font-step" title="增大字号">A+</button>'
+        );
+      }
+      bindFontStepButton(document.getElementById("desknote-font-smaller"), -1);
+      bindFontStepButton(document.getElementById("desknote-font-bigger"), 1);
       syncFontToolbarControls();
       return true;
     }
@@ -888,16 +1070,19 @@
     wrap.setAttribute("aria-label", "字体");
     wrap.innerHTML =
       '<select id="desknote-font-face" class="desknote-font-face" title="字体（作用于选中文字）">' +
-      '<option value="Microsoft YaHei">微软雅黑</option>' +
+      '<option value="Microsoft YaHei" selected>微软雅黑</option>' +
       '<option value="SimSun">宋体</option>' +
       "</select>" +
       '<select id="desknote-font-size" class="desknote-font-size" title="字号（作用于选中文字）">' +
       [10, 11, 12, 14, 16, 18, 20, 22, 24, 28, 32]
         .map(function (n) {
-          return '<option value="' + n + '">' + n + "</option>";
+          return '<option value="' + n + '"' + (n === 12 ? " selected" : "") +
+            ">" + n + "</option>";
         })
         .join("") +
-      "</select>";
+      "</select>" +
+      '<button type="button" id="desknote-font-smaller" class="desknote-font-step" title="减小字号">A-</button>' +
+      '<button type="button" id="desknote-font-bigger" class="desknote-font-step" title="增大字号">A+</button>';
     host.appendChild(wrap);
     var faceEl = document.getElementById("desknote-font-face");
     var sizeEl = document.getElementById("desknote-font-size");
@@ -921,7 +1106,9 @@
         post({ type: "fontPrefs", face: face, pt: pt });
       });
     }
-    setDefaultEditorFont(editorFontFace, editorFontPt);
+    bindFontStepButton(document.getElementById("desknote-font-smaller"), -1);
+    bindFontStepButton(document.getElementById("desknote-font-bigger"), 1);
+    setDefaultEditorFont(editorFontFace || "Microsoft YaHei", editorFontPt);
     return true;
   }
 
@@ -997,12 +1184,14 @@
       scheduleChangePost();
       scheduleTrailingExitSlot();
     });
+    bindSoftBreakKeys();
     placeToolbarAboveTitle();
     // Editor painted — clear host applying_set_ (chromeReady already revealed).
     post({ type: "contentReady" });
     setTimeout(function () {
       suppress = false;
       try {
+        bindSoftBreakKeys();
         placeToolbarAboveTitle();
         window.__desknoteWysiwygResize(window.innerHeight);
         ensureTrailingExitSlot();

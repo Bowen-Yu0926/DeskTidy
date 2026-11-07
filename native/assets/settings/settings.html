@@ -1206,7 +1206,11 @@
             <label class="toggle"><input type="checkbox" id="ext_close_to_tray" /> 关闭窗口后在后台运行（系统托盘）</label>
             <label class="toggle"><input type="checkbox" id="ext_check_update" /> 启动时检查更新</label>
           </div>
-          <p class="hint">控制开机自启与托盘驻留行为。</p>
+          <div class="row" style="margin-top:10px; align-items:center; gap:12px">
+            <button class="btn" data-act="updates" title="联网查询 GitHub Releases 是否有新版本">检查更新</button>
+            <span class="hint" id="settings-app-ver" style="margin:0">当前版本 …</span>
+          </div>
+          <p class="hint">控制开机自启与托盘驻留行为。也可随时点「检查更新」手动查询。</p>
           <div class="group">桌面行为</div>
           <div class="toggles">
             <!-- Fences always on; dbl-click hide removed (keep hidden inputs for prefs bind). -->
@@ -2670,13 +2674,23 @@
       name: '出海少女',
       blurb: '出海少女：救生衣草帽造型；摸摸、等待（刷手机）、跌落；拖拽拎起',
       actions: [{ id: 'wait', label: '刷手机' }]
+    },
+    xianjian: {
+      name: '白衣剑仙',
+      blurb: '白衣剑仙：摸摸（颔首浅笑、衣袂轻扬）、倚树打盹、失足踉跄；拖拽拎起，松开从容落地',
+      actions: [{ id: 'sleep', label: '倚树打盹' }]
     }
   };
   function petEnabledSet(charId) {
     const map = state.pet_actions && typeof state.pet_actions === 'object'
       ? state.pet_actions : {};
     const raw = Array.isArray(map[charId]) ? map[charId] : null;
-    if (raw && raw.length) return new Set(raw.map(String));
+    if (raw && raw.length) {
+      const set = new Set(raw.map(String));
+      if (charId === 'xianjian') set.delete('wait');
+      return set;
+    }
+    if (charId === 'xianjian') return new Set(['pet', 'sleep', 'fall']);
     return (charId === 'hoodie' || charId === 'pixehood')
       ? new Set(['pet', 'wait', 'sleep', 'fall'])
       : new Set(['pet', 'wait', 'fall']);
@@ -2686,7 +2700,8 @@
     set.add('pet');
     set.add('fall');
     const order = ['pet', 'wait', 'sleep', 'fall'];
-    const list = order.filter((a) => set.has(a) && !(charId === 'voyage' && a === 'sleep'));
+    const list = order.filter((a) => set.has(a) && !(charId === 'voyage' && a === 'sleep') &&
+      !(charId === 'xianjian' && a === 'wait'));
     if (!state.pet_actions || typeof state.pet_actions !== 'object') state.pet_actions = {};
     state.pet_actions[charId] = list;
     post({ type: 'field', id: 'pet_actions', value: charId + ':' + list.join(',') });
@@ -2875,10 +2890,18 @@
         sessionStorage.setItem('dt_vault_api', state.vault_api_base || '');
       }
     } catch (e) {}
+    const verLabel = state.app_version
+      ? (state.app_version.startsWith('v')
+          ? state.app_version
+          : ('v' + state.app_version))
+      : '';
     const verEl = document.getElementById('brand-ver');
-    if (verEl && state.app_version) {
-      verEl.textContent = state.app_version.startsWith('v')
-        ? state.app_version : ('v' + state.app_version);
+    if (verEl && verLabel) {
+      verEl.textContent = verLabel;
+    }
+    const verHint = document.getElementById('settings-app-ver');
+    if (verHint && verLabel) {
+      verHint.textContent = '当前版本 ' + verLabel;
     }
     if (typeof msg.focus_sub === 'string' && msg.focus_sub) {
       // Navigate to 设置 → 快捷键 (or other subtab).

@@ -89,6 +89,32 @@ const wchar_t* PixehoodLine(const char* action) {
   return L"";
 }
 
+// 白衣剑仙：清冷、从容、仙气，非可爱挂。
+const wchar_t* XianjianLine(const char* action) {
+  if (std::strcmp(action, "pet") == 0) {
+    return Pick({L"……多谢。", L"有礼了。", L"嗯，甚好。"});
+  }
+  if (std::strcmp(action, "sleep") == 0) {
+    return Pick({L"且歇片刻。", L"倚剑小憩……", L"Zzz……"});
+  }
+  if (std::strcmp(action, "wake") == 0) {
+    return Pick({L"神清气爽。", L"该启程了。"});
+  }
+  if (std::strcmp(action, "wait") == 0) {
+    return Pick({L"静候片刻。", L"且听风吟。", L"在此稍候。"});
+  }
+  if (std::strcmp(action, "climb") == 0) {
+    return Pick({L"借一步。", L"踏叶而行。"});
+  }
+  if (std::strcmp(action, "fall") == 0) {
+    return Pick({L"失……失礼了。", L"无妨。"});
+  }
+  if (std::strcmp(action, "trash") == 0) {
+    return Pick({L"尘归尘，土归土。", L"御剑去了。", L"就此别过。"});
+  }
+  return L"";
+}
+
 }  // namespace
 
 std::wstring PetActionLine(const std::wstring& character, const char* action) {
@@ -100,6 +126,8 @@ std::wstring PetActionLine(const std::wstring& character, const char* action) {
     line = VoyageLine(action);
   } else if (_wcsicmp(character.c_str(), L"pixehood") == 0) {
     line = PixehoodLine(action);
+  } else if (_wcsicmp(character.c_str(), L"xianjian") == 0) {
+    line = XianjianLine(action);
   } else {
     line = HoodieLine(action);
   }

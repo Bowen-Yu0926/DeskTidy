@@ -1,8 +1,11 @@
 #include "ole_drag.h"
 
+#include <CommCtrl.h>
 #include <ShlObj.h>
 #include <Shellapi.h>
+#include <ShObjIdl.h>
 
+#include <algorithm>
 #include <cstring>
 #include <new>
 #include <vector>
@@ -49,9 +52,47 @@ bool g_desktop_unpin_requested = false;
 // Python start_virtual_item_drag: releasing over the real desktop / public
 // float host unpins without OLE. Folder windows + Recycle Bin still get DROP.
 bool IsPointOverDesktopUnpinZone(POINT pt);  // defined below
+void MoveDragGhost(POINT cursor);  // defined below (ImageList_DragMove)
+void BeginOleDragVisual(IDataObject* data,
+                        const std::vector<std::wstring>& paths);
+void EndOleDragVisual();
 
 bool PinDragOverDesktopUnpinZone(POINT pt) {
   return IsPointOverDesktopUnpinZone(pt);
+}
+
+// The Recycle Bin desktop icon sits on the same DefView as the blank desktop,
+// but it is a legitimate CF_HDROP target (delete). Detect it so the release
+// over it is NOT cancelled as a "desktop unpin zone".
+bool IsOverRecycleBinIcon(HWND list, POINT client_pt) {
+  LVHITTESTINFO hit{};
+  hit.pt = client_pt;
+  const int item = ListView_HitTest(list, &hit);
+  if (item < 0) {
+    return false;
+  }
+  LVITEMW lvi{};
+  lvi.mask = LVIF_PARAM;
+  lvi.iItem = item;
+  if (!ListView_GetItem(list, &lvi) || !lvi.lParam) {
+    return false;
+  }
+  auto* pidl = reinterpret_cast<PCUITEMID_CHILD>(lvi.lParam);
+  IShellFolder* desktop = nullptr;
+  if (FAILED(SHGetDesktopFolder(&desktop)) || !desktop) {
+    return false;
+  }
+  bool recycle = false;
+  STRRET str{};
+  if (SUCCEEDED(desktop->GetDisplayNameOf(pidl, SHGDN_FORPARSING, &str))) {
+    if (str.uType == STRRET_WSTR && str.pOleStr) {
+      recycle = wcsstr(str.pOleStr,
+                       L"645FF040-5081-101B-9F08-00AA002F954E") != nullptr;
+      CoTaskMemFree(str.pOleStr);
+    }
+  }
+  desktop->Release();
+  return recycle;
 }
 
 bool IsPointOverDesktopUnpinZone(POINT pt) {
@@ -62,6 +103,14 @@ bool IsPointOverDesktopUnpinZone(POINT pt) {
   for (HWND cur = hwnd; cur; cur = GetParent(cur)) {
     wchar_t cls[256] = {};
     GetClassNameW(cur, cls, 256);
+    if (wcscmp(cls, L"SysListView32") == 0) {
+      // Over a desktop icon — if it's the Recycle Bin, let the drop proceed.
+      POINT cp = pt;
+      ScreenToClient(cur, &cp);
+      if (IsOverRecycleBinIcon(cur, cp)) {
+        return false;
+      }
+    }
     if (wcscmp(cls, L"DeskTidyNativeFence") == 0 ||
         wcscmp(cls, L"DeskTidyNativePet") == 0 ||
         wcscmp(cls, L"DeskTidyNativePetBuoy") == 0 ||
@@ -137,9 +186,10 @@ class SimpleDropSource : public IDropSource {
       g_desktop_unpin_requested = false;
       return DRAGDROP_S_DROP;
     }
+    POINT pt{};
+    GetCursorPos(&pt);
+    MoveDragGhost(pt);
     if (g_pin_move_fn) {
-      POINT pt{};
-      GetCursorPos(&pt);
       PinDragHint hint;
       hint.over_target = g_over_pin_target;
       hint.invalid = g_over_pin_invalid;
@@ -216,6 +266,152 @@ HGLOBAL BuildPinPayload(const std::wstring& src_fence_id,
   return mem;
 }
 
+HRESULT DupHglobal(HGLOBAL src, STGMEDIUM* stg) {
+  if (!src || !stg) {
+    return E_INVALIDARG;
+  }
+  const SIZE_T sz = GlobalSize(src);
+  HGLOBAL copy = GlobalAlloc(GHND | GMEM_SHARE, sz);
+  if (!copy) {
+    return E_OUTOFMEMORY;
+  }
+  void* s = GlobalLock(src);
+  void* d = GlobalLock(copy);
+  if (s && d) {
+    memcpy(d, s, sz);
+  }
+  GlobalUnlock(src);
+  GlobalUnlock(copy);
+  stg->tymed = TYMED_HGLOBAL;
+  stg->hGlobal = copy;
+  stg->pUnkForRelease = nullptr;
+  return S_OK;
+}
+
+// IDragSourceHelper::InitializeFromBitmap needs SetData on the IDataObject.
+// Without it, OLE falls back to per-file icon+label ghosts that stack into an
+// unreadable blob on multi-select fence drags.
+class ExtraMediumStore {
+ public:
+  ~ExtraMediumStore() { Clear(); }
+
+  void Clear() {
+    for (auto& e : items_) {
+      ReleaseStgMedium(&e.stg);
+    }
+    items_.clear();
+  }
+
+  HRESULT Set(FORMATETC* fe, STGMEDIUM* stg, BOOL release) {
+    if (!fe || !stg) {
+      return E_INVALIDARG;
+    }
+    for (auto it = items_.begin(); it != items_.end();) {
+      if (it->fe.cfFormat == fe->cfFormat && it->fe.dwAspect == fe->dwAspect &&
+          it->fe.lindex == fe->lindex) {
+        ReleaseStgMedium(&it->stg);
+        it = items_.erase(it);
+      } else {
+        ++it;
+      }
+    }
+    Entry e;
+    e.fe = *fe;
+    e.fe.ptd = nullptr;
+    if (release) {
+      // Take ownership of any tymed (DragImageBits may be HGLOBAL/ISTREAM/GDI).
+      e.stg = *stg;
+    } else if (stg->tymed == TYMED_HGLOBAL && stg->hGlobal) {
+      e.stg = {};
+      const HRESULT hr = DupHglobal(stg->hGlobal, &e.stg);
+      if (FAILED(hr)) {
+        return hr;
+      }
+    } else if (stg->tymed == TYMED_GDI && stg->hBitmap) {
+      HBITMAP copy = static_cast<HBITMAP>(
+          CopyImage(stg->hBitmap, IMAGE_BITMAP, 0, 0, LR_CREATEDIBSECTION));
+      if (!copy) {
+        return E_OUTOFMEMORY;
+      }
+      e.stg.tymed = TYMED_GDI;
+      e.stg.hBitmap = copy;
+      e.stg.pUnkForRelease = nullptr;
+    } else if (stg->tymed == TYMED_ISTREAM && stg->pstm) {
+      e.stg.tymed = TYMED_ISTREAM;
+      e.stg.pstm = stg->pstm;
+      e.stg.pstm->AddRef();
+      e.stg.pUnkForRelease = nullptr;
+    } else {
+      return DV_E_TYMED;
+    }
+    items_.push_back(e);
+    return S_OK;
+  }
+
+  HRESULT Get(FORMATETC* fe, STGMEDIUM* stg) const {
+    if (!fe || !stg) {
+      return E_INVALIDARG;
+    }
+    for (const auto& e : items_) {
+      if (e.fe.cfFormat != fe->cfFormat || e.fe.dwAspect != fe->dwAspect ||
+          e.fe.lindex != fe->lindex) {
+        continue;
+      }
+      if ((fe->tymed & e.stg.tymed) == 0) {
+        return DV_E_TYMED;
+      }
+      if (e.stg.tymed == TYMED_HGLOBAL && e.stg.hGlobal) {
+        return DupHglobal(e.stg.hGlobal, stg);
+      }
+      if (e.stg.tymed == TYMED_GDI && e.stg.hBitmap) {
+        HBITMAP copy = static_cast<HBITMAP>(
+            CopyImage(e.stg.hBitmap, IMAGE_BITMAP, 0, 0, LR_CREATEDIBSECTION));
+        if (!copy) {
+          return E_OUTOFMEMORY;
+        }
+        stg->tymed = TYMED_GDI;
+        stg->hBitmap = copy;
+        stg->pUnkForRelease = nullptr;
+        return S_OK;
+      }
+      if (e.stg.tymed == TYMED_ISTREAM && e.stg.pstm) {
+        stg->tymed = TYMED_ISTREAM;
+        stg->pstm = e.stg.pstm;
+        stg->pstm->AddRef();
+        stg->pUnkForRelease = nullptr;
+        return S_OK;
+      }
+      if (e.stg.pUnkForRelease) {
+        *stg = e.stg;
+        e.stg.pUnkForRelease->AddRef();
+        return S_OK;
+      }
+      return DV_E_FORMATETC;
+    }
+    return DV_E_FORMATETC;
+  }
+
+  HRESULT Query(FORMATETC* fe) const {
+    if (!fe) {
+      return E_INVALIDARG;
+    }
+    for (const auto& e : items_) {
+      if (e.fe.cfFormat == fe->cfFormat && e.fe.dwAspect == fe->dwAspect &&
+          e.fe.lindex == fe->lindex && (fe->tymed & e.stg.tymed)) {
+        return S_OK;
+      }
+    }
+    return DV_E_FORMATETC;
+  }
+
+ private:
+  struct Entry {
+    FORMATETC fe{};
+    STGMEDIUM stg{};
+  };
+  std::vector<Entry> items_;
+};
+
 class HdropDataObject : public IDataObject {
  public:
   explicit HdropDataObject(HGLOBAL hdrop) : hdrop_(hdrop) {}
@@ -253,25 +449,10 @@ class HdropDataObject : public IDataObject {
     if (!fe || !stg || !hdrop_) {
       return E_INVALIDARG;
     }
-    if (fe->cfFormat != CF_HDROP || fe->tymed != TYMED_HGLOBAL) {
-      return DV_E_FORMATETC;
+    if (fe->cfFormat == CF_HDROP && (fe->tymed & TYMED_HGLOBAL)) {
+      return DupHglobal(hdrop_, stg);
     }
-    const SIZE_T sz = GlobalSize(hdrop_);
-    HGLOBAL copy = GlobalAlloc(GHND | GMEM_SHARE, sz);
-    if (!copy) {
-      return E_OUTOFMEMORY;
-    }
-    void* src = GlobalLock(hdrop_);
-    void* dst = GlobalLock(copy);
-    if (src && dst) {
-      memcpy(dst, src, sz);
-    }
-    GlobalUnlock(hdrop_);
-    GlobalUnlock(copy);
-    stg->tymed = TYMED_HGLOBAL;
-    stg->hGlobal = copy;
-    stg->pUnkForRelease = nullptr;
-    return S_OK;
+    return extras_.Get(fe, stg);
   }
   HRESULT STDMETHODCALLTYPE GetDataHere(FORMATETC*, STGMEDIUM*) override {
     return E_NOTIMPL;
@@ -283,7 +464,7 @@ class HdropDataObject : public IDataObject {
     if (fe->cfFormat == CF_HDROP && (fe->tymed & TYMED_HGLOBAL)) {
       return S_OK;
     }
-    return DV_E_FORMATETC;
+    return extras_.Query(fe);
   }
   HRESULT STDMETHODCALLTYPE GetCanonicalFormatEtc(FORMATETC*,
                                                   FORMATETC* out) override {
@@ -292,8 +473,9 @@ class HdropDataObject : public IDataObject {
     }
     return DATA_S_SAMEFORMATETC;
   }
-  HRESULT STDMETHODCALLTYPE SetData(FORMATETC*, STGMEDIUM*, BOOL) override {
-    return E_NOTIMPL;
+  HRESULT STDMETHODCALLTYPE SetData(FORMATETC* fe, STGMEDIUM* stg,
+                                    BOOL release) override {
+    return extras_.Set(fe, stg, release);
   }
   HRESULT STDMETHODCALLTYPE EnumFormatEtc(DWORD dir,
                                           IEnumFORMATETC** enum_fe) override {
@@ -301,6 +483,10 @@ class HdropDataObject : public IDataObject {
       return E_POINTER;
     }
     *enum_fe = nullptr;
+    // IDragSourceHelper probes DATADIR_SET; empty enum is enough for SetData.
+    if (dir == DATADIR_SET) {
+      return SHCreateStdEnumFmtEtc(0, nullptr, enum_fe);
+    }
     if (dir != DATADIR_GET) {
       return E_NOTIMPL;
     }
@@ -321,6 +507,7 @@ class HdropDataObject : public IDataObject {
  private:
   LONG ref_ = 1;
   HGLOBAL hdrop_ = nullptr;
+  ExtraMediumStore extras_;
 };
 
 class PinTransferDataObject : public IDataObject {
@@ -362,7 +549,7 @@ class PinTransferDataObject : public IDataObject {
   }
 
   HGLOBAL HandleFor(const FORMATETC* fe) const {
-    if (!fe || fe->tymed != TYMED_HGLOBAL) {
+    if (!fe || !(fe->tymed & TYMED_HGLOBAL)) {
       return nullptr;
     }
     if (fe->cfFormat == CF_HDROP) {
@@ -379,25 +566,10 @@ class PinTransferDataObject : public IDataObject {
       return E_INVALIDARG;
     }
     HGLOBAL src = HandleFor(fe);
-    if (!src) {
-      return DV_E_FORMATETC;
+    if (src) {
+      return DupHglobal(src, stg);
     }
-    const SIZE_T sz = GlobalSize(src);
-    HGLOBAL copy = GlobalAlloc(GHND | GMEM_SHARE, sz);
-    if (!copy) {
-      return E_OUTOFMEMORY;
-    }
-    void* s = GlobalLock(src);
-    void* d = GlobalLock(copy);
-    if (s && d) {
-      memcpy(d, s, sz);
-    }
-    GlobalUnlock(src);
-    GlobalUnlock(copy);
-    stg->tymed = TYMED_HGLOBAL;
-    stg->hGlobal = copy;
-    stg->pUnkForRelease = nullptr;
-    return S_OK;
+    return extras_.Get(fe, stg);
   }
   HRESULT STDMETHODCALLTYPE GetDataHere(FORMATETC*, STGMEDIUM*) override {
     return E_NOTIMPL;
@@ -406,10 +578,10 @@ class PinTransferDataObject : public IDataObject {
     if (!fe) {
       return E_INVALIDARG;
     }
-    if ((fe->tymed & TYMED_HGLOBAL) && HandleFor(fe)) {
+    if (HandleFor(fe)) {
       return S_OK;
     }
-    return DV_E_FORMATETC;
+    return extras_.Query(fe);
   }
   HRESULT STDMETHODCALLTYPE GetCanonicalFormatEtc(FORMATETC*,
                                                   FORMATETC* out) override {
@@ -418,8 +590,9 @@ class PinTransferDataObject : public IDataObject {
     }
     return DATA_S_SAMEFORMATETC;
   }
-  HRESULT STDMETHODCALLTYPE SetData(FORMATETC*, STGMEDIUM*, BOOL) override {
-    return E_NOTIMPL;
+  HRESULT STDMETHODCALLTYPE SetData(FORMATETC* fe, STGMEDIUM* stg,
+                                    BOOL release) override {
+    return extras_.Set(fe, stg, release);
   }
   HRESULT STDMETHODCALLTYPE EnumFormatEtc(DWORD dir,
                                           IEnumFORMATETC** enum_fe) override {
@@ -427,6 +600,9 @@ class PinTransferDataObject : public IDataObject {
       return E_POINTER;
     }
     *enum_fe = nullptr;
+    if (dir == DATADIR_SET) {
+      return SHCreateStdEnumFmtEtc(0, nullptr, enum_fe);
+    }
     if (dir != DATADIR_GET) {
       return E_NOTIMPL;
     }
@@ -451,7 +627,183 @@ class PinTransferDataObject : public IDataObject {
   LONG ref_ = 1;
   HGLOBAL hdrop_ = nullptr;
   HGLOBAL pin_ = nullptr;
+  ExtraMediumStore extras_;
 };
+
+// Fences / Explorer multi-drag: icon stack only (never filenames).
+// Win11 synthesizes icon+label ghosts from CF_HDROP on custom IDataObjects;
+// that path ignores a failed IDragSourceHelper. Use a real shell IDataObject
+// and replace its drag image via InitializeFromWindow (DI_GETDRAGIMAGE).
+constexpr COLORREF kDragKey = RGB(255, 0, 255);
+constexpr wchar_t kDragImgClass[] = L"DeskTidyDragImageSrc";
+HWND g_drag_img_hwnd = nullptr;
+UINT g_msg_get_drag_image = 0;
+std::vector<std::wstring> g_drag_img_paths;
+HBITMAP g_drag_img_bmp = nullptr;  // owned until next BeginOleDragVisual
+int g_drag_img_w = 0;
+int g_drag_img_h = 0;
+int g_drag_hot_x = 0;
+int g_drag_hot_y = 0;
+
+HBITMAP BuildIconStackBitmap(const std::vector<std::wstring>& paths, int* out_w,
+                             int* out_h, int* out_hot_x, int* out_hot_y) {
+  if (paths.empty() || !out_w || !out_h || !out_hot_x || !out_hot_y) {
+    return nullptr;
+  }
+  const int stack_n = (std::min)(3, static_cast<int>(paths.size()));
+  const int icon = GetSystemMetrics(SM_CXICON);
+  const int gap = (std::max)(6, icon / 8);
+  const int w = icon + (stack_n - 1) * gap;
+  const int h = icon + (stack_n - 1) * gap;
+  *out_w = w;
+  *out_h = h;
+  *out_hot_x = icon / 2;
+  *out_hot_y = icon / 2;
+
+  HDC screen = GetDC(nullptr);
+  // Compatible bitmap (not DIBSection): required by IDragSourceHelper samples.
+  HDC mem = CreateCompatibleDC(screen);
+  HBITMAP bmp = CreateCompatibleBitmap(screen, w, h);
+  if (!bmp) {
+    DeleteDC(mem);
+    ReleaseDC(nullptr, screen);
+    return nullptr;
+  }
+  HGDIOBJ old = SelectObject(mem, bmp);
+  RECT fill{0, 0, w, h};
+  HBRUSH brush = CreateSolidBrush(kDragKey);
+  FillRect(mem, &fill, brush);
+  DeleteObject(brush);
+  for (int i = 0; i < stack_n; ++i) {
+    SHFILEINFOW sfi{};
+    if (!SHGetFileInfoW(paths[static_cast<size_t>(i)].c_str(), 0, &sfi,
+                        sizeof(sfi), SHGFI_ICON | SHGFI_LARGEICON) ||
+        !sfi.hIcon) {
+      continue;
+    }
+    DrawIconEx(mem, i * gap, i * gap, sfi.hIcon, icon, icon, 0, nullptr,
+               DI_NORMAL);
+    DestroyIcon(sfi.hIcon);
+  }
+  SelectObject(mem, old);
+  DeleteDC(mem);
+  ReleaseDC(nullptr, screen);
+  return bmp;
+}
+
+LRESULT CALLBACK DragImageSrcWndProc(HWND hwnd, UINT msg, WPARAM w, LPARAM l) {
+  if (g_msg_get_drag_image && msg == g_msg_get_drag_image) {
+    auto* di = reinterpret_cast<SHDRAGIMAGE*>(l);
+    if (!di) {
+      return FALSE;
+    }
+    if (g_drag_img_bmp) {
+      DeleteObject(g_drag_img_bmp);
+      g_drag_img_bmp = nullptr;
+    }
+    g_drag_img_bmp = BuildIconStackBitmap(g_drag_img_paths, &g_drag_img_w,
+                                          &g_drag_img_h, &g_drag_hot_x,
+                                          &g_drag_hot_y);
+    if (!g_drag_img_bmp) {
+      return FALSE;
+    }
+    di->sizeDragImage = {g_drag_img_w, g_drag_img_h};
+    di->ptOffset = {g_drag_hot_x, g_drag_hot_y};
+    di->hbmpDragImage = g_drag_img_bmp;
+    di->crColorKey = kDragKey;
+    // Ownership transferred to the drag-image manager.
+    g_drag_img_bmp = nullptr;
+    return TRUE;
+  }
+  return DefWindowProcW(hwnd, msg, w, l);
+}
+
+HWND EnsureDragImageSrcWindow() {
+  if (g_drag_img_hwnd) {
+    return g_drag_img_hwnd;
+  }
+  if (!g_msg_get_drag_image) {
+    g_msg_get_drag_image = RegisterWindowMessage(DI_GETDRAGIMAGE);
+  }
+  WNDCLASSEXW wc{};
+  wc.cbSize = sizeof(wc);
+  wc.lpfnWndProc = DragImageSrcWndProc;
+  wc.hInstance = GetModuleHandleW(nullptr);
+  wc.lpszClassName = kDragImgClass;
+  wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
+  RegisterClassExW(&wc);
+  g_drag_img_hwnd =
+      CreateWindowExW(WS_EX_TOOLWINDOW, kDragImgClass, L"", WS_POPUP, 0, 0, 8,
+                      8, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
+  return g_drag_img_hwnd;
+}
+
+bool AttachIconOnlyShellDragImage(IDataObject* data,
+                                  const std::vector<std::wstring>& paths) {
+  if (!data || paths.empty()) {
+    return false;
+  }
+  g_drag_img_paths = paths;
+  HWND hwnd = EnsureDragImageSrcWindow();
+  IDragSourceHelper* helper = nullptr;
+  if (FAILED(CoCreateInstance(CLSID_DragDropHelper, nullptr, CLSCTX_INPROC_SERVER,
+                              IID_PPV_ARGS(&helper))) ||
+      !helper) {
+    return false;
+  }
+  bool ok = false;
+  if (hwnd) {
+    POINT pt{g_drag_hot_x, g_drag_hot_y};
+    // Prefer InitializeFromWindow — DI_GETDRAGIMAGE supplies icons-only.
+    // Pre-build hot-spot using a throwaway bitmap size probe.
+    int w = 0;
+    int h = 0;
+    HBITMAP probe =
+        BuildIconStackBitmap(paths, &w, &h, &g_drag_hot_x, &g_drag_hot_y);
+    if (probe) {
+      DeleteObject(probe);
+    }
+    pt = {g_drag_hot_x, g_drag_hot_y};
+    ok = SUCCEEDED(helper->InitializeFromWindow(hwnd, &pt, data));
+  }
+  if (!ok) {
+    int w = 0;
+    int h = 0;
+    int hx = 0;
+    int hy = 0;
+    HBITMAP bmp = BuildIconStackBitmap(paths, &w, &h, &hx, &hy);
+    if (bmp) {
+      SHDRAGIMAGE di{};
+      di.sizeDragImage = {w, h};
+      di.ptOffset = {hx, hy};
+      di.hbmpDragImage = bmp;
+      di.crColorKey = kDragKey;
+      ok = SUCCEEDED(helper->InitializeFromBitmap(&di, data));
+      if (!ok) {
+        DeleteObject(bmp);
+      }
+    }
+  }
+  helper->Release();
+  return ok;
+}
+
+void MoveDragGhost(POINT /*cursor*/) {
+  // Shell drag-image manager tracks the cursor; nothing to move.
+}
+
+void BeginOleDragVisual(IDataObject* data,
+                        const std::vector<std::wstring>& paths) {
+  AttachIconOnlyShellDragImage(data, paths);
+}
+
+void EndOleDragVisual() {
+  g_drag_img_paths.clear();
+  if (g_drag_img_bmp) {
+    DeleteObject(g_drag_img_bmp);
+    g_drag_img_bmp = nullptr;
+  }
+}
 
 IDataObject* CreateShellDataObject(const std::vector<std::wstring>& paths) {
   if (paths.empty()) {
@@ -531,8 +883,10 @@ bool ShellDoDragFiles(const std::vector<std::wstring>& paths,
   }
   // AIGC START
   g_float_drag_active = cancel_desktop_self_drop;
+  BeginOleDragVisual(data, paths);
   DWORD effect = DROPEFFECT_COPY | DROPEFFECT_MOVE | DROPEFFECT_LINK;
   const HRESULT hr = DoDragDrop(data, source, effect, &effect);
+  EndOleDragVisual();
   g_float_drag_active = false;
   // AIGC END
   source->Release();
@@ -547,21 +901,51 @@ PinDragResult ShellDoDragPins(const std::vector<std::wstring>& paths,
   if (paths.empty()) {
     return PinDragResult::KeptInFence;
   }
-  HGLOBAL hdrop = BuildHdrop(paths);
-  if (!hdrop) {
-    return PinDragResult::KeptInFence;
-  }
   HGLOBAL pin = BuildPinPayload(src_fence_id, paths);
   if (!pin) {
-    GlobalFree(hdrop);
     return PinDragResult::KeptInFence;
   }
-  auto* data = new (std::nothrow) PinTransferDataObject(hdrop, pin);
+
+  // Prefer shell IDataObject so Win11 drag-image manager honors
+  // IDragSourceHelper (custom CF_HDROP objects get auto icon+label ghosts).
+  IDataObject* data = CreateShellDataObject(paths);
+  if (data) {
+    FORMATETC fe{PinTransferFormat(), nullptr, DVASPECT_CONTENT, -1,
+                 TYMED_HGLOBAL};
+    STGMEDIUM stg{};
+    stg.tymed = TYMED_HGLOBAL;
+    stg.hGlobal = pin;
+    if (FAILED(data->SetData(&fe, &stg, TRUE))) {
+      data->Release();
+      data = nullptr;
+    } else {
+      pin = nullptr;
+    }
+  }
   if (!data) {
-    GlobalFree(hdrop);
-    GlobalFree(pin);
-    return PinDragResult::KeptInFence;
+    HGLOBAL hdrop = BuildHdrop(paths);
+    if (!hdrop) {
+      if (pin) {
+        GlobalFree(pin);
+      }
+      return PinDragResult::KeptInFence;
+    }
+    if (!pin) {
+      pin = BuildPinPayload(src_fence_id, paths);
+    }
+    if (!pin) {
+      GlobalFree(hdrop);
+      return PinDragResult::KeptInFence;
+    }
+    data = new (std::nothrow) PinTransferDataObject(hdrop, pin);
+    if (!data) {
+      GlobalFree(hdrop);
+      GlobalFree(pin);
+      return PinDragResult::KeptInFence;
+    }
+    pin = nullptr;
   }
+
   auto* source = new (std::nothrow) SimpleDropSource();
   if (!source) {
     data->Release();
@@ -570,24 +954,24 @@ PinDragResult ShellDoDragPins(const std::vector<std::wstring>& paths,
   g_pin_transferred = false;
   g_desktop_unpin_requested = false;
   g_pin_drag_active = true;
+  BeginOleDragVisual(data, paths);
   DWORD effect = DROPEFFECT_COPY | DROPEFFECT_MOVE | DROPEFFECT_LINK;
   const HRESULT hr = DoDragDrop(data, source, effect, &effect);
+  EndOleDragVisual();
   g_pin_drag_active = false;
   const bool desktop_unpin = g_desktop_unpin_requested;
   g_desktop_unpin_requested = false;
   const bool transferred = g_pin_transferred;
   source->Release();
   data->Release();
-  if (transferred) {
-    return PinDragResult::TransferredFence;
-  }
   // Desktop/public release cancels OLE → unpin (float back on desktop).
   if (hr == DRAGDROP_S_CANCEL && desktop_unpin) {
     return PinDragResult::Unpinned;
   }
-  // Successful DROP with MOVE: only unpin when the desktop path is actually
-  // gone (Recycle / move-to-folder). Some apps advertise MOVE but leave the
-  // file in place (WeChat-class) — keep the fence pin then.
+  // Successful DROP with MOVE: prefer Unpinned when the path is gone
+  // (Recycle Bin / move-to-folder), even if the sink also flagged a pin
+  // transfer — otherwise drop-on-hosted-bin looks like「拖进回收站」and
+  // leaves a stale pin.
   if (hr == DRAGDROP_S_DROP && (effect & DROPEFFECT_MOVE) != 0) {
     bool any_gone = false;
     for (const auto& p : paths) {
@@ -602,6 +986,9 @@ PinDragResult ShellDoDragPins(const std::vector<std::wstring>& paths,
     if (any_gone) {
       return PinDragResult::Unpinned;
     }
+  }
+  if (transferred) {
+    return PinDragResult::TransferredFence;
   }
   return PinDragResult::KeptInFence;
 }
@@ -774,20 +1161,30 @@ DWORD PathDropTarget::ResolveFileEffect(DWORD key_state, DWORD allowed,
   // AIGC END
 }
 
+void PathDropTarget::NotifyDragOver(POINTL pt, bool active) {
+  if (drag_over_fn_) {
+    drag_over_fn_(pt, active);
+  }
+}
+
 HRESULT STDMETHODCALLTYPE PathDropTarget::DragEnter(IDataObject* data,
                                                     DWORD key_state,
-                                                    POINTL /*pt*/,
+                                                    POINTL pt,
                                                     DWORD* effect) {
   g_over_pin_target = false;
   g_over_pin_invalid = false;
   pin_mode_ = false;
   accept_ = false;
   sample_src_.clear();
+  pin_src_.clear();
+  pin_paths_.clear();
 
   std::wstring src;
   std::vector<std::wstring> paths;
   if (on_pin_drop_ && ExtractPinTransfer(data, &src, &paths)) {
     pin_mode_ = true;
+    pin_src_ = src;
+    pin_paths_ = paths;
     const DWORD eff = on_pin_drop_(src, paths, /*commit=*/false);
     accept_ = (eff != DROPEFFECT_NONE);
     g_over_pin_target = true;
@@ -798,6 +1195,7 @@ HRESULT STDMETHODCALLTYPE PathDropTarget::DragEnter(IDataObject* data,
     if (highlight_fn_) {
       highlight_fn_(accept_);
     }
+    NotifyDragOver(pt, accept_);
     return S_OK;
   }
 
@@ -818,16 +1216,28 @@ HRESULT STDMETHODCALLTYPE PathDropTarget::DragEnter(IDataObject* data,
   if (highlight_fn_) {
     highlight_fn_(accept_);
   }
+  NotifyDragOver(pt, accept_);
   return S_OK;
 }
 
-HRESULT STDMETHODCALLTYPE PathDropTarget::DragOver(DWORD key_state,
-                                                   POINTL /*pt*/,
+HRESULT STDMETHODCALLTYPE PathDropTarget::DragOver(DWORD key_state, POINTL pt,
                                                    DWORD* effect) {
   if (pin_mode_) {
-    if (effect) {
+    // Re-query so hovering the hosted Recycle Bin can accept even when the
+    // source fence == dest (src==dst transfer is otherwise rejected).
+    if (on_pin_drop_) {
+      const DWORD eff =
+          on_pin_drop_(pin_src_, pin_paths_, /*commit=*/false);
+      accept_ = (eff != DROPEFFECT_NONE);
+      g_over_pin_target = true;
+      g_over_pin_invalid = !accept_;
+      if (effect) {
+        *effect = accept_ ? eff : DROPEFFECT_NONE;
+      }
+    } else if (effect) {
       *effect = accept_ ? DROPEFFECT_MOVE : DROPEFFECT_NONE;
     }
+    NotifyDragOver(pt, accept_);
     return S_OK;
   }
   if (effect) {
@@ -836,6 +1246,7 @@ HRESULT STDMETHODCALLTYPE PathDropTarget::DragOver(DWORD key_state,
     *effect = accept_ ? ResolveFileEffect(key_state, allowed, sample_src_)
                       : DROPEFFECT_NONE;
   }
+  NotifyDragOver(pt, accept_);
   return S_OK;
 }
 
@@ -845,14 +1256,17 @@ HRESULT STDMETHODCALLTYPE PathDropTarget::DragLeave() {
   accept_ = false;
   pin_mode_ = false;
   sample_src_.clear();
+  pin_src_.clear();
+  pin_paths_.clear();
   if (highlight_fn_) {
     highlight_fn_(false);
   }
+  NotifyDragOver(POINTL{}, false);
   return S_OK;
 }
 
 HRESULT STDMETHODCALLTYPE PathDropTarget::Drop(IDataObject* data,
-                                               DWORD key_state, POINTL /*pt*/,
+                                               DWORD key_state, POINTL pt,
                                                DWORD* effect) {
   if (pin_mode_) {
     std::wstring src;
@@ -873,9 +1287,12 @@ HRESULT STDMETHODCALLTYPE PathDropTarget::Drop(IDataObject* data,
     accept_ = false;
     pin_mode_ = false;
     sample_src_.clear();
+    pin_src_.clear();
+    pin_paths_.clear();
     if (highlight_fn_) {
       highlight_fn_(false);
     }
+    NotifyDragOver(pt, false);
     return S_OK;
   }
 
@@ -905,6 +1322,7 @@ HRESULT STDMETHODCALLTYPE PathDropTarget::Drop(IDataObject* data,
   if (highlight_fn_) {
     highlight_fn_(false);
   }
+  NotifyDragOver(pt, false);
   return S_OK;
 }
 

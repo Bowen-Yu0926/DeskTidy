@@ -7,26 +7,28 @@
 <style>
   :root {
     --card: #ffffff;
-    --border: #e2e8f0;
-    --text: #0f172a;
-    --muted: #64748b;
+    --border: #d0d7e2;
+    --text: #1a1f27;
+    --muted: #4b5563;
     --accent: #2563eb;
+    --accent-hover: #1d4ed8;
     --accent-soft: #eff6ff;
-    --primary: #16a34a;
-    --primary-hover: #15803d;
+    --primary: #2563eb;
+    --primary-hover: #1d4ed8;
     --danger: #dc2626;
     --danger-hover: #b91c1c;
     --danger-soft: #fef2f2;
-    --warn: #d97706;
-    --warn-soft: #fffbeb;
+    --warn: #c2410c;
+    --warn-soft: #fff7ed;
+    --info: #2563eb;
     --info-soft: #eff6ff;
-    --shadow: 0 22px 48px rgba(15, 23, 42, 0.22), 0 0 0 1px rgba(15, 23, 42, 0.04);
-    --radius: 18px;
+    --shadow: 0 16px 40px rgba(15, 23, 42, 0.18), 0 0 0 1px rgba(15, 23, 42, 0.06);
+    --radius: 12px;
   }
   * { box-sizing: border-box; }
   html, body {
     margin: 0; height: 100%;
-    font-family: "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", sans-serif;
+    font-family: "Microsoft YaHei", "微软雅黑", "Microsoft YaHei UI", "Segoe UI", sans-serif;
     background: transparent; color: var(--text); font-size: 13px;
     -webkit-font-smoothing: antialiased;
   }
@@ -35,83 +37,112 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    padding: 14px;
+    padding: 12px;
     background: transparent;
   }
   #card {
     width: 100%;
-    max-width: 400px;
+    max-width: 380px;
     background: var(--card);
     border: 1px solid var(--border);
     border-radius: var(--radius);
-    padding: 22px 22px 18px;
+    padding: 18px 18px 16px;
     box-shadow: var(--shadow);
     position: relative;
-    animation: mistIn 160ms ease-out;
+    animation: mistIn 140ms ease-out;
   }
   @keyframes mistIn {
-    from { opacity: 0; transform: translateY(6px) scale(0.98); }
+    from { opacity: 0; transform: translateY(4px) scale(0.985); }
     to { opacity: 1; transform: none; }
   }
   #close {
-    position: absolute; top: 12px; right: 12px; width: 30px; height: 30px;
-    border: none; background: transparent; color: #94a3b8; font-size: 18px;
-    border-radius: 9px; cursor: pointer; line-height: 1;
+    position: absolute; top: 10px; right: 10px; width: 28px; height: 28px;
+    border: none; background: transparent; color: #6b7280; font-size: 18px;
+    border-radius: 8px; cursor: pointer; line-height: 1;
   }
-  #close:hover { background: #f1f5f9; color: var(--text); }
+  #close:hover { background: #f3f4f6; color: var(--text); }
   .head {
-    display: flex; gap: 14px; align-items: flex-start;
-    margin: 0 24px 14px 0;
+    display: flex; gap: 12px; align-items: flex-start;
+    margin: 0 22px 0 0;
   }
   .badge {
     flex: 0 0 auto;
-    width: 40px; height: 40px; border-radius: 12px;
+    width: 36px; height: 36px; border-radius: 50%;
     display: grid; place-items: center;
-    background: var(--info-soft); color: var(--accent);
-    font-size: 18px; font-weight: 800;
+    background: var(--info-soft); color: var(--info);
+    margin-top: 1px;
   }
+  .badge svg { width: 18px; height: 18px; display: block; }
   body.warn .badge { background: var(--warn-soft); color: var(--warn); }
   body.danger .badge { background: var(--danger-soft); color: var(--danger); }
-  .head-text { min-width: 0; flex: 1; padding-top: 2px; }
+  .head-text { min-width: 0; flex: 1; }
   #title {
-    margin: 0 0 6px; font-size: 17px; font-weight: 700; letter-spacing: -0.01em;
-    line-height: 1.3;
+    margin: 0 0 6px; font-size: 16px; font-weight: 700; letter-spacing: 0;
+    line-height: 1.35; color: var(--text);
   }
   #msg {
     margin: 0;
     color: var(--muted);
-    font-size: 13.5px;
-    line-height: 1.6;
+    font-size: 13px;
+    line-height: 1.55;
     white-space: pre-wrap;
     word-break: break-word;
   }
   .foot {
-    display: flex; gap: 10px; justify-content: flex-end; flex-wrap: wrap;
-    margin-top: 20px; padding-top: 4px;
+    display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap;
+    margin-top: 18px;
   }
   .btn {
     border: 1px solid var(--border);
     background: #fff;
-    border-radius: 11px;
-    min-width: 84px;
-    padding: 9px 16px;
+    border-radius: 8px;
+    min-width: 76px;
+    min-height: 32px;
+    padding: 6px 14px;
     font: inherit;
-    font-weight: 650;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text);
     cursor: pointer;
-    transition: background 120ms ease, border-color 120ms ease, color 120ms ease,
-                transform 80ms ease;
+    transition: background 100ms ease, border-color 100ms ease, color 100ms ease,
+                box-shadow 100ms ease;
   }
-  .btn:hover { background: #f8fafc; border-color: #cbd5e1; }
-  .btn:active { transform: translateY(1px); }
+  .btn:hover { background: #f3f4f6; border-color: #b8c0cc; }
+  .btn:active { background: #e5e7eb; }
+  .btn:focus { outline: none; }
   .btn:focus-visible {
-    outline: 2px solid var(--accent);
-    outline-offset: 2px;
+    box-shadow: 0 0 0 2px #fff, 0 0 0 4px rgba(37, 99, 235, 0.45);
   }
-  .btn.primary { background: var(--primary); border-color: var(--primary); color: #fff; }
-  .btn.primary:hover { background: var(--primary-hover); border-color: var(--primary-hover); color: #fff; }
-  .btn.danger { background: var(--danger); border-color: var(--danger); color: #fff; }
-  .btn.danger:hover { background: var(--danger-hover); border-color: var(--danger-hover); color: #fff; }
-  .btn.ghost { background: #f8fafc; }
+  .btn.ghost {
+    background: #fff;
+    border-color: var(--border);
+  }
+  .btn.primary {
+    background: var(--primary);
+    border-color: var(--primary);
+    color: #fff;
+  }
+  .btn.primary:hover {
+    background: var(--primary-hover);
+    border-color: var(--primary-hover);
+    color: #fff;
+  }
+  .btn.primary:focus-visible {
+    box-shadow: 0 0 0 2px #fff, 0 0 0 4px rgba(37, 99, 235, 0.45);
+  }
+  .btn.danger {
+    background: var(--danger);
+    border-color: var(--danger);
+    color: #fff;
+  }
+  .btn.danger:hover {
+    background: var(--danger-hover);
+    border-color: var(--danger-hover);
+    color: #fff;
+  }
+  .btn.danger:focus-visible {
+    box-shadow: 0 0 0 2px #fff, 0 0 0 4px rgba(220, 38, 38, 0.45);
+  }
   #btn-no, #btn-cancel { display: none; }
   /* Confirm: 确定/删除 + 取消（市面删除确认，不用「是/否」） */
   body.confirm #btn-cancel,
@@ -124,7 +155,7 @@
   <div id="card" role="dialog" aria-modal="true" aria-labelledby="title" aria-describedby="msg">
     <button id="close" type="button" aria-label="关闭">×</button>
     <div class="head">
-      <div class="badge" id="badge" aria-hidden="true">i</div>
+      <div class="badge" id="badge" aria-hidden="true"></div>
       <div class="head-text">
         <h1 id="title">提示</h1>
         <p id="msg"></p>
@@ -142,17 +173,26 @@
     try { chrome.webview.postMessage(JSON.stringify(msg)); } catch (e) {}
   }
   let mode = 'alert';
-  function badgeGlyph(tone) {
-    if (tone === 'danger') return '!';
-    if (tone === 'warn') return '!';
-    return 'i';
+  function badgeSvg(tone) {
+    // Compact Fluent-style glyphs (info / warn / danger).
+    if (tone === 'danger' || tone === 'warn') {
+      return '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true">' +
+        '<path d="M12 8.2v5.2" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/>' +
+        '<circle cx="12" cy="16.4" r="1.15" fill="currentColor"/>' +
+        '</svg>';
+    }
+    return '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true">' +
+      '<circle cx="12" cy="12" r="8.2" stroke="currentColor" stroke-width="2"/>' +
+      '<path d="M12 10.6v5" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/>' +
+      '<circle cx="12" cy="7.7" r="1.15" fill="currentColor"/>' +
+      '</svg>';
   }
   window.applyState = function(m) {
     if (!m || m.type !== 'state') return;
     mode = m.mode || 'alert';
     const tone = m.tone || '';
     document.body.className = mode + (tone ? ' ' + tone : '');
-    document.getElementById('badge').textContent = badgeGlyph(tone);
+    document.getElementById('badge').innerHTML = badgeSvg(tone);
     document.getElementById('title').textContent = m.title || '提示';
     document.getElementById('msg').textContent = m.message || '';
     const yes = document.getElementById('btn-yes');

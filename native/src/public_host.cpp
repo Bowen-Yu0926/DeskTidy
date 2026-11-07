@@ -4,6 +4,7 @@
 #include "display_geom.h"
 #include "i18n.h"
 #include "icon_actions.h"
+#include "log.h"
 #include "ole_drag.h"
 #include "pin_store.h"
 #include "shell_clipboard.h"
@@ -145,29 +146,111 @@ Gdiplus::Bitmap* BuildPremultipliedIcon(HICON icon, int dest) {
   return out;
 }
 
-// Explorer/DefView desktop caption (Python _qt_explorer_caption): white glyph
-// + soft dark glow so names stay readable on light wallpaper. Plain near-white
-// ink vanishes on pale desktops (「拖到桌面不显示名字」).
+// Explorer/DefView: icon label color follows wallpaper luminance (light desk →
+// near-black ink; dark desk → white ink), with a soft opposing glow.
+COLORREF ReadDesktopSolidBackground() {
+  HKEY key = nullptr;
+  if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Control Panel\\Colors", 0, KEY_READ,
+                    &key) != ERROR_SUCCESS) {
+    return RGB(0, 0, 0);
+  }
+  wchar_t buf[64] = {};
+  DWORD type = 0;
+  DWORD bytes = sizeof(buf);
+  const LONG rc =
+      RegQueryValueExW(key, L"Background", nullptr, &type,
+                       reinterpret_cast<LPBYTE>(buf), &bytes);
+  RegCloseKey(key);
+  if (rc != ERROR_SUCCESS || (type != REG_SZ && type != REG_EXPAND_SZ)) {
+    return RGB(0, 0, 0);
+  }
+  int r = 0;
+  int g = 0;
+  int b = 0;
+  if (swscanf_s(buf, L"%d %d %d", &r, &g, &b) != 3) {
+    return RGB(0, 0, 0);
+  }
+  return RGB(r, g, b);
+}
+
+int SampleWallpaperLuminance() {
+  wchar_t path[MAX_PATH] = {};
+  SystemParametersInfoW(SPI_GETDESKWALLPAPER, MAX_PATH, path, 0);
+  if (path[0] && GetFileAttributesW(path) != INVALID_FILE_ATTRIBUTES) {
+    Gdiplus::Bitmap bmp(path);
+    if (bmp.GetLastStatus() == Gdiplus::Ok && bmp.GetWidth() > 0 &&
+        bmp.GetHeight() > 0) {
+      const UINT w = bmp.GetWidth();
+      const UINT h = bmp.GetHeight();
+      // Sparse grid — enough for light/dark decision, cheap on 4K photos.
+      double sum = 0;
+      int n = 0;
+      for (UINT y = h / 10; y < h && n < 64; y += (std::max)(1u, h / 8)) {
+        for (UINT x = w / 10; x < w && n < 64; x += (std::max)(1u, w / 8)) {
+          Gdiplus::Color c;
+          if (bmp.GetPixel(static_cast<INT>(x), static_cast<INT>(y), &c) !=
+              Gdiplus::Ok) {
+            continue;
+          }
+          // Rec. 601 luma.
+          sum += 0.299 * c.GetR() + 0.587 * c.GetG() + 0.114 * c.GetB();
+          ++n;
+        }
+      }
+      if (n > 0) {
+        return static_cast<int>(sum / n);
+      }
+    }
+  }
+  const COLORREF solid = ReadDesktopSolidBackground();
+  return static_cast<int>(0.299 * GetRValue(solid) + 0.587 * GetGValue(solid) +
+                          0.114 * GetBValue(solid));
+}
+
+bool DesktopCaptionUseDarkInk() {
+  static ULONGLONG s_tick = 0;
+  static wchar_t s_path[MAX_PATH] = {};
+  static bool s_dark_ink = false;
+  wchar_t path[MAX_PATH] = {};
+  SystemParametersInfoW(SPI_GETDESKWALLPAPER, MAX_PATH, path, 0);
+  const ULONGLONG now = GetTickCount64();
+  if (s_tick != 0 && now - s_tick < 3000 && wcscmp(path, s_path) == 0) {
+    return s_dark_ink;
+  }
+  wcscpy_s(s_path, path);
+  s_tick = now;
+  // Explorer threshold sits near mid-grey; bias slightly toward dark ink so
+  // pale wallpapers match black desktop labels.
+  s_dark_ink = SampleWallpaperLuminance() >= 140;
+  return s_dark_ink;
+}
+
 void DrawExplorerCaption(Gdiplus::Graphics& g, const std::wstring& text,
                          const Gdiplus::RectF& box, const Gdiplus::Font& font,
                          const Gdiplus::StringFormat& fmt) {
   if (text.empty()) {
     return;
   }
+  const bool dark_ink = DesktopCaptionUseDarkInk();
+  const BYTE glow_r = dark_ink ? 255 : 0;
+  const BYTE glow_g = dark_ink ? 255 : 0;
+  const BYTE glow_b = dark_ink ? 255 : 0;
   auto paint_at = [&](BYTE a, float dx, float dy) {
-    Gdiplus::SolidBrush br(Gdiplus::Color(a, 0, 0, 0));
+    Gdiplus::SolidBrush br(Gdiplus::Color(a, glow_r, glow_g, glow_b));
     Gdiplus::RectF r = box;
     r.X += dx;
     r.Y += dy;
     g.DrawString(text.c_str(), -1, &font, r, &fmt, &br);
   };
-  // Down-sampled 4-direction glow + main ink (was 12 + 8 + 1 DrawStrings; the
-  // per-frame caption pass runs for every float on every marquee frame).
+  // 4-direction glow + main ink (Explorer drop-shadow readability).
   paint_at(110, -1.f, 0.f);
   paint_at(110, 1.f, 0.f);
   paint_at(110, 0.f, -1.f);
   paint_at(110, 0.f, 1.f);
-  Gdiplus::SolidBrush ink(Gdiplus::Color(255, 255, 255, 255));
+  const Gdiplus::Color ink_c =
+      dark_ink ? Gdiplus::Color(255, 0, 0, 0)
+               : Gdiplus::Color(255, 255, 255, 255);
+  Gdiplus::SolidBrush ink(ink_c);
   g.DrawString(text.c_str(), -1, &font, box, &fmt, &ink);
 }
 }  // namespace
@@ -333,6 +416,50 @@ void PublicHost::Show() { SetVisible(true); }
 
 void PublicHost::Hide() { SetVisible(false); }
 
+void PublicHost::BeginDeferPresent() { defer_present_ = true; }
+
+void PublicHost::EndDeferPresent() { defer_present_ = false; }
+
+void PublicHost::ForceRemapPresent() {
+  if (!hwnd_ || slots_.empty()) {
+    return;
+  }
+  defer_present_ = false;
+  want_visible_ = true;
+  int drawable = 0;
+  for (const auto& s : slots_) {
+    if (s.icon) {
+      ++drawable;
+    }
+  }
+  if (drawable <= 0) {
+    LogLine(L"[public] ForceRemapPresent abort slots=%d drawable=0",
+            static_cast<int>(slots_.size()));
+    return;
+  }
+  // Stay hidden while repairing the layered surface — toggling WS_EX_LAYERED
+  // while visible caused the flash; skipping the reset left Win11 blank ULW.
+  if (IsWindowVisible(hwnd_) || IsIconic(hwnd_)) {
+    ShowWindow(hwnd_, SW_HIDE);
+  }
+  if (!IsAttachedToDesktop(hwnd_)) {
+    if (!AttachOverlayToDesktop(hwnd_, /*show=*/false)) {
+      ForceAttachOverlayToDesktop(hwnd_, /*show=*/false);
+    }
+  }
+  {
+    const LONG_PTR ex = GetWindowLongPtrW(hwnd_, GWL_EXSTYLE);
+    SetWindowLongPtrW(hwnd_, GWL_EXSTYLE, ex & ~WS_EX_LAYERED);
+    SetWindowLongPtrW(hwnd_, GWL_EXSTYLE, ex | WS_EX_LAYERED);
+  }
+  ReleasePresentBuffer();
+  layer_dirty_ = true;
+  // One visible transition: map then blit (pixels ready on first frame).
+  ShowWindow(hwnd_, SW_SHOWNOACTIVATE);
+  RaiseOverlayInDesktopBand(hwnd_);
+  Present();
+}
+
 void PublicHost::ApplyVisibility() {
   if (!hwnd_) {
     return;
@@ -351,7 +478,17 @@ void PublicHost::ApplyVisibility() {
     ShowWindow(hwnd_, SW_HIDE);
     return;
   }
-  if (!IsWindowVisible(hwnd_)) {
+  // During OLE-unpin defer: keep hidden + dirty. Mapping an empty ULW first
+  // then Present was the visible flash; Reveal does one Show+Present.
+  if (defer_present_) {
+    layer_dirty_ = true;
+    return;
+  }
+  // Map first, then ULW — never UpdateLayeredWindow while hidden (Win11
+  // blank-after-Show; click Present was the only recovery).
+  if (IsIconic(hwnd_)) {
+    ShowWindow(hwnd_, SW_RESTORE);
+  } else if (!IsWindowVisible(hwnd_)) {
     ShowWindow(hwnd_, SW_SHOWNOACTIVATE);
   }
   AttachToDesktopLayer();  // no-op when already seated (avoids page flash)
@@ -667,7 +804,12 @@ void PublicHost::Layout() {
   SetOverlayScreenPos(hwnd_, origin_x, origin_y, w, h,
                       SWP_NOZORDER | SWP_NOREDRAW);
   // AIGC END
-  Present();
+  // Geometry only while hidden — Present after Show (ApplyVisibility).
+  if (IsWindowVisible(hwnd_) && !IsIconic(hwnd_)) {
+    Present();
+  } else {
+    layer_dirty_ = true;
+  }
 }
 
 void PublicHost::PasteClipboardFiles() {
@@ -1835,6 +1977,15 @@ void PublicHost::Present() {
   if (!hwnd_) {
     return;
   }
+  if (defer_present_) {
+    layer_dirty_ = true;
+    return;
+  }
+  // Soft-park / pre-Show: never ULW while hidden (Win11 blank-after-Show).
+  if (!IsWindowVisible(hwnd_) || IsIconic(hwnd_)) {
+    layer_dirty_ = true;
+    return;
+  }
   if (rubber_) {
     PresentRubberFast();
     return;
@@ -1864,13 +2015,42 @@ void PublicHost::Present() {
   blend.BlendOp = AC_SRC_OVER;
   blend.SourceConstantAlpha = 255;
   blend.AlphaFormat = AC_SRC_ALPHA;
-  UpdateOverlayLayered(hwnd_, screen, &origin, &size, mem, &src, 0, &blend,
-                      ULW_ALPHA);
+  const BOOL ok =
+      UpdateOverlayLayered(hwnd_, screen, &origin, &size, mem, &src, 0, &blend,
+                           ULW_ALPHA)
+          ? TRUE
+          : FALSE;
   ReleaseDC(nullptr, screen);
+  if (!ok) {
+    LogLine(L"[public] UpdateLayeredWindow failed err=%lu size=%dx%d",
+            GetLastError(), w, h);
+    layer_dirty_ = true;
+    return;
+  }
+  layer_dirty_ = false;
 }
 
 void PublicHost::RefreshLayer() {
-  if (hwnd_ && IsWindowVisible(hwnd_) && !IsIconic(hwnd_)) {
+  if (!hwnd_ || slots_.empty()) {
+    return;
+  }
+  if (defer_present_) {
+    layer_dirty_ = true;
+    return;
+  }
+  // Map first when wanted, then blit. Raise/SoftSeat can clear ULW while
+  // IsWindowVisible stays TRUE — always re-upload after seating.
+  if (want_visible_) {
+    if (IsIconic(hwnd_)) {
+      ShowWindow(hwnd_, SW_RESTORE);
+    } else if (!IsWindowVisible(hwnd_)) {
+      ShowWindow(hwnd_, SW_SHOWNOACTIVATE);
+    }
+    AttachToDesktopLayer();
+  }
+  if (want_visible_ && IsWindowVisible(hwnd_) && !IsIconic(hwnd_)) {
     Present();
+  } else if (want_visible_) {
+    layer_dirty_ = true;
   }
 }

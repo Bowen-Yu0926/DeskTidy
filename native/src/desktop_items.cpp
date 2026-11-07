@@ -191,6 +191,17 @@ HICON IconFromShellItemFactory(const std::wstring& path, int size_px) {
     DeleteObject(hbmp);
     return nullptr;
   }
+  // Fill the 1bpp AND-mask all-opaque (0 = opaque). CreateBitmap leaves the
+  // bits uninitialized; if they land all-1 the icon is fully transparent and
+  // renders blank on some machines. The 32bpp alpha channel then drives the
+  // real transparency.
+  {
+    HDC mask_dc = CreateCompatibleDC(nullptr);
+    HBITMAP old = static_cast<HBITMAP>(SelectObject(mask_dc, mask));
+    PatBlt(mask_dc, 0, 0, bm.bmWidth, bm.bmHeight, BLACKNESS);
+    SelectObject(mask_dc, old);
+    DeleteDC(mask_dc);
+  }
   ICONINFO ii{};
   ii.fIcon = TRUE;
   ii.hbmColor = hbmp;
@@ -272,7 +283,9 @@ std::vector<DesktopItem> ScanDesktopItems() {
 void InvalidateDesktopScanCache() {
   g_scan_cache.clear();
   g_scan_tick = 0;
-  DestroyMasterIconCache();
+  // Do NOT clear g_master_icon_cache here — icons are keyed by path@bucket and
+  // stay valid when the file list changes (copy/paste/delete). Clearing it made
+  // every refresh reload all icons (hundreds of ms of ShellItemImageFactory).
 }
 
 void ClearItemIconCache() {
@@ -432,19 +445,22 @@ HICON TrimIconTransparentPadding(HICON src) {
   return trimmed;
 }
 
-HICON LoadItemIcon(const std::wstring& path, int size_px) {
-  if (path.empty()) {
-    return nullptr;
-  }
-
+std::wstring IconCacheKey(const std::wstring& path, int size_px) {
   // Encode the source tier (JUMBO vs ExtraLarge) into the key: IconSizeBucket
   // maps 36..44 into the same "40" bucket, so 39px (ExtraLarge) and 44px
   // (JUMBO) would otherwise collide and a 44px request could hit a 48px master
   // then upscale it back — the exact blur we removed.
   const bool jumbo_source = size_px >= 40;
-  const std::wstring key =
-      ScanDedupKey(path) + L"@" + std::to_wstring(IconSizeBucket(size_px)) +
-      (jumbo_source ? L"j" : L"x");
+  return ScanDedupKey(path) + L"@" + std::to_wstring(IconSizeBucket(size_px)) +
+         (jumbo_source ? L"j" : L"x");
+}
+
+HICON LoadItemIcon(const std::wstring& path, int size_px) {
+  if (path.empty()) {
+    return nullptr;
+  }
+
+  const std::wstring key = IconCacheKey(path, size_px);
   {
     std::lock_guard<std::mutex> lk(g_master_icon_cache_mutex);
     const auto hit = g_master_icon_cache.find(key);
@@ -515,22 +531,38 @@ void PreloadIconsParallel(const std::vector<std::pair<std::wstring, int>>& jobs)
   if (jobs.empty()) {
     return;
   }
-  // Cap workers so boot stays bounded. SHGetImageList / IImageList::GetIcon are
-  // COM calls — each worker must init COM, otherwise the icon load can fail
-  // (CO_E_NOTINITIALIZED) and the preload silently degrades on some machines.
+  // 1) Collect only the cold icons (not yet in the process-wide cache). Most
+  //    refreshes hit 100% cache — spawning a thread pool + CoInitializeEx for
+  //    those was the bulk of the per-refresh cost (hundreds of ms even with
+  //    zero actual loads).
+  std::vector<std::pair<std::wstring, int>> cold;
+  cold.reserve(jobs.size());
+  for (const auto& job : jobs) {
+    const std::wstring key = IconCacheKey(job.first, job.second);
+    std::lock_guard<std::mutex> lk(g_master_icon_cache_mutex);
+    if (g_master_icon_cache.find(key) == g_master_icon_cache.end()) {
+      cold.push_back(job);
+    }
+  }
+  if (cold.empty()) {
+    return;
+  }
+  // 2) Parallel-load only the cold subset. SHGetImageList / IImageList::GetIcon
+  //    are COM calls — each worker must init COM or the load can fail
+  //    (CO_E_NOTINITIALIZED) on some machines.
   const unsigned hw = std::thread::hardware_concurrency();
   const unsigned nthreads = (std::max)(1u, (std::min)(8u, hw ? hw : 4u));
   std::atomic<size_t> next{0};
   std::vector<std::thread> pool;
   pool.reserve(nthreads);
-  auto worker = [&jobs, &next]() {
+  auto worker = [&cold, &next]() {
     CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
     for (;;) {
       const size_t i = next.fetch_add(1, std::memory_order_relaxed);
-      if (i >= jobs.size()) {
+      if (i >= cold.size()) {
         break;
       }
-      HICON icon = LoadItemIcon(jobs[i].first, jobs[i].second);
+      HICON icon = LoadItemIcon(cold[i].first, cold[i].second);
       if (icon) {
         DestroyIcon(icon);  // cache keeps the master; our clone is disposable
       }
