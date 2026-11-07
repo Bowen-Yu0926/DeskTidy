@@ -33,6 +33,11 @@ void RaiseOverlayInDesktopBand(HWND hwnd);
 bool IsOverlayAboveDefView(HWND hwnd);
 bool IsExplorerDesktopForeground();
 bool IsShowDesktopActive();
+// Monitor-covering APPWINDOW still visible (borderless/fullscreen game).
+// Fences/Rainmeter: do not ride DefView TOPMOST over a live cover — that only
+// "lifts fences" without actually showing the desktop.
+HWND FindFullscreenCoverWindow();
+bool HasVisibleFullscreenCover();
 bool FilterDesktopChromeSysCommand(WPARAM wparam);
 bool FilterDesktopChromeWindowPosChanging(WINDOWPOS* wp);
 

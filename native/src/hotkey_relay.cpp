@@ -1,5 +1,6 @@
 #include "hotkey_relay.h"
 
+#include "desktop_shell.h"
 #include "log.h"
 #include "paths_util.h"
 
@@ -91,58 +92,6 @@ std::string MappingJson(const std::vector<HotkeyDef>& keys) {
   }
   out += "}";
   return out;
-}
-
-bool CoversMonitor(HWND hwnd, const RECT& mon) {
-  RECT wr{};
-  if (!GetWindowRect(hwnd, &wr)) {
-    return false;
-  }
-  constexpr int kTol = 8;
-  return (wr.right - wr.left) > 0 && (wr.bottom - wr.top) > 0 &&
-         wr.left <= mon.left + kTol && wr.top <= mon.top + kTol &&
-         wr.right >= mon.right - kTol && wr.bottom >= mon.bottom - kTol;
-}
-
-bool IsShellFullscreenClass(HWND hwnd) {
-  wchar_t cls[128]{};
-  GetClassNameW(hwnd, cls, 128);
-  return wcscmp(cls, L"Progman") == 0 || wcscmp(cls, L"WorkerW") == 0 ||
-         wcscmp(cls, L"SHELLDLL_DefView") == 0 ||
-         wcscmp(cls, L"SysListView32") == 0 ||
-         wcscmp(cls, L"Shell_TrayWnd") == 0 ||
-         wcscmp(cls, L"Shell_SecondaryTrayWnd") == 0 ||
-         wcscmp(cls, L"Windows.UI.Core.CoreWindow") == 0;
-}
-
-struct EnumCtx {
-  RECT mon{};
-  DWORD own_pid = 0;
-  HWND found = nullptr;
-};
-
-BOOL CALLBACK EnumCoverProc(HWND hwnd, LPARAM lp) {
-  auto* ctx = reinterpret_cast<EnumCtx*>(lp);
-  if (!IsWindowVisible(hwnd) || IsIconic(hwnd)) {
-    return TRUE;
-  }
-  DWORD pid = 0;
-  GetWindowThreadProcessId(hwnd, &pid);
-  if (pid == ctx->own_pid) {
-    return TRUE;
-  }
-  if (IsShellFullscreenClass(hwnd)) {
-    return TRUE;
-  }
-  const LONG_PTR ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
-  if (ex & WS_EX_TOOLWINDOW) {
-    return TRUE;
-  }
-  if (CoversMonitor(hwnd, ctx->mon)) {
-    ctx->found = hwnd;
-    return FALSE;
-  }
-  return TRUE;
 }
 
 }  // namespace
@@ -356,29 +305,16 @@ void HotkeyRelay::ServeLoop() {
 }
 
 bool MinimizeFullscreenCover() {
-  HWND fg = GetForegroundWindow();
-  HMONITOR mon = MonitorFromWindow(fg ? fg : GetDesktopWindow(),
-                                   MONITOR_DEFAULTTONEAREST);
-  MONITORINFO mi{sizeof(mi)};
-  if (!GetMonitorInfoW(mon, &mi)) {
-    return false;
-  }
-  HWND target = nullptr;
-  if (fg && IsWindowVisible(fg) && !IsIconic(fg) &&
-      !IsShellFullscreenClass(fg) && CoversMonitor(fg, mi.rcMonitor)) {
-    target = fg;
-  } else {
-    EnumCtx ctx;
-    ctx.mon = mi.rcMonitor;
-    ctx.own_pid = GetCurrentProcessId();
-    EnumWindows(EnumCoverProc, reinterpret_cast<LPARAM>(&ctx));
-    target = ctx.found;
-  }
+  // Fences-class Win+D over borderless/fullscreen: drop the cover so Explorer
+  // show-desktop (and our DefView TOPMOST band) can actually reveal chrome.
+  HWND target = FindFullscreenCoverWindow();
   if (!target || IsIconic(target)) {
     return false;
   }
-  if (!PostMessageW(target, WM_SYSCOMMAND, SC_MINIMIZE, 0)) {
-    ShowWindow(target, SW_MINIMIZE);
+  // FORCEMINIMIZE: SC_MINIMIZE alone is often ignored by borderless games.
+  ShowWindow(target, SW_FORCEMINIMIZE);
+  if (!IsIconic(target)) {
+    PostMessageW(target, WM_SYSCOMMAND, SC_MINIMIZE, 0);
   }
   return true;
 }

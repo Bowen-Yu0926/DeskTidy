@@ -51,5 +51,6 @@ class HotkeyRelay {
   bool helper_launched_ = false;
 };
 
-// Minimize elevated/fullscreen cover so desktop band is visible (Win+D path).
+// Fences-class Win+D: minimize monitor-covering APPWINDOW (game/fullscreen)
+// so show-desktop can reveal the desktop band instead of only lifting fences.
 bool MinimizeFullscreenCover();

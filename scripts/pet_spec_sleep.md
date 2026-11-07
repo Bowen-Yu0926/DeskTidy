@@ -2,7 +2,7 @@
 
 帧数：**8** 张　｜　播放：**循环**
 
-剑仙倚剑打盹（站着靠剑或盘坐打坐），非趴睡。
+剑仙倚树抱剑打盹（背靠树干、双臂环抱长剑于胸前、闭目入睡），非趴睡。
 
 ## 角色（白衣剑仙，所有帧统一）
 - 白发高髻（银白长发、束发髻、散落发丝）
@@ -29,11 +29,5 @@
 
 | 帧 | 命名 | 动作 |
 |---|---|---|
-| 0 | xianjian_sleep_0.png | 倚剑，平静 |
-| 1 | xianjian_sleep_1.png | 眼帘渐垂 |
-| 2 | xianjian_sleep_2.png | 闭目入睡 |
-| 3 | xianjian_sleep_3.png | 呼吸轻起（身体微起） |
-| 4 | xianjian_sleep_4.png | 呼吸轻伏 |
-| 5 | xianjian_sleep_5.png | 呼吸轻起 |
-| 6 | xianjian_sleep_6.png | 呼吸轻伏 |
-| 7 | xianjian_sleep_7.png | 回到帧0（循环） |
+| 0 | xianjian_sleep_0.png | 倚树抱剑，闭目入睡（定格主帧） |
+| 1–7 | xianjian_sleep_1..7.png | 与帧0相同（运行时定格，Zzz 表呼吸） |

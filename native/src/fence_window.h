@@ -394,11 +394,13 @@ class FenceWindow {
   int drag_insert_ = -1;   // live insert indicator position
   bool drag_left_ = false;  // pointer has left the client area
   POINT drag_pt_{};         // client cursor while icon_dragging_ (ghost)
+  DWORD last_manual_drag_present_ms_ = 0;
   // OLE inbound drop preview (Explorer / desktop / other fence).
   bool drop_preview_ = false;
   bool drop_over_recycle_ = false;
   int drop_insert_ = -1;
   POINT drop_pt_{};
+  DWORD last_ole_preview_present_ms_ = 0;
   // Legacy whole-fence flash — kept off; insert bar replaces it.
   bool drop_highlight_ = false;
   // F4 icon zoom.

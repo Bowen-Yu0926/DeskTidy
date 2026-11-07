@@ -370,6 +370,86 @@ bool IsShowDesktopActive() {
   return (GetWindowLongPtrW(host.defview, GWL_EXSTYLE) & WS_EX_TOPMOST) != 0;
 }
 
+namespace {
+
+bool CoversMonitorRect(HWND hwnd, const RECT& mon) {
+  RECT wr{};
+  if (!GetWindowRect(hwnd, &wr)) {
+    return false;
+  }
+  constexpr int kTol = 8;
+  return (wr.right - wr.left) > 0 && (wr.bottom - wr.top) > 0 &&
+         wr.left <= mon.left + kTol && wr.top <= mon.top + kTol &&
+         wr.right >= mon.right - kTol && wr.bottom >= mon.bottom - kTol;
+}
+
+bool IsShellFullscreenClass(HWND hwnd) {
+  wchar_t cls[128]{};
+  GetClassNameW(hwnd, cls, 128);
+  return wcscmp(cls, L"Progman") == 0 || wcscmp(cls, L"WorkerW") == 0 ||
+         wcscmp(cls, L"SHELLDLL_DefView") == 0 ||
+         wcscmp(cls, L"SysListView32") == 0 ||
+         wcscmp(cls, L"Shell_TrayWnd") == 0 ||
+         wcscmp(cls, L"Shell_SecondaryTrayWnd") == 0 ||
+         wcscmp(cls, L"Windows.UI.Core.CoreWindow") == 0;
+}
+
+struct CoverEnumCtx {
+  RECT mon{};
+  DWORD own_pid = 0;
+  HWND found = nullptr;
+};
+
+BOOL CALLBACK EnumFullscreenCoverProc(HWND hwnd, LPARAM lp) {
+  auto* ctx = reinterpret_cast<CoverEnumCtx*>(lp);
+  if (!IsWindowVisible(hwnd) || IsIconic(hwnd)) {
+    return TRUE;
+  }
+  DWORD pid = 0;
+  GetWindowThreadProcessId(hwnd, &pid);
+  if (pid == ctx->own_pid) {
+    return TRUE;
+  }
+  if (IsShellFullscreenClass(hwnd)) {
+    return TRUE;
+  }
+  const LONG_PTR ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+  if (ex & WS_EX_TOOLWINDOW) {
+    return TRUE;
+  }
+  if (CoversMonitorRect(hwnd, ctx->mon)) {
+    ctx->found = hwnd;
+    return FALSE;
+  }
+  return TRUE;
+}
+
+}  // namespace
+
+HWND FindFullscreenCoverWindow() {
+  HWND fg = GetForegroundWindow();
+  HMONITOR mon = MonitorFromWindow(fg ? fg : GetDesktopWindow(),
+                                   MONITOR_DEFAULTTONEAREST);
+  MONITORINFO mi{sizeof(mi)};
+  if (!GetMonitorInfoW(mon, &mi)) {
+    return nullptr;
+  }
+  if (fg && IsWindowVisible(fg) && !IsIconic(fg) &&
+      !IsShellFullscreenClass(fg) && CoversMonitorRect(fg, mi.rcMonitor)) {
+    return fg;
+  }
+  CoverEnumCtx ctx;
+  ctx.mon = mi.rcMonitor;
+  ctx.own_pid = GetCurrentProcessId();
+  EnumWindows(EnumFullscreenCoverProc, reinterpret_cast<LPARAM>(&ctx));
+  return ctx.found;
+}
+
+bool HasVisibleFullscreenCover() {
+  HWND cover = FindFullscreenCoverWindow();
+  return cover != nullptr && IsWindowVisible(cover) && !IsIconic(cover);
+}
+
 bool FilterDesktopChromeSysCommand(WPARAM wparam) {
   return (wparam & 0xFFF0) == SC_MINIMIZE;
 }
@@ -413,7 +493,10 @@ void RaiseOverlayInDesktopBand(HWND hwnd) {
   }
 
   const UINT flags = kSwpNoMoveNoSizeNoActivate | SWP_NOREDRAW;
-  const bool show_desktop = IsShowDesktopActive();
+  // Ride DefView TOPMOST only when show-desktop is real (no live fullscreen
+  // cover). Otherwise TOPMOST just floats fences over the game — not Fences.
+  const bool show_desktop =
+      IsShowDesktopActive() && !HasVisibleFullscreenCover();
   const LONG_PTR ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
   const bool self_topmost = (ex & WS_EX_TOPMOST) != 0;
 

@@ -307,9 +307,9 @@ LRESULT CALLBACK LowLevelKeyboardProc(int code, WPARAM wparam, LPARAM lparam) {
                          (GetAsyncKeyState(VK_RWIN) & 0x8000) != 0;
         if (win) {
           // Passthrough: still CallNextHookEx so Explorer gets Win+D.
-          // Band restore seats overlays into the show-desktop TOPMOST band
-          // (Rainmeter/Fences model) — not a minimize→repaint patch.
-          PostMessageW(g_band_hwnd, kMsgBandRestore, 0, 0);
+          // wParam=1: Win+D path — also drop fullscreen cover (Fences-class)
+          // before seating chrome; plain band restore must not minimize apps.
+          PostMessageW(g_band_hwnd, kMsgBandRestore, 1, 0);
         }
       }
       // P1-28 Tier A: when exclusive fullscreen swallows RegisterHotKey /
@@ -5614,8 +5614,10 @@ void App::RestoreDesktopChrome() {
   // Show / Raise (system-dialog dismiss used to schedule 12 settle ticks and
   // flash the desktop on every no-op pass).
   // Rainmeter CheckDesktopState: re-seat only when show-desktop band toggles
-  // (DefView TOPMOST on/off) or chrome is unhealthy.
-  const bool show_desktop = IsShowDesktopActive();
+  // (DefView TOPMOST on/off) or chrome is unhealthy. Ignore DefView TOPMOST
+  // while a fullscreen cover is still live (Win+D over game must not "lift").
+  const bool show_desktop =
+      IsShowDesktopActive() && !HasVisibleFullscreenCover();
   const bool band_changed = show_desktop != show_desktop_seated_;
   if (DesktopChromeHealthy() && !band_changed) {
     return;
@@ -6143,6 +6145,11 @@ LRESULT CALLBACK App::TrayWndProc(HWND hwnd, UINT msg, WPARAM wparam,
 
   switch (msg) {
     case kMsgBandRestore:
+      // wParam=1 from Win+D LL hook (and elevated helper show_desktop): drop
+      // fullscreen cover first so we don't TOPMOST-lift fences over a game.
+      if (wparam) {
+        MinimizeFullscreenCover();
+      }
       self->ScheduleDesktopBandRestore();
       return 0;
     case kMsgHideOffPage:

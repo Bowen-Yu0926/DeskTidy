@@ -817,13 +817,22 @@ void FenceWindow::UpdateOleDropPreview(int x, int y) {
       drop_insert_ == insert && drop_pt_.x == x && drop_pt_.y == y) {
     return;
   }
+  const bool structural =
+      !drop_preview_ || drop_over_recycle_ != recycle || drop_insert_ != insert;
   drop_preview_ = true;
   drop_over_recycle_ = recycle;
   drop_insert_ = insert;
   drop_pt_ = {x, y};
   drop_highlight_ = false;
-  if (hwnd_) {
+  if (!hwnd_) {
+    return;
+  }
+  // Insert/recycle changes: immediate. Ghost cursor only: ~30fps.
+  const DWORD now = GetTickCount();
+  if (structural || last_ole_preview_present_ms_ == 0 ||
+      now - last_ole_preview_present_ms_ >= 33u) {
     PresentLayered();
+    last_ole_preview_present_ms_ = now;
   }
 }
 
@@ -837,6 +846,7 @@ void FenceWindow::ClearOleDropPreview() {
   drop_insert_ = -1;
   drop_pt_ = {};
   drop_highlight_ = false;
+  last_ole_preview_present_ms_ = 0;
   if (hwnd_) {
     PresentLayered();
   }
@@ -2217,6 +2227,7 @@ void FenceWindow::StartManualIconDrag(int index) {
   drag_insert_ = -1;
   drag_left_ = false;
   drag_pt_ = {};
+  last_manual_drag_present_ms_ = 0;
   {
     POINT cur{};
     if (GetCursorPos(&cur) && ScreenToClient(hwnd_, &cur)) {
@@ -2228,12 +2239,15 @@ void FenceWindow::StartManualIconDrag(int index) {
   LogLine(L"[fence] manual drag start: %d items from %s",
           static_cast<int>(drag_paths_.size()), title_.c_str());
   PresentLayered();
+  last_manual_drag_present_ms_ = GetTickCount();
 }
 
 void FenceWindow::UpdateManualIconDrag(int x, int y) {
   if (!icon_dragging_) {
     return;
   }
+  const int prev_insert = drag_insert_;
+  const bool prev_left = drag_left_;
   drag_pt_ = {x, y};
   RECT rc{};
   GetClientRect(hwnd_, &rc);
@@ -2247,6 +2261,7 @@ void FenceWindow::UpdateManualIconDrag(int x, int y) {
     drag_paths_.clear();
     drag_indices_.clear();
     drag_insert_ = -1;
+    last_manual_drag_present_ms_ = 0;
     ReleaseCapture();
     PresentLayered();
     CommitDragOutPins(std::move(paths));
@@ -2254,7 +2269,14 @@ void FenceWindow::UpdateManualIconDrag(int x, int y) {
   }
   drag_left_ = outside;
   drag_insert_ = outside ? -1 : InsertIndexAt(x, y);
-  PresentLayered();
+  const bool structural =
+      drag_insert_ != prev_insert || drag_left_ != prev_left;
+  const DWORD now = GetTickCount();
+  if (structural || last_manual_drag_present_ms_ == 0 ||
+      now - last_manual_drag_present_ms_ >= 33u) {
+    PresentLayered();
+    last_manual_drag_present_ms_ = now;
+  }
 }
 
 void FenceWindow::FinishManualIconDrag(int x, int y) {
@@ -2262,6 +2284,7 @@ void FenceWindow::FinishManualIconDrag(int x, int y) {
     return;
   }
   icon_dragging_ = false;
+  last_manual_drag_present_ms_ = 0;
   ReleaseCapture();
   RECT rc{};
   GetClientRect(hwnd_, &rc);

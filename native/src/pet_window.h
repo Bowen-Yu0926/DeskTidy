@@ -86,12 +86,16 @@ class PetWindow {
   LRESULT HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam);
   void Paint(HDC hdc);
   void Present();
+  // Drag hot-path: re-ULW with the last present DIB (no Paint/premultiply).
+  void PresentMoveOnly();
   void ReleasePresentBuffer();
   bool EnsurePresentBuffer(int w, int h);
   // Cached left-facing flip of the current sprite frame (avoid
   // CreateDIBSection×2 + per-pixel flip every Paint when facing left).
   HDC EnsureFlipBuffer(HDC hdc, HBITMAP bmp, int bw, int bh);
   void ReleaseFlipBuffer();
+  // Mirror frames_pargb_[idx] into frames_pargb_flip_ (lazy, once per cel).
+  void EnsureFlippedPargbCel(size_t idx);
   // Rebuild + apply the sprite-shaped hit region (cached per frame).
   void ApplyHitRegion(const std::vector<BYTE>& alpha, int bw, int bh, int cw,
                       int ch);
@@ -221,8 +225,11 @@ class PetWindow {
   std::vector<std::vector<BYTE>> frames_alpha_;
   // Full BGRA PARGB cels (HBITMAP round-trips drop alpha → ULW blank pet).
   std::vector<std::vector<BYTE>> frames_pargb_;
+  // Horizontal mirrors of frames_pargb_ (lazy); avoids GDI+ flip every Paint.
+  std::vector<std::vector<BYTE>> frames_pargb_flip_;
   std::vector<BYTE> sprite_alpha_;
   std::vector<BYTE> sprite_pargb_;
+  std::vector<BYTE> sprite_pargb_flip_;
   int sprite_h_ = 0;
   std::vector<HBITMAP> frames_;
   int frame_i_ = 0;
@@ -268,6 +275,12 @@ class PetWindow {
   void* present_bits_ = nullptr;
   int present_buf_w_ = 0;
   int present_buf_h_ = 0;
+  // True after a full Present filled present_bits_ for current size/frame/facing.
+  bool present_content_valid_ = false;
+  int present_frame_i_ = -1;
+  int present_facing_ = 0;
+  int present_anim_tick_ = -1;
+  HCURSOR drag_size_cursor_ = nullptr;
   // Left-facing flip cache (dst DIB held selected in flip_dc_).
   HDC flip_dc_ = nullptr;
   HBITMAP flip_dib_ = nullptr;
