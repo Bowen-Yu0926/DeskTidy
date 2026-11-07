@@ -245,6 +245,7 @@ class App {
   HWINEVENTHOOK fg_hook_ = nullptr;
   std::vector<std::thread> workers_;
   int band_restore_left_ = 0;
+  bool band_restore_force_ = false;
   // Hybrid-GPU (Optimus/AMD switchable) overlay re-upload budget: re-Present
   // visible layered windows a few times after boot so a lost initial blit
   // recovers without a desktop click.

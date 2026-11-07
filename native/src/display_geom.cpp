@@ -632,12 +632,13 @@ IconGridMetrics QueryIconGridMetrics() {
 int MinFenceHeightForIconRows(int rows, const IconGridMetrics* metrics) {
   const IconGridMetrics local = metrics ? *metrics : QueryIconGridMetrics();
   const int n = (std::max)(1, rows);
-  // Match fence_window chrome: header 32 + bottom pad 12 @ 96dpi, then DPI.
+  // Match fence_window chrome: header 32 + pad 10 + footer 24 @ 96dpi, then DPI.
   const int dpi = SystemDpi();
   const int header = MulDiv(32, dpi, 96);
-  const int pad = MulDiv(12, dpi, 96);
+  const int pad = MulDiv(10, dpi, 96);
+  const int footer = MulDiv(24, dpi, 96);
   const int cell = (std::max)(48, local.cell_h);
-  return header + pad + n * cell;
+  return header + pad + n * cell + footer;
 }
 
 int ScalePxForDpi(int px, int dpi) {

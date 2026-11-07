@@ -5384,11 +5384,12 @@ void App::ScheduleDesktopBandRestore() {
       GetTickCount64() < suppress_band_restore_until_) {
     return;
   }
+  band_restore_force_ = true;
   // Coalesce like Python: bump settle budget; first tick after WorkerW settles.
-  if (band_restore_left_ < 12) {
-    band_restore_left_ = 12;
+  if (band_restore_left_ < 6) {
+    band_restore_left_ = 6;
   }
-  SetTimer(message_hwnd_, kTimerBandSettle, 280, nullptr);
+  SetTimer(message_hwnd_, kTimerBandSettle, 100, nullptr);
 }
 
 void App::StartForegroundHook() {
@@ -5619,8 +5620,12 @@ void App::RestoreDesktopChrome() {
   const bool show_desktop =
       IsShowDesktopActive() && !HasVisibleFullscreenCover();
   const bool band_changed = show_desktop != show_desktop_seated_;
-  if (DesktopChromeHealthy() && !band_changed) {
+  if (!band_restore_force_ && band_restore_left_ <= 0 &&
+      DesktopChromeHealthy() && !band_changed) {
     return;
+  }
+  if (band_restore_left_ <= 1) {
+    band_restore_force_ = false;
   }
 
   InvalidateDefViewCache();
@@ -6149,6 +6154,7 @@ LRESULT CALLBACK App::TrayWndProc(HWND hwnd, UINT msg, WPARAM wparam,
       // fullscreen cover first so we don't TOPMOST-lift fences over a game.
       if (wparam) {
         MinimizeFullscreenCover();
+        self->band_restore_force_ = true;
       }
       self->ScheduleDesktopBandRestore();
       return 0;
@@ -6252,15 +6258,14 @@ LRESULT CALLBACK App::TrayWndProc(HWND hwnd, UINT msg, WPARAM wparam,
         if (!self->DesktopChromeMayRestack()) {
           KillTimer(hwnd, kTimerBandSettle);
           self->band_restore_left_ = 0;
+          self->band_restore_force_ = false;
           return 0;
         }
         self->RestoreDesktopChrome();
-        // Stop once chrome is seated — do not burn the remaining settle budget
-        // (that was flashing after MessageBox / system dialog dismiss).
-        if (self->DesktopChromeHealthy() ||
-            --self->band_restore_left_ <= 0) {
+        if (--self->band_restore_left_ <= 0) {
           KillTimer(hwnd, kTimerBandSettle);
           self->band_restore_left_ = 0;
+          self->band_restore_force_ = false;
         }
         return 0;
       }

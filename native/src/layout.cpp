@@ -277,31 +277,49 @@ void NormalizePageNames(std::vector<std::wstring>* names) {
 }
 
 std::vector<FenceLayout> DefaultLayouts() {
-  // Fresh install: 工作页「常用」:「其他」≈6:1 宽；文档页「文档」铺满工作区。
-  // Work-row height = max(design ratio, two-row icon content_min), capped at
-  // half work (display-adaptivity / Fences-class).
+  // Fences-class: 工作页「常用」与「其他」采用均衡适中的网格列宽（约 1.25:1 比例，两侧均工整对齐单元格）；
+  // 底部留出呼吸边距，高度自适应容纳 2~3 行完整图标，避免底部切断。文档页「文档」铺满工作区。
   const RECT work = PrimaryWorkArea();
   const int aw = (std::max)(320, static_cast<int>(work.right - work.left));
   const int ah = (std::max)(240, static_cast<int>(work.bottom - work.top));
-  const int gap = (std::max)(4, aw * 4 / 1920);
+  const int dpi = SystemDpi();
+  const int gap = MulDiv(10, dpi, 96);
+  const int margin_x = MulDiv(10, dpi, 96);
+  const int margin_y = MulDiv(8, dpi, 96);
+  const int pad = MulDiv(10, dpi, 96);
+
   const IconGridMetrics grid = QueryIconGridMetrics();
-  const int content_min = MinFenceHeightForIconRows(2, &grid);
-  const int row_h =
-      (std::min)(ah / 2, (std::max)(content_min, ah * 400 / 1032));
-  // 6:1 of the usable width after the inter-fence gap.
-  const int usable = (std::max)(280, aw - gap);
-  int left_w = (std::max)(160, usable * 6 / 7);
-  int right_w = (std::max)(120, usable - left_w);
-  if (left_w + gap + right_w > aw) {
-    left_w = (std::max)(160, aw - gap - right_w);
+  const int cell_w = (std::max)(64, grid.cell_w);
+  const int cell_h = (std::max)(64, grid.cell_h);
+
+  const int usable_w = (std::max)(280, aw - margin_x * 2 - gap);
+  const int total_cols = (std::max)(6, (usable_w - pad * 4) / cell_w);
+
+  // 比例约 1.25:1（常用分配 ~56% 列数，其他分配 ~44% 列数），确保两侧均有足够列宽容纳图标
+  const int common_cols = (std::max)(3, (total_cols * 56 + 50) / 100);
+  const int side_cols = (std::max)(3, total_cols - common_cols);
+
+  int left_w = pad * 2 + common_cols * cell_w;
+  int right_w = usable_w - left_w;
+  if (right_w < pad * 2 + side_cols * cell_w) {
+    right_w = pad * 2 + side_cols * cell_w;
   }
+  if (left_w + gap + right_w > aw - margin_x * 2) {
+    right_w = (std::max)(pad * 2 + 2 * cell_w, aw - margin_x * 2 - gap - left_w);
+  }
+
+  // 高度：自适应容纳完整图标行数 + header + pad + footer，绝不切断半个图标
+  const int target_rows = (ah >= 860) ? 3 : 2;
+  const int content_h = MinFenceHeightForIconRows(target_rows, &grid);
+  const int content_min = MinFenceHeightForIconRows(2, &grid);
+  const int row_h = (std::min)(ah * 48 / 100, (std::max)(content_min, content_h));
 
   std::vector<FenceLayout> out;
   FenceLayout common;
   common.id = "system_common";
   common.title = L"常用";
-  common.x = work.left;
-  common.y = work.top;
+  common.x = work.left + margin_x;
+  common.y = work.top + margin_y;
   common.w = left_w;
   common.h = row_h;
   common.page = 0;
@@ -311,8 +329,8 @@ std::vector<FenceLayout> DefaultLayouts() {
   FenceLayout side;
   side.id = "system_software_side";
   side.title = L"其他";
-  side.x = work.left + left_w + gap;
-  side.y = work.top;
+  side.x = work.left + margin_x + left_w + gap;
+  side.y = work.top + margin_y;
   side.w = right_w;
   side.h = row_h;
   side.page = 0;
@@ -1241,12 +1259,12 @@ int RestoreSystemFenceProportions(std::vector<FenceLayout>* fences) {
   FenceLayout def_common = defaults[0];
   FenceLayout def_side = defaults[1];
   FenceLayout def_docs = defaults.size() > 2 ? defaults[2] : FenceLayout{};
-  // Skewed when far from default ~6:1 (常用 ate the row / 其他 vanished).
+  // Skewed when far from balanced layout (常用 ate the row >78% / 其他 vanished <22%).
   const int row_w =
       (std::max)(1, common->w + side->w +
                         (std::max)(0, side->x - (common->x + common->w)));
   const bool skewed =
-      common->w * 100 >= row_w * 92 || side->w * 100 <= row_w * 8;
+      common->w * 100 >= row_w * 78 || side->w * 100 <= row_w * 22;
   const RECT work = PrimaryWorkArea();
   const int ah = (std::max)(1, static_cast<int>(work.bottom - work.top));
   // Full-bleed height from display-scale corruption — same restore as skew.

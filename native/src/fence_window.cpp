@@ -1670,7 +1670,11 @@ void FenceWindow::LayoutCellsTo(int w, int h) {
                                static_cast<size_t>(cols));
     content_h_ = rows * cell_h;
   }
-  const int view = (std::max)(0, h - header - pad);
+  const int footer_h =
+      (!collapsed_ && (inner_r - inner_l) >= S(hwnd_, 180) && !cells_.empty())
+          ? S(hwnd_, 24)
+          : 0;
+  const int view = (std::max)(0, h - header - pad - footer_h);
   ClampScrollForView(view);
 
   const int inner_t = rc.top + header - scroll_y_;
@@ -3214,6 +3218,11 @@ LRESULT FenceWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
     FilterDesktopChromeWindowPosChanging(reinterpret_cast<WINDOWPOS*>(lparam));
   }
   switch (msg) {
+    case WM_ACTIVATE:
+      if (wparam != WA_INACTIVE) {
+        RefreshLayer();
+      }
+      return 0;
     case WM_PAINT: {
       PAINTSTRUCT ps{};
       BeginPaint(hwnd_, &ps);
@@ -3578,13 +3587,46 @@ LRESULT FenceWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
       }
       if (resizing_) {
         resizing_ = false;
-        resize_edge_ = Edge::None;
         // Commit owned height before Present/persist (ResolveLayerSize uses
         // expanded_h_ once resizing_ is clear).
         {
           RECT rc{};
           GetWindowRect(hwnd_, &rc);
           SnapRectToWorkArea(&rc, 0);
+
+          // Fences-style Grid Snapping: 吸附到最接近的整列与整行，支持任意尺寸且绝不切断半个单元格
+          if (!collapsed_) {
+            const int pad = S(hwnd_, kPad0);
+            const int header = S(hwnd_, kHeaderH0);
+            const int footer_h = S(hwnd_, 24);
+            const int cell_w = (std::max)(1, CellWidthPx());
+            const int cell_h = (std::max)(1, CellHeightPx());
+
+            const int cur_w = rc.right - rc.left;
+            const int cur_h = rc.bottom - rc.top;
+
+            int cols = (cur_w - pad * 2 + cell_w / 2) / cell_w;
+            cols = (std::max)(2, cols);
+            const int snap_w = pad * 2 + cols * cell_w;
+
+            int rows = (cur_h - header - pad - footer_h + cell_h / 2) / cell_h;
+            rows = (std::max)(1, rows);
+            const int snap_h = header + pad + rows * cell_h + footer_h;
+
+            const int ev = static_cast<int>(resize_edge_);
+            if (ev & static_cast<int>(Edge::Left)) {
+              rc.left = rc.right - snap_w;
+            } else {
+              rc.right = rc.left + snap_w;
+            }
+            if (ev & static_cast<int>(Edge::Top)) {
+              rc.top = rc.bottom - snap_h;
+            } else {
+              rc.bottom = rc.top + snap_h;
+            }
+            SnapRectToWorkArea(&rc, 0);
+          }
+
           const int nh = rc.bottom - rc.top;
           if (!collapsed_ && nh >= kFenceMinH) {
             expanded_h_ = (std::max)(kFenceExpandedFloor, nh);
@@ -3593,6 +3635,7 @@ LRESULT FenceWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
                               collapsed_ ? S(hwnd_, kCollapsedH0) : expanded_h_,
                               SWP_NOZORDER);
         }
+        resize_edge_ = Edge::None;
         AttachToDesktopLayer();
         // Final snap + sibling resolve (same path as drag-end).
         if (on_geometry_moved_) {
@@ -4142,9 +4185,9 @@ void FenceWindow::Paint(HDC hdc) {
   }
 
   // F5: bottom count / zoom hint band (hidden when narrow or collapsed).
-  if (!collapsed_ && rc.right >= S(hwnd_, 200)) {
-    const int footer_h = S(hwnd_, 22);
-    const int fy = rc.bottom - footer_h;
+  if (!collapsed_ && rc.right >= S(hwnd_, 180)) {
+    const int footer_h = S(hwnd_, 20);
+    const int fy = rc.bottom - footer_h - S(hwnd_, 4);
     std::wstring footer;
     if (GetTickCount() < footer_zoom_hint_until_) {
       footer = L"图标大小 " + std::to_wstring(icon_zoom_percent_) + L"%";

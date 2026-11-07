@@ -324,7 +324,10 @@ bool IsExplorerDesktopForeground() {
     if (GetClassNameW(cur, cls, 64) > 0) {
       if (wcscmp(cls, L"Progman") == 0 || wcscmp(cls, L"WorkerW") == 0 ||
           wcscmp(cls, L"SHELLDLL_DefView") == 0 ||
-          wcscmp(cls, L"SysListView32") == 0) {
+          wcscmp(cls, L"SysListView32") == 0 ||
+          wcscmp(cls, L"Shell_TrayWnd") == 0 ||
+          wcscmp(cls, L"Shell_SecondaryTrayWnd") == 0 ||
+          wcsncmp(cls, L"DeskTidy", 8) == 0) {
         return true;
       }
     }
@@ -367,10 +370,35 @@ bool IsShowDesktopActive() {
   if (!host.defview || !IsWindowAlive(host.defview)) {
     return false;
   }
-  return (GetWindowLongPtrW(host.defview, GWL_EXSTYLE) & WS_EX_TOPMOST) != 0;
+  if ((GetWindowLongPtrW(host.defview, GWL_EXSTYLE) & WS_EX_TOPMOST) != 0) {
+    return true;
+  }
+  if (host.host &&
+      (GetWindowLongPtrW(host.host, GWL_EXSTYLE) & WS_EX_TOPMOST) != 0) {
+    return true;
+  }
+  // Modern Windows 10/11: Show Desktop does not set WS_EX_TOPMOST on DefView.
+  // When Explorer desktop shell is foreground and no fullscreen app cover is live,
+  // show-desktop is active.
+  return IsExplorerDesktopForeground();
 }
 
 namespace {
+
+HWND WindowAboveDefView(HWND defview, HWND host, HWND self) {
+  HWND anchor = defview ? defview : host;
+  if (!anchor || !IsWindow(anchor)) {
+    return nullptr;
+  }
+  HWND above = GetWindow(anchor, GW_HWNDPREV);
+  if (above == self) {
+    above = GetWindow(self, GW_HWNDPREV);
+  }
+  if (above == self) {
+    return nullptr;
+  }
+  return above;
+}
 
 bool CoversMonitorRect(HWND hwnd, const RECT& mon) {
   RECT wr{};
@@ -514,8 +542,12 @@ void RaiseOverlayInDesktopBand(HWND hwnd) {
   if (self_topmost) {
     SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, flags);
   }
-  // Owned popup: HWND_BOTTOM under APPWINDOWs; ownership keeps us above DefView.
-  SetWindowPos(hwnd, HWND_BOTTOM, 0, 0, 0, 0, flags);
+  // Seat above DefView / WorkerW; insert-after window above DefView keeps us
+  // under APPWINDOWs without sinking to HWND_BOTTOM (which buries overlays
+  // under WorkerW wallpaper).
+  HWND above = WindowAboveDefView(host.defview, host.host, hwnd);
+  HWND insert_after = (above && above != hwnd) ? above : HWND_TOP;
+  SetWindowPos(hwnd, insert_after, 0, 0, 0, 0, flags);
   if (want_show) {
     ShowOverlayNoActivate(hwnd);
   }
