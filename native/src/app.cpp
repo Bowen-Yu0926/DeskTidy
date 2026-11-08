@@ -1,4 +1,4 @@
-﻿#include "app.h"
+#include "app.h"
 
 #include "autostart.h"
 #include "desktop_dblclick.h"
@@ -518,6 +518,30 @@ void App::WireFence(FenceWindow* fence) {
     rects[moved_i].x = snapped.x;
     rects[moved_i].y = snapped.y;
     ResolveFenceCollisions(&rects, kFenceMinW, kFenceMinH);
+    // Ensure horizontal siblings on the same row adapt seamlessly without overlapping
+    const int sibling_gap = MulDiv(10, SystemDpi(), 96);
+    for (size_t i = 0; i < rects.size(); ++i) {
+      for (size_t j = i + 1; j < rects.size(); ++j) {
+        LayoutRect& a = rects[i];
+        LayoutRect& b = rects[j];
+        if (std::abs(a.y - b.y) <= 40) {
+          LayoutRect* left_r = a.x <= b.x ? &a : &b;
+          LayoutRect* right_r = a.x <= b.x ? &b : &a;
+          if (left_r->right() + sibling_gap > right_r->x) {
+            right_r->x = left_r->right() + sibling_gap;
+            if (right_r->right() > work_r.right()) {
+              if (work_r.right() - right_r->x >= kFenceMinW) {
+                right_r->w = work_r.right() - right_r->x;
+              } else {
+                right_r->w = kFenceMinW;
+                right_r->x = work_r.right() - kFenceMinW;
+                left_r->w = (std::max)(kFenceMinW, right_r->x - left_r->x - sibling_gap);
+              }
+            }
+          }
+        }
+      }
+    }
     for (size_t i = 0; i < rects.size(); ++i) {
       RECT rr{rects[i].x, rects[i].y, rects[i].x + rects[i].w,
               rects[i].y + rects[i].h};

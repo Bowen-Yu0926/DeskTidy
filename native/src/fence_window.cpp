@@ -3645,42 +3645,24 @@ LRESULT FenceWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
           GetWindowRect(hwnd_, &rc);
           SnapRectToWorkArea(&rc, 0);
 
-          // Fences-style Grid Snapping: 吸附到最接近的整列与整行，支持任意尺寸且绝不切断半个单元格
-          if (!collapsed_) {
-            const int pad = S(hwnd_, kPad0);
-            const int header = S(hwnd_, kHeaderH0);
-            const int footer_h = S(hwnd_, 24);
-            const int cell_w = (std::max)(1, CellWidthPx());
-            const int cell_h = (std::max)(1, CellHeightPx());
-
-            const int cur_w = rc.right - rc.left;
-            const int cur_h = rc.bottom - rc.top;
-
-            int cols = (cur_w - pad * 2 + cell_w / 2) / cell_w;
-            cols = (std::max)(2, cols);
-            const int snap_w = pad * 2 + cols * cell_w;
-
-            int rows = (cur_h - header - pad - footer_h + cell_h / 2) / cell_h;
-            rows = (std::max)(1, rows);
-            const int snap_h = header + pad + rows * cell_h + footer_h;
-
-            const int ev = static_cast<int>(resize_edge_);
-            if (ev & static_cast<int>(Edge::Left)) {
-              rc.left = rc.right - snap_w;
-            } else {
-              rc.right = rc.left + snap_w;
-            }
-            if (ev & static_cast<int>(Edge::Top)) {
-              rc.top = rc.bottom - snap_h;
-            } else {
-              rc.bottom = rc.top + snap_h;
-            }
-            SnapRectToWorkArea(&rc, 0);
+          // Honor exact user-dragged bounds without artificial discrete step jump
+          const int nw = (std::max)(kFenceMinW, static_cast<int>(rc.right - rc.left));
+          const int nh = (std::max)(kFenceMinH, static_cast<int>(rc.bottom - rc.top));
+          const int ev = static_cast<int>(resize_edge_);
+          if (ev & static_cast<int>(Edge::Left)) {
+            rc.left = rc.right - nw;
+          } else {
+            rc.right = rc.left + nw;
           }
+          if (ev & static_cast<int>(Edge::Top)) {
+            rc.top = rc.bottom - nh;
+          } else {
+            rc.bottom = rc.top + nh;
+          }
+          SnapRectToWorkArea(&rc, 0);
 
-          const int nh = rc.bottom - rc.top;
-          if (!collapsed_ && nh >= kFenceMinH) {
-            expanded_h_ = (std::max)(kFenceExpandedFloor, nh);
+          if (!collapsed_) {
+            expanded_h_ = (std::max)(kFenceExpandedFloor, static_cast<int>(rc.bottom - rc.top));
           }
           SetOverlayScreenPos(hwnd_, rc.left, rc.top, rc.right - rc.left,
                               collapsed_ ? S(hwnd_, kCollapsedH0) : expanded_h_,
