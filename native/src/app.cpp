@@ -3347,7 +3347,22 @@ void App::SetFenceStyleAt(int index, const std::wstring& style_id) {
 }
 
 void App::SetAllFenceStyle(const std::wstring& style_id) {
-  ApplyGlobalThemeId(NarrowUtf8(style_id));
+  const std::string id = NormalizeFenceStyleId(NarrowUtf8(style_id));
+  prefs_.theme_id = id;
+  SaveAppPrefs(prefs_);
+  for (auto& fence : fences_) {
+    if (fence) {
+      fence->SetStyleId(id);
+    }
+  }
+  PersistLayouts();
+  PushExtensionSettings();
+  const auto* opt = FenceStyleById(id);
+  if (opt) {
+    ShowToast(std::wstring(L"已应用分区样式：") + opt->name);
+  } else {
+    ShowToast(L"已更新所有分区样式");
+  }
 }
 
 void App::SetFenceOpacityPctAt(int index, int opacity_pct) {
@@ -4217,7 +4232,7 @@ void App::CreateFenceOnPage(int page, bool switch_to_page) {
   layout.page = page;
   layout.pages = {page};
   layout.organize_kinds = {"file"};
-  layout.style_id = "navy"; // 分区独立默认样式，不联动全局主题
+  layout.style_id = prefs_.theme_id.empty() ? "navy" : prefs_.theme_id; // 跟随当前分区样式，不联动全局主题
   if (!SpawnFence(layout)) {
     return;
   }
@@ -4383,29 +4398,23 @@ void App::OpenLayoutEditor() {
 }
 
 void App::ApplyGlobalThemeId(const std::string& theme_id) {
-  const std::string id = NormalizeFenceStyleId(theme_id);
-  prefs_.theme_id = id;
+  ApplyUiThemeId(theme_id);
+}
+
+void App::ApplyThemeId(const std::string& theme_id) {
+  ApplyUiThemeId(theme_id);
+}
+
+void App::ApplyUiThemeId(const std::string& ui_theme) {
+  const std::string id = NormalizeUiTheme(ui_theme);
   prefs_.ui_theme = id;
-  // 分区不与全局主题联动，保留各自独立/原有样式
   SaveAppPrefs(prefs_);
-  PersistLayouts();
   settings_.ApplyUiThemeVars(UiThemeCssVars(id));
   todos_.ApplyUiTheme(id);
   ApplyTrayThemeIcon();
   ApplyChromeTheme();
   PushExtensionSettings();
-  const auto* opt = FenceStyleById(id);
-  if (opt) {
-    ShowToast(std::wstring(L"已切换主题：") + opt->name);
-  }
-}
-
-void App::ApplyThemeId(const std::string& theme_id) {
-  ApplyGlobalThemeId(theme_id);
-}
-
-void App::ApplyUiThemeId(const std::string& ui_theme) {
-  ApplyGlobalThemeId(ui_theme);
+  ShowToast(L"已切换主题");
 }
 
 COLORREF App::TrayAccentColor() const {
@@ -6104,7 +6113,7 @@ void App::AddFenceAtRect(const RECT& screen) {
   layout.w = (std::max)(kFenceMinW, drawn_w);
   layout.h = (std::max)(kFenceMinH, drawn_h);
   layout.page = current_page_;
-  layout.style_id = "navy"; // 分区独立默认样式，不联动全局主题
+  layout.style_id = prefs_.theme_id.empty() ? "navy" : prefs_.theme_id; // 跟随当前分区样式，不联动全局主题
   if (!SpawnFence(layout)) {
     return;
   }
