@@ -176,7 +176,7 @@ std::vector<HotkeyDef> DefaultHotkeys() {
       // PRD P0-2 / market: bare F1–F4 collide with Help/Rename/Find — use
       // Ctrl+Alt+N (Fences-class tools also avoid naked F-keys as defaults).
       H("screenshot", "hk_screenshot", MOD_CONTROL | MOD_ALT, '1'),
-      H("show_screenshot", "hk_show_screenshot", MOD_CONTROL | MOD_ALT, '2'),
+      H("show_screenshot", "hk_show_screenshot", 0, VK_F2),
       H("screen_record", "hk_screen_record", MOD_CONTROL | MOD_ALT, '3'),
       H("file_search", "hk_file_search", MOD_CONTROL | MOD_ALT, '4'),
       H("calculator", "hk_calculator", MOD_CONTROL | MOD_ALT, 'C'),
@@ -357,7 +357,7 @@ std::vector<std::wstring> HotkeyFallbacks(const std::string& id) {
     return {L"Ctrl+Alt+1", L"Ctrl+Shift+S", L"Ctrl+Alt+S"};
   }
   if (id == "show_screenshot") {
-    return {L"Ctrl+Alt+2", L"Ctrl+Shift+P", L"Ctrl+Alt+P"};
+    return {L"F2", L"Ctrl+Alt+2", L"Ctrl+Shift+P", L"Ctrl+Alt+P"};
   }
   if (id == "screen_record") {
     return {L"Ctrl+Alt+3", L"Ctrl+Shift+R"};

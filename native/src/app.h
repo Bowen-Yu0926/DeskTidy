@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include "app_prefs.h"
 #include "capture_overlay.h"
@@ -152,6 +152,7 @@ class App {
   void ApplyHotkeyChord(const std::wstring& key_id, const std::wstring& chord);
   void DispatchSettingsCommand(const std::wstring& id);
   void PinImage(const std::wstring& path);
+  bool PinClipboardImage();
   void ReregisterHotkeys();
   // P1-28: start/update elevated hotkey helper relay.
   void SyncHotkeyRelay();

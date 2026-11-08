@@ -1729,21 +1729,26 @@ void App::DispatchHotkey(const std::string& id) {
   } else if (id == "screenshot" || id == "shot") {
     StartRegionCapture();
   } else if (id == "show_screenshot" || id == "fullscreen") {
-    // Python: walk newest→oldest recent shots, one pin per press.
+    // F2贴图：剪贴板优先贴图（Snipaste/PixPin体验）
+    if (PinClipboardImage()) {
+      return;
+    }
     if (!recent_shots_.empty()) {
       if (recent_shot_i_ >= recent_shots_.size()) {
         recent_shot_i_ = 0;
       }
       PinImage(recent_shots_[recent_shot_i_++]);
-    } else if (!pins_img_.empty()) {
+      return;
+    }
+    if (!pins_img_.empty()) {
       for (auto& p : pins_img_) {
         if (p) {
           p->Show();
         }
       }
-    } else {
-      CaptureRegionToPng(settings_.Hwnd());
+      return;
     }
+    ShowToast(L"剪贴板中无图片，请先截图或复制图片 (F2贴图)");
   } else if (id == "screen_record" || id == "record") {
     if (!prefs_.record_enabled && !IsScreenRecording()) {
       ShowToast(L"录屏未启用 — 请在设置 → 扩展功能中打开");
@@ -2063,6 +2068,24 @@ void App::StartRegionCapture() {
       auto_pin);
 }
 
+static int GetPngEncoderClsid(CLSID* pClsid) {
+  UINT num = 0, size = 0;
+  Gdiplus::GetImageEncodersSize(&num, &size);
+  if (!size) return -1;
+  auto* info = static_cast<Gdiplus::ImageCodecInfo*>(malloc(size));
+  if (!info) return -1;
+  Gdiplus::GetImageEncoders(num, size, info);
+  for (UINT i = 0; i < num; ++i) {
+    if (wcscmp(info[i].MimeType, L"image/png") == 0) {
+      *pClsid = info[i].Clsid;
+      free(info);
+      return static_cast<int>(i);
+    }
+  }
+  free(info);
+  return -1;
+}
+
 void App::PinImage(const std::wstring& path) {
   if (path.empty()) {
     return;
@@ -2071,8 +2094,8 @@ void App::PinImage(const std::wstring& path) {
   if (max_pins < 1) {
     max_pins = 1;
   }
-  if (max_pins > 5) {
-    max_pins = 5;
+  if (max_pins > 8) {
+    max_pins = 8;
   }
   while (static_cast<int>(pins_img_.size()) >= max_pins) {
     if (pins_img_.front()) {
@@ -2086,6 +2109,81 @@ void App::PinImage(const std::wstring& path) {
   }
   img->Show();
   pins_img_.push_back(std::move(img));
+}
+
+bool App::PinClipboardImage() {
+  if (!OpenClipboard(nullptr)) {
+    return false;
+  }
+
+  std::wstring file_path;
+  HBITMAP clip_bmp = nullptr;
+
+  // 1. 优先检查剪贴板是否复制了图片文件 (CF_HDROP)
+  if (IsClipboardFormatAvailable(CF_HDROP)) {
+    HDROP hdrop = static_cast<HDROP>(GetClipboardData(CF_HDROP));
+    if (hdrop) {
+      wchar_t buf[MAX_PATH]{};
+      const UINT count = DragQueryFileW(hdrop, 0xFFFFFFFF, nullptr, 0);
+      for (UINT i = 0; i < count; ++i) {
+        if (DragQueryFileW(hdrop, i, buf, MAX_PATH)) {
+          const std::wstring p = buf;
+          const size_t dot = p.find_last_of(L'.');
+          if (dot != std::wstring::npos) {
+            std::wstring ext = p.substr(dot);
+            for (auto& c : ext) c = static_cast<wchar_t>(towlower(c));
+            if (ext == L".png" || ext == L".jpg" || ext == L".jpeg" ||
+                ext == L".bmp" || ext == L".gif" || ext == L".webp") {
+              file_path = p;
+              break;
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // 2. 检查剪贴板中直接复制的位图 (CF_BITMAP)
+  if (file_path.empty() && IsClipboardFormatAvailable(CF_BITMAP)) {
+    HBITMAP raw = static_cast<HBITMAP>(GetClipboardData(CF_BITMAP));
+    if (raw) {
+      clip_bmp = static_cast<HBITMAP>(CopyImage(raw, IMAGE_BITMAP, 0, 0, LR_COPYRETURNORG));
+    }
+  }
+
+  CloseClipboard();
+
+  if (!file_path.empty()) {
+    PinImage(file_path);
+    return true;
+  }
+
+  if (clip_bmp) {
+    const std::wstring dir = JoinPath(NativeDataDir(), L"pins");
+    CreateDirectoryW(dir.c_str(), nullptr);
+    const ULONGLONG tick = GetTickCount64();
+    const std::wstring out_path = JoinPath(dir, L"clip_pin_" + std::to_wstring(tick) + L".png");
+
+    ULONG_PTR token = 0;
+    Gdiplus::GdiplusStartupInput input;
+    Gdiplus::GdiplusStartup(&token, &input, nullptr);
+    {
+      Gdiplus::Bitmap gbmp(clip_bmp, nullptr);
+      CLSID clsid{};
+      if (GetPngEncoderClsid(&clsid) >= 0) {
+        gbmp.Save(out_path.c_str(), &clsid, nullptr);
+      }
+    }
+    Gdiplus::GdiplusShutdown(token);
+    DeleteObject(clip_bmp);
+
+    if (GetFileAttributesW(out_path.c_str()) != INVALID_FILE_ATTRIBUTES) {
+      PinImage(out_path);
+      return true;
+    }
+  }
+
+  return false;
 }
 
 void App::ShowHotkeys() { ShowHotkeyHelp(settings_.Hwnd()); }
