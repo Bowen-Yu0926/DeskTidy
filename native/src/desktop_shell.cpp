@@ -318,19 +318,29 @@ bool IsExplorerDesktopForeground() {
   if (!IsWindowAlive(fg)) {
     return false;
   }
+  // 若前台窗口属于本进程（如 DeskTidy 设置后台、提示框等），绝不是桌面
+  DWORD fg_pid = 0;
+  GetWindowThreadProcessId(fg, &fg_pid);
+  if (fg_pid == GetCurrentProcessId()) {
+    return false;
+  }
+
   HWND cur = fg;
   for (int hop = 0; hop < 6 && IsWindowAlive(cur); ++hop) {
     wchar_t cls[64] = {};
     if (GetClassNameW(cur, cls, 64) > 0) {
+      // 任务栏及其现代组件绝非桌面！点击托盘/任务栏/开始菜单绝不可误判为切换到桌面
+      if (wcscmp(cls, L"Shell_TrayWnd") == 0 ||
+          wcscmp(cls, L"Shell_SecondaryTrayWnd") == 0 ||
+          wcscmp(cls, L"XamlExplorerHostIslandWindow") == 0 ||
+          wcscmp(cls, L"Windows.UI.Composition.DesktopWindowContentBridge") == 0) {
+        return false;
+      }
+      // 真正的桌面外壳宿主（点击桌面壁纸/图标）
       if (wcscmp(cls, L"Progman") == 0 || wcscmp(cls, L"WorkerW") == 0 ||
           wcscmp(cls, L"SHELLDLL_DefView") == 0 ||
           wcscmp(cls, L"SysListView32") == 0 ||
-          wcscmp(cls, L"DirectUIHWND") == 0 ||
-          wcscmp(cls, L"Shell_TrayWnd") == 0 ||
-          wcscmp(cls, L"Shell_SecondaryTrayWnd") == 0 ||
-          wcscmp(cls, L"XamlExplorerHostIslandWindow") == 0 ||
-          wcscmp(cls, L"Windows.UI.Composition.DesktopWindowContentBridge") == 0 ||
-          wcsncmp(cls, L"DeskTidy", 8) == 0) {
+          wcscmp(cls, L"DirectUIHWND") == 0) {
         return true;
       }
     }

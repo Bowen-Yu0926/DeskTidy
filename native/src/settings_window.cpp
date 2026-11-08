@@ -1220,14 +1220,9 @@ void SettingsWindow::Show() {
   } else {
     ShowWindow(hwnd_, SW_SHOW);
   }
-  // Tray callbacks often lack foreground rights — brief TOPMOST bounce is the
-  // usual way to surface an already-open settings window (market tray apps).
-  SetWindowPos(hwnd_, HWND_TOPMOST, 0, 0, 0, 0,
-               SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
+  // 市面标准规范：干净拉起前台，绝不在 TOPMOST 与 NOTOPMOST 间震荡
   SetForegroundWindow(hwnd_);
   BringWindowToTop(hwnd_);
-  SetWindowPos(hwnd_, HWND_NOTOPMOST, 0, 0, 0, 0,
-               SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
   if (!web_available_) {
     CreateWebView();
   }

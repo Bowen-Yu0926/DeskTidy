@@ -766,7 +766,6 @@ bool App::Init(HINSTANCE instance) {
       [this]() { AddFence(); },
       [this](int index) { RemoveFenceAt(index); },
       [this]() {
-        SeatAllFencesUnderApps();
         settings_.Show();
       },
       [this](int index, const std::wstring& title) {
@@ -3378,8 +3377,7 @@ void App::DeferredOpenSettingsVaultSync() {
   if (!settings_.IsOpen()) {
     return;
   }
-  // Runs after the window is already visible — keep this off the tray click.
-  SeatAllFencesUnderApps();
+  // 后台打开：严格保持分区原样不动，绝不调用任何桌面重排函数
   RefreshSettingsList();
   settings_.SetToggles(dock_visible_, pet_visible_, IsNativeAutostartEnabled());
   settings_.SetOrganizePrefs(prefs_.auto_organize_on_startup,
@@ -3400,11 +3398,12 @@ void App::DeferredOpenSettingsVaultSync() {
 }
 
 void App::OpenSettings() {
-  // Pause band-settle churn while settings is up (raise/sink was flashing).
+  // 保持后台纯净打开：暂停并抑制任何桌面层级重排，确保分区绝对原封不动
   if (message_hwnd_ && band_restore_left_ > 0) {
     KillTimer(message_hwnd_, kTimerBandSettle);
     band_restore_left_ = 0;
   }
+  suppress_band_restore_until_ = GetTickCount64() + 2000;
   // Tray click: show the HWND immediately; fill data on the next timer tick.
   settings_.Show();
   if (settings_.Hwnd()) {
