@@ -1393,6 +1393,7 @@ void PetWindow::EnterWait(DWORD now) {
     return;
   }
   walking_ = false;
+  facing_ = 1;
   falling_ = false;
   climbing_ = false;
   on_ledge_ = false;
@@ -1406,6 +1407,7 @@ void PetWindow::EnterWait(DWORD now) {
 
 void PetWindow::ScheduleIdle(DWORD now) {
   walking_ = false;
+  facing_ = 1;
   falling_ = false;
   climbing_ = false;
   on_ledge_ = false;
@@ -1522,22 +1524,10 @@ void PetWindow::RunAi(DWORD now) {
     }
     mood_ = (std::min)(100.f, mood_ + 1.5f);
   }
-  // P1-14: face the cursor whenever it is near (not just on the approach edge),
-  // so the sprite mirrors as the cursor crosses left↔right while hovering.
-  // wait/play/perch 同样左右可转；剑仙倚树 sleep 锁朝左（树+抱剑素材）。
-  const bool face_ok =
-      pose_ == L"idle" || pose_ == L"walk" || pose_ == L"wait" ||
-      pose_ == L"play" || pose_ == L"perch" || walking_;
-  const bool face_locked =
-      character_ == L"xianjian" && (pose_ == L"sleep" || pose_ == L"lie");
-  if (cursor_near && face_ok && !face_locked) {
-    if (cur.x != cx) {
-      const int f = cur.x > cx ? 1 : -1;
-      if (f != facing_) {
-        facing_ = f;
-        present_dirty_ = true;
-      }
-    }
+  // 等待/站立等非行走状态下保持单一默认自然朝向（facing_ = 1），不跟随鼠标翻转
+  if (!walking_ && !dragging_ && facing_ != 1) {
+    facing_ = 1;
+    present_dirty_ = true;
   }
   cursor_was_near_ = cursor_near;
 }
