@@ -128,5 +128,5 @@ void ShowAppHelpCenter(HWND owner) {
     }
     return id == L"close";
   };
-  MistWebDialogRun(&dlg, L"帮助", 560, 560);
+  MistWebDialogRun(&dlg, L"帮助", 680, 620);
 }

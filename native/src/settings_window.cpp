@@ -211,12 +211,26 @@ bool SettingsWindow::Create(HINSTANCE instance) {
   wc.hIconSm = CreateBrandMarkIcon(16);
   RegisterClassExW(&wc);
 
-  const int default_w = 960;
-  const int default_h = 660;
+  // 现代桌面软件后台标准尺寸（1120x740），并自适应当前工作区居中展示
+  int default_w = 1120;
+  int default_h = 740;
+  RECT work{};
+  SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0);
+  const int work_w = work.right - work.left;
+  const int work_h = work.bottom - work.top;
+  if (default_w > static_cast<int>(work_w * 0.9f)) {
+    default_w = static_cast<int>(work_w * 0.9f);
+  }
+  if (default_h > static_cast<int>(work_h * 0.9f)) {
+    default_h = static_cast<int>(work_h * 0.9f);
+  }
+  const int pos_x = work.left + (work_w - default_w) / 2;
+  const int pos_y = work.top + (work_h - default_h) / 2;
+
   hwnd_ = CreateWindowExW(
       WS_EX_APPWINDOW, kClassName, L"DeskTidy 设置",
-      WS_OVERLAPPEDWINDOW, CW_USEDEFAULT,
-      CW_USEDEFAULT, default_w, default_h, nullptr, nullptr, instance, this);
+      WS_OVERLAPPEDWINDOW, pos_x, pos_y, default_w, default_h, nullptr,
+      nullptr, instance, this);
   if (!hwnd_) {
     return false;
   }

@@ -209,6 +209,6 @@ bool EditRulesDialog(
     return false;
   };
 
-  MistWebDialogRun(&dlg, L"整理规则", 560, 440);
+  MistWebDialogRun(&dlg, L"整理规则", 680, 520);
   return ctx.saved;
 }

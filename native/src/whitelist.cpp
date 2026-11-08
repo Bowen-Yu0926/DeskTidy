@@ -362,5 +362,5 @@ void EditWhitelistDialog(HWND owner) {
     return false;
   };
 
-  MistWebDialogRun(&dlg, L"整理白名单", 520, 420);
+  MistWebDialogRun(&dlg, L"整理白名单", 640, 500);
 }

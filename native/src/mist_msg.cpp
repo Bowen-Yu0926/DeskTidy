@@ -178,7 +178,7 @@ MistMsgResult MistMessage(HWND owner, const wchar_t* title,
     return true;
   };
 
-  MistWebDialogRun(&dlg, title ? title : L"提示", 440, 260);
+  MistWebDialogRun(&dlg, title ? title : L"提示", 480, 280);
   // DestroyWeb clears web_available — do NOT re-check it after Run returns,
   // or every successful Mist click would also open the Win32 MessageBox.
   if (answered) {
@@ -258,7 +258,7 @@ std::wstring MistPromptText(HWND owner, const wchar_t* title,
     return true;
   };
 
-  MistWebDialogRun(&dlg, title ? title : L"输入", 440, 220);
+  MistWebDialogRun(&dlg, title ? title : L"输入", 480, 260);
   if (answered) {
     return accepted ? result : std::wstring{};
   }

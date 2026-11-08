@@ -46,8 +46,8 @@ struct FencePageGeometry {
 constexpr int kFenceMinW = 160;
 constexpr int kFenceMinH = 120;
 constexpr int kFenceExpandedFloor = 180;
-constexpr int kFenceDefaultW = 280;
-constexpr int kFenceDefaultH = 360;
+constexpr int kFenceDefaultW = 320;
+constexpr int kFenceDefaultH = 400;
 
 struct FenceLayout {
   std::string id;

@@ -634,7 +634,7 @@ void ConfigureScreenRecord(HWND owner) {
     return false;
   };
 
-  MistWebDialogRun(&dlg, Tr("record_settings").c_str(), 460, 420);
+  MistWebDialogRun(&dlg, Tr("record_settings").c_str(), 560, 480);
   if (ok) {
     SaveAppPrefs(prefs);
     ShowToast(Tr("record_saved"));

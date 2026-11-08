@@ -741,7 +741,7 @@ bool PickRecordMonitor(HWND owner, const std::vector<MonitorInfo>& mons,
     }
     return false;
   };
-  MistWebDialogRun(&dlg, L"录屏", 480, 360);
+  MistWebDialogRun(&dlg, L"录屏", 560, 420);
   if (!ok) {
     return false;
   }
@@ -1381,7 +1381,7 @@ void RunKeepDiscardRenameDialog(std::wstring saved) {
       }
       return false;
     };
-    MistWebDialogRun(&dlg, L"录屏", 480, 300);
+    MistWebDialogRun(&dlg, L"录屏", 540, 360);
   }
 
   if (!answered && mist_attempted) {

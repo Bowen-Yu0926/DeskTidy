@@ -256,7 +256,7 @@ void EditPageFoldersDialog(HWND owner) {
     return false;
   };
 
-  MistWebDialogRun(&dlg, L"分页文件夹", 560, 440);
+  MistWebDialogRun(&dlg, L"分页文件夹", 660, 520);
   // Closing the title-bar X used to discard unsaved adds — flush once more.
   PersistIfDirty(&ctx);
 }

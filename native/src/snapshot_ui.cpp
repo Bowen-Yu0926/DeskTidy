@@ -237,6 +237,6 @@ bool ManageSnapshotsDialog(HWND owner, AppState* applied,
     return false;
   };
 
-  MistWebDialogRun(&dlg, Tr("snap_mgr_title").c_str(), 580, 420);
+  MistWebDialogRun(&dlg, Tr("snap_mgr_title").c_str(), 680, 500);
   return ctx.restored;
 }
