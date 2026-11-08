@@ -582,12 +582,24 @@ void FenceWindow::PresentLayered() {
     g.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
     g.SetPixelOffsetMode(Gdiplus::PixelOffsetModeNone);
     const BYTE a = panel_alpha_;
-    Gdiplus::SolidBrush fill(Gdiplus::Color(a, GetRValue(bg_), GetGValue(bg_),
-                                            GetBValue(bg_)));
-    Gdiplus::GraphicsPath path;
     const int rr = radius * 2;
     const int rw = (std::max)(1, w - 1);
     const int rh = (std::max)(1, h - 1);
+
+    // 360-style glossy vertical frosted acrylic wash
+    const BYTE r_val = GetRValue(bg_);
+    const BYTE g_val = GetGValue(bg_);
+    const BYTE b_val = GetBValue(bg_);
+    const BYTE top_a = static_cast<BYTE>((std::min)(255, static_cast<int>(a) + 10));
+    const BYTE top_r = static_cast<BYTE>((std::min)(255, static_cast<int>(r_val) + (light_panel_ ? -3 : 8)));
+    const BYTE top_g = static_cast<BYTE>((std::min)(255, static_cast<int>(g_val) + (light_panel_ ? -3 : 8)));
+    const BYTE top_b = static_cast<BYTE>((std::min)(255, static_cast<int>(b_val) + (light_panel_ ? -3 : 12)));
+    Gdiplus::LinearGradientBrush fill(
+        Gdiplus::Point(0, 0), Gdiplus::Point(0, rh),
+        Gdiplus::Color(top_a, top_r, top_g, top_b),
+        Gdiplus::Color(a, r_val, g_val, b_val));
+
+    Gdiplus::GraphicsPath path;
     if (rr > 2 && rr < rw && rr < rh) {
       path.AddArc(0, 0, rr, rr, 180, 90);
       path.AddArc(rw - rr, 0, rr, rr, 270, 90);
@@ -650,7 +662,7 @@ void FenceWindow::PresentLayered() {
     }
 
     COLORREF border = light_panel_ ? RGB(15, 23, 42) : RGB(255, 255, 255);
-    const BYTE ba = light_panel_ ? 42 : 36;
+    const BYTE ba = light_panel_ ? 32 : 30;
     Gdiplus::Pen edge(Gdiplus::Color(ba, GetRValue(border), GetGValue(border),
                                      GetBValue(border)),
                       1.0f);
@@ -691,7 +703,13 @@ void FenceWindow::RefreshLayer() {
 
 void FenceWindow::SetStyleId(const std::string& style_id) {
   style_id_ = NormalizeFenceStyleId(style_id);
+  has_custom_colors_ = false;
+  opacity_override_ = -1;
+  radius_override_ = -1;
   ApplyStyle();
+  if (hwnd_ && IsWindowVisible(hwnd_)) {
+    PresentLayered();
+  }
 }
 
 void FenceWindow::SetOpacity(int opacity) {
@@ -3932,21 +3950,31 @@ void FenceWindow::Paint(HDC hdc) {
   }
 
   const int view = (std::max)(0, static_cast<int>(rc.bottom) - header - pad);
+  // Modern 360-style ultra-thin pill scrollbar (no background track)
   if (content_h_ > view && view > 0) {
-    const int track_top = header + 2;
-    const int track_h = (std::max)(8, static_cast<int>(rc.bottom) - track_top - 4);
+    const int track_top = header + 4;
+    const int track_h = (std::max)(8, static_cast<int>(rc.bottom) - track_top - 6);
     const int thumb_h =
-        (std::max)(16, track_h * view / (std::max)(1, content_h_));
+        (std::max)(22, track_h * view / (std::max)(1, content_h_));
     const int max_scroll = (std::max)(1, content_h_ - view);
     int thumb_y = track_top + (track_h - thumb_h) * scroll_y_ / max_scroll;
     if (thumb_y + thumb_h > track_top + track_h) {
       thumb_y = track_top + track_h - thumb_h;
     }
-    const int edge = kEdge;
-    RECT thumb{rc.right - edge - 6, thumb_y, rc.right - edge - 2, thumb_y + thumb_h};
-    HBRUSH thumb_br = CreateSolidBrush(accent_);
-    FillRect(hdc, &thumb, thumb_br);
-    DeleteObject(thumb_br);
+    const float pill_x = static_cast<float>(rc.right - kEdge - 5);
+    const float pill_w = 3.2f;
+    const float pill_y = static_cast<float>(thumb_y);
+    const float pill_h = static_cast<float>(thumb_h);
+
+    Gdiplus::GraphicsPath pill_path;
+    pill_path.AddArc(pill_x, pill_y, pill_w, pill_w, 180, 180);
+    pill_path.AddArc(pill_x, pill_y + pill_h - pill_w, pill_w, pill_w, 0, 180);
+    pill_path.CloseFigure();
+
+    Gdiplus::SolidBrush pill_br(Gdiplus::Color(
+        light_panel_ ? 95 : 125,
+        GetRValue(accent_), GetGValue(accent_), GetBValue(accent_)));
+    g.FillPath(&pill_br, &pill_path);
   }
 
   g.SetClip(Gdiplus::Rect(rc.left, header, rc.right - rc.left,

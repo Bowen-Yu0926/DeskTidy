@@ -1335,17 +1335,14 @@
   </div>
 </div>
 <script>
+  // 精选 6 款经典 360 桌面整理通透磨砂配色
   const STYLE_COLORS = {
-    navy: { bg: '#202633', accent: '#4CC2FF', text: '#FFFFFF' },
-    cyberpunk: { bg: '#101422', accent: '#00F0FF', text: '#FFFFFF' },
-    aurora: { bg: '#11201D', accent: '#00FFAB', text: '#FFFFFF' },
-    sunset: { bg: '#241422', accent: '#FF5C8A', text: '#FFFFFF' },
-    obsidian: { bg: '#13151C', accent: '#94A3B8', text: '#FFFFFF' },
-    graphite: { bg: '#2E3036', accent: '#64A0FF', text: '#FFFFFF' },
-    midnight: { bg: '#201A2E', accent: '#A578FF', text: '#FFFFFF' },
-    mica: { bg: '#F3F4F8', accent: '#2F6FED', text: '#161C28' },
-    latte: { bg: '#F2E7DA', accent: '#C07A4A', text: '#2B1E14' },
-    matcha: { bg: '#DEE7DA', accent: '#5E8C6A', text: '#1C261E' }
+    obsidian: { bg: '#141822', accent: '#E2E8F0', text: '#FFFFFF', name: '曜石黑' },
+    navy:     { bg: '#101A2E', accent: '#38BDF8', text: '#FFFFFF', name: '深海蓝' },
+    mica:     { bg: '#F6F8FC', accent: '#2563EB', text: '#1E293B', name: '云母白' },
+    aurora:   { bg: '#0E1E1A', accent: '#34D399', text: '#FFFFFF', name: '极光绿' },
+    sunset:   { bg: '#241814', accent: '#FB923C', text: '#FFFFFF', name: '落霞金' },
+    midnight: { bg: '#1A122A', accent: '#C084FC', text: '#FFFFFF', name: '幻夜紫' }
   };
 
   const state = {
@@ -1760,9 +1757,16 @@
     }).join('');
     box.querySelectorAll('[data-style]').forEach((chip) => {
       chip.addEventListener('click', () => {
-        post({ type: 'action', id: 'fence_set_style_all', value: chip.dataset.style });
-        state.theme_id = chip.dataset.style;
+        const sid = chip.dataset.style;
+        post({ type: 'action', id: 'fence_set_style_all', value: sid });
+        state.theme_id = sid;
+        if (Array.isArray(state.fences)) {
+          state.fences.forEach((f) => { f.style_id = sid; });
+        }
         renderGlobalStyle();
+        if (typeof renderFences === 'function') {
+          renderFences();
+        }
       });
     });
   }
