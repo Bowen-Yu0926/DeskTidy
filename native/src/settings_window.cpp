@@ -211,10 +211,12 @@ bool SettingsWindow::Create(HINSTANCE instance) {
   wc.hIconSm = CreateBrandMarkIcon(16);
   RegisterClassExW(&wc);
 
+  const int default_w = 960;
+  const int default_h = 660;
   hwnd_ = CreateWindowExW(
       WS_EX_APPWINDOW, kClassName, L"DeskTidy 设置",
-      WS_OVERLAPPEDWINDOW & ~WS_THICKFRAME & ~WS_MAXIMIZEBOX, CW_USEDEFAULT,
-      CW_USEDEFAULT, 920, 640, nullptr, nullptr, instance, this);
+      WS_OVERLAPPEDWINDOW, CW_USEDEFAULT,
+      CW_USEDEFAULT, default_w, default_h, nullptr, nullptr, instance, this);
   if (!hwnd_) {
     return false;
   }
@@ -1499,9 +1501,16 @@ LRESULT SettingsWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
       }
       return 0;
     }
+    case WM_GETMINMAXINFO: {
+      auto* mmi = reinterpret_cast<MINMAXINFO*>(lparam);
+      const UINT dpi = GetDpiForWindow(hwnd_);
+      mmi->ptMinTrackSize.x = MulDiv(820, dpi, 96);
+      mmi->ptMinTrackSize.y = MulDiv(560, dpi, 96);
+      return 0;
+    }
     case WM_SIZE:
       ResizeWebView();
-        return 0;
+      return 0;
     case WM_CLOSE:
       if (ext_.close_to_tray) {
         Hide();
