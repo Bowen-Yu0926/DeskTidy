@@ -689,6 +689,8 @@ std::wstring SettingsWindow::BuildStateJson() const {
   json += L",\"page_chrome_style\":\"";
   json += JsonEscape(WidenUtf8(
       ext_.page_chrome_style == "tabs" ? "tabs" : "float"));
+  json += L"\",\"page_bar_style\":\"";
+  json += JsonEscape(WidenUtf8(ext_.page_bar_style));
   json += L"\",\"vault_enabled\":";
   json += flag(ext_.vault_enabled);
   json += L",\"vault_api_base\":\"";

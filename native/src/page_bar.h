@@ -58,6 +58,8 @@ class PageBar {
   // X2: absolute dpi/96 rescale of chip / slot / font (design sheet @ 96 DPI).
   void ScaleForDpi(int old_dpi, int new_dpi);
   void ApplyStyle(COLORREF background, COLORREF accent, COLORREF title);
+  using StyleFn = std::function<void(const std::string&)>;
+  void SetOnSetStyle(StyleFn fn) { on_set_style_ = std::move(fn); }
   void SetOnPage(PageFn fn) { on_page_ = std::move(fn); }
   void SetOnRenamePage(VoidFn fn) { on_rename_page_ = std::move(fn); }
   void SetOnTool(ToolFn fn) { on_tool_ = std::move(fn); }
@@ -177,6 +179,7 @@ class PageBar {
   PageFn on_rename_page_at_;
   PageFn on_toggle_page_lock_;
   std::vector<std::wstring> fence_titles_;
+  StyleFn on_set_style_;
   std::function<void(int, int)> on_move_fence_to_page_;
   HDC layer_dc_ = nullptr;
   HBITMAP layer_dib_ = nullptr;

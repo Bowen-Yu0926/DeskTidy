@@ -1114,6 +1114,9 @@ bool App::Init(HINSTANCE instance) {
                                                                  : "float";
       SaveAppPrefs(prefs_);
       SyncPageChrome();
+    } else if (id == L"page_bar_style") {
+      SetPageBarStyle(value);
+      return;
     } else {
       return;
     }
@@ -1199,6 +1202,9 @@ bool App::Init(HINSTANCE instance) {
   page_bar_.SetOnMoved([this]() {
     prefs_.page_bar_anchor_y = page_bar_.AnchorY();
     SaveAppPrefs(prefs_);
+  });
+  page_bar_.SetOnSetStyle([this](const std::string& style_id) {
+    SetPageBarStyle(WidenUtf8(style_id));
   });
   public_host_.Create(instance);
   dock_.SetOnPathReplaced(
@@ -3201,6 +3207,8 @@ void App::PushExtensionSettings() {
   ext.lang = CurrentLang() ? CurrentLang() : "zh";
   ext.app_version = NativeProductVersion();
   ext.theme_id = prefs_.theme_id;
+  ext.page_bar_style =
+      prefs_.page_bar_style.empty() ? "navy" : prefs_.page_bar_style;
   ext.ui_theme = NormalizeUiTheme(prefs_.ui_theme);
   ext.themes.clear();
   for (const auto* s : AllFenceStyles()) {
@@ -3363,6 +3371,20 @@ void App::SetAllFenceStyle(const std::wstring& style_id) {
   } else {
     ShowToast(L"已更新所有分区样式");
   }
+}
+
+void App::SetPageBarStyle(const std::wstring& style_id) {
+  const std::string id = NormalizeFenceStyleId(NarrowUtf8(style_id));
+  prefs_.page_bar_style = id;
+  SaveAppPrefs(prefs_);
+  const auto* opt = FenceStyleById(id);
+  if (opt) {
+    page_bar_.ApplyStyle(opt->background, opt->accent, opt->title);
+    ShowToast(std::wstring(L"已更新页签颜色：") + opt->name);
+  } else {
+    ShowToast(L"已更新页签颜色");
+  }
+  PushExtensionSettings();
 }
 
 void App::SetFenceOpacityPctAt(int index, int opacity_pct) {
@@ -4061,11 +4083,19 @@ void App::OnUpdateProgress(int pct) {
 }
 
 void App::ApplyChromeTheme() {
+  const std::string bar_style_id =
+      prefs_.page_bar_style.empty() ? "navy" : prefs_.page_bar_style;
+  const FenceStylePreset* bar_style = FenceStyleById(bar_style_id);
+  if (!bar_style) {
+    bar_style = &DefaultFenceStyle();
+  }
+  page_bar_.ApplyStyle(bar_style->background, bar_style->accent,
+                       bar_style->title);
+
   const FenceStylePreset* style = FenceStyleById(prefs_.theme_id);
   if (!style) {
     style = &DefaultFenceStyle();
   }
-  page_bar_.ApplyStyle(style->background, style->accent, style->title);
   settings_.ApplyStyle(style->background, style->accent, style->title);
 }
 

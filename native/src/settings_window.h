@@ -117,6 +117,7 @@ class SettingsWindow {
     bool enable_public_desktop = true;
     bool show_page_indicator = true;
     std::string page_chrome_style = "float";  // float | tabs
+    std::string page_bar_style = "navy";
     std::string lang = "zh";
     std::wstring app_version = L"0.0.0";
     // Fence style preset (legacy field name theme_id in JSON).

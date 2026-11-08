@@ -102,6 +102,8 @@ struct AppPrefs {
   bool show_page_indicator = true;
   // Edge page chrome: "float" = mist card peek; "tabs" = discrete bookmark chips.
   std::string page_chrome_style = "float";
+  // Page bar independent color style preset (navy / obsidian / aurora / sunset / etc.)
+  std::string page_bar_style = "navy";
   // Portal / desktop scan exclude patterns (Python exclude_patterns).
   std::vector<std::wstring> exclude_patterns;
   // U6 first-run markers (Python first_run_guide_done / first_run_organize_done).

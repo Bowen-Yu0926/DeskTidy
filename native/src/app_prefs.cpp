@@ -390,6 +390,14 @@ AppPrefs LoadAppPrefsFromPath(const std::wstring& path) {
       prefs.page_chrome_style = "float";
     }
   }
+  {
+    const std::string bar_style = ParseStringField(json, "page_bar_style");
+    if (!bar_style.empty()) {
+      prefs.page_bar_style = bar_style;
+    } else {
+      prefs.page_bar_style = "navy";
+    }
+  }
   prefs.exclude_patterns = ParseStringArrayField(json, "exclude_patterns");
   if (prefs.exclude_patterns.empty()) {
     prefs.exclude_patterns = {L"desktop.ini", L"DeskTidy"};
@@ -524,6 +532,8 @@ void SaveAppPrefsToPath(const AppPrefs& prefs, const std::wstring& path) {
       << (prefs.show_page_indicator ? "true" : "false")
       << ",\n  \"page_chrome_style\": \""
       << EscapeJson(prefs.page_chrome_style) << "\""
+      << ",\n  \"page_bar_style\": \""
+      << EscapeJson(prefs.page_bar_style) << "\""
        << ",\n  \"exclude_patterns\": [";
   for (size_t i = 0; i < prefs.exclude_patterns.size(); ++i) {
     if (i) {

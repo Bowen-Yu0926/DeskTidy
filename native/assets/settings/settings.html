@@ -917,6 +917,19 @@
                 <option value="tabs">分立页签</option>
               </select>
             </label>
+            <label class="field-inline" style="margin-left:0.6rem;display:inline-flex;align-items:center;gap:0.35rem">
+              <span class="hint" style="margin:0">页签颜色</span>
+              <select id="ext_page_bar_style">
+                <option value="navy">深海蓝</option>
+                <option value="obsidian">曜石黑</option>
+                <option value="mica">云母白</option>
+                <option value="aurora">极光绿</option>
+                <option value="sunset">落霞金</option>
+                <option value="midnight">幻夜紫</option>
+                <option value="rose">暮色红</option>
+                <option value="slate">静谧灰</option>
+              </select>
+            </label>
           </div>
         </div>
         <div class="global-style-row">
@@ -2363,6 +2376,7 @@
     set('ext_public_desktop', state.enable_public_desktop);
     set('ext_page_indicator', state.show_page_indicator);
     setVal('ext_page_chrome_style', state.page_chrome_style === 'tabs' ? 'tabs' : 'float');
+    setVal('ext_page_bar_style', state.page_bar_style || 'navy');
     set('ext_vault_enabled', state.vault_enabled);
     setVal('ext_vault_api', state.vault_api_base);
     setVal('ext_vault_refresh', state.vault_refresh_hours);
@@ -2865,7 +2879,7 @@
      'search_include_open_folders','search_include_hidden'].forEach(copyBool);
     ['minutes_folder','notepad_folder','wallpaper_folder','record_dir','record_mic',
      'minutes_folder_default','notepad_folder_default','record_dir_default',
-     'pet_character','theme_id','ui_theme','page_chrome_style','vault_api_base','lang','app_version',
+     'pet_character','theme_id','ui_theme','page_chrome_style','page_bar_style','vault_api_base','lang','app_version',
      'vault_session_label'].forEach(copyStr);
     if (Array.isArray(msg.page_folders)) state.page_folders = msg.page_folders;
     if (Array.isArray(msg.whitelist)) state.whitelist = msg.whitelist;
@@ -3101,6 +3115,7 @@
   bindField('ext_dock_opacity', 'dock_opacity', true);
   bindField('ext_ui_theme', 'ui_theme');
   bindField('ext_page_chrome_style', 'page_chrome_style');
+  bindField('ext_page_bar_style', 'page_bar_style');
   bindField('ext_vault_api', 'vault_api_base');
   bindField('ext_vault_refresh', 'vault_refresh_hours', true);
   bindField('ext_vault_clip', 'vault_clipboard_clear_seconds', true);

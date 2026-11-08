@@ -3,6 +3,7 @@
 #include "desktop_shell.h"
 #include "display_geom.h"
 #include "i18n.h"
+#include "fence_style.h"
 
 #include <CommCtrl.h>
 #include <objidl.h>
@@ -709,6 +710,15 @@ void PageBar::ShowPageContextMenu(int page_index) {
   AppendMenuW(menu, MF_STRING, CmdToggleLock, locked ? L"解锁页面" : L"锁定页面");
   AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
   AppendMenuW(menu, MF_STRING, CmdNote, L"打开记事本");
+  AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+  HMENU color_menu = CreatePopupMenu();
+  enum { CmdColorBase = 300 };
+  const auto all_styles = AllFenceStyles();
+  for (size_t i = 0; i < all_styles.size(); ++i) {
+    AppendMenuW(color_menu, MF_STRING, static_cast<UINT_PTR>(CmdColorBase + i),
+                all_styles[i]->name);
+  }
+  AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(color_menu), L"页签颜色");
   POINT pt{};
   GetCursorPos(&pt);
   SetForegroundWindow(hwnd_);
@@ -717,6 +727,13 @@ void PageBar::ShowPageContextMenu(int page_index) {
       hwnd_, nullptr);
   DestroyMenu(menu);
   PostMessageW(hwnd_, WM_NULL, 0, 0);
+  if (cmd >= CmdColorBase && cmd < CmdColorBase + static_cast<int>(all_styles.size())) {
+    const size_t idx = static_cast<size_t>(cmd - CmdColorBase);
+    if (on_set_style_) {
+      on_set_style_(all_styles[idx]->id);
+    }
+    return;
+  }
   if (cmd >= CmdMoveBase) {
     const int fence = cmd - CmdMoveBase;
     if (on_move_fence_to_page_ && fence >= 0 &&
@@ -977,6 +994,10 @@ void PageBar::Paint(HDC) {
     const BYTE ar = GetRValue(accent_);
     const BYTE ag = GetGValue(accent_);
     const BYTE ab = GetBValue(accent_);
+    const BYTE br = GetRValue(bg_);
+    const BYTE bg = GetGValue(bg_);
+    const BYTE bb = GetBValue(bg_);
+    const bool is_light = (br * 299 + bg * 587 + bb * 114) / 1000 > 180;
     const int pad_x = PadX();
     const int card_m = CardMargin();
     const bool float_style = IsFloatStyle();
@@ -1016,13 +1037,19 @@ void PageBar::Paint(HDC) {
 
       Gdiplus::GraphicsPath card;
       add_round_rect(&card, card_x, card_y, card_w, card_h, card_rad);
+      auto clamp_b = [](int v) -> BYTE { return static_cast<BYTE>((std::max)(0, (std::min)(255, v))); };
+      Gdiplus::Color card_top = is_light
+          ? Gdiplus::Color(235, 246, 248, 252)
+          : Gdiplus::Color(230, clamp_b(br + 12), clamp_b(bg + 12), clamp_b(bb + 15));
+      Gdiplus::Color card_bot = is_light
+          ? Gdiplus::Color(245, 230, 236, 246)
+          : Gdiplus::Color(245, clamp_b(br - 4), clamp_b(bg - 4), clamp_b(bb - 4));
       Gdiplus::LinearGradientBrush fill(
           Gdiplus::PointF(card_x, card_y),
           Gdiplus::PointF(card_x, card_y + card_h),
-          Gdiplus::Color(230, 20, 26, 38),
-          Gdiplus::Color(245, 12, 16, 26));
+          card_top, card_bot);
       g.FillPath(&fill, &card);
-      Gdiplus::Pen rim(Gdiplus::Color(75, 140, 180, 240), 1.f);
+      Gdiplus::Pen rim(Gdiplus::Color(is_light ? 120 : 85, ar, ag, ab), 1.f);
       g.DrawPath(&rim, &card);
       if (expand_t_ < 0.55f) {
         const float nose_alpha = 140.f + expand_t_ * 100.f;
@@ -1144,15 +1171,29 @@ void PageBar::Paint(HDC) {
 
         Gdiplus::Color top;
         Gdiplus::Color bottom;
-        if (on) {
-          top = Gdiplus::Color(245, 24, 32, 50);
-          bottom = Gdiplus::Color(255, 16, 22, 36);
-        } else if (hover) {
-          top = Gdiplus::Color(225, 32, 40, 58);
-          bottom = Gdiplus::Color(235, 22, 28, 42);
+        if (is_light) {
+          if (on) {
+            top = Gdiplus::Color(245, 255, 255, 255);
+            bottom = Gdiplus::Color(255, 235, 240, 250);
+          } else if (hover) {
+            top = Gdiplus::Color(230, 248, 250, 254);
+            bottom = Gdiplus::Color(240, 225, 232, 245);
+          } else {
+            top = Gdiplus::Color(210, 240, 243, 248);
+            bottom = Gdiplus::Color(220, 220, 226, 236);
+          }
         } else {
-          top = Gdiplus::Color(195, 18, 22, 34);
-          bottom = Gdiplus::Color(215, 14, 18, 28);
+          auto clamp_b = [](int v) -> BYTE { return static_cast<BYTE>((std::max)(0, (std::min)(255, v))); };
+          if (on) {
+            top = Gdiplus::Color(245, clamp_b(br + 22), clamp_b(bg + 22), clamp_b(bb + 26));
+            bottom = Gdiplus::Color(255, clamp_b(br + 6), clamp_b(bg + 6), clamp_b(bb + 10));
+          } else if (hover) {
+            top = Gdiplus::Color(225, clamp_b(br + 14), clamp_b(bg + 14), clamp_b(bb + 18));
+            bottom = Gdiplus::Color(235, static_cast<BYTE>(br), static_cast<BYTE>(bg), static_cast<BYTE>(bb));
+          } else {
+            top = Gdiplus::Color(195, static_cast<BYTE>(br), static_cast<BYTE>(bg), static_cast<BYTE>(bb));
+            bottom = Gdiplus::Color(215, clamp_b(br - 8), clamp_b(bg - 8), clamp_b(bb - 8));
+          }
         }
         Gdiplus::LinearGradientBrush body(
             Gdiplus::PointF(tab_cx, tab_cy), Gdiplus::PointF(tab_cx, tab_cy + tab_bh), top,
@@ -1239,10 +1280,13 @@ void PageBar::Paint(HDC) {
                        Gdiplus::RectF(text_x, tab_cy + 1.f, text_w, tab_bh), fmt_, &shadow_ink);
           const BYTE ink_a = static_cast<BYTE>(255.f * text_fade);
           Gdiplus::SolidBrush ink(
-              on ? Gdiplus::Color(ink_a, 255, 255, 255)
-                 : (hover ? Gdiplus::Color(ink_a, 240, 245, 255)
-                          : (utility ? Gdiplus::Color(static_cast<BYTE>(200.f * text_fade), 160, 180, 205)
-                                     : Gdiplus::Color(static_cast<BYTE>(220.f * text_fade), 210, 222, 240))));
+              is_light
+                  ? (on ? Gdiplus::Color(ink_a, 24, 40, 68)
+                        : Gdiplus::Color(ink_a, 51, 65, 85))
+                  : (on ? Gdiplus::Color(ink_a, 255, 255, 255)
+                        : (hover ? Gdiplus::Color(ink_a, 240, 245, 255)
+                                 : (utility ? Gdiplus::Color(static_cast<BYTE>(200.f * text_fade), 160, 180, 205)
+                                            : Gdiplus::Color(static_cast<BYTE>(220.f * text_fade), 210, 222, 240)))));
           g.DrawString(s.label.c_str(), -1, &font,
                        Gdiplus::RectF(text_x, tab_cy, text_w, tab_bh), fmt_, &ink);
         }
