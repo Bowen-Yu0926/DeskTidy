@@ -1238,9 +1238,9 @@
             <label class="toggle"><input type="checkbox" id="org_startup2" /> 启动时自动整理桌面（按规则钉选到分区）</label>
             <label class="toggle"><input type="checkbox" id="org_watch2" /> 新桌面文件按规则自动钉选到分区（Fences 式）</label>
             <label class="toggle" hidden><input type="checkbox" id="ext_dblclick_hide" /> 双击桌面空白处隐藏/显示系统桌面图标</label>
-            <label class="toggle"><input type="checkbox" id="ext_public_desktop" /> 启用公共区域（未入分区图标跨分页共享）</label>
+            <label class="toggle" hidden><input type="checkbox" id="ext_public_desktop" checked /> 启用公共区域（未入分区图标跨分页共享）</label>
           </div>
-          <p class="hint">分区始终显示（虚拟钉选，文件仍留在桌面）。公共区域开启时，散落在桌面的图标在所有分页都可见；关闭则只在放入时的分页显示。</p>
+          <p class="hint" hidden>分区始终显示（虚拟钉选，文件仍留在桌面）。公共区域开启时，散落在桌面的图标在所有分页都可见；关闭则只在放入时的分页显示。</p>
           <!-- Desktop shell verbs always on; keep binding, hide control. -->
           <div class="group" hidden>系统集成</div>
           <div class="toggles" hidden>

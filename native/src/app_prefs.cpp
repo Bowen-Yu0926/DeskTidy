@@ -374,13 +374,10 @@ AppPrefs LoadAppPrefsFromPath(const std::wstring& path) {
   prefs.session_active = ParseBoolField(json, "session_active", false);
   prefs.show_fences = true;  // always shown; ignore persisted false
   prefs.double_click_hide = false;  // feature removed
-  // Cross-page shared floats (Fences public). Heal: older builds force-wrote
-  // false while the settings toggle was hidden — restore default on once.
   const bool public_migrated =
       ParseBoolField(json, "public_desktop_pref_migrated_v1", false);
-  prefs.enable_public_desktop =
-      public_migrated ? ParseBoolField(json, "enable_public_desktop", true)
-                      : true;
+  // 公共区域功能（未入分区图标跨分页共享）默认且始终启用
+  prefs.enable_public_desktop = true;
   prefs.vault_launcher_x = ParseIntField(json, "vault_launcher_x", -1);
   prefs.vault_launcher_y = ParseIntField(json, "vault_launcher_y", -1);
   prefs.show_page_indicator =
