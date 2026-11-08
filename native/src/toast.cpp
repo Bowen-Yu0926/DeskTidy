@@ -88,7 +88,12 @@ void ArmDismissTimer(HWND hwnd, UINT ms) {
 }
 
 LRESULT CALLBACK ToastProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
+  if (msg == WM_WINDOWPOSCHANGING) {
+    FilterDesktopChromeWindowPosChanging(reinterpret_cast<WINDOWPOS*>(lparam));
+  }
   switch (msg) {
+    case WM_MOUSEACTIVATE:
+      return MA_NOACTIVATE;
     case WM_SETCURSOR:
       if (g_clickable) {
         SetCursor(LoadCursor(nullptr, IDC_HAND));
@@ -163,10 +168,10 @@ LRESULT CALLBACK ToastProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
         DestroyWindow(hwnd);
       } else if (wparam == 2 && g_follow && IsWindow(g_follow)) {
         PlaceToastWindow(hwnd, g_follow, g_clear_above);
-        if (IsAttachedToDesktop(g_follow)) {
+        if (!IsAttachedToDesktop(hwnd)) {
           AttachOverlayToDesktop(hwnd, true);
-          RaiseOverlayInDesktopBand(hwnd);
         }
+        RaiseOverlayInDesktopBand(hwnd);
       }
       return 0;
     case WM_DESTROY:
@@ -226,14 +231,17 @@ void ShowToastImpl(HWND anchor, HWND clear_above, const std::wstring& text,
   }
   PlaceToastWindow(g_hwnd, g_follow, g_clear_above);
   SetLayeredWindowAttributes(g_hwnd, 0, 235, LWA_ALPHA);
-  if (g_follow && IsAttachedToDesktop(g_follow)) {
+  if (g_follow) {
+    // 宠物台词气泡属于桌面层，绝不允许 WS_EX_TOPMOST / HWND_TOPMOST
+    // 必须随同宠物挂在桌面宿主层，确保前台有软件时严格处于软件下方
+    ShowWindow(g_hwnd, SW_SHOWNOACTIVATE);
     AttachOverlayToDesktop(g_hwnd, true);
     RaiseOverlayInDesktopBand(g_hwnd);
   } else {
     SetWindowPos(g_hwnd, HWND_TOPMOST, 0, 0, 0, 0,
                  SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    ShowWindow(g_hwnd, SW_SHOWNOACTIVATE);
   }
-  ShowWindow(g_hwnd, SW_SHOWNOACTIVATE);
   InvalidateRect(g_hwnd, nullptr, TRUE);
   ArmDismissTimer(g_hwnd, duration_ms ? duration_ms
                                       : (g_clickable ? kActionMs : kDefaultMs));
