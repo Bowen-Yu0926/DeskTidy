@@ -91,6 +91,7 @@ add_executable(desktidy_native WIN32
   src/cli_ipc.cpp
   src/file_assoc.cpp
   src/version.rc
+  src/desktidy_icon.rc
   ${ARGON2_SOURCES}
 )
 

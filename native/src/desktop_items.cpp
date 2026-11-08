@@ -513,6 +513,21 @@ HICON LoadItemIcon(const std::wstring& path, int size_px) {
   }
 
   if (!master) {
+    std::wstring lower = path;
+    for (auto& ch : lower) {
+      ch = towlower(ch);
+    }
+    if (lower.find(L"desktidy") != std::wstring::npos) {
+      HICON app_ico = static_cast<HICON>(LoadImageW(
+          GetModuleHandleW(nullptr), MAKEINTRESOURCEW(1), IMAGE_ICON,
+          size_px, size_px, LR_DEFAULTCOLOR));
+      if (app_ico) {
+        master = TrimIconTransparentPadding(app_ico);
+      }
+    }
+  }
+
+  if (!master) {
     return nullptr;
   }
   {
