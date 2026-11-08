@@ -2684,11 +2684,7 @@
       blurb: '卫衣少年：摸摸、玩手机 / 睡觉（等待时轮流）、跌落；拖拽揪领，松开跌落',
       actions: [{ id: 'wait', label: '玩手机' }, { id: 'sleep', label: '睡觉' }]
     },
-    pixehood: {
-      name: '像素卫衣',
-      blurb: '像素卫衣：由卫衣少年脚本像素化；摸摸、玩手机 / 睡觉、跌落；拖拽揪领',
-      actions: [{ id: 'wait', label: '玩手机' }, { id: 'sleep', label: '睡觉' }]
-    },
+
     voyage: {
       name: '出海少女',
       blurb: '出海少女：救生衣草帽造型；摸摸、等待（刷手机）、跌落；拖拽拎起',
@@ -2710,7 +2706,7 @@
       return set;
     }
     if (charId === 'xianjian') return new Set(['pet', 'sleep', 'fall']);
-    return (charId === 'hoodie' || charId === 'pixehood')
+    return (charId === 'hoodie')
       ? new Set(['pet', 'wait', 'sleep', 'fall'])
       : new Set(['pet', 'wait', 'fall']);
   }
@@ -2729,9 +2725,11 @@
     const grid = document.getElementById('pet-char-grid');
     const hidden = document.getElementById('ext_pet_character');
     if (!grid) return;
-    const chars = Array.isArray(state.pet_characters) && state.pet_characters.length
-      ? state.pet_characters : ['hoodie', 'voyage'];
-    const cur = state.pet_character || 'hoodie';
+    const chars = (Array.isArray(state.pet_characters) && state.pet_characters.length
+      ? state.pet_characters : ['hoodie', 'voyage', 'xianjian']).filter(id => id !== 'pixehood');
+    let cur = state.pet_character || 'hoodie';
+    if (cur === 'pixehood') cur = 'hoodie';
+    state.pet_character = cur;
     if (hidden) hidden.value = cur;
     grid.innerHTML = '';
     chars.forEach((id) => {

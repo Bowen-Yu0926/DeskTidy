@@ -70,7 +70,7 @@ struct PetMotion {
 };
 
 bool IsHoodieFamily(const std::wstring& character) {
-  return character == L"hoodie" || character == L"pixehood";
+  return character == L"hoodie";
 }
 
 // 有「睡觉/打盹」动作的角色：卫衣家族 + 白衣剑仙（倚剑打盹）。
@@ -79,7 +79,7 @@ bool HasSleepAction(const std::wstring& character) {
 }
 
 bool IsPixelArtCharacter(const std::wstring& character) {
-  return character == L"pixehood" || character == L"gufeng";
+  return character == L"gufeng";
 }
 
 bool PoseSkipsMotion(const std::wstring& character, const std::wstring& pose) {
@@ -854,7 +854,7 @@ std::vector<int> PetWindow::VisibleMenuIndices() const {
 void PetWindow::LoadCharacters() {
   character_ids_.clear();
   auto push_unique = [&](const std::wstring& name) {
-    if (name.empty()) {
+    if (name.empty() || _wcsicmp(name.c_str(), L"pixehood") == 0) {
       return;
     }
     for (const auto& existing : character_ids_) {
@@ -1021,7 +1021,11 @@ void PetWindow::LoadPosePacks() {
 }
 
 void PetWindow::SetCharacter(const std::wstring& character) {
-  character_ = character;
+  if (character == L"pixehood") {
+    character_ = L"hoodie";
+  } else {
+    character_ = character;
+  }
   LoadPosePacks();
   if (!pose_names_.empty()) {
     SetPose(pose_names_[0]);
