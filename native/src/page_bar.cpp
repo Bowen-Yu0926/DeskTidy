@@ -31,12 +31,14 @@ constexpr int kSepGap = 10;  // page block ↔ tool block (float only)
 constexpr int kTabsChipW = 86;
 constexpr int kTabsChipH = 34;
 constexpr int kTabsSlot = 38;
-constexpr int kTabsPadX = 0;
+constexpr int kTabsPadX = 14;  // Reserve room for active tab pop-out animation
 constexpr int kTabsPadY = 6;
 constexpr int kEdgeMargin = 0;
 constexpr int kDragThreshold = 6;
 // Collapsed: thin card nose; hover / click slides the full float out.
 constexpr int kPeekW = 16;
+constexpr int kTabsPeekW = 32;       // Tabs mode collapsed peek width @ 96 DPI
+constexpr int kTabsPopMargin = 14;   // Active tab extra pop-out distance on expand
 constexpr UINT_PTR kTimerExpand = 77;
 constexpr UINT_PTR kTimerCollapseDelay = 78;
 constexpr UINT kExpandTickMs = 16;
@@ -96,9 +98,8 @@ bool PageBar::Create(HINSTANCE instance) {
   const int w = CardMargin() + PadX() * 2 + chip_w_;
   const int h = ContentHeight();
   const RECT work = HostWorkArea();
-  // Float starts tucked; tabs sit fully on the edge.
-  const int x = IsFloatStyle() ? (work.right - kPeekW - kEdgeMargin)
-                               : (work.right - w - kEdgeMargin);
+  // Both float and tabs start collapsed at the right edge
+  const int x = work.right - VisibleWidth() - kEdgeMargin;
   const int y = work.top + (work.bottom - work.top - h) / 2;
   hwnd_ = CreateWindowExW(
       WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_LAYERED, kClassName,
@@ -177,22 +178,17 @@ void PageBar::SetChromeStyle(ChromeStyle style) {
     KillTimer(hwnd_, kTimerExpand);
     KillTimer(hwnd_, kTimerCollapseDelay);
   }
-  if (IsFloatStyle()) {
-    expand_t_ = 0.f;
-    expand_target_ = 0.f;
-  } else {
-    expand_t_ = 1.f;
-    expand_target_ = 1.f;
-  }
+  expand_t_ = 0.f;
+  expand_target_ = 0.f;
   ApplyDesignMetrics(SystemDpi());
   Relayout();
 }
 
 int PageBar::PeekWidth() const {
-  if (!IsFloatStyle()) {
-    return VisibleWidth();
+  if (IsFloatStyle()) {
+    return (std::max)(10, static_cast<int>(kPeekW * font_scale_ + 0.5f));
   }
-  return (std::max)(10, static_cast<int>(kPeekW * font_scale_ + 0.5f));
+  return (std::max)(16, static_cast<int>(kTabsPeekW * font_scale_ + 0.5f));
 }
 
 int PageBar::VisibleWidth() const {
@@ -203,11 +199,8 @@ int PageBar::VisibleWidth() const {
       full = static_cast<int>(rc.right - rc.left);
     }
   }
-  if (!IsFloatStyle()) {
-    return (std::max)(1, full);
-  }
   const float e = EaseOutCubic(expand_t_);
-  const int peek = (std::max)(10, static_cast<int>(kPeekW * font_scale_ + 0.5f));
+  const int peek = PeekWidth();
   full = (std::max)(peek, full);
   return peek + static_cast<int>((full - peek) * e + 0.5f);
 }
@@ -224,18 +217,13 @@ void PageBar::ApplyEdgeX() {
   int y = rc.top;
   y = (std::max)(static_cast<int>(work.top),
                  (std::min)(y, static_cast<int>(work.bottom) - h));
-  // Slide: collapsed leaves only the left nose on-screen; expanded seats flush.
+  // Slide: collapsed leaves only the peek portion on-screen; expanded seats flush.
   const int visible = VisibleWidth();
   const int x = static_cast<int>(work.right) - visible - kEdgeMargin;
   SetOverlayScreenPos(hwnd_, x, y, w, h, SWP_NOZORDER);
 }
 
 void PageBar::SetExpandTarget(float target) {
-  if (!IsFloatStyle()) {
-    expand_t_ = 1.f;
-    expand_target_ = 1.f;
-    return;
-  }
   target = (std::max)(0.f, (std::min)(1.f, target));
   expand_target_ = target;
   if (!hwnd_) {
@@ -258,14 +246,20 @@ void PageBar::TickExpandAnim() {
     return;
   }
   const float d = expand_target_ - expand_t_;
-  if (std::fabs(d) < 0.01f) {
+  if (std::fabs(d) < 0.008f) {
     expand_t_ = expand_target_;
     KillTimer(hwnd_, kTimerExpand);
     ApplyEdgeX();
     Paint(nullptr);
     return;
   }
-  expand_t_ += (d > 0.f ? kExpandStep : -kExpandStep);
+  // Smooth spring-like easing: responsive launch with gentle deceleration
+  float step = d * 0.28f;
+  const float min_step = 0.035f;
+  if (std::fabs(step) < min_step) {
+    step = (d > 0.f ? min_step : -min_step);
+  }
+  expand_t_ += step;
   if ((d > 0.f && expand_t_ > expand_target_) ||
       (d < 0.f && expand_t_ < expand_target_)) {
     expand_t_ = expand_target_;
@@ -641,8 +635,8 @@ void PageBar::AttachToDesktopLayer() {
 }
 
 int PageBar::HitTest(int x, int y) const {
-  const int left = CardMargin() + PadX();
-  if (x < left || x >= left + chip_w_) {
+  const int full_w = CardMargin() + PadX() * 2 + chip_w_;
+  if (x < 0 || x >= full_w) {
     return -1;
   }
   for (int i = 0; i < static_cast<int>(slots_.size()); ++i) {
@@ -867,8 +861,7 @@ LRESULT PageBar::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
         Paint(nullptr);
         UpdateHoverTip(-1);
       }
-      // Float only: delay tuck so the pointer can travel between chips.
-      if (IsFloatStyle() && !dragging_) {
+      if (!dragging_) {
         SetTimer(hwnd_, kTimerCollapseDelay, kCollapseDelayMs, nullptr);
       }
       return 0;
@@ -1136,12 +1129,22 @@ void PageBar::Paint(HDC) {
                                          4.8f * font_scale_));
         }
       } else {
-        // Discrete bookmark tabs (flush right edge) - Modern Frosted Acrylic
+        // Discrete bookmark tabs (flush right edge) - Modern Frosted Acrylic with Active Pop-out
+        const float pop_max = static_cast<float>(Scaled(kTabsPopMargin, font_scale_));
+        const float e = EaseOutCubic(expand_t_);
+        // Active tab pops out leftwards smoothly on expand; hover also pops slightly
+        const float pop = on ? (pop_max * (0.32f + 0.68f * e))
+                             : (hover ? (std::min)(pop_max * 0.42f, 5.f * font_scale_ * e) : 0.f);
+        const float tab_cx = static_cast<float>(card_m + pad_x) - pop;
+        const float tab_cy = static_cast<float>(SlotTop(i) + (slot_h_ - chip_h_) / 2);
+        const float tab_bw = static_cast<float>(chip_w_) + pop;
+        const float tab_bh = static_cast<float>(chip_h_);
+
         Gdiplus::Color top;
         Gdiplus::Color bottom;
         if (on) {
-          top = Gdiplus::Color(235, 24, 30, 46);
-          bottom = Gdiplus::Color(245, 16, 20, 32);
+          top = Gdiplus::Color(245, 24, 32, 50);
+          bottom = Gdiplus::Color(255, 16, 22, 36);
         } else if (hover) {
           top = Gdiplus::Color(225, 32, 40, 58);
           bottom = Gdiplus::Color(235, 22, 28, 42);
@@ -1150,27 +1153,27 @@ void PageBar::Paint(HDC) {
           bottom = Gdiplus::Color(215, 14, 18, 28);
         }
         Gdiplus::LinearGradientBrush body(
-            Gdiplus::PointF(cx, cy), Gdiplus::PointF(cx, cy + bh), top,
+            Gdiplus::PointF(tab_cx, tab_cy), Gdiplus::PointF(tab_cx, tab_cy + tab_bh), top,
             bottom);
-        const float rad = (std::min)(11.f * font_scale_, bh * 0.44f);
+        const float rad = (std::min)(11.f * font_scale_, tab_bh * 0.44f);
         Gdiplus::GraphicsPath path;
-        path.AddArc(cx, cy, rad * 2, rad * 2, 180, 90);
-        path.AddLine(cx + rad, cy, cx + bw, cy);
-        path.AddLine(cx + bw, cy, cx + bw, cy + bh);
-        path.AddLine(cx + bw, cy + bh, cx + rad, cy + bh);
-        path.AddArc(cx, cy + bh - rad * 2, rad * 2, rad * 2, 90, 90);
+        path.AddArc(tab_cx, tab_cy, rad * 2, rad * 2, 180, 90);
+        path.AddLine(tab_cx + rad, tab_cy, tab_cx + tab_bw, tab_cy);
+        path.AddLine(tab_cx + tab_bw, tab_cy, tab_cx + tab_bw, tab_cy + tab_bh);
+        path.AddLine(tab_cx + tab_bw, tab_cy + tab_bh, tab_cx + rad, tab_cy + tab_bh);
+        path.AddArc(tab_cx, tab_cy + tab_bh - rad * 2, rad * 2, rad * 2, 90, 90);
         path.CloseFigure();
 
         // Subtle ambient shadow
         {
           Gdiplus::GraphicsPath shadow;
-          shadow.AddArc(cx - 1.f, cy + 1.5f, rad * 2, rad * 2, 180, 90);
-          shadow.AddLine(cx + rad - 1.f, cy + 1.5f, cx + bw, cy + 1.5f);
-          shadow.AddLine(cx + bw, cy + 1.5f, cx + bw, cy + bh + 2.f);
-          shadow.AddLine(cx + bw, cy + bh + 2.f, cx + rad - 1.f, cy + bh + 2.f);
-          shadow.AddArc(cx - 1.f, cy + bh - rad * 2 + 2.f, rad * 2, rad * 2, 90, 90);
+          shadow.AddArc(tab_cx - 1.5f, tab_cy + 1.5f, rad * 2, rad * 2, 180, 90);
+          shadow.AddLine(tab_cx + rad - 1.5f, tab_cy + 1.5f, tab_cx + tab_bw, tab_cy + 1.5f);
+          shadow.AddLine(tab_cx + tab_bw, tab_cy + 1.5f, tab_cx + tab_bw, tab_cy + tab_bh + 2.f);
+          shadow.AddLine(tab_cx + tab_bw, tab_cy + tab_bh + 2.f, tab_cx + rad - 1.5f, tab_cy + tab_bh + 2.f);
+          shadow.AddArc(tab_cx - 1.5f, tab_cy + tab_bh - rad * 2 + 2.f, rad * 2, rad * 2, 90, 90);
           shadow.CloseFigure();
-          Gdiplus::SolidBrush shade(Gdiplus::Color(45, 0, 0, 0));
+          Gdiplus::SolidBrush shade(Gdiplus::Color(on ? 65 : 40, 0, 0, 0));
           g.FillPath(&shade, &shadow);
         }
 
@@ -1178,16 +1181,16 @@ void PageBar::Paint(HDC) {
 
         // Accent wash overlay for active tab
         if (on) {
-          Gdiplus::SolidBrush tint(Gdiplus::Color(45, ar, ag, ab));
+          Gdiplus::SolidBrush tint(Gdiplus::Color(static_cast<BYTE>(40 + 35 * e), ar, ag, ab));
           g.FillPath(&tint, &path);
         }
 
-        // 1px subtle border rim
+        // 1px subtle border rim (enhanced accent rim for active pop-out)
         if (on) {
-          Gdiplus::Pen rim(Gdiplus::Color(170, ar, ag, ab), 1.2f);
+          Gdiplus::Pen rim(Gdiplus::Color(static_cast<BYTE>(160 + 60 * e), ar, ag, ab), 1.3f);
           g.DrawPath(&rim, &path);
         } else if (hover) {
-          Gdiplus::Pen rim(Gdiplus::Color(110, ar, ag, ab), 1.0f);
+          Gdiplus::Pen rim(Gdiplus::Color(120, ar, ag, ab), 1.0f);
           g.DrawPath(&rim, &path);
         } else {
           Gdiplus::Pen rim(Gdiplus::Color(55, 255, 255, 255), 0.85f);
@@ -1197,19 +1200,19 @@ void PageBar::Paint(HDC) {
         // Top specular highlight line
         {
           Gdiplus::GraphicsPath spec;
-          spec.AddArc(cx + 1.f, cy + 1.f, rad * 2 - 2.f, rad * 2 - 2.f, 180, 90);
-          spec.AddLine(cx + rad, cy + 1.f, cx + bw, cy + 1.f);
-          Gdiplus::Pen spec_pen(Gdiplus::Color(on ? 100 : (hover ? 70 : 40), 255, 255, 255), 1.0f);
+          spec.AddArc(tab_cx + 1.f, tab_cy + 1.f, rad * 2 - 2.f, rad * 2 - 2.f, 180, 90);
+          spec.AddLine(tab_cx + rad, tab_cy + 1.f, tab_cx + tab_bw, tab_cy + 1.f);
+          Gdiplus::Pen spec_pen(Gdiplus::Color(on ? 120 : (hover ? 80 : 45), 255, 255, 255), 1.0f);
           g.DrawPath(&spec_pen, &spec);
         }
 
         // Glowing active rail
         if (on) {
-          const float rail_h = (std::max)(12.f, bh - 14.f);
-          const float rail_x = cx + 4.5f;
-          const float rail_y = cy + (bh - rail_h) * 0.5f;
+          const float rail_h = (std::max)(12.f, tab_bh - 14.f);
+          const float rail_x = tab_cx + 4.8f;
+          const float rail_y = tab_cy + (tab_bh - rail_h) * 0.5f;
           // Outer bloom
-          Gdiplus::Pen glow(Gdiplus::Color(90, ar, ag, ab), 3.8f);
+          Gdiplus::Pen glow(Gdiplus::Color(static_cast<BYTE>(80 + 50 * e), ar, ag, ab), 4.2f);
           glow.SetLineCap(Gdiplus::LineCapRound, Gdiplus::LineCapRound, Gdiplus::DashCapRound);
           g.DrawLine(&glow, rail_x, rail_y + 1.5f, rail_x, rail_y + rail_h - 1.5f);
           // Inner core
@@ -1218,31 +1221,34 @@ void PageBar::Paint(HDC) {
         }
 
         // Center label in the tab body; leave room for active rail + lock.
-        const float rail_reserve = on ? 9.f : 0.f;
+        const float rail_reserve = on ? 10.f : 0.f;
         const float lock_reserve = locked ? 14.f : 0.f;
         const float side = 6.f;
-        const float text_x = cx + side + rail_reserve;
-        const float text_w = bw - side * 2.f - rail_reserve - lock_reserve;
+        const float text_x = tab_cx + side + rail_reserve;
+        const float text_w = tab_bw - side * 2.f - rail_reserve - lock_reserve;
 
-        // Soft text shadow for maximum readability
-        if (text_w > 8.f) {
-          Gdiplus::SolidBrush shadow_ink(Gdiplus::Color(140, 0, 0, 0));
+        // Smooth text fade-in as the bar slides open (clean peek state without cut letters)
+        const float text_fade = (std::min)(1.f, (std::max)(0.f, (expand_t_ - 0.20f) / 0.65f));
+        if (text_w > 8.f && text_fade > 0.05f) {
+          const BYTE sa = static_cast<BYTE>(140.f * text_fade);
+          Gdiplus::SolidBrush shadow_ink(Gdiplus::Color(sa, 0, 0, 0));
           const Gdiplus::Font& font = utility ? *font_util_ : *font_page_;
           g.DrawString(s.label.c_str(), -1, &font,
-                       Gdiplus::RectF(text_x, cy + 1.f, text_w, bh), fmt_, &shadow_ink);
+                       Gdiplus::RectF(text_x, tab_cy + 1.f, text_w, tab_bh), fmt_, &shadow_ink);
+          const BYTE ink_a = static_cast<BYTE>(255.f * text_fade);
           Gdiplus::SolidBrush ink(
-              on ? Gdiplus::Color(255, 255, 255, 255)
-                 : (hover ? Gdiplus::Color(255, 240, 245, 255)
-                          : (utility ? Gdiplus::Color(200, 160, 180, 205)
-                                     : Gdiplus::Color(220, 210, 222, 240))));
+              on ? Gdiplus::Color(ink_a, 255, 255, 255)
+                 : (hover ? Gdiplus::Color(ink_a, 240, 245, 255)
+                          : (utility ? Gdiplus::Color(static_cast<BYTE>(200.f * text_fade), 160, 180, 205)
+                                     : Gdiplus::Color(static_cast<BYTE>(220.f * text_fade), 210, 222, 240))));
           g.DrawString(s.label.c_str(), -1, &font,
-                       Gdiplus::RectF(text_x, cy, text_w, bh), fmt_, &ink);
+                       Gdiplus::RectF(text_x, tab_cy, text_w, tab_bh), fmt_, &ink);
         }
 
-        if (locked) {
+        if (locked && expand_t_ > 0.35f) {
           const float lw = 6.f;
-          const float lx = cx + bw - 11.f;
-          const float ly = cy + (bh - 9.f) * 0.5f;
+          const float lx = tab_cx + tab_bw - 11.f;
+          const float ly = tab_cy + (tab_bh - 9.f) * 0.5f;
           const Gdiplus::Color lock_c(on ? Gdiplus::Color(255, ar, ag, ab)
                                          : Gdiplus::Color(180, 180, 200, 225));
           Gdiplus::Pen shackle(lock_c, 1.f);
