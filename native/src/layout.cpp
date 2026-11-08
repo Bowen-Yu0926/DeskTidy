@@ -1587,9 +1587,9 @@ void ResolveFenceCollisions(std::vector<LayoutRect>* rects, int min_w, int min_h
         const int dx = a.center_x() - b.center_x();
         const int dy = a.center_y() - b.center_y();
         if (AbsInt(dx) >= AbsInt(dy)) {
-          b.x = (dx >= 0) ? (a.x - 1 - b.w) : (a.right() + 1);
+          b.x = (dx >= 0) ? (a.x - b.w) : a.right();
         } else {
-          b.y = (dy >= 0) ? (a.y - 1 - b.h) : (a.bottom() + 1);
+          b.y = (dy >= 0) ? (a.y - b.h) : a.bottom();
         }
         touched = true;
       }

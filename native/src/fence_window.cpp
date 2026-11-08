@@ -3664,9 +3664,24 @@ LRESULT FenceWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
           SnapRectToWorkArea(&rc, 0);
 
           // Honor exact user-dragged bounds without artificial discrete step jump
-          const int nw = (std::max)(kFenceMinW, static_cast<int>(rc.right - rc.left));
-          const int nh = (std::max)(kFenceMinH, static_cast<int>(rc.bottom - rc.top));
+          int nw = (std::max)(kFenceMinW, static_cast<int>(rc.right - rc.left));
+          int nh = (std::max)(kFenceMinH, static_cast<int>(rc.bottom - rc.top));
           const int ev = static_cast<int>(resize_edge_);
+          if (ev & static_cast<int>(Edge::Bottom)) {
+            // Snap to full icon row height to avoid cutting icons horizontally
+            const int header = S(hwnd_, kHeaderH0);
+            const int pad = S(hwnd_, kPad0);
+            const int footer_h = S(hwnd_, 24);
+            const int cell_h = CellHeightPx();
+            if (cell_h > 0) {
+              const int content_h = nh - header - pad * 2 - footer_h;
+              const int rows = (std::max)(1, (content_h + cell_h / 2) / cell_h);
+              const int snapped_h = header + pad * 2 + footer_h + rows * cell_h;
+              if (std::abs(nh - snapped_h) <= 24) {
+                nh = snapped_h;
+              }
+            }
+          }
           if (ev & static_cast<int>(Edge::Left)) {
             rc.left = rc.right - nw;
           } else {
@@ -3688,6 +3703,7 @@ LRESULT FenceWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
         }
         resize_edge_ = Edge::None;
         AttachToDesktopLayer();
+        PresentLayered();
         // Final snap + sibling resolve (same path as drag-end).
         if (on_geometry_moved_) {
           on_geometry_moved_(this);
@@ -3977,8 +3993,13 @@ void FenceWindow::Paint(HDC hdc) {
     g.FillPath(&pill_br, &pill_path);
   }
 
+  const int footer_reserve =
+      (!collapsed_ && (rc.right - rc.left) >= S(hwnd_, 180) && !cells_.empty())
+          ? S(hwnd_, 24)
+          : 0;
+  const int clip_bottom = (std::max)(header, static_cast<int>(rc.bottom) - footer_reserve);
   g.SetClip(Gdiplus::Rect(rc.left, header, rc.right - rc.left,
-                          rc.bottom - header));
+                          clip_bottom - header));
 
   Gdiplus::StringFormat list_fmt;
   list_fmt.SetAlignment(Gdiplus::StringAlignmentNear);

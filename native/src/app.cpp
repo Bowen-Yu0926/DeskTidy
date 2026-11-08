@@ -523,12 +523,15 @@ void App::WireFence(FenceWindow* fence) {
       for (size_t j = i + 1; j < rects.size(); ++j) {
         LayoutRect& a = rects[i];
         LayoutRect& b = rects[j];
-        if (std::abs(a.y - b.y) <= 40) {
+        const bool v_overlap =
+            (std::max)(a.y, b.y) < (std::min)(a.bottom(), b.bottom()) ||
+            std::abs(a.y - b.y) <= 60;
+        if (v_overlap) {
           LayoutRect* left_r = a.x <= b.x ? &a : &b;
           LayoutRect* right_r = a.x <= b.x ? &b : &a;
           const int gap_dist = right_r->x - left_r->right();
-          // Magnetic seamless snapping when within 16px or overlapping (never force a white gap)
-          if (gap_dist <= 16) {
+          // Magnetic seamless snapping when within 24px or overlapping (never force a white gap)
+          if (gap_dist <= 24) {
             right_r->x = left_r->right();
             if (right_r->right() > work_r.right()) {
               if (work_r.right() - right_r->x >= kFenceMinW) {
@@ -556,7 +559,7 @@ void App::WireFence(FenceWindow* fence) {
       geo.visible = fw->VisibleOnPage(page);
       geo.collapsed = fw->IsCollapsed();
       // ApplyPageGeometry refreshes expanded_h_ so Present keeps owned size.
-      fw->ApplyPageGeometry(geo, /*present=*/false);
+      fw->ApplyPageGeometry(geo, /*present=*/true);
       fw->AttachToDesktopLayer();
     }
     PersistLayouts();
@@ -6673,11 +6676,11 @@ LRESULT CALLBACK App::TrayWndProc(HWND hwnd, UINT msg, WPARAM wparam,
             ShowAppHelp(self->settings_.Hwnd());
             break;
           case 41: {
-            const std::wstring msg =
+            const std::wstring about_msg =
                 L"DeskTidy 桌面整理\n版本 " + NativeProductVersion() +
                 L"\n\n官网 / 发布页：\ngithub.com/Bowen-Yu0926/DeskTidy-Releases\n\n"
                 L"「是」打开发布页\n「否」打开使用说明";
-            if (MistConfirm(hwnd, L"关于 DeskTidy", msg.c_str(),
+            if (MistConfirm(hwnd, L"关于 DeskTidy", about_msg.c_str(),
                             MistMsgTone::Info)) {
               ShellExecuteW(
                   nullptr, L"open",
