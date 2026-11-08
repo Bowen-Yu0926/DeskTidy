@@ -295,7 +295,7 @@ void PinnedImage::ShowContextMenu(POINT screen) {
   AppendMenuW(opa, MF_STRING | (alpha_ == 100 ? MF_CHECKED : 0), 13, L"40%");
   AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(opa), L"透明度 (Ctrl+滚轮)");
   AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-  AppendMenuW(menu, MF_STRING, 9, L"关闭贴图 (Esc)");
+  AppendMenuW(menu, MF_STRING, 9, L"关闭贴图 (双击 / Esc)");
 
   SetForegroundWindow(hwnd_);
   const int cmd =
@@ -409,20 +409,9 @@ LRESULT PinnedImage::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
       ReleaseCapture();
       return 0;
     case WM_LBUTTONDBLCLK: {
-      POINT pt{GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
-      if (InCloseButton(pt)) {
-        Destroy();
-        return 0;
-      }
-      // 双击：若当前不是 100% 原始大小则一键还原；若已是 100% 则快速缩略到 50%
-      RECT rc{};
-      GetWindowRect(hwnd_, &rc);
-      POINT center{rc.left + (rc.right - rc.left) / 2, rc.top + (rc.bottom - rc.top) / 2};
-      if (std::abs(zoom_ - 1.0f) > 0.05f) {
-        ResetZoom();
-      } else {
-        Zoom(0.5f, center);
-      }
+      dragging_ = false;
+      ReleaseCapture();
+      Destroy();
       return 0;
     }
     case WM_RBUTTONUP: {
