@@ -628,11 +628,16 @@ void FenceWindow::PresentLayered() {
       }
     }
 
-    // Luminous separator bar between header and content (360-style frosted separator)
+    // Luminous separator bar between header and content (融入强调色微光，柔和通透)
+    const BYTE ar = GetRValue(accent_);
+    const BYTE ag = GetGValue(accent_);
+    const BYTE ab = GetBValue(accent_);
     if (h > header_h + 2) {
       Gdiplus::Color mid_col = light_panel_
           ? Gdiplus::Color(40, 15, 23, 42)
-          : Gdiplus::Color(55, 240, 248, 255);
+          : Gdiplus::Color(60, static_cast<BYTE>((235 * 3 + ar) / 4),
+                               static_cast<BYTE>((245 * 3 + ag) / 4),
+                               static_cast<BYTE>((255 * 3 + ab) / 4));
       Gdiplus::Color trans_col(0, mid_col.GetR(), mid_col.GetG(), mid_col.GetB());
       Gdiplus::LinearGradientBrush sep(
           Gdiplus::Point(0, header_h), Gdiplus::Point(rw, header_h),
@@ -644,11 +649,11 @@ void FenceWindow::PresentLayered() {
       g.DrawLine(&sep_pen, 0, header_h, rw, header_h);
     }
 
-    // Subtle specular inner rim along the very top edge (360 crystal highlight)
+    // Subtle specular inner rim along the very top edge (360/Fluent 晶润高光)
     {
       Gdiplus::Color rim_mid = light_panel_
           ? Gdiplus::Color(80, 255, 255, 255)
-          : Gdiplus::Color(85, 255, 255, 255);
+          : Gdiplus::Color(95, 255, 255, 255);
       Gdiplus::Color rim_ends(0, 255, 255, 255);
       Gdiplus::LinearGradientBrush top_rim(
           Gdiplus::Point(0, 1), Gdiplus::Point(rw, 1),
@@ -661,11 +666,13 @@ void FenceWindow::PresentLayered() {
       g.DrawLine(&rim_pen, inset, 1, rw - inset, 1);
     }
 
-    COLORREF border = light_panel_ ? RGB(15, 23, 42) : RGB(255, 255, 255);
-    const BYTE ba = light_panel_ ? 38 : 44;
-    Gdiplus::Pen edge(Gdiplus::Color(ba, GetRValue(border), GetGValue(border),
-                                     GetBValue(border)),
-                      1.0f);
+    // 现代精致微光光晕边框（融入 preset accent 强调色微光，通透柔和，告别发硬白框）
+    Gdiplus::Color edge_col = light_panel_
+        ? Gdiplus::Color(45, 15, 23, 42)
+        : Gdiplus::Color(55, static_cast<BYTE>((255 * 7 + ar * 3) / 10),
+                             static_cast<BYTE>((255 * 7 + ag * 3) / 10),
+                             static_cast<BYTE>((255 * 7 + ab * 3) / 10));
+    Gdiplus::Pen edge(edge_col, 1.0f);
     if (rr > 2 && rr < rw && rr < rh) {
       g.DrawPath(&edge, &path);
     } else {

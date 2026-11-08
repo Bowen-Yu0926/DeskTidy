@@ -2,36 +2,44 @@
 
 namespace {
 
-// 精选 6 款经典 360 桌面整理与现代高颜值磨砂预设
+// 精选 8 款市面主流桌面整理高颜值磨砂配色，色相鲜明、辨识度极高、通透微光
 constexpr FenceStylePreset kPresets[] = {
-    // 1. 经典黑曜暗晶（360 经典黑曜暗晶磨砂，通透深邃）
-    {"obsidian", L"曜石黑", RGB(0x13, 0x16, 0x20), RGB(0x93, 0xC5, 0xFD),
-     RGB(0xFF, 0xFF, 0xFF), 140, 10, false},
+    // 1. 经典黑曜暗晶（纯净透光磨砂灰黑，沉稳高贵，不挑壁纸）
+    {"obsidian", L"曜石黑", RGB(22, 26, 36), RGB(147, 197, 253),
+     RGB(255, 255, 255), 148, 13, false},
 
-    // 2. 商务深邃深海蓝（360 经典海蓝磨砂，科技沉稳）
-    {"navy", L"深海蓝", RGB(0x0E, 0x18, 0x2C), RGB(0x38, 0xBD, 0xF8),
-     RGB(0xFF, 0xFF, 0xFF), 142, 10, false},
+    // 2. 深海湛蓝（科技深海宝石蓝，色泽深邃澄澈）
+    {"navy", L"深海蓝", RGB(18, 48, 88), RGB(56, 189, 248),
+     RGB(255, 255, 255), 150, 13, false},
 
-    // 3. 通透浅色云母白（360 经典清新透白，极简明亮）
-    {"mica", L"云母白", RGB(0xF6, 0xF8, 0xFC), RGB(0x25, 0x63, 0xEB),
-     RGB(0x1E, 0x29, 0x3B), 160, 10, true},
+    // 3. 通透云母白（极简明净透白，微透桌面纹理）
+    {"mica", L"云母白", RGB(246, 248, 252), RGB(37, 99, 235),
+     RGB(30, 41, 59), 165, 13, true},
 
-    // 4. 清新翡翠极光绿（360 清新翡翠薄荷，生机护眼）
-    {"aurora", L"极光绿", RGB(0x0C, 0x1F, 0x1A), RGB(0x34, 0xD3, 0x99),
-     RGB(0xFF, 0xFF, 0xFF), 142, 10, false},
+    // 4. 清新极光绿（生机盎然的深翡翠薄荷色）
+    {"aurora", L"极光绿", RGB(16, 56, 44), RGB(52, 211, 153),
+     RGB(255, 255, 255), 150, 13, false},
 
-    // 5. 温暖琥珀落霞金（360 暖阳轻奢琥珀，温润典雅）
-    {"sunset", L"落霞金", RGB(0x22, 0x16, 0x12), RGB(0xFB, 0x92, 0x3C),
-     RGB(0xFF, 0xFF, 0xFF), 142, 10, false},
+    // 5. 温暖落霞金（温润高级的落霞轻奢琥珀金）
+    {"sunset", L"落霞金", RGB(60, 34, 20), RGB(251, 146, 60),
+     RGB(255, 255, 255), 150, 13, false},
 
-    // 6. 神秘罗兰幻夜紫（360 神秘暗夜紫晶，梦幻高贵）
-    {"midnight", L"幻夜紫", RGB(0x18, 0x11, 0x26), RGB(0xC0, 0x84, 0xFC),
-     RGB(0xFF, 0xFF, 0xFF), 142, 10, false},
+    // 6. 幻夜紫晶（神秘梦幻的深紫罗兰宝石色）
+    {"midnight", L"幻夜紫", RGB(44, 22, 68), RGB(192, 132, 252),
+     RGB(255, 255, 255), 150, 13, false},
+
+    // 7. 暮色嫣红（浪漫轻奢深玫红，红玛瑙质感）
+    {"rose", L"暮色红", RGB(60, 20, 34), RGB(251, 113, 133),
+     RGB(255, 255, 255), 150, 13, false},
+
+    // 8. 静谧黛灰（极简高级商务金属冷灰）
+    {"slate", L"静谧灰", RGB(34, 44, 58), RGB(148, 163, 184),
+     RGB(255, 255, 255), 148, 13, false},
 };
 
 }  // namespace
 
-const FenceStylePreset& DefaultFenceStyle() { return kPresets[0]; }
+const FenceStylePreset& DefaultFenceStyle() { return kPresets[1]; } // 默认 navy (深海蓝)
 
 std::string NormalizeFenceStyleId(const std::string& id) {
   for (const auto& p : kPresets) {
@@ -39,13 +47,15 @@ std::string NormalizeFenceStyleId(const std::string& id) {
       return id;
     }
   }
-  // 历史与扩展旧预设向前兼容映射至 6 款新预设
+  // 历史与扩展旧预设向前兼容映射至 8 款新预设
   if (id == "cyberpunk" || id == "sky") return "navy";
   if (id == "graphite" || id == "dark" || id == "black") return "obsidian";
   if (id == "latte" || id == "peach") return "sunset";
   if (id == "matcha" || id == "mint") return "aurora";
   if (id == "mist" || id == "light" || id == "white") return "mica";
   if (id == "lavender" || id == "purple") return "midnight";
+  if (id == "red" || id == "crimson") return "rose";
+  if (id == "gray" || id == "grey") return "slate";
 
   return DefaultFenceStyle().id;
 }
