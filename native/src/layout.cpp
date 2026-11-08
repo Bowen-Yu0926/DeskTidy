@@ -1417,7 +1417,7 @@ int HealFenceLayouts(std::vector<FenceLayout>* fences) {
         continue;
       }
       FenceLayout before = b;
-      b.x = a.x + a.w + 16;
+      b.x = a.x + a.w;
       RECT rc{b.x, b.y, b.x + b.w, b.y + b.h};
       ClampRectToWorkArea(&rc);
       b.x = rc.left;

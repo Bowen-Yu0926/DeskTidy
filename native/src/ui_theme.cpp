@@ -34,73 +34,89 @@ std::string RgbaFromHex(const char* hex, float alpha) {
 }
 
 const Palette& PaletteFor(const std::string& id) {
-  // Content from Python _PALETTES; sidebar from _SIDEBAR_RAIL (360-like light).
-  static const Palette kMist{
-      "#EEF1F6", "#F4F6F9", "#FFFFFF", "#C9D2DE", "#1A2332", "#64748B",
-      "#1D4ED8", "#E0E7FF", "#1E40AF", "#16A34A", "#15803D", "#DC2626",
-      "#F5F7FA", "#1A2332", "#64748B"};
-  static const Palette kGraphite{
-      "#E8EAED", "#F0F1F3", "#FFFFFF", "#C5CAD3", "#1F2933", "#6B7280",
-      "#4B5563", "#E5E7EB", "#374151", "#374151", "#1F2937", "#DC2626",
-      "#F0F1F3", "#1F2933", "#6B7280"};
-  static const Palette kSky{
-      "#EAF4FF", "#F2F8FF", "#FFFFFF", "#B9D4F0", "#0F2744", "#5B7391",
-      "#0EA5E9", "#E0F2FE", "#0284C7", "#0EA5E9", "#0284C7", "#E11D48",
-      "#EAF4FF", "#0F2744", "#5B7391"};
-  static const Palette kMint{
-      "#EAF8F2", "#F3FBF7", "#FFFFFF", "#B7DFCB", "#12352A", "#4F7466",
-      "#10B981", "#D1FAE5", "#059669", "#059669", "#047857", "#DC2626",
-      "#EAF8F2", "#12352A", "#4F7466"};
-  static const Palette kLavender{
-      "#F2EEFF", "#F7F4FF", "#FFFFFF", "#D2C7EF", "#2A2148", "#6B6288",
-      "#8B5CF6", "#EDE9FE", "#7C3AED", "#7C3AED", "#6D28D9", "#E11D48",
-      "#F2EEFF", "#2A2148", "#6B6288"};
-  static const Palette kPeach{
-      "#FFF1E8", "#FFF7F2", "#FFFFFF", "#F0CDB8", "#3B2418", "#8A6452",
-      "#F97316", "#FFEDD5", "#EA580C", "#EA580C", "#C2410C", "#DC2626",
-      "#FFF7F2", "#3B2418", "#8A6452"};
-  if (id == "graphite") {
-    return kGraphite;
+  // 6 款 360 风格现代高颜值 UI 配色方案（与桌面分区 100% 对齐）
+  static const Palette kObsidian{
+      "#12151D", "#161B26", "#1C2331", "#2D3748", "#F1F5F9", "#94A3B8",
+      "#38BDF8", "#1E293B", "#0284C7", "#38BDF8", "#0284C7", "#EF4444",
+      "#0F131D", "#F1F5F9", "#94A3B8"};
+  static const Palette kNavy{
+      "#0E1726", "#121E33", "#172640", "#233857", "#F8FAFC", "#94A3B8",
+      "#38BDF8", "#1E293B", "#0EA5E9", "#38BDF8", "#0284C7", "#EF4444",
+      "#0B1120", "#F8FAFC", "#94A3B8"};
+  static const Palette kMica{
+      "#EEF2F6", "#F4F7FA", "#FFFFFF", "#CBD5E1", "#1E293B", "#64748B",
+      "#2563EB", "#DBEAFE", "#1D4ED8", "#2563EB", "#1D4ED8", "#DC2626",
+      "#F1F5F9", "#1E293B", "#64748B"};
+  static const Palette kAurora{
+      "#0B1B17", "#0F241F", "#142F28", "#1C4339", "#F0FDF4", "#86EFAC",
+      "#34D399", "#132E27", "#10B981", "#10B981", "#059669", "#EF4444",
+      "#081612", "#F0FDF4", "#86EFAC"};
+  static const Palette kSunset{
+      "#1F1511", "#281B16", "#34231C", "#4C3329", "#FFF7ED", "#FDBA74",
+      "#FB923C", "#38231B", "#F97316", "#F97316", "#EA580C", "#EF4444",
+      "#18100D", "#FFF7ED", "#FDBA74"};
+  static const Palette kMidnight{
+      "#161021", "#1C142B", "#251B38", "#382955", "#FAF5FF", "#D8B4FE",
+      "#C084FC", "#2B1E40", "#A855F7", "#A855F7", "#9333EA", "#EF4444",
+      "#110C1B", "#FAF5FF", "#D8B4FE"};
+
+  if (id == "navy") {
+    return kNavy;
   }
-  if (id == "sky") {
-    return kSky;
+  if (id == "mica") {
+    return kMica;
   }
-  if (id == "mint") {
-    return kMint;
+  if (id == "aurora") {
+    return kAurora;
   }
-  if (id == "lavender") {
-    return kLavender;
+  if (id == "sunset") {
+    return kSunset;
   }
-  if (id == "peach") {
-    return kPeach;
+  if (id == "midnight") {
+    return kMidnight;
   }
-  return kMist;
+  return kObsidian;
 }
 
 }  // namespace
 
 const std::vector<UiThemeOption>& AllUiThemes() {
   static const std::vector<UiThemeOption> kThemes = {
-      {"mist", L"薄雾浅灰（推荐）"},
-      {"graphite", L"石墨灰（推荐）"},
-      {"sky", L"天空蓝"},
-      {"mint", L"薄荷绿"},
-      {"lavender", L"淡紫 · 柔和"},
-      {"peach", L"浅杏 · 柔和"},
+      {"obsidian", L"曜石黑（360经典黑曜暗晶）"},
+      {"navy", L"深海蓝（360经典海蓝磨砂）"},
+      {"mica", L"云母白（360经典清新透白）"},
+      {"aurora", L"极光绿（360清新翡翠薄荷）"},
+      {"sunset", L"落霞金（360暖阳轻奢琥珀）"},
+      {"midnight", L"幻夜紫（360神秘暗夜紫晶）"},
   };
   return kThemes;
 }
 
 std::string NormalizeUiTheme(const std::string& id) {
-  if (id == "dark" || id == "black") {
-    return "mist";
+  if (id == "graphite" || id == "dark" || id == "black") {
+    return "obsidian";
+  }
+  if (id == "sky" || id == "cyberpunk") {
+    return "navy";
+  }
+  if (id == "mist" || id == "light" || id == "white") {
+    return "mica";
+  }
+  if (id == "mint" || id == "matcha") {
+    return "aurora";
+  }
+  if (id == "peach" || id == "latte") {
+    return "sunset";
+  }
+  if (id == "lavender" || id == "purple") {
+    return "midnight";
   }
   for (const auto& t : AllUiThemes()) {
     if (id == t.id) {
       return id;
     }
   }
-  return "mist";
+  return "obsidian";
 }
 
 const UiThemeOption* UiThemeById(const std::string& id) {

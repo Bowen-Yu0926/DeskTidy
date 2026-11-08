@@ -628,11 +628,11 @@ void FenceWindow::PresentLayered() {
       }
     }
 
-    // Luminous separator bar between header and content
+    // Luminous separator bar between header and content (360-style frosted separator)
     if (h > header_h + 2) {
       Gdiplus::Color mid_col = light_panel_
-          ? Gdiplus::Color(35, 15, 23, 42)
-          : Gdiplus::Color(48, 240, 248, 255);
+          ? Gdiplus::Color(40, 15, 23, 42)
+          : Gdiplus::Color(55, 240, 248, 255);
       Gdiplus::Color trans_col(0, mid_col.GetR(), mid_col.GetG(), mid_col.GetB());
       Gdiplus::LinearGradientBrush sep(
           Gdiplus::Point(0, header_h), Gdiplus::Point(rw, header_h),
@@ -644,11 +644,11 @@ void FenceWindow::PresentLayered() {
       g.DrawLine(&sep_pen, 0, header_h, rw, header_h);
     }
 
-    // Subtle specular inner rim along the very top edge
+    // Subtle specular inner rim along the very top edge (360 crystal highlight)
     {
       Gdiplus::Color rim_mid = light_panel_
-          ? Gdiplus::Color(55, 255, 255, 255)
-          : Gdiplus::Color(70, 255, 255, 255);
+          ? Gdiplus::Color(80, 255, 255, 255)
+          : Gdiplus::Color(85, 255, 255, 255);
       Gdiplus::Color rim_ends(0, 255, 255, 255);
       Gdiplus::LinearGradientBrush top_rim(
           Gdiplus::Point(0, 1), Gdiplus::Point(rw, 1),
@@ -662,7 +662,7 @@ void FenceWindow::PresentLayered() {
     }
 
     COLORREF border = light_panel_ ? RGB(15, 23, 42) : RGB(255, 255, 255);
-    const BYTE ba = light_panel_ ? 32 : 30;
+    const BYTE ba = light_panel_ ? 38 : 44;
     Gdiplus::Pen edge(Gdiplus::Color(ba, GetRValue(border), GetGValue(border),
                                      GetBValue(border)),
                       1.0f);

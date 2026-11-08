@@ -518,8 +518,7 @@ void App::WireFence(FenceWindow* fence) {
     rects[moved_i].x = snapped.x;
     rects[moved_i].y = snapped.y;
     ResolveFenceCollisions(&rects, kFenceMinW, kFenceMinH);
-    // Ensure horizontal siblings on the same row adapt seamlessly without overlapping
-    const int sibling_gap = MulDiv(10, SystemDpi(), 96);
+    // Ensure horizontal siblings on the same row seamlessly abut (gap=0) without gap or overlap
     for (size_t i = 0; i < rects.size(); ++i) {
       for (size_t j = i + 1; j < rects.size(); ++j) {
         LayoutRect& a = rects[i];
@@ -527,15 +526,17 @@ void App::WireFence(FenceWindow* fence) {
         if (std::abs(a.y - b.y) <= 40) {
           LayoutRect* left_r = a.x <= b.x ? &a : &b;
           LayoutRect* right_r = a.x <= b.x ? &b : &a;
-          if (left_r->right() + sibling_gap > right_r->x) {
-            right_r->x = left_r->right() + sibling_gap;
+          const int gap_dist = right_r->x - left_r->right();
+          // Magnetic seamless snapping when within 16px or overlapping (never force a white gap)
+          if (gap_dist <= 16) {
+            right_r->x = left_r->right();
             if (right_r->right() > work_r.right()) {
               if (work_r.right() - right_r->x >= kFenceMinW) {
                 right_r->w = work_r.right() - right_r->x;
               } else {
                 right_r->w = kFenceMinW;
                 right_r->x = work_r.right() - kFenceMinW;
-                left_r->w = (std::max)(kFenceMinW, right_r->x - left_r->x - sibling_gap);
+                left_r->w = (std::max)(kFenceMinW, right_r->x - left_r->x);
               }
             }
           }
@@ -3238,19 +3239,7 @@ void App::SetFenceStyleAt(int index, const std::wstring& style_id) {
 }
 
 void App::SetAllFenceStyle(const std::wstring& style_id) {
-  const std::string id = NormalizeFenceStyleId(NarrowUtf8(style_id));
-  for (auto& fence : fences_) {
-    if (fence) {
-      fence->SetStyleId(id);
-    }
-  }
-  // Global preset lives in prefs_.theme_id (not AppState), so persist it
-  // explicitly; PersistLayouts() only writes the per-fence layouts.
-  prefs_.theme_id = id;
-  SaveAppPrefs(prefs_);
-  PersistLayouts();
-  PushExtensionSettings();
-  ShowToast(L"已应用到全部分区样式");
+  ApplyGlobalThemeId(NarrowUtf8(style_id));
 }
 
 void App::SetFenceOpacityPctAt(int index, int opacity_pct) {
@@ -4286,35 +4275,34 @@ void App::OpenLayoutEditor() {
   ShowToast(L"布局已应用");
 }
 
-void App::ApplyThemeId(const std::string& theme_id) {
-  const FenceStylePreset* style = FenceStyleById(theme_id);
-  if (!style) {
-    return;
-  }
-  prefs_.theme_id = style->id;
-  SaveAppPrefs(prefs_);
+void App::ApplyGlobalThemeId(const std::string& theme_id) {
+  const std::string id = NormalizeFenceStyleId(theme_id);
+  prefs_.theme_id = id;
+  prefs_.ui_theme = id;
   for (auto& fence : fences_) {
     if (fence) {
-      fence->SetStyleId(prefs_.theme_id);
+      fence->SetStyleId(id);
     }
   }
+  SaveAppPrefs(prefs_);
   PersistLayouts();
+  settings_.ApplyUiThemeVars(UiThemeCssVars(id));
+  todos_.ApplyUiTheme(id);
+  ApplyTrayThemeIcon();
   ApplyChromeTheme();
   PushExtensionSettings();
-  ShowToast(std::wstring(L"分区样式：") + style->name);
+  const auto* opt = FenceStyleById(id);
+  if (opt) {
+    ShowToast(std::wstring(L"已切换主题：") + opt->name);
+  }
+}
+
+void App::ApplyThemeId(const std::string& theme_id) {
+  ApplyGlobalThemeId(theme_id);
 }
 
 void App::ApplyUiThemeId(const std::string& ui_theme) {
-  prefs_.ui_theme = NormalizeUiTheme(ui_theme);
-  SaveAppPrefs(prefs_);
-  const auto* opt = UiThemeById(prefs_.ui_theme);
-  settings_.ApplyUiThemeVars(UiThemeCssVars(prefs_.ui_theme));
-  todos_.ApplyUiTheme(prefs_.ui_theme);
-  PushExtensionSettings();
-  ApplyTrayThemeIcon();
-  if (opt) {
-    ShowToast(std::wstring(L"界面主题：") + opt->name_zh);
-  }
+  ApplyGlobalThemeId(ui_theme);
 }
 
 COLORREF App::TrayAccentColor() const {

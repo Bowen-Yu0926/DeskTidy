@@ -89,6 +89,7 @@ class App {
   void RenamePageAt(int page);
   void OpenLayoutEditor();
   void CycleTheme();
+  void ApplyGlobalThemeId(const std::string& theme_id);
   void ApplyThemeId(const std::string& theme_id);
   void ApplyUiThemeId(const std::string& ui_theme);
   void SyncVaultSessionState();
