@@ -411,11 +411,12 @@
   .global-style-label { font-size: 13px; font-weight: 800; color: var(--text); }
   .global-style-row .ft-chips { display: flex; flex-wrap: wrap; gap: 6px; }
   .global-style-row .ft-chip {
-    width: 28px; height: 22px; border-radius: 6px; border: 1px solid rgba(0,0,0,0.15);
+    width: 32px; height: 24px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.22);
     cursor: pointer; padding: 0; transition: transform 0.15s ease, box-shadow 0.15s ease;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.3);
   }
-  .global-style-row .ft-chip:hover { transform: translateY(-1px); box-shadow: 0 2px 6px rgba(0,0,0,0.15); }
-  .global-style-row .ft-chip.on { outline: 2px solid var(--accent); outline-offset: 1px; box-shadow: 0 0 8px rgba(47, 111, 237, 0.45); }
+  .global-style-row .ft-chip:hover { transform: translateY(-2px); box-shadow: 0 4px 10px rgba(0,0,0,0.35); }
+  .global-style-row .ft-chip.on { outline: 2px solid #FFFFFF; outline-offset: 2px; box-shadow: 0 0 10px var(--accent); }
   .global-style-row .hint { margin: 0; }
   .fence-columns {
     display: flex; gap: 12px; flex: 1; min-height: 320px; align-items: stretch;
@@ -507,10 +508,11 @@
   }
   .fence-tile .ft-chips { display: flex; flex-wrap: wrap; gap: 4px; }
   .fence-tile .ft-chip {
-    width: 18px; height: 14px; border-radius: 4px; border: 1px solid var(--border);
-    cursor: pointer; padding: 0;
+    width: 20px; height: 16px; border-radius: 4px; border: 1px solid rgba(255,255,255,0.18);
+    cursor: pointer; padding: 0; transition: transform 0.1s ease;
   }
-  .fence-tile .ft-chip.on { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .fence-tile .ft-chip:hover { transform: scale(1.15); }
+  .fence-tile .ft-chip.on { outline: 2px solid #FFFFFF; outline-offset: 1px; box-shadow: 0 0 6px var(--accent); }
   .fence-tile .ft-op {
     display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--muted);
   }
@@ -1354,14 +1356,16 @@
   </div>
 </div>
 <script>
-  // 精选 6 款经典 360 桌面整理通透磨砂配色
+  // 精选 8 款经典通透磨砂高颜值配色（与 C++ 端 100% 精确对齐）
   const STYLE_COLORS = {
-    obsidian: { bg: '#131620', accent: '#93C5FD', text: '#FFFFFF', name: '曜石黑' },
-    navy:     { bg: '#0E182C', accent: '#38BDF8', text: '#FFFFFF', name: '深海蓝' },
-    mica:     { bg: '#F6F8FC', accent: '#2563EB', text: '#1E293B', name: '云母白' },
-    aurora:   { bg: '#0C1F1A', accent: '#34D399', text: '#FFFFFF', name: '极光绿' },
-    sunset:   { bg: '#221612', accent: '#FB923C', text: '#FFFFFF', name: '落霞金' },
-    midnight: { bg: '#181126', accent: '#C084FC', text: '#FFFFFF', name: '幻夜紫' }
+    obsidian: { bg: '#181E2A', chip: 'linear-gradient(135deg, #334155 0%, #0F172A 100%)', accent: '#93C5FD', text: '#FFFFFF', name: '曜石黑' },
+    navy:     { bg: '#183A70', chip: 'linear-gradient(135deg, #2563EB 0%, #0F2A66 100%)', accent: '#38BDF8', text: '#FFFFFF', name: '深海蓝' },
+    mica:     { bg: '#F6F8FC', chip: 'linear-gradient(135deg, #FFFFFF 0%, #CBD5E1 100%)', accent: '#2563EB', text: '#1E293B', name: '云母白' },
+    aurora:   { bg: '#124434', chip: 'linear-gradient(135deg, #10B981 0%, #064E3B 100%)', accent: '#34D399', text: '#FFFFFF', name: '极光绿' },
+    sunset:   { bg: '#4C2A18', chip: 'linear-gradient(135deg, #F97316 0%, #7C2D12 100%)', accent: '#FB923C', text: '#FFFFFF', name: '落霞金' },
+    midnight: { bg: '#381C56', chip: 'linear-gradient(135deg, #8B5CF6 0%, #4C1D95 100%)', accent: '#C084FC', text: '#FFFFFF', name: '幻夜紫' },
+    rose:     { bg: '#4C182A', chip: 'linear-gradient(135deg, #F43F5E 0%, #881337 100%)', accent: '#FB7185', text: '#FFFFFF', name: '暮色红' },
+    slate:    { bg: '#2A3646', chip: 'linear-gradient(135deg, #64748B 0%, #1E293B 100%)', accent: '#94A3B8', text: '#FFFFFF', name: '静谧灰' }
   };
 
   const state = {
@@ -1667,8 +1671,8 @@
         const id = t.id || '';
         const col = STYLE_COLORS[id] || STYLE_COLORS.navy;
         return '<button type="button" class="ft-chip' + (id === sid ? ' on' : '') +
-          '" data-style="' + id + '" title="' + (t.name || id) +
-          '" style="background:' + col.bg + '"></button>';
+          '" data-style="' + id + '" title="' + (col.name || t.name || id) +
+          '" style="background:' + (col.chip || col.bg) + '"></button>';
       }).join('');
       const isSystem = !!c.system;
       el.innerHTML =
@@ -1771,8 +1775,8 @@
       const id = t.id || '';
       const col = STYLE_COLORS[id] || STYLE_COLORS.navy;
       return '<button type="button" class="ft-chip' + (id === cur ? ' on' : '') +
-        '" data-style="' + id + '" title="' + (t.name || id) +
-        '" style="background:' + col.bg + '"></button>';
+        '" data-style="' + id + '" title="' + (col.name || t.name || id) +
+        '" style="background:' + (col.chip || col.bg) + '"></button>';
     }).join('');
     box.querySelectorAll('[data-style]').forEach((chip) => {
       chip.addEventListener('click', () => {
