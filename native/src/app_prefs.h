@@ -12,7 +12,7 @@ struct AppPrefs {
   // Soft file-size cap in MiB (P2-38). 0 = unlimited; default 2048.
   int record_max_mb = 2048;
   // 0 low, 1 medium, 2 high (libx264 CRF).
-  int record_quality = 1;
+  int record_quality = 2;
   // Capture frame rate (Python screen_record.fps). Clamped 15–60 at load.
   int record_fps = 30;
   // U1 screen_record.enabled — tray (T1) reads this to decide whether recording
@@ -122,5 +122,6 @@ struct AppPrefs {
 
 AppPrefs LoadAppPrefs();
 void SaveAppPrefs(const AppPrefs& prefs);
+std::wstring NormalizeRecordMic(const std::wstring& mic);
 AppPrefs LoadAppPrefsFromPath(const std::wstring& path);
 void SaveAppPrefsToPath(const AppPrefs& prefs, const std::wstring& path);

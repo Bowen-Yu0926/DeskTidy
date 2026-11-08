@@ -230,9 +230,9 @@ AppPrefs LoadAppPrefsFromPath(const std::wstring& path) {
   if (prefs.record_max_mb < 0) {
     prefs.record_max_mb = 0;
   }
-  prefs.record_quality = ParseIntField(json, "record_quality", 1);
+  prefs.record_quality = ParseIntField(json, "record_quality", 2);
   if (prefs.record_quality < 0 || prefs.record_quality > 2) {
-    prefs.record_quality = 1;
+    prefs.record_quality = 2;
   }
   prefs.record_fps = ParseIntField(json, "record_fps", 30);
   if (prefs.record_fps < 15 || prefs.record_fps > 60) {

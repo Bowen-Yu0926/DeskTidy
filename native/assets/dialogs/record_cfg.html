@@ -65,9 +65,9 @@
     <div class="field">
       <label>画质</label>
       <select id="quality">
-        <option value="0">低</option>
+        <option value="2" selected>高（默认）</option>
         <option value="1">中</option>
-        <option value="2">高</option>
+        <option value="0">低</option>
       </select>
     </div>
     <div class="field">
@@ -87,17 +87,22 @@
   function fillMic(devices, selected) {
     var sel = document.getElementById('mic');
     sel.innerHTML = '';
-    var none = document.createElement('option');
-    none.value = '';
-    none.textContent = '（不录音）';
-    sel.appendChild(none);
-    (devices || []).forEach(function (d) {
+    var devs = devices || [];
+    if (devs.length === 0) {
+      var none = document.createElement('option');
+      none.value = '';
+      none.textContent = '未检测到麦克风';
+      sel.appendChild(none);
+      sel.value = '';
+      return;
+    }
+    devs.forEach(function (d) {
       var o = document.createElement('option');
       o.value = d;
       o.textContent = d;
       sel.appendChild(o);
     });
-    sel.value = selected || '';
+    sel.value = (selected && devs.indexOf(selected) >= 0) ? selected : devs[0];
   }
   window.applyState = function(m) {
     if (!m || m.type !== 'state') return;

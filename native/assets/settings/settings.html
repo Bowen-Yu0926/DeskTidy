@@ -1087,14 +1087,14 @@
         <div class="field-row">
           <span class="label">画质</span>
           <select id="ext_record_quality">
-            <option value="2">高（更清晰，文件较大）</option>
-            <option value="1" selected>中（默认）</option>
+            <option value="2" selected>高（默认，清晰保真）</option>
+            <option value="1">中</option>
             <option value="0">低（省空间）</option>
           </select>
         </div>
         <div class="field-row">
           <span class="label">麦克风</span>
-          <input type="text" id="ext_record_mic" placeholder="留空 = 不录制麦克风" />
+          <select id="ext_record_mic"></select>
           <button class="btn" data-act="record">更多…</button>
         </div>
       </div>
@@ -1374,7 +1374,7 @@
     minutes_enabled: false, calculator_enabled: false, todos_enabled: false,
     record_enabled: false,
     screenshot_max_pins: 3, minutes_folder: '', notepad_folder: '',
-    wallpaper_folder: '', record_dir: '', record_mic: '', record_quality: 1,
+    wallpaper_folder: '', record_dir: '', record_mic: '', record_quality: 2,
     page_folders: [], whitelist: [], whitelist_selected: -1,
     search_desktop: true, search_documents: true, search_downloads: true,
     search_all_drives: false,
@@ -2294,8 +2294,28 @@
     setVal('ext_notepad_folder', state.notepad_folder);
     setVal('ext_wallpaper_folder', state.wallpaper_folder);
     setVal('ext_record_dir', state.record_dir);
-    setVal('ext_record_mic', state.record_mic);
-    setVal('ext_record_quality', state.record_quality);
+    {
+      const micSel = document.getElementById('ext_record_mic');
+      if (micSel) {
+        micSel.innerHTML = '';
+        const devs = state.record_mics || [];
+        if (devs.length === 0) {
+          const opt = document.createElement('option');
+          opt.value = '';
+          opt.textContent = '未检测到麦克风设备';
+          micSel.appendChild(opt);
+        } else {
+          devs.forEach((d) => {
+            const opt = document.createElement('option');
+            opt.value = d;
+            opt.textContent = d;
+            micSel.appendChild(opt);
+          });
+          micSel.value = (state.record_mic && devs.includes(state.record_mic)) ? state.record_mic : devs[0];
+        }
+      }
+    }
+    setVal('ext_record_quality', state.record_quality != null ? state.record_quality : 2);
     renderExtHotkeys();
     renderPageFolders();
     set('ext_search_desktop', state.search_desktop);

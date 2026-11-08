@@ -519,6 +519,14 @@ std::wstring SettingsWindow::BuildStateJson() const {
   json += JsonEscape(ext_.record_dir);
   json += L"\",\"record_mic\":\"";
   json += JsonEscape(ext_.record_mic);
+  json += L"\",\"record_mics\":[";
+  for (size_t i = 0; i < ext_.record_mics.size(); ++i) {
+    if (i) {
+      json += L',';
+    }
+    json += L"\"" + JsonEscape(ext_.record_mics[i]) + L"\"";
+  }
+  json += L"]";
   json += L"\",\"minutes_folder_default\":\"";
   json += JsonEscape(ext_.minutes_folder_default);
   json += L"\",\"notepad_folder_default\":\"";

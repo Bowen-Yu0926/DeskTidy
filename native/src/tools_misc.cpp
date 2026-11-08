@@ -544,13 +544,16 @@ void ConfigureScreenRecord(HWND owner) {
   dlg.build_state = [&]() {
     int q = prefs.record_quality;
     if (q < 0 || q > 2) {
-      q = 1;
+      q = 2;
     }
     int fps = prefs.record_fps;
     if (fps < 15 || fps > 60) {
       fps = 30;
     }
     const std::vector<std::wstring> mics = ListAudioCaptureDevices();
+    if (prefs.record_mic.empty() && !mics.empty()) {
+      prefs.record_mic = mics.front();
+    }
     std::wstring json = L"{\"type\":\"state\",\"seconds\":";
     json += std::to_wstring(prefs.record_seconds);
     json += L",\"fps\":";
@@ -613,9 +616,9 @@ void ConfigureScreenRecord(HWND owner) {
         prefs.record_seconds = 0;
       }
       prefs.record_output_dir = MistJsonStringField(json, L"dir");
-      prefs.record_quality = MistJsonIntField(json, L"quality", 1);
+      prefs.record_quality = MistJsonIntField(json, L"quality", 2);
       if (prefs.record_quality < 0 || prefs.record_quality > 2) {
-        prefs.record_quality = 1;
+        prefs.record_quality = 2;
       }
       prefs.record_fps = MistJsonIntField(json, L"fps", 30);
       if (prefs.record_fps < 15 || prefs.record_fps > 60) {

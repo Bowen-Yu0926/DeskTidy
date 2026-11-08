@@ -1512,7 +1512,13 @@ bool StartRecording(HWND owner) {
     g_capture_rc = r;
     g_capture_rc_set = true;
   }
-  const std::wstring mic = NormalizeRecordMic(prefs.record_mic);
+  std::wstring mic = NormalizeRecordMic(prefs.record_mic);
+  if (mic.empty()) {
+    const auto mics = ListAudioCaptureDevices();
+    if (!mics.empty()) {
+      mic = mics.front();
+    }
+  }
   if (!mic.empty()) {
     g_cmd.with_audio = true;
     g_cmd.audio_in = L" -f dshow -i audio=\"" + mic + L"\"";

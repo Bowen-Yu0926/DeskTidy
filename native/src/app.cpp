@@ -3126,7 +3126,15 @@ void App::PushExtensionSettings() {
   ext.notepad_folder = prefs_.notepad_folder;
   ext.wallpaper_folder = WallpaperLibraryFolder();
   ext.record_dir = prefs_.record_output_dir;
-  ext.record_mic = prefs_.record_mic;
+  const auto audio_mics = ListAudioCaptureDevices();
+  std::wstring norm_mic = NormalizeRecordMic(prefs_.record_mic);
+  if (norm_mic.empty() && !audio_mics.empty()) {
+    norm_mic = audio_mics.front();
+    prefs_.record_mic = norm_mic;
+    SaveAppPrefs(prefs_);
+  }
+  ext.record_mic = norm_mic;
+  ext.record_mics = audio_mics;
   // Always show install-dir defaults in placeholders (not a corrupt override).
   ext.minutes_folder_default = JoinPath(ExeDir(), L"纪要");
   ext.notepad_folder_default = JoinPath(ExeDir(), L"笔记");

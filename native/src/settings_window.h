@@ -61,12 +61,13 @@ class SettingsWindow {
     bool todos_on_bar = false;
     bool screenshot_auto_pin = false;
     int screenshot_max_pins = 3;
-    int record_quality = 1;
+    int record_quality = 2;
     std::wstring minutes_folder;
     std::wstring notepad_folder;
     std::wstring wallpaper_folder;
     std::wstring record_dir;
     std::wstring record_mic;
+    std::vector<std::wstring> record_mics;
     // Resolved defaults for empty-path placeholders (Python resolve_*).
     std::wstring minutes_folder_default;
     std::wstring notepad_folder_default;
