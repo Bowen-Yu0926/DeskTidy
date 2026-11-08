@@ -4218,7 +4218,7 @@ void App::CreateFenceOnPage(int page, bool switch_to_page) {
   layout.page = page;
   layout.pages = {page};
   layout.organize_kinds = {"file"};
-  layout.style_id = prefs_.theme_id.empty() ? "navy" : prefs_.theme_id;
+  layout.style_id = "navy"; // 分区独立默认样式，不联动全局主题
   if (!SpawnFence(layout)) {
     return;
   }
@@ -4387,11 +4387,7 @@ void App::ApplyGlobalThemeId(const std::string& theme_id) {
   const std::string id = NormalizeFenceStyleId(theme_id);
   prefs_.theme_id = id;
   prefs_.ui_theme = id;
-  for (auto& fence : fences_) {
-    if (fence) {
-      fence->SetStyleId(id);
-    }
-  }
+  // 分区不与全局主题联动，保留各自独立/原有样式
   SaveAppPrefs(prefs_);
   PersistLayouts();
   settings_.ApplyUiThemeVars(UiThemeCssVars(id));
@@ -6109,8 +6105,7 @@ void App::AddFenceAtRect(const RECT& screen) {
   layout.w = (std::max)(kFenceMinW, drawn_w);
   layout.h = (std::max)(kFenceMinH, drawn_h);
   layout.page = current_page_;
-  layout.style_id =
-      prefs_.theme_id.empty() ? "navy" : prefs_.theme_id;
+  layout.style_id = "navy"; // 分区独立默认样式，不联动全局主题
   if (!SpawnFence(layout)) {
     return;
   }

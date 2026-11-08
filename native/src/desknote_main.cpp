@@ -212,7 +212,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
   }
   {
     AppPrefs prefs = LoadAppPrefs();
-    notes.ApplyUiTheme(NormalizeUiTheme(prefs.ui_theme));
+    // DeskNote 作为独立笔记视窗，保持独立素雅浅色高对比度，不与全局主题联动
   }
 
   if (elev_save) {

@@ -971,8 +971,8 @@ bool NotesWindow::Create(HINSTANCE instance) {
     }
   };
   {
-    const std::wstring theme =
-        SystemAppsUseLightTheme() ? L"light" : L"dark";
+    // DeskNote 保持经典清晰素雅界面，不与系统/全局深色主题联动
+    const std::wstring theme = L"light";
     web_.SetTheme(theme);
     preview_web_.SetTheme(theme);
   }
@@ -1368,8 +1368,9 @@ void NotesWindow::ApplyUiTheme(const std::string& ui_theme) {
   card_bg_ = RGB(255, 255, 255);
   rail_bg_ = RGB(245, 246, 248);
   border_color_ = RGB(226, 230, 236);
-  text_color_ = pick("text", RGB(32, 36, 42));
-  muted_color_ = pick("muted", RGB(120, 128, 140));
+  // DeskNote 保证在白底上始终为深黑清晰字色
+  text_color_ = RGB(32, 36, 42);
+  muted_color_ = RGB(120, 128, 140);
   ApplyChrome();
   // P2: preview/WYSIWYG follow the product theme (not only OS light/dark).
   // All shipped UI themes use light content panes → "light" chrome.
@@ -5715,7 +5716,7 @@ void NotesWindow::TogglePreview() {
 void NotesWindow::ExportPdf() {
   if (!preview_web_.Available()) {
     preview_web_.SetKind(NotesWebView::Kind::kViewer);
-    preview_web_.SetTheme(SystemAppsUseLightTheme() ? L"light" : L"dark");
+    preview_web_.SetTheme(L"light");
     if (!preview_web_.Create(hwnd_)) {
       MistAlert(hwnd_, L"导出 PDF", L"无法启动 PDF 导出（WebView2 不可用）。",
                 MistMsgTone::Warn);
