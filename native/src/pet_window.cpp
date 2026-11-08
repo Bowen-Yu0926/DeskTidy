@@ -2037,11 +2037,17 @@ void PetWindow::ShowContextMenu(POINT screen) {
     AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(poses), L"姿态");
   }
   HMENU chars = CreatePopupMenu();
+  auto get_char_display_name = [](const std::wstring& id) -> std::wstring {
+    if (id == L"hoodie") return L"卫衣少年";
+    if (id == L"voyage") return L"出海少女";
+    if (id == L"xianjian") return L"白衣剑仙";
+    return id;
+  };
   for (size_t i = 0; i < character_ids_.size(); ++i) {
     const UINT flags =
         MF_STRING | (character_ == character_ids_[i] ? MF_CHECKED : 0);
-    AppendMenuW(chars, flags, static_cast<UINT>(200 + i),
-                character_ids_[i].c_str());
+    const std::wstring label = get_char_display_name(character_ids_[i]);
+    AppendMenuW(chars, flags, static_cast<UINT>(200 + i), label.c_str());
   }
   if (!character_ids_.empty()) {
     AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(chars), L"角色");
@@ -3290,8 +3296,11 @@ void PetWindow::EndDragFloat() {
 }
 
 int PetWindow::WantedTickMs() const {
-  if (!hwnd_ || !IsWindowVisible(hwnd_) || dragging_) {
-    return 33;
+  if (!hwnd_ || !IsWindowVisible(hwnd_)) {
+    return 1000;
+  }
+  if (dragging_) {
+    return 16;
   }
   // wait = 站立 — same cadence as idle (was 33ms and felt stuttery/blank).
   const bool quiet_pose = pose_ == L"idle" || pose_ == L"sleep" ||
