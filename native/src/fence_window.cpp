@@ -1325,26 +1325,25 @@ bool FenceWindow::Show() {
   const bool was_visible = IsWindowVisible(hwnd_) != FALSE && !was_iconic;
   const bool buried =
       was_visible && IsAttachedToDesktop(hwnd_) && !IsOverlayAboveDefView(hwnd_);
-  if (was_iconic) {
-    ShowWindow(hwnd_, SW_RESTORE);
-  } else if (!was_visible) {
-    ShowWindow(hwnd_, SW_SHOWNOACTIVATE);
+
+  // Fences-class: 分层位图先就绪并提交显存，确保映射第一帧饱满无暇，杜绝先显示后绘制的白屏/黑边闪烁
+  if (!was_visible || was_iconic || buried || layer_dirty_) {
+    LayoutCells();
+    PresentLayered();
   }
+
   if (!IsAttachedToDesktop(hwnd_)) {
     AttachToDesktopLayer();
   } else if (buried || !IsOverlayAboveDefView(hwnd_)) {
     RaiseOverlayInDesktopBand(hwnd_);
   }
-  // Present after map/raise. Soft-park "visible under DefView" keeps
-  // IsWindowVisible TRUE with a blank ULW — skipping Present is why page
-  // switch needed a desktop click. Healthy already-mapped Show (ApplyPage
-  // Visibility) skips the blit to avoid flash.
-  if (!was_visible || was_iconic || buried || layer_dirty_) {
-    LayoutCells();
-    PresentLayered();
-    return true;
+
+  if (was_iconic) {
+    ShowWindow(hwnd_, SW_RESTORE);
+  } else if (!was_visible) {
+    ShowWindow(hwnd_, SW_SHOWNOACTIVATE);
   }
-  return false;
+  return true;
 }
 
 void FenceWindow::Hide() {

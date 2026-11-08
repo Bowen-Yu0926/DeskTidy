@@ -5369,61 +5369,59 @@ void App::SetPage(int page) {
     KillTimer(message_hwnd_, kTimerWarmFences);
   }
 
-  // Page switch (Fences-class): hard-hide leavers, then Show+Present arrivals.
-  // Soft-park "visible under DefView" used to skip Present (mapped && !above
-  // DefView → Raise only) — blank until desktop click RefreshLayer.
-  HideOffPageFences();
-  InvalidateDefViewCache();
+  // Fences-class 零闪烁切页：先显后隐 + 预先就绪位图 + 同步刷新公共区，杜绝桌面底色裸露与48ms二次重绘跳变
+  std::vector<FenceWindow*> leavers;
+  std::vector<FenceWindow*> arrivals;
   for (auto& fence : fences_) {
-    if (!fence || !fence->Hwnd()) {
-      continue;
+    if (!fence || !fence->Hwnd()) continue;
+    const bool want = !fences_hidden_ && !peek_active_ && fence->VisibleOnPage(current_page_);
+    if (want) {
+      arrivals.push_back(fence.get());
+    } else {
+      if (IsWindowVisible(fence->Hwnd()) || IsIconic(fence->Hwnd())) {
+        leavers.push_back(fence.get());
+      }
     }
-    const bool want =
-        !fences_hidden_ && !peek_active_ && fence->VisibleOnPage(current_page_);
-    if (!want) {
-      continue;
-    }
+  }
+
+  // 1. 预先更新并显示入场分区（Arrivals）：位图在显存准备好后再映射，保证第一帧饱满
+  for (FenceWindow* fence : arrivals) {
     const FencePageGeometry geo = fence->GeometryForPage(current_page_);
-    fence->ApplyPageGeometry(geo, /*present=*/false);
-    // Show() already re-presents when it maps/raises a hidden / iconic / buried
-    // / dirty fence. Only re-present the stay-visible multi-page case it skips
-    // (otherwise one page click redraws every arriving fence twice).
-    if (!fence->Show() && fence->Hwnd() && IsWindowVisible(fence->Hwnd()) &&
-        !IsIconic(fence->Hwnd())) {
+    fence->ApplyPageGeometry(geo, /*present=*/true);
+    if (!fence->Show()) {
       fence->RefreshLayer();
     }
   }
 
-  // Ensure desktop controls (Dock, Pet, PetPages, PageBar) sit above fences in Desktop Band.
-  if (dock_visible_ && dock_.Hwnd()) {
-    RaiseOverlayInDesktopBand(dock_.Hwnd());
-  }
-  if (pet_visible_ && pet_.Hwnd()) {
-    RaiseOverlayInDesktopBand(pet_.Hwnd());
-    if (pet_.PagesHwnd()) {
-      RaiseOverlayInDesktopBand(pet_.PagesHwnd());
-    }
-    if (pet_.MenuHwnd()) {
-      RaiseOverlayInDesktopBand(pet_.MenuHwnd());
-    }
+  // 2. 同步更新公共区域浮层（取消48ms延迟计时器，彻底根除切页后的二次突兀闪烁）
+  if (public_visible_) {
+    RebuildPublicItems();
   }
 
+  // 3. 入场分区全部就位后，再隐藏离场分区（Leavers）：新画面覆盖旧画面，桌面壁纸绝不暴露
+  for (FenceWindow* fence : leavers) {
+    ShowWindow(fence->Hwnd(), SW_HIDE);
+  }
+
+  // 4. 辅助控件状态平滑保持（无需频繁 Raise 强制 DWM 刷树）
+  if (dock_visible_ && dock_.Hwnd() && !IsWindowVisible(dock_.Hwnd())) {
+    dock_.Show();
+  }
+  if (pet_visible_ && pet_.Hwnd() && !IsWindowVisible(pet_.Hwnd())) {
+    pet_.Show();
+  }
   if (show_page_bar) {
-    page_bar_.Show();
-    if (page_bar_.Hwnd()) {
-      RaiseOverlayInDesktopBand(page_bar_.Hwnd());
-      page_bar_.RefreshLayer();
+    if (!page_bar_.Hwnd() || !IsWindowVisible(page_bar_.Hwnd())) {
+      page_bar_.Show();
     }
   } else {
     page_bar_.Hide();
   }
 
-  // Defer pet nudge + float reflow off the click path (sync SetWindowPos flash).
-  if (message_hwnd_ && (pet_visible_ || public_visible_)) {
+  if (message_hwnd_) {
     KillTimer(message_hwnd_, kTimerReflowPublic);
-    SetTimer(message_hwnd_, kTimerReflowPublic, 48, nullptr);
   }
-  HideOffPageFences();
+
   SchedulePersistLayouts();
 }
 

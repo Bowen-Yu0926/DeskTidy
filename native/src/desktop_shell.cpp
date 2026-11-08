@@ -594,10 +594,11 @@ void OverlayWindowBatch::Commit() {
   if (items.empty()) {
     return;
   }
+  // Fences-class 无闪烁切换：Show 优先于 Move，Hide 最后执行，避免新窗口出现前露出桌面底色
   std::stable_sort(items.begin(), items.end(),
                    [](const Item& a, const Item& b) {
-                     const int oa = a.op == kHide ? 0 : (a.op == kMove ? 1 : 2);
-                     const int ob = b.op == kHide ? 0 : (b.op == kMove ? 1 : 2);
+                     const int oa = a.op == kShow ? 0 : (a.op == kMove ? 1 : 2);
+                     const int ob = b.op == kShow ? 0 : (b.op == kMove ? 1 : 2);
                      if (oa != ob) {
                        return oa < ob;
                      }
