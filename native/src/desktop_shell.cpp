@@ -399,18 +399,35 @@ bool IsShowDesktopActive() {
 namespace {
 
 HWND WindowAboveDefView(HWND defview, HWND host, HWND self) {
-  HWND anchor = defview ? defview : host;
+  HWND anchor = host ? host : defview;
   if (!anchor || !IsWindow(anchor)) {
     return nullptr;
   }
-  HWND above = GetWindow(anchor, GW_HWNDPREV);
-  if (above == self) {
-    above = GetWindow(self, GW_HWNDPREV);
+  HWND cur = anchor;
+  for (int i = 0; i < 32; ++i) {
+    HWND prev = GetWindow(cur, GW_HWNDPREV);
+    if (!prev || prev == cur) {
+      break;
+    }
+    cur = prev;
+    if (cur == self) {
+      continue;
+    }
+    if (IsWindowVisible(cur) && !IsIconic(cur)) {
+      DWORD pid = 0;
+      GetWindowThreadProcessId(cur, &pid);
+      if (pid != GetCurrentProcessId()) {
+        wchar_t cls[64] = {};
+        GetClassNameW(cur, cls, 64);
+        if (wcscmp(cls, L"WorkerW") != 0 && wcscmp(cls, L"Progman") != 0 &&
+            wcscmp(cls, L"Shell_TrayWnd") != 0 &&
+            wcscmp(cls, L"Shell_SecondaryTrayWnd") != 0) {
+          return cur;
+        }
+      }
+    }
   }
-  if (above == self) {
-    return nullptr;
-  }
-  return above;
+  return nullptr;
 }
 
 bool CoversMonitorRect(HWND hwnd, const RECT& mon) {
@@ -546,13 +563,15 @@ void RaiseOverlayInDesktopBand(HWND hwnd) {
   if (self_topmost) {
     SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, flags);
   }
-  // Seat above DefView / WorkerW; insert-after window above DefView keeps us
-  // under APPWINDOWs without sinking to HWND_BOTTOM (which buries overlays
-  // under WorkerW wallpaper).
-  // Root invariant: Desktop overlays must stay below all app windows and dialogs.
-  // Never elevate to HWND_TOP (which lifts overlays over apps and UAC dialogs).
-  HWND above = WindowAboveDefView(host.defview, host.host, hwnd);
-  HWND insert_after = (above && above != hwnd) ? above : (host.host ? host.host : HWND_BOTTOM);
+  // 1. 若处于显示桌面模式（Win+D / 点击桌面壁纸且无全屏覆盖），桌面覆盖层随桌面显示在顶层
+  // 2. 若正常有应用窗口/弹窗，必须沉在最底部应用窗口的下方，绝不覆盖应用或弹窗
+  HWND insert_after = HWND_TOP;
+  if (!IsShowDesktopActive()) {
+    HWND above = WindowAboveDefView(host.defview, host.host, hwnd);
+    if (above && above != hwnd) {
+      insert_after = above;
+    }
+  }
   SetWindowPos(hwnd, insert_after, 0, 0, 0, 0, flags);
   if (want_show) {
     ShowOverlayNoActivate(hwnd);
