@@ -3349,10 +3349,7 @@ void PetWindow::Tick() {
 
   bool frame_changed = false;
   if (dragging_) {
-    // Hoodie/voyage: grab "hold" cels. 剑仙 hold 无树且近乎静帧 — 拖时保持原
-    // pose（睡觉树景/idle 呼吸）并继续播帧，避免「拖一下动画没了」。
-    const bool use_hold =
-        HasPose(L"hold") && character_ != L"xianjian";
+    const bool use_hold = HasPose(L"hold");
     bool pose_switched = false;
     if (use_hold && pose_ != L"hold") {
       SetPose(L"hold");
@@ -3474,6 +3471,9 @@ LRESULT PetWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
           }
           dragging_ = true;
           pose_before_drag_ = pose_;
+          if (HasPose(L"hold")) {
+            SetPose(L"hold");
+          }
           last_interact_ms_ = GetTickCount();
           chrome_dirty_ = true;
           if (!drag_size_cursor_) {
