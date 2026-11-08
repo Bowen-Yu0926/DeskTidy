@@ -3429,6 +3429,8 @@ LRESULT PetWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
     FilterDesktopChromeWindowPosChanging(reinterpret_cast<WINDOWPOS*>(lparam));
   }
   switch (msg) {
+    case WM_MOUSEACTIVATE:
+      return MA_NOACTIVATE;
     case WM_SETCURSOR:
       if (dragging_ && LOWORD(lparam) == HTCLIENT) {
         SetCursor(LoadCursor(nullptr, IDC_HAND));

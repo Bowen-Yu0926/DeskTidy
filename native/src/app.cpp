@@ -3735,7 +3735,6 @@ void App::SeatAllFencesUnderApps() {
     // HWND_BOTTOM alone can slip under DefView (blank fences until page
     // switch). Raise keeps the Fences-class seat: above DefView, under apps.
     PlaceOverlayInDesktopBand(hwnd, true);
-    RaiseOverlayInDesktopBand(hwnd);
   };
   for (auto& fence : fences_) {
     if (!fence || !fence->Hwnd()) {

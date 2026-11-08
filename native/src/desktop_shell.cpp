@@ -549,8 +549,10 @@ void RaiseOverlayInDesktopBand(HWND hwnd) {
   // Seat above DefView / WorkerW; insert-after window above DefView keeps us
   // under APPWINDOWs without sinking to HWND_BOTTOM (which buries overlays
   // under WorkerW wallpaper).
+  // Root invariant: Desktop overlays must stay below all app windows and dialogs.
+  // Never elevate to HWND_TOP (which lifts overlays over apps and UAC dialogs).
   HWND above = WindowAboveDefView(host.defview, host.host, hwnd);
-  HWND insert_after = (above && above != hwnd) ? above : HWND_TOP;
+  HWND insert_after = (above && above != hwnd) ? above : (host.host ? host.host : HWND_BOTTOM);
   SetWindowPos(hwnd, insert_after, 0, 0, 0, 0, flags);
   if (want_show) {
     ShowOverlayNoActivate(hwnd);

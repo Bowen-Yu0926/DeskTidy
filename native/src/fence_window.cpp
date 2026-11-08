@@ -3281,6 +3281,10 @@ LRESULT FenceWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
     FilterDesktopChromeWindowPosChanging(reinterpret_cast<WINDOWPOS*>(lparam));
   }
   switch (msg) {
+    case WM_MOUSEACTIVATE:
+      // Desktop overlay invariant: never activate or change Z-order on click,
+      // keeping fences strictly below all app windows, prompts, and dialogs.
+      return MA_NOACTIVATE;
     case WM_ACTIVATE:
       if (wparam != WA_INACTIVE) {
         RefreshLayer();

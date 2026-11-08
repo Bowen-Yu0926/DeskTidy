@@ -1568,6 +1568,8 @@ LRESULT PublicHost::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
     return HTCLIENT;
   }
   switch (msg) {
+    case WM_MOUSEACTIVATE:
+      return MA_NOACTIVATE;
     case WM_PAINT: {
       PAINTSTRUCT ps{};
       BeginPaint(hwnd_, &ps);

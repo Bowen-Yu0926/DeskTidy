@@ -775,6 +775,8 @@ LRESULT PageBar::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
     FilterDesktopChromeWindowPosChanging(reinterpret_cast<WINDOWPOS*>(lparam));
   }
   switch (msg) {
+    case WM_MOUSEACTIVATE:
+      return MA_NOACTIVATE;
     case WM_PAINT: {
       PAINTSTRUCT ps{};
       BeginPaint(hwnd_, &ps);
