@@ -9,6 +9,7 @@ struct Palette {
   const char* window;
   const char* content;
   const char* card;
+  const char* card_sub;
   const char* border;
   const char* text;
   const char* muted;
@@ -21,6 +22,7 @@ struct Palette {
   const char* sidebar;
   const char* sidebar_text;
   const char* sidebar_muted;
+  const char* nav_active;
 };
 
 std::string RgbaFromHex(const char* hex, float alpha) {
@@ -34,31 +36,31 @@ std::string RgbaFromHex(const char* hex, float alpha) {
 }
 
 const Palette& PaletteFor(const std::string& id) {
-  // 6 款 360 风格现代高颜值 UI 配色方案（与桌面分区 100% 对齐）
+  // 6 款 360 风格现代高颜值 UI 配色方案（与桌面分区 100% 对齐，具备极佳文字对比度）
   static const Palette kObsidian{
-      "#12151D", "#161B26", "#1C2331", "#2D3748", "#F1F5F9", "#94A3B8",
-      "#38BDF8", "#1E293B", "#0284C7", "#38BDF8", "#0284C7", "#EF4444",
-      "#0F131D", "#F1F5F9", "#94A3B8"};
+      "#12151D", "#161B26", "#1F2637", "#171F2D", "#2E3A4E", "#F8FAFC", "#94A3B8",
+      "#38BDF8", "rgba(56, 189, 248, 0.18)", "#0284C7", "#38BDF8", "#0284C7", "#EF4444",
+      "#0F131D", "#F8FAFC", "#94A3B8", "#38BDF8"};
   static const Palette kNavy{
-      "#0E1726", "#121E33", "#172640", "#233857", "#F8FAFC", "#94A3B8",
-      "#38BDF8", "#1E293B", "#0EA5E9", "#38BDF8", "#0284C7", "#EF4444",
-      "#0B1120", "#F8FAFC", "#94A3B8"};
+      "#0E1726", "#121E33", "#1A2946", "#142138", "#253B61", "#F8FAFC", "#94A3B8",
+      "#38BDF8", "rgba(56, 189, 248, 0.18)", "#0EA5E9", "#38BDF8", "#0284C7", "#EF4444",
+      "#0B1120", "#F8FAFC", "#94A3B8", "#38BDF8"};
   static const Palette kMica{
-      "#EEF2F6", "#F4F7FA", "#FFFFFF", "#CBD5E1", "#1E293B", "#64748B",
+      "#EEF2F6", "#F4F7FA", "#FFFFFF", "#F1F5F9", "#CBD5E1", "#0F172A", "#475569",
       "#2563EB", "#DBEAFE", "#1D4ED8", "#2563EB", "#1D4ED8", "#DC2626",
-      "#F1F5F9", "#1E293B", "#64748B"};
+      "#F8FAFC", "#0F172A", "#64748B", "#2563EB"};
   static const Palette kAurora{
-      "#0B1B17", "#0F241F", "#142F28", "#1C4339", "#F0FDF4", "#86EFAC",
-      "#34D399", "#132E27", "#10B981", "#10B981", "#059669", "#EF4444",
-      "#081612", "#F0FDF4", "#86EFAC"};
+      "#0B1B17", "#0F241F", "#15332B", "#102923", "#1F4D41", "#F0FDF4", "#86EFAC",
+      "#34D399", "rgba(52, 211, 153, 0.18)", "#10B981", "#10B981", "#059669", "#EF4444",
+      "#081612", "#F0FDF4", "#86EFAC", "#34D399"};
   static const Palette kSunset{
-      "#1F1511", "#281B16", "#34231C", "#4C3329", "#FFF7ED", "#FDBA74",
-      "#FB923C", "#38231B", "#F97316", "#F97316", "#EA580C", "#EF4444",
-      "#18100D", "#FFF7ED", "#FDBA74"};
+      "#1F1511", "#281B16", "#37251E", "#2C1D18", "#52372D", "#FFF7ED", "#FDBA74",
+      "#FB923C", "rgba(251, 146, 60, 0.18)", "#F97316", "#F97316", "#EA580C", "#EF4444",
+      "#18100D", "#FFF7ED", "#FDBA74", "#FB923C"};
   static const Palette kMidnight{
-      "#161021", "#1C142B", "#251B38", "#382955", "#FAF5FF", "#D8B4FE",
-      "#C084FC", "#2B1E40", "#A855F7", "#A855F7", "#9333EA", "#EF4444",
-      "#110C1B", "#FAF5FF", "#D8B4FE"};
+      "#161021", "#1C142B", "#271C3D", "#201732", "#3F2D60", "#FAF5FF", "#D8B4FE",
+      "#C084FC", "rgba(192, 132, 252, 0.18)", "#A855F7", "#A855F7", "#9333EA", "#EF4444",
+      "#110C1B", "#FAF5FF", "#D8B4FE", "#C084FC"};
 
   if (id == "navy") {
     return kNavy;
@@ -135,6 +137,7 @@ std::unordered_map<std::string, std::string> UiThemeCssVars(const std::string& i
   out["window"] = p.window;
   out["content"] = p.content;
   out["card"] = p.card;
+  out["card-sub"] = p.card_sub;
   out["border"] = p.border;
   out["text"] = p.text;
   out["muted"] = p.muted;
@@ -147,6 +150,7 @@ std::unordered_map<std::string, std::string> UiThemeCssVars(const std::string& i
   out["sidebar"] = p.sidebar;
   out["sidebar-text"] = p.sidebar_text;
   out["sidebar-muted"] = p.sidebar_muted;
+  out["nav-active"] = p.nav_active;
   out["sidebar-hover"] = RgbaFromHex(p.accent, 0.12f);
   out["sidebar-active"] = RgbaFromHex(p.accent, 0.18f);
   out["sidebar-line"] = RgbaFromHex(p.accent, 0.18f);
