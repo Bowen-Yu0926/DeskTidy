@@ -2,6 +2,7 @@
 
 #include "notes_library.h"
 #include "paths_util.h"
+#include "vault_http.h"
 
 #include <Windows.h>
 #include <wincrypt.h>
@@ -35,6 +36,33 @@ bool UnprotectBlob(const std::vector<BYTE>& enc, std::string* plain) {
   plain->assign(reinterpret_cast<char*>(out.pbData), out.cbData);
   LocalFree(out.pbData);
   return true;
+}
+
+bool ProtectBlob(const std::string& plain, std::vector<BYTE>* out) {
+  DATA_BLOB in{};
+  in.pbData = reinterpret_cast<BYTE*>(const_cast<char*>(plain.data()));
+  in.cbData = static_cast<DWORD>(plain.size());
+  DATA_BLOB enc{};
+  if (!CryptProtectData(&in, L"DeskTidyNativeVault", nullptr, nullptr, nullptr,
+                        0, &enc)) {
+    return false;
+  }
+  out->assign(enc.pbData, enc.pbData + enc.cbData);
+  LocalFree(enc.pbData);
+  return true;
+}
+
+std::wstring StripTabs(std::wstring s) {
+  s.erase(std::remove(s.begin(), s.end(), L'\t'), s.end());
+  s.erase(std::remove(s.begin(), s.end(), L'\r'), s.end());
+  s.erase(std::remove(s.begin(), s.end(), L'\n'), s.end());
+  while (!s.empty() && (s.front() == L' ' || s.front() == L'\t')) {
+    s.erase(s.begin());
+  }
+  while (!s.empty() && (s.back() == L' ' || s.back() == L'\t')) {
+    s.pop_back();
+  }
+  return s;
 }
 
 std::wstring MaskPass(size_t n) {
@@ -275,5 +303,97 @@ std::wstring FindVaultLocalField(int index, const std::wstring& field) {
   if (field == L"note") {
     return e.note;
   }
+  if (field == L"title") {
+    return e.title;
+  }
   return {};
+}
+
+bool SaveVaultLocalEntries(const std::vector<VaultLocalEntry>& entries) {
+  std::ostringstream ss;
+  for (const auto& e : entries) {
+    ss << NarrowUtf8(e.title) << '\t' << NarrowUtf8(e.user) << '\t'
+       << NarrowUtf8(e.pass) << '\t' << NarrowUtf8(e.url) << '\t'
+       << NarrowUtf8(e.note) << '\t' << (e.pinned ? '1' : '0') << '\n';
+  }
+  std::vector<BYTE> enc;
+  if (!ProtectBlob(ss.str(), &enc)) {
+    return false;
+  }
+  std::ofstream out(VaultDpapiPath(), std::ios::binary);
+  if (!out) {
+    return false;
+  }
+  out.write(reinterpret_cast<const char*>(enc.data()),
+            static_cast<std::streamsize>(enc.size()));
+  return static_cast<bool>(out);
+}
+
+VaultLocalSaveResult UpsertVaultLocalEntry(int index, VaultLocalEntry entry,
+                                           bool vault_enabled) {
+  VaultLocalSaveResult r;
+  if (!vault_enabled) {
+    r.error = L"账号功能未开启";
+    return r;
+  }
+  entry.title = StripTabs(std::move(entry.title));
+  entry.user = StripTabs(std::move(entry.user));
+  entry.pass = StripTabs(std::move(entry.pass));
+  entry.url = StripTabs(std::move(entry.url));
+  entry.note = StripTabs(std::move(entry.note));
+  if (entry.title.empty()) {
+    r.error = L"标题不能为空";
+    return r;
+  }
+
+  auto entries = LoadVaultLocalEntries();
+  if (index >= 0 && index < static_cast<int>(entries.size())) {
+    if (entry.pass.empty()) {
+      entry.pass = entries[static_cast<size_t>(index)].pass;
+    }
+    entry.pinned = entries[static_cast<size_t>(index)].pinned;
+    entries[static_cast<size_t>(index)] = entry;
+    r.index = index;
+  } else {
+    entries.push_back(entry);
+    r.index = static_cast<int>(entries.size()) - 1;
+  }
+
+  if (!SaveVaultLocalEntries(entries)) {
+    r.error = L"本地保存失败";
+    return r;
+  }
+  SyncVaultAccountsNote(true);
+  r.ok = true;
+
+  VaultHttpImportPythonSessionIfNeeded();
+  if (VaultHttpLoggedIn()) {
+    r.cloud_attempted = true;
+    // Prefer full mirror when ZK master key is already in this process;
+    // otherwise upsert one credential (enc_ver=0 path).
+    if (VaultHttpHasMasterKey()) {
+      std::vector<VaultHttpCredential> mirror;
+      mirror.reserve(entries.size());
+      for (size_t i = 0; i < entries.size(); ++i) {
+        VaultHttpCredential c;
+        c.title = entries[i].title;
+        c.username = entries[i].user;
+        c.password = entries[i].pass;
+        c.url = entries[i].url;
+        c.note = entries[i].note;
+        c.pinned = entries[i].pinned;
+        c.sort_order = static_cast<int>(i);
+        mirror.push_back(std::move(c));
+      }
+      r.cloud_ok = VaultHttpPushLocalMirror(mirror);
+    } else {
+      r.cloud_ok = VaultHttpUpsertCredential(
+          entry.title, entry.user, entry.pass, entry.url, entry.note,
+          entry.pinned, r.index >= 0 ? r.index : 0);
+    }
+    if (!r.cloud_ok) {
+      r.error = L"本地已保存，云端同步失败";
+    }
+  }
+  return r;
 }

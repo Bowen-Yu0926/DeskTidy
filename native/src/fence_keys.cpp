@@ -9,14 +9,25 @@ LRESULT CALLBACK FenceKeyProc(int code, WPARAM wparam, LPARAM lparam) {
   if (code == HC_ACTION &&
       (wparam == WM_KEYDOWN || wparam == WM_SYSKEYDOWN)) {
     const auto* kb = reinterpret_cast<KBDLLHOOKSTRUCT*>(lparam);
+    if (!kb) {
+      return CallNextHookEx(nullptr, code, wparam, lparam);
+    }
     const DWORD vk = kb->vkCode;
+    // Fast path: bypass everything if key cannot belong to a fence shortcut.
+    const bool is_base_key =
+        (vk == VK_DELETE || vk == VK_F2 || vk == VK_ESCAPE ||
+         vk == VK_RETURN || vk == VK_SPACE || vk == VK_HOME || vk == VK_END ||
+         vk == VK_LEFT || vk == VK_RIGHT || vk == VK_UP || vk == VK_DOWN);
+    const bool is_alpha_candidate = (vk == 'A' || vk == 'C' || vk == 'V' || vk == 'X');
+    if (!is_base_key && !is_alpha_candidate) {
+      return CallNextHookEx(nullptr, code, wparam, lparam);
+    }
     const bool ctrl = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
+    if (is_alpha_candidate && !ctrl) {
+      return CallNextHookEx(nullptr, code, wparam, lparam);
+    }
     const bool shift = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
-    const bool interesting =
-        vk == VK_DELETE || vk == VK_F2 || vk == VK_ESCAPE ||
-        vk == VK_RETURN || vk == VK_SPACE || vk == VK_HOME || vk == VK_END ||
-        vk == VK_LEFT || vk == VK_RIGHT || vk == VK_UP || vk == VK_DOWN ||
-        (ctrl && (vk == 'A' || vk == 'C' || vk == 'V' || vk == 'X'));
+    const bool interesting = is_base_key || (ctrl && is_alpha_candidate);
     if (interesting) {
       POINT pt{};
       GetCursorPos(&pt);
@@ -26,7 +37,7 @@ LRESULT CALLBACK FenceKeyProc(int code, WPARAM wparam, LPARAM lparam) {
           wcscmp(cls, L"EDIT") == 0) {
         // Inline rename owns Esc/Enter/Space — do not steal.
         if (vk == VK_ESCAPE || vk == VK_RETURN || vk == VK_SPACE) {
-          return CallNextHookEx(g_hook, code, wparam, lparam);
+          return CallNextHookEx(nullptr, code, wparam, lparam);
         }
         target = GetParent(target);
         cls[0] = 0;
@@ -49,7 +60,7 @@ LRESULT CALLBACK FenceKeyProc(int code, WPARAM wparam, LPARAM lparam) {
       }
     }
   }
-  return CallNextHookEx(g_hook, code, wparam, lparam);
+  return CallNextHookEx(nullptr, code, wparam, lparam);
 }
 }  // namespace
 

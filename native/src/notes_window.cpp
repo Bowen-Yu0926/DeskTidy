@@ -983,6 +983,49 @@ bool NotesWindow::Create(HINSTANCE instance) {
       SetWindowTextW(status_, L"密码已显示 · 再次点击眼睛可隐藏");
     }
   };
+  web_.on_vault_edit_request = [this](int index) {
+    if (!vault_html_view_ || !IsVaultAccountsNotePath(path_)) {
+      return;
+    }
+    const std::wstring title = FindVaultLocalField(index, L"title");
+    const std::wstring user = FindVaultLocalField(index, L"user");
+    const std::wstring url = FindVaultLocalField(index, L"url");
+    const std::wstring note = FindVaultLocalField(index, L"note");
+    const std::wstring pass = FindVaultLocalField(index, L"pass");
+    web_.PushVaultEditForm(index, title, user, url, note, !pass.empty());
+  };
+  web_.on_vault_save = [this](int index, const std::wstring& title,
+                              const std::wstring& user,
+                              const std::wstring& pass, const std::wstring& url,
+                              const std::wstring& note) {
+    if (!vault_html_view_ || !IsVaultAccountsNotePath(path_)) {
+      return;
+    }
+    const AppPrefs prefs = LoadAppPrefs();
+    VaultLocalEntry e;
+    e.title = title;
+    e.user = user;
+    e.pass = pass;
+    e.url = url;
+    e.note = note;
+    const VaultLocalSaveResult r =
+        UpsertVaultLocalEntry(index, std::move(e), prefs.vault_enabled);
+    std::wstring msg;
+    if (!r.ok) {
+      msg = r.error.empty() ? L"保存失败" : r.error;
+    } else if (r.cloud_attempted && r.cloud_ok) {
+      msg = L"已保存并同步到服务器";
+    } else if (r.cloud_attempted && !r.cloud_ok) {
+      msg = r.error.empty() ? L"本地已保存，云端同步失败" : r.error;
+    } else {
+      msg = L"已保存到本机";
+    }
+    web_.PushVaultSaveResult(r.ok, r.cloud_ok, r.cloud_attempted, msg,
+                             BuildVaultAccountsUiJson());
+    if (status_) {
+      SetWindowTextW(status_, msg.c_str());
+    }
+  };
   web_.on_need_content = [this]() {
     // Boot race: prefer RichEdit load buffer, then cache. Do not go through
     // CurrentPlainText() — in WYSIWYG that reads cache and can re-push "".

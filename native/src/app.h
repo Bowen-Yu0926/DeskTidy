@@ -25,6 +25,7 @@
 #include <Windows.h>
 #include <ShlObj.h>
 #include <shellapi.h>
+#include <wtsapi32.h>
 
 #include <memory>
 #include <string>
@@ -222,6 +223,8 @@ class App {
   void TogglePageLock(int page);
   // U4: single converge action for WM_DISPLAYCHANGE (scale + reload).
   void ConvergeDisplayChange();
+  void OnDisplayChangeTimerFired();
+  bool IsSessionLocked() const { return session_locked_; }
   void DispatchHotkey(const std::string& id);
   void ScheduleDesktopBandRestore();
   // False while settings/vault/todos (owned modals) should keep desktop chrome still.
@@ -312,6 +315,7 @@ class App {
   int current_page_ = 0;
   bool dock_visible_ = true;
   bool pet_visible_ = true;
+  bool session_locked_ = false;
   // Float host visible while Explorer icons are hidden; cross-page sharing
   // still follows prefs_.enable_public_desktop inside RebuildPublicItems.
   bool public_visible_ = false;

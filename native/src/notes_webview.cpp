@@ -637,12 +637,8 @@ void NotesWebView::PushVaultAccountsData() {
   content_ready_ = true;
 }
 
-void NotesWebView::PushVaultPassReveal(int index, const std::wstring& pass) {
-  auto* web = static_cast<ICoreWebView2*>(webview_);
-  if (!web || kind_ != Kind::kVaultAccounts || index < 0) {
-    return;
-  }
-  // Escape for JSON string value.
+namespace {
+std::wstring JsonEscapeW(const std::wstring& pass) {
   std::wstring esc;
   esc.reserve(pass.size() + 8);
   for (wchar_t c : pass) {
@@ -673,11 +669,67 @@ void NotesWebView::PushVaultPassReveal(int index, const std::wstring& pass) {
         break;
     }
   }
+  return esc;
+}
+}  // namespace
+
+void NotesWebView::PushVaultPassReveal(int index, const std::wstring& pass) {
+  auto* web = static_cast<ICoreWebView2*>(webview_);
+  if (!web || kind_ != Kind::kVaultAccounts || index < 0) {
+    return;
+  }
   std::wstring json = L"{\"type\":\"revealPass\",\"i\":";
   json += std::to_wstring(index);
   json += L",\"pass\":\"";
-  json += esc;
+  json += JsonEscapeW(pass);
   json += L"\"}";
+  web->PostWebMessageAsJson(json.c_str());
+}
+
+void NotesWebView::PushVaultEditForm(int index, const std::wstring& title,
+                                     const std::wstring& user,
+                                     const std::wstring& url,
+                                     const std::wstring& note, bool has_pass) {
+  auto* web = static_cast<ICoreWebView2*>(webview_);
+  if (!web || kind_ != Kind::kVaultAccounts) {
+    return;
+  }
+  std::wstring json = L"{\"type\":\"editForm\",\"i\":";
+  json += std::to_wstring(index);
+  json += L",\"title\":\"";
+  json += JsonEscapeW(title);
+  json += L"\",\"user\":\"";
+  json += JsonEscapeW(user);
+  json += L"\",\"url\":\"";
+  json += JsonEscapeW(url);
+  json += L"\",\"note\":\"";
+  json += JsonEscapeW(note);
+  json += L"\",\"hasPass\":";
+  json += has_pass ? L"true" : L"false";
+  json += L"}";
+  web->PostWebMessageAsJson(json.c_str());
+}
+
+void NotesWebView::PushVaultSaveResult(bool ok, bool cloud_ok,
+                                       bool cloud_attempted,
+                                       const std::wstring& message,
+                                       const std::wstring& entries_json) {
+  auto* web = static_cast<ICoreWebView2*>(webview_);
+  if (!web || kind_ != Kind::kVaultAccounts) {
+    return;
+  }
+  pending_vault_json_ = entries_json.empty() ? L"[]" : entries_json;
+  std::wstring json = L"{\"type\":\"saveResult\",\"ok\":";
+  json += ok ? L"true" : L"false";
+  json += L",\"cloudOk\":";
+  json += cloud_ok ? L"true" : L"false";
+  json += L",\"cloudAttempted\":";
+  json += cloud_attempted ? L"true" : L"false";
+  json += L",\"message\":\"";
+  json += JsonEscapeW(message);
+  json += L"\",\"entries\":";
+  json += pending_vault_json_;
+  json += L"}";
   web->PostWebMessageAsJson(json.c_str());
 }
 
@@ -841,6 +893,22 @@ void NotesWebView::OnWebMessage(const std::wstring& json) {
       const std::wstring i_s = JsonStringField(json, L"i");
       const int index = i_s.empty() ? -1 : _wtoi(i_s.c_str());
       on_vault_reveal(index);
+    }
+  } else if (type == L"vaultEditRequest") {
+    if (on_vault_edit_request) {
+      const std::wstring i_s = JsonStringField(json, L"i");
+      const int index = i_s.empty() ? -1 : _wtoi(i_s.c_str());
+      on_vault_edit_request(index);
+    }
+  } else if (type == L"vaultSave") {
+    if (on_vault_save) {
+      const std::wstring i_s = JsonStringField(json, L"i");
+      const int index = i_s.empty() ? -1 : _wtoi(i_s.c_str());
+      on_vault_save(index, JsonStringField(json, L"title"),
+                    JsonStringField(json, L"user"),
+                    JsonStringField(json, L"password"),
+                    JsonStringField(json, L"url"),
+                    JsonStringField(json, L"note"));
     }
   }
 }

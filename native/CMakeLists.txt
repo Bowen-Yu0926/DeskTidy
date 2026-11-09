@@ -118,6 +118,9 @@ add_executable(deskNote WIN32
   src/desktop_shell.cpp
   src/display_geom.cpp
   src/vault_local.cpp
+  src/vault_http.cpp
+  src/vault_crypto.cpp
+  ${ARGON2_SOURCES}
   src/log.cpp
   src/version.rc
   src/desknote_icon.rc
@@ -126,11 +129,14 @@ add_executable(deskNote WIN32
 target_include_directories(deskNote PRIVATE
   src
   ${CMAKE_CURRENT_SOURCE_DIR}/third_party/webview2-include
+  ${CMAKE_CURRENT_SOURCE_DIR}/third_party/argon2/include
+  ${CMAKE_CURRENT_SOURCE_DIR}/third_party/argon2/src
 )
-target_compile_definitions(deskNote PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+target_compile_definitions(deskNote PRIVATE
+  UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX ARGON2_NO_THREADS)
 target_link_libraries(deskNote PRIVATE
   user32 gdi32 shell32 ole32 oleaut32 uuid comctl32 advapi32 crypt32
-  gdiplus comdlg32 uxtheme version propsys
+  gdiplus comdlg32 uxtheme version propsys winhttp bcrypt
   ${CMAKE_CURRENT_SOURCE_DIR}/third_party/webview2-x64/WebView2LoaderStatic.lib
 )
 set_target_properties(deskNote PROPERTIES OUTPUT_NAME "deskNote")
@@ -180,7 +186,7 @@ target_compile_definitions(desktidy_native PRIVATE
   UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX ARGON2_NO_THREADS)
 target_link_libraries(desktidy_native PRIVATE
   user32 gdi32 shell32 ole32 oleaut32 uuid comctl32 advapi32
-  gdiplus comdlg32 crypt32 winhttp bcrypt msimg32 version propsys
+  gdiplus comdlg32 crypt32 winhttp bcrypt msimg32 version propsys wtsapi32
   ${CMAKE_CURRENT_SOURCE_DIR}/third_party/webview2-x64/WebView2LoaderStatic.lib
 )
 

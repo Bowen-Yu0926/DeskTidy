@@ -302,6 +302,14 @@ LRESULT CALLBACK LowLevelKeyboardProc(int code, WPARAM wparam, LPARAM lparam) {
       (wparam == WM_KEYDOWN || wparam == WM_SYSKEYDOWN)) {
     const auto* kb = reinterpret_cast<KBDLLHOOKSTRUCT*>(lparam);
     if (kb) {
+      // Fast bypass: Win+L is system lock workstation chord, never delay.
+      if (kb->vkCode == 'L') {
+        const bool win = (GetAsyncKeyState(VK_LWIN) & 0x8000) != 0 ||
+                         (GetAsyncKeyState(VK_RWIN) & 0x8000) != 0;
+        if (win) {
+          return CallNextHookEx(nullptr, code, wparam, lparam);
+        }
+      }
       if (g_band_hwnd && kb->vkCode == 'D') {
         const bool win = (GetAsyncKeyState(VK_LWIN) & 0x8000) != 0 ||
                          (GetAsyncKeyState(VK_RWIN) & 0x8000) != 0;
@@ -319,7 +327,7 @@ LRESULT CALLBACK LowLevelKeyboardProc(int code, WPARAM wparam, LPARAM lparam) {
       }
     }
   }
-  return CallNextHookEx(g_kb_hook, code, wparam, lparam);
+  return CallNextHookEx(nullptr, code, wparam, lparam);
 }
 
 std::unordered_map<std::string, std::wstring> FenceTitlesOf(
@@ -729,6 +737,7 @@ bool App::Init(HINSTANCE instance) {
                     reinterpret_cast<LONG_PTR>(this));
   // Cut-ghost dimming tracks Explorer Preferred DropEffect changes.
   AddClipboardFormatListener(message_hwnd_);
+  WTSRegisterSessionNotification(message_hwnd_, NOTIFY_FOR_THIS_SESSION);
   // P1-12: drive the floating drop hint from the OLE drag loop.
   SetPinDragMoveFn([this](POINT cursor, const PinDragHint& hint) {
     UpdatePinDragHint(cursor, hint);
@@ -1662,7 +1671,7 @@ void App::OnRelayHotkeyAction(const std::string& action) {
 }
 
 void App::TryDispatchLlHotkey(UINT vk) {
-  if (!message_hwnd_ || vk == 0) {
+  if (!message_hwnd_ || vk == 0 || session_locked_) {
     return;
   }
   // Ignore pure modifier keys.
@@ -1686,7 +1695,7 @@ void App::TryDispatchLlHotkey(UINT vk) {
     mods |= MOD_WIN;
   }
   // Win+D is handled separately for band restore — skip here.
-  if ((mods & MOD_WIN) && vk == 'D') {
+  if ((mods & MOD_WIN) && (vk == 'D' || vk == 'L')) {
     return;
   }
   for (size_t i = 0; i < hotkeys_.size(); ++i) {
@@ -2044,6 +2053,7 @@ void App::Shutdown() {
   RunShutdownStep("step 14 msg hwnd", [this]() {
     if (message_hwnd_) {
       RemoveClipboardFormatListener(message_hwnd_);
+      WTSUnRegisterSessionNotification(message_hwnd_);
       DestroyWindow(message_hwnd_);
       message_hwnd_ = nullptr;
     }
@@ -2858,6 +2868,9 @@ void App::HealLayoutsNow(bool toast) {
 }
 
 void App::OnDisplayTopologyMaybeChanged() {
+  if (session_locked_) {
+    return;
+  }
   // Called from the 2s watch tick. WM_DISPLAYCHANGE converges real changes
   // right away, so only recompute the full fingerprint (monitor enum + per-
   // monitor DC caps) when the throttle interval has elapsed.
@@ -2881,6 +2894,9 @@ void App::OnDisplayTopologyMaybeChanged() {
 }
 
 void App::ConvergeDisplayChange() {
+  if (session_locked_) {
+    return;
+  }
   // Persist already ran under the outgoing fingerprint (display_fp_). Load /
   // heal restore via per-monitor donor ratios — not primary sx/sy.
   PrepareDestinationProfileForDisplayChange(display_work_, PrimaryWorkArea());
@@ -2888,6 +2904,32 @@ void App::ConvergeDisplayChange() {
   display_work_ = PrimaryWorkArea();
   display_fp_ = DisplayFingerprint();
   ShowToast(L"显示器变化：已按配置恢复分区");
+}
+
+void App::OnDisplayChangeTimerFired() {
+  if (session_locked_) {
+    return;
+  }
+  const std::string fp = DisplayFingerprint();
+  if (FingerprintIsTransient(fp) || fp == display_fp_) {
+    display_change_stage_ = 0;
+    return;
+  }
+  const int old_count = CountMonitorsInFingerprint(display_fp_);
+  const int new_count = static_cast<int>(EnumMonitors().size());
+  PersistLayouts();
+  display_fp_ = fp;
+  ConvergeDisplayChange();
+  LogLine(L"[display] converge display change finished (mon %d->%d, stage %d)",
+          old_count, new_count, display_change_stage_);
+  if (new_count < old_count && display_change_stage_ == 1) {
+    // Removal: two-stage converge (second converge 1000ms later) so taskbar settles
+    display_change_stage_ = 2;
+    display_change_timer_ =
+        SetTimer(message_hwnd_, kTimerDisplayChange, 1000, nullptr);
+  } else {
+    display_change_stage_ = 0;
+  }
 }
 
 void App::TogglePageLock(int page) {
@@ -5568,7 +5610,7 @@ void App::ScheduleDesktopBandRestore() {
   if (!message_hwnd_) {
     return;
   }
-  if (!DesktopChromeMayRestack()) {
+  if (session_locked_ || !DesktopChromeMayRestack()) {
     return;
   }
   // After 账号浮窗 close, ignore desktop-FG restore briefly (avoids Raise).
@@ -5717,7 +5759,8 @@ void App::OnDesktopContentRefresh() {
 
 void CALLBACK App::ForegroundWinEvent(HWINEVENTHOOK, DWORD, HWND, LONG, LONG,
                                       DWORD, DWORD) {
-  if (!g_app_for_hook || !g_app_for_hook->message_hwnd_) {
+  if (!g_app_for_hook || !g_app_for_hook->message_hwnd_ ||
+      g_app_for_hook->session_locked_) {
     return;
   }
   // Coalesce: Win+D / Alt+Tab-to-desktop — settle overlays after Explorer FG.
@@ -5801,7 +5844,7 @@ void App::RestoreDesktopChrome() {
   HideOffPageFences();
 
   // While settings/vault/todos is open, do NOT re-seat fences.
-  if (!DesktopChromeMayRestack()) {
+  if (session_locked_ || !DesktopChromeMayRestack()) {
     if (settings_.IsOpen() && settings_.Hwnd()) {
       SetWindowPos(settings_.Hwnd(), HWND_TOP, 0, 0, 0, 0,
                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
@@ -6499,6 +6542,9 @@ LRESULT CALLBACK App::TrayWndProc(HWND hwnd, UINT msg, WPARAM wparam,
         return 0;
       }
       if (wparam == kTimerWatch) {
+        if (self->session_locked_) {
+          return 0;
+        }
         self->OnDisplayTopologyMaybeChanged();
         std::vector<std::wstring> portals;
         for (const auto& fence : self->fences_) {
@@ -6654,15 +6700,7 @@ LRESULT CALLBACK App::TrayWndProc(HWND hwnd, UINT msg, WPARAM wparam,
       if (wparam == kTimerDisplayChange) {
         KillTimer(hwnd, kTimerDisplayChange);
         self->display_change_timer_ = 0;
-        self->ConvergeDisplayChange();
-        if (self->display_change_stage_ == 2) {
-          // Removal: schedule the second converge 1000ms later.
-          self->display_change_stage_ = 3;
-          self->display_change_timer_ =
-              SetTimer(hwnd, kTimerDisplayChange, 1000, nullptr);
-        } else {
-          self->display_change_stage_ = 0;
-        }
+        self->OnDisplayChangeTimerFired();
         return 0;
       }
       break;
@@ -6921,29 +6959,58 @@ LRESULT CALLBACK App::TrayWndProc(HWND hwnd, UINT msg, WPARAM wparam,
       }
       break;
     }
-    case WM_DISPLAYCHANGE: {
-      const std::string fp = DisplayFingerprint();
-      if (FingerprintIsTransient(fp) || fp == self->display_fp_) {
+    case WM_WTSSESSION_CHANGE: {
+      if (wparam == WTS_SESSION_LOCK) {
+        self->session_locked_ = true;
+        LogLine(L"[session] locked - pausing animations, watch and display handling");
+        if (self->pet_timer_) {
+          KillTimer(hwnd, kTimerPet);
+          self->pet_timer_ = 0;
+        }
+        if (self->restore_timer_) {
+          KillTimer(hwnd, kTimerBandSettle);
+          self->restore_timer_ = 0;
+        }
+        self->band_restore_left_ = 0;
+        if (self->display_change_timer_) {
+          KillTimer(hwnd, kTimerDisplayChange);
+          self->display_change_timer_ = 0;
+        }
         return 0;
       }
-      // Persist the current geometry under the outgoing fingerprint, then
-      // remember the new one so the watch timer won't re-fire.
-      const int old_count = CountMonitorsInFingerprint(self->display_fp_);
-      const int new_count = static_cast<int>(EnumMonitors().size());
-      self->PersistLayouts();
-      self->display_fp_ = fp;
-      // Reuse/reset any pending converge timer — never stack multiple timers.
+      if (wparam == WTS_SESSION_UNLOCK) {
+        self->session_locked_ = false;
+        LogLine(L"[session] unlocked - resuming");
+        if (self->pet_visible_ && !self->pet_timer_) {
+          self->pet_timer_ =
+              SetTimer(hwnd, kTimerPet, self->pet_tick_ms_, nullptr);
+        }
+        self->ScheduleDesktopBandRestore();
+        // Give the desktop shell 600ms to recover after unlock, then check topology
+        if (!self->display_change_timer_) {
+          self->display_change_stage_ = 1;
+          self->display_change_timer_ =
+              SetTimer(hwnd, kTimerDisplayChange, 600, nullptr);
+        }
+        return 0;
+      }
+      break;
+    }
+    case WM_DISPLAYCHANGE: {
+      if (self->session_locked_) {
+        LogLine(L"[display] WM_DISPLAYCHANGE ignored during session lock");
+        return 0;
+      }
+      // Never perform synchronous driver DC probes (CreateDCW) or disk IO inside
+      // the broadcast handler. Instead, coalesce all display changes with a debounce timer.
       if (self->display_change_timer_) {
         KillTimer(hwnd, kTimerDisplayChange);
         self->display_change_timer_ = 0;
       }
-      // Removal: two-stage converge (500ms then 1000ms) so the taskbar /
-      // workspace settle. Addition / resolution change: single 500ms converge.
-      self->display_change_stage_ = (new_count < old_count) ? 2 : 1;
+      self->display_change_stage_ = 1;
       self->display_change_timer_ =
           SetTimer(hwnd, kTimerDisplayChange, 500, nullptr);
-      LogLine(L"[display] WM_DISPLAYCHANGE removed=%d (mon %d->%d)",
-              (new_count < old_count) ? 1 : 0, old_count, new_count);
+      LogLine(L"[display] WM_DISPLAYCHANGE received, debounce timer scheduled");
       return 0;
     }
     case WM_COPYDATA: {

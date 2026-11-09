@@ -88,7 +88,20 @@ class NotesWebView {
       on_vault_copy;
   // Eye button: host looks up plaintext and calls PushVaultPassReveal.
   std::function<void(int index)> on_vault_reveal;
+  // Create/edit save from vault HTML form.
+  std::function<void(int index, const std::wstring& title,
+                     const std::wstring& user, const std::wstring& pass,
+                     const std::wstring& url, const std::wstring& note)>
+      on_vault_save;
+  // Edit dialog needs current fields (password omitted; empty = keep).
+  std::function<void(int index)> on_vault_edit_request;
   void PushVaultPassReveal(int index, const std::wstring& pass);
+  void PushVaultEditForm(int index, const std::wstring& title,
+                         const std::wstring& user, const std::wstring& url,
+                         const std::wstring& note, bool has_pass);
+  void PushVaultSaveResult(bool ok, bool cloud_ok, bool cloud_attempted,
+                           const std::wstring& message,
+                           const std::wstring& entries_json);
 
  private:
   void NavigateHome();

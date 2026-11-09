@@ -120,7 +120,7 @@ LRESULT CALLBACK LowLevelKeyboardProc(int code, WPARAM wparam, LPARAM lparam) {
       }
     }
   }
-  return CallNextHookEx(g_key_hook, code, wparam, lparam);
+  return CallNextHookEx(nullptr, code, wparam, lparam);
 }
 
 }  // namespace

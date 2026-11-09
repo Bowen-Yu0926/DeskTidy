@@ -5,6 +5,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <winreg.h>
+#include <unordered_map>
+#include <utility>
 
 namespace {
 
@@ -53,9 +55,18 @@ UINT MonitorDpi(HMONITOR mon) {
 void PhysicalMm(const MonitorInfo& m, int* mm_w, int* mm_h) {
   *mm_w = 520;
   *mm_h = 290;
+  static std::unordered_map<std::wstring, std::pair<int, int>> s_cache;
+  const std::wstring dev_key = m.device[0] ? m.device : L"DEFAULT";
+  auto it = s_cache.find(dev_key);
+  if (it != s_cache.end()) {
+    *mm_w = it->second.first;
+    *mm_h = it->second.second;
+    return;
+  }
   HDC dc = CreateDCW(L"DISPLAY", m.device[0] ? m.device : nullptr, nullptr,
                      nullptr);
   if (!dc) {
+    s_cache[dev_key] = {*mm_w, *mm_h};
     return;
   }
   const int w = GetDeviceCaps(dc, HORZSIZE);
@@ -67,6 +78,7 @@ void PhysicalMm(const MonitorInfo& m, int* mm_w, int* mm_h) {
   if (h > 0) {
     *mm_h = h;
   }
+  s_cache[dev_key] = {*mm_w, *mm_h};
 }
 
 std::string FormatDpr(double dpr) {
