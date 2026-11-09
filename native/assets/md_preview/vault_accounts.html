@@ -1,0 +1,466 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>账号库</title>
+<style>
+  :root {
+    --bg: #f4f6f9;
+    --card: #ffffff;
+    --text: #1a2332;
+    --muted: #6b7a8d;
+    --line: #e4e9f0;
+    --accent: #2f6fed;
+    --accent-soft: #eaf1fe;
+    --btn: #f0f3f8;
+    --btn-hover: #e2e8f2;
+    --ok: #16a34a;
+    --shadow: 0 1px 2px rgba(15, 23, 42, 0.04), 0 8px 24px rgba(15, 23, 42, 0.06);
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; height: 100%;
+    font-family: "Microsoft YaHei UI", "Segoe UI", sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    font-size: 14px;
+  }
+  body {
+    overflow: auto;
+  }
+  .wrap {
+    max-width: none;
+    width: 100%;
+    margin: 0;
+    padding: 20px 20px 40px;
+  }
+  .hero {
+    margin-bottom: 16px;
+    text-align: left;
+  }
+  .hero h1 {
+    margin: 0 0 6px;
+    font-size: 26px;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+  }
+  .hero p {
+    margin: 0;
+    color: var(--muted);
+    font-size: 13px;
+    line-height: 1.5;
+  }
+  .search-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 0 0 16px;
+    max-width: 420px;
+  }
+  .search-bar input {
+    flex: 1;
+    min-width: 0;
+    height: 36px;
+    padding: 0 12px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: var(--card);
+    color: var(--text);
+    font: inherit;
+    font-size: 13px;
+    outline: none;
+    box-shadow: var(--shadow);
+  }
+  .search-bar input:focus {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px var(--accent-soft);
+  }
+  .search-bar input::placeholder { color: #9aa8b8; }
+  .search-meta {
+    color: var(--muted);
+    font-size: 12px;
+    white-space: nowrap;
+  }
+  .empty {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    padding: 36px 24px;
+    text-align: center;
+    color: var(--muted);
+    box-shadow: var(--shadow);
+  }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    margin-bottom: 14px;
+    overflow: hidden;
+    box-shadow: var(--shadow);
+  }
+  .card-head {
+    padding: 14px 18px 10px;
+    font-size: 16px;
+    font-weight: 700;
+    border-bottom: 1px solid var(--line);
+  }
+  .row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px 18px;
+    border-top: 1px solid transparent;
+    cursor: copy;
+  }
+  .row + .row { border-top-color: var(--line); }
+  .row:hover { background: rgba(47, 111, 237, 0.03); }
+  .row:active { background: rgba(47, 111, 237, 0.06); }
+  .label {
+    flex: 0 0 56px;
+    color: var(--muted);
+    font-size: 12px;
+    font-weight: 600;
+  }
+  .value {
+    flex: 1;
+    min-width: 0;
+    font-family: Consolas, "Cascadia Mono", "Microsoft YaHei UI", monospace;
+    font-size: 13px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    user-select: text;
+  }
+  .value.mask { letter-spacing: 0.12em; }
+  .actions {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .copy, .eye {
+    flex: 0 0 auto;
+    border: 0;
+    background: var(--btn);
+    color: var(--text);
+    font: inherit;
+    font-size: 12px;
+    font-weight: 600;
+    padding: 7px 12px;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: background .12s ease, color .12s ease, transform .08s ease;
+  }
+  .eye {
+    width: 36px;
+    height: 32px;
+    padding: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .eye svg { width: 16px; height: 16px; display: block; }
+  .copy:hover, .eye:hover { background: var(--btn-hover); }
+  .copy:active, .eye:active { transform: scale(0.97); }
+  .copy.ok, .eye.on {
+    background: var(--accent-soft);
+    color: var(--accent);
+  }
+  .eye.on svg { stroke: var(--accent); }
+  .toast {
+    position: fixed;
+    left: 50%;
+    bottom: 24px;
+    transform: translateX(-50%) translateY(12px);
+    background: #172033;
+    color: #fff;
+    padding: 10px 16px;
+    border-radius: 999px;
+    font-size: 12px;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity .18s ease, transform .18s ease;
+    z-index: 20;
+  }
+  .toast.show {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="hero">
+      <h1>账号库</h1>
+      <p>DeskTidy 账号功能同步 · 双击行可复制 · 眼睛可显示密码</p>
+    </div>
+    <div class="search-bar">
+      <input id="search" type="search" placeholder="按标题搜索…" autocomplete="off" spellcheck="false" />
+      <span id="search-meta" class="search-meta"></span>
+    </div>
+    <div id="list"></div>
+  </div>
+  <div id="toast" class="toast"></div>
+  <script>
+(function () {
+  function post(msg) {
+    if (window.chrome && chrome.webview && chrome.webview.postMessage) {
+      chrome.webview.postMessage(JSON.stringify(msg));
+    }
+  }
+
+  var toastTimer = null;
+  function flash(text) {
+    var el = document.getElementById("toast");
+    if (!el) return;
+    el.textContent = text || "已复制";
+    el.classList.add("show");
+    if (toastTimer) clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () {
+      el.classList.remove("show");
+    }, 1600);
+  }
+
+  function esc(s) {
+    return String(s == null ? "" : s)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+  }
+
+  var entryCache = [];
+  var revealed = {}; // original index -> plaintext password
+  var searchQuery = "";
+
+  function eyeSvg(open) {
+    // open = password currently visible → show "hide" (eye-off) icon
+    if (open) {
+      return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"/><path d="M14.12 14.12a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>';
+    }
+    return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>';
+  }
+
+  function rowHtml(label, value, index, field, masked) {
+    if (!value && field !== "pass") return "";
+    var shown = value || (field === "pass" ? "••••••••" : "");
+    var eye = "";
+    if (field === "pass") {
+      var on = !!revealed[index];
+      eye =
+        '<button type="button" class="eye' + (on ? " on" : "") +
+        '" data-i="' + index + '" title="' + (on ? "隐藏密码" : "显示密码") +
+        '" aria-label="' + (on ? "隐藏密码" : "显示密码") + '">' +
+        eyeSvg(on) + "</button>";
+    }
+    return (
+      '<div class="row" data-i="' + index + '" data-f="' + field +
+        '" title="双击复制" data-pass-row="' +
+        (field === "pass" ? index : "") + '">' +
+        '<div class="label">' + esc(label) + "</div>" +
+        '<div class="value' + (masked && !revealed[index] ? " mask" : "") +
+          '" data-pass-value="' + (field === "pass" ? index : "") + '">' +
+          esc(field === "pass" && revealed[index] ? revealed[index] : shown) +
+        "</div>" +
+        '<div class="actions">' + eye +
+          '<button type="button" class="copy" data-i="' + index +
+            '" data-f="' + field + '">复制</button>' +
+        "</div>" +
+      "</div>"
+    );
+  }
+
+  function copyField(index, field, btn) {
+    post({ type: "vaultCopy", i: String(index), field: field || "pass" });
+    if (btn) {
+      btn.classList.add("ok");
+      var old = btn.textContent;
+      btn.textContent = "已复制";
+      setTimeout(function () {
+        btn.classList.remove("ok");
+        btn.textContent = old;
+      }, 1200);
+    }
+    flash(field === "pass" ? "密码已复制" : "已复制");
+  }
+
+  function norm(s) {
+    return String(s == null ? "" : s).toLowerCase();
+  }
+
+  function updateSearchMeta(shown, total) {
+    var meta = document.getElementById("search-meta");
+    if (!meta) return;
+    if (!total) {
+      meta.textContent = "";
+      return;
+    }
+    if (!searchQuery) {
+      meta.textContent = "共 " + total + " 条";
+      return;
+    }
+    meta.textContent = "找到 " + shown + " / " + total;
+  }
+
+  function renderList() {
+    var root = document.getElementById("list");
+    if (!root) return;
+    var total = entryCache.length;
+    if (!total) {
+      root.innerHTML =
+        '<div class="empty">暂无账号条目。<br/>请在 DeskTidy「设置 → 账号管理」中添加后重新打开。</div>';
+      updateSearchMeta(0, 0);
+      return;
+    }
+    var q = norm(searchQuery).trim();
+    var html = "";
+    var shown = 0;
+    for (var i = 0; i < entryCache.length; i++) {
+      var e = entryCache[i] || {};
+      var title = e.title || "（未命名）";
+      if (q && norm(title).indexOf(q) < 0) {
+        continue;
+      }
+      shown++;
+      html +=
+        '<section class="card">' +
+          '<div class="card-head">' + esc(title) + "</div>" +
+          rowHtml("用户名", e.user, i, "user", false) +
+          rowHtml("密码", e.passMask || "••••••••", i, "pass", true) +
+          rowHtml("网址", e.url, i, "url", false) +
+          rowHtml("备注", e.note, i, "note", false) +
+        "</section>";
+    }
+    if (!html) {
+      root.innerHTML =
+        '<div class="empty">没有标题匹配「' + esc(searchQuery.trim()) +
+        '」的账号。</div>';
+    } else {
+      root.innerHTML = html;
+    }
+    updateSearchMeta(shown, total);
+  }
+
+  function render(entries) {
+    entryCache = entries || [];
+    renderList();
+  }
+
+  function applyReveal(index, pass) {
+    revealed[index] = pass || "";
+    var val = document.querySelector('[data-pass-value="' + index + '"]');
+    var eye = document.querySelector('button.eye[data-i="' + index + '"]');
+    if (val) {
+      val.textContent = pass || "";
+      val.classList.remove("mask");
+    }
+    if (eye) {
+      eye.classList.add("on");
+      eye.innerHTML = eyeSvg(true);
+      eye.title = "隐藏密码";
+      eye.setAttribute("aria-label", "隐藏密码");
+    }
+  }
+
+  function hideReveal(index) {
+    delete revealed[index];
+    var e = entryCache[index] || {};
+    var mask = e.passMask || "••••••••";
+    var val = document.querySelector('[data-pass-value="' + index + '"]');
+    var eye = document.querySelector('button.eye[data-i="' + index + '"]');
+    if (val) {
+      val.textContent = mask;
+      val.classList.add("mask");
+    }
+    if (eye) {
+      eye.classList.remove("on");
+      eye.innerHTML = eyeSvg(false);
+      eye.title = "显示密码";
+      eye.setAttribute("aria-label", "显示密码");
+    }
+  }
+
+  document.addEventListener("click", function (ev) {
+    var eye = ev.target && ev.target.closest ? ev.target.closest("button.eye") : null;
+    if (eye) {
+      ev.preventDefault();
+      var ei = eye.getAttribute("data-i") || "";
+      var idx = parseInt(ei, 10);
+      if (revealed[idx]) {
+        hideReveal(idx);
+        return;
+      }
+      post({ type: "vaultReveal", i: ei });
+      return;
+    }
+    var btn = ev.target && ev.target.closest ? ev.target.closest("button.copy") : null;
+    if (!btn) return;
+    ev.preventDefault();
+    copyField(btn.getAttribute("data-i") || "", btn.getAttribute("data-f") || "pass", btn);
+  });
+
+  document.addEventListener("dblclick", function (ev) {
+    if (ev.target && ev.target.closest &&
+        (ev.target.closest("button.copy") || ev.target.closest("button.eye") ||
+         ev.target.closest("input"))) {
+      return;
+    }
+    var row = ev.target && ev.target.closest ? ev.target.closest(".row[data-f]") : null;
+    if (!row) return;
+    ev.preventDefault();
+    var btn = row.querySelector("button.copy");
+    copyField(row.getAttribute("data-i") || "", row.getAttribute("data-f") || "pass", btn);
+  });
+
+  window.__desknoteVaultSet = function (entries) {
+    revealed = {};
+    render(entries || []);
+    post({ type: "contentReady" });
+  };
+
+  var searchInput = document.getElementById("search");
+  if (searchInput) {
+    searchInput.addEventListener("input", function () {
+      searchQuery = searchInput.value || "";
+      renderList();
+    });
+    searchInput.addEventListener("keydown", function (ev) {
+      if (ev.key === "Escape") {
+        searchInput.value = "";
+        searchQuery = "";
+        renderList();
+        searchInput.blur();
+      }
+    });
+  }
+
+  window.__desknoteVaultReveal = function (index, pass) {
+    applyReveal(index, pass || "");
+  };
+
+  if (window.chrome && chrome.webview) {
+    chrome.webview.addEventListener("message", function (e) {
+      var msg = e.data || {};
+      if (typeof msg === "string") {
+        try { msg = JSON.parse(msg); } catch (err) { msg = {}; }
+      }
+      if (msg.type === "setEntries") {
+        window.__desknoteVaultSet(msg.entries || []);
+      } else if (msg.type === "revealPass") {
+        window.__desknoteVaultReveal(
+          parseInt(msg.i != null ? msg.i : msg.index, 10),
+          msg.pass || msg.value || ""
+        );
+      } else if (msg.type === "set") {
+        // Host sometimes reuses set; ignore markdown.
+      }
+    });
+  }
+
+  post({ type: "ready" });
+  post({ type: "needContent" });
+})();
+  </script>
+</body>
+</html>

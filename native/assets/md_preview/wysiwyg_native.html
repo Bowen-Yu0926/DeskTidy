@@ -1286,6 +1286,66 @@
     }
   };
 
+  // DeskTidy vault mirror: [复制] links + double-click masked password.
+  document.addEventListener("click", function (ev) {
+    var a = ev.target && ev.target.closest ? ev.target.closest("a") : null;
+    if (!a) return;
+    var href = a.getAttribute("href") || "";
+    if (href.indexOf("desknote-vault://") !== 0) return;
+    try { ev.preventDefault(); ev.stopPropagation(); } catch (err) {}
+    var q = {};
+    href.replace(/[?&]([^=]+)=([^&]*)/g, function (_, k, v) {
+      q[k] = decodeURIComponent(v || "");
+    });
+    post({
+      type: "vaultCopy",
+      i: q.i || "",
+      field: q.f || q.field || "pass",
+      title: "",
+      user: ""
+    });
+  }, true);
+
+  document.addEventListener("dblclick", function (ev) {
+    var el = ev.target;
+    if (!el) return;
+    if (el.closest && el.closest("a")) return;
+    var block = el.closest
+      ? el.closest("li") || el.closest("p") || el.closest("div") || el
+      : el;
+    var text = ((block.innerText || block.textContent || "") + "").trim();
+    if (text.indexOf("密码") < 0) return;
+    if (text.indexOf("\u2022") < 0 && text.indexOf("*") < 0 &&
+        text.indexOf("\u25CF") < 0) {
+      return;
+    }
+    var title = "";
+    var user = "";
+    var cur = block;
+    while (cur && !title) {
+      var prev = cur.previousElementSibling;
+      while (prev) {
+        var tag = (prev.tagName || "").toLowerCase();
+        if (/^h[1-6]$/.test(tag)) {
+          title = ((prev.innerText || prev.textContent || "") + "").trim();
+          break;
+        }
+        if (tag === "li" || tag === "p") {
+          var pt = ((prev.innerText || prev.textContent || "") + "").trim();
+          if (pt.indexOf("用户名") >= 0 && !user) {
+            user = pt.replace(/^[\s\S]*用户名\s*[:：]\s*/, "")
+                     .replace(/[`·复制]/g, "").trim();
+          }
+        }
+        prev = prev.previousElementSibling;
+      }
+      cur = cur.parentElement;
+    }
+    if (!title) return;
+    post({ type: "vaultCopy", field: "pass", title: title, user: user || "" });
+    try { ev.preventDefault(); } catch (err) {}
+  }, true);
+
   if (window.chrome && chrome.webview) {
     chrome.webview.addEventListener("message", function (e) {
       var msg = e.data || {};

@@ -14,7 +14,7 @@ void NotesWarmWebViewEnv();
 //   kViewer  — the offline markdown preview (read-only render + PDF export).
 class NotesWebView {
  public:
-  enum class Kind { kWysiwyg, kViewer };
+  enum class Kind { kWysiwyg, kViewer, kVaultAccounts };
 
   bool Create(HWND parent);
   void Destroy();
@@ -23,10 +23,15 @@ class NotesWebView {
   // True after title chrome painted (chromeReady) or Editor set (contentReady).
   // Safe to cover RichEdit staging — body Toast may still be loading.
   bool ContentReady() const { return content_ready_; }
+  Kind GetKind() const { return kind_; }
   void Show();
   void Hide();
   void Resize();
   void SetKind(Kind kind) { kind_ = kind; }
+  // Navigate to vault_accounts.html and push masked entry JSON.
+  void ShowVaultAccounts(const std::wstring& entries_json);
+  // Return to Toast WYSIWYG shell (after leaving the vault HTML view).
+  void ShowWysiwygEditor();
   // Preview/editor chrome theme: "light" or "dark" (P2-30).
   void SetTheme(const std::wstring& theme) { theme_ = theme; }
   const std::wstring& Theme() const { return theme_; }
@@ -76,6 +81,14 @@ class NotesWebView {
   // Explorer file drop onto the WebView surface (AllowExternalDrop → file://
   // NavigationStarting cancel). Opens note / inserts image in the host.
   std::function<void(const std::vector<std::wstring>&)> on_external_drop;
+  // Vault accounts note: copy a field (dblclick or [复制] link).
+  // index >= 0 → by entry index; else match title/user. field empty → pass.
+  std::function<void(int index, const std::wstring& field,
+                     const std::wstring& title, const std::wstring& user)>
+      on_vault_copy;
+  // Eye button: host looks up plaintext and calls PushVaultPassReveal.
+  std::function<void(int index)> on_vault_reveal;
+  void PushVaultPassReveal(int index, const std::wstring& pass);
 
  private:
   void NavigateHome();
@@ -101,6 +114,8 @@ class NotesWebView {
   std::wstring pending_md_;
   std::wstring pending_set_;
   std::wstring pending_base_;
+  std::wstring pending_vault_json_;
+  void PushVaultAccountsData();
   bool got_scroll_ = false;
   double scroll_ratio_ = 0.0;
   bool print_done_ = false;

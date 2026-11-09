@@ -404,7 +404,7 @@ HWND WindowAboveDefView(HWND defview, HWND host, HWND self) {
     return nullptr;
   }
   HWND cur = anchor;
-  for (int i = 0; i < 32; ++i) {
+  for (int i = 0; i < 128; ++i) {
     HWND prev = GetWindow(cur, GW_HWNDPREV);
     if (!prev || prev == cur) {
       break;
@@ -565,11 +565,26 @@ void RaiseOverlayInDesktopBand(HWND hwnd) {
   }
   // 1. 若处于显示桌面模式（Win+D / 点击桌面壁纸且无全屏覆盖），桌面覆盖层随桌面显示在顶层
   // 2. 若正常有应用窗口/弹窗，必须沉在最底部应用窗口的下方，绝不覆盖应用或弹窗
-  HWND insert_after = HWND_TOP;
-  if (!IsShowDesktopActive()) {
+  HWND insert_after = HWND_BOTTOM;
+  if (IsShowDesktopActive()) {
+    insert_after = HWND_TOP;
+  } else {
     HWND above = WindowAboveDefView(host.defview, host.host, hwnd);
     if (above && above != hwnd) {
       insert_after = above;
+    } else {
+      HWND fg = GetForegroundWindow();
+      if (fg && IsWindowVisible(fg) && !IsIconic(fg)) {
+        DWORD pid = 0;
+        GetWindowThreadProcessId(fg, &pid);
+        if (pid != GetCurrentProcessId() && !IsShellFullscreenClass(fg)) {
+          insert_after = fg;
+        } else {
+          insert_after = host.host ? host.host : HWND_BOTTOM;
+        }
+      } else {
+        insert_after = host.host ? host.host : HWND_BOTTOM;
+      }
     }
   }
   SetWindowPos(hwnd, insert_after, 0, 0, 0, 0, flags);

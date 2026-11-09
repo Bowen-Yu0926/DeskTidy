@@ -117,6 +117,7 @@ add_executable(deskNote WIN32
   src/tool_paths.cpp
   src/desktop_shell.cpp
   src/display_geom.cpp
+  src/vault_local.cpp
   src/log.cpp
   src/version.rc
   src/desknote_icon.rc
@@ -128,7 +129,7 @@ target_include_directories(deskNote PRIVATE
 )
 target_compile_definitions(deskNote PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
 target_link_libraries(deskNote PRIVATE
-  user32 gdi32 shell32 ole32 oleaut32 uuid comctl32 advapi32
+  user32 gdi32 shell32 ole32 oleaut32 uuid comctl32 advapi32 crypt32
   gdiplus comdlg32 uxtheme version propsys
   ${CMAKE_CURRENT_SOURCE_DIR}/third_party/webview2-x64/WebView2LoaderStatic.lib
 )
@@ -149,6 +150,9 @@ add_custom_command(TARGET deskNote POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E copy_if_different
           ${CMAKE_CURRENT_SOURCE_DIR}/assets/md_preview/wysiwyg_native.html
           $<TARGET_FILE_DIR:desktidy_native>/assets/md_preview/wysiwyg_native.html
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          ${CMAKE_CURRENT_SOURCE_DIR}/assets/md_preview/vault_accounts.html
+          $<TARGET_FILE_DIR:desktidy_native>/assets/md_preview/vault_accounts.html
   COMMAND ${CMAKE_COMMAND} -E copy_if_different
           ${CMAKE_CURRENT_SOURCE_DIR}/assets/md_preview/vendor/toastui-editor.min.js
           $<TARGET_FILE_DIR:desktidy_native>/assets/md_preview/vendor/toastui-editor.min.js
@@ -203,6 +207,9 @@ add_custom_command(TARGET desktidy_native POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E copy_if_different
           ${CMAKE_CURRENT_SOURCE_DIR}/assets/md_preview/wysiwyg_native.html
           $<TARGET_FILE_DIR:desktidy_native>/assets/md_preview/wysiwyg_native.html
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          ${CMAKE_CURRENT_SOURCE_DIR}/assets/md_preview/vault_accounts.html
+          $<TARGET_FILE_DIR:desktidy_native>/assets/md_preview/vault_accounts.html
   COMMAND ${CMAKE_COMMAND} -E copy_if_different
           ${CMAKE_CURRENT_SOURCE_DIR}/assets/md_preview/vendor/toastui-editor.min.js
           $<TARGET_FILE_DIR:desktidy_native>/assets/md_preview/vendor/toastui-editor.min.js

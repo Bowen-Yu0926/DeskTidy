@@ -16,6 +16,7 @@
 #include "prompt_text.h"
 #include "tool_paths.h"
 #include "ui_theme.h"
+#include "vault_local.h"
 
 #include <CommCtrl.h>
 #include <commdlg.h>
@@ -163,6 +164,7 @@ constexpr UINT_PTR kPersistTabsTimer = 6;
 constexpr UINT_PTR kGutterTimer = 7;
 constexpr UINT_PTR kSyncFilenameTimer = 8;
 constexpr UINT_PTR kTitleSyncTimer = 9;
+constexpr UINT_PTR kVaultClipTimer = 10;
 constexpr int kStatusBarH = 26;
 
 // P2-30: follow Windows app light/dark preference for MD preview chrome.
@@ -888,10 +890,16 @@ bool NotesWindow::Create(HINSTANCE instance) {
   web_.on_external_drop = on_drop;
   preview_web_.on_external_drop = on_drop;
   web_.on_dirty = [this]() {
+    if (vault_html_view_) {
+      return;
+    }
     // Immediate (no markdown body) — covers the 150ms changed debounce window.
     MarkDirty();
   };
   web_.on_changed = [this]() {
+    if (vault_html_view_) {
+      return;
+    }
     // Cache already updated in OnWebMessage. Mirror to RichEdit only on
     // Save / SyncFromWysiwyg / tab switch — not every keystroke.
     MarkDirty();
@@ -947,6 +955,34 @@ bool NotesWindow::Create(HINSTANCE instance) {
   };
   web_.on_find = [this](bool replace) { ShowFind(replace); };
   web_.on_find_again = [this](bool down) { FindAgain(down); };
+  web_.on_vault_copy = [this](int index, const std::wstring& field,
+                              const std::wstring& title,
+                              const std::wstring& user) {
+    CopyVaultField(index, field, title, user);
+  };
+  web_.on_vault_reveal = [this](int index) {
+    if (!vault_html_view_ || !IsVaultAccountsNotePath(path_)) {
+      return;
+    }
+    const AppPrefs prefs = LoadAppPrefs();
+    if (!prefs.vault_enabled) {
+      if (status_) {
+        SetWindowTextW(status_, L"账号功能未开启");
+      }
+      return;
+    }
+    const std::wstring pass = FindVaultLocalField(index, L"pass");
+    if (pass.empty()) {
+      if (status_) {
+        SetWindowTextW(status_, L"未找到密码");
+      }
+      return;
+    }
+    web_.PushVaultPassReveal(index, pass);
+    if (status_) {
+      SetWindowTextW(status_, L"密码已显示 · 再次点击眼睛可隐藏");
+    }
+  };
   web_.on_need_content = [this]() {
     // Boot race: prefer RichEdit load buffer, then cache. Do not go through
     // CurrentPlainText() — in WYSIWYG that reads cache and can re-push "".
@@ -977,6 +1013,7 @@ bool NotesWindow::Create(HINSTANCE instance) {
     preview_web_.SetTheme(theme);
   }
   LoadTabSession();
+  EnsureVaultAccountsNote();
   LoadViewSettings();
   EnsureFontControls();
   ApplyEditorFont();
@@ -986,11 +1023,15 @@ bool NotesWindow::Create(HINSTANCE instance) {
     tab_paths_.push_back(path_);
     tab_index_ = 0;
   }
+  if (tab_index_ < 0 || tab_index_ >= static_cast<int>(tab_paths_.size())) {
+    tab_index_ = 0;
+  }
   path_ = tab_paths_[static_cast<size_t>(tab_index_)];
   RebuildTabControl();
   Load();
   ApplyWordWrap();
   ApplyViewMenuChecks();
+  // Always rebuild after vault sync so「账号库」appears under 全部笔记.
   if (sidebar_visible_) {
     RebuildSidebar();
   }
@@ -1411,7 +1452,12 @@ void NotesWindow::Destroy() {
     KillTimer(hwnd_, kStatusTimer);
     KillTimer(hwnd_, kPersistTabsTimer);
     KillTimer(hwnd_, kGutterTimer);
+    if (vault_clip_timer_) {
+      KillTimer(hwnd_, vault_clip_timer_);
+      vault_clip_timer_ = 0;
+    }
   }
+  ClearVaultClipboardIfOurs();
   if (web_.Host()) {
     RevokeDropOnSubtree(web_.Host());
   }
@@ -1893,6 +1939,304 @@ void NotesWindow::CopyPathToClipboard(const std::wstring& path) {
     }
   }
   CloseClipboard();
+}
+
+void NotesWindow::EnsureVaultAccountsNote() {
+  const AppPrefs prefs = LoadAppPrefs();
+  const std::wstring vault_path = SyncVaultAccountsNote(prefs.vault_enabled);
+  auto same_path = [&](const std::wstring& a, const std::wstring& b) {
+    return !a.empty() && !b.empty() &&
+           _wcsicmp(NormalizePathKey(a).c_str(),
+                    NormalizePathKey(b).c_str()) == 0;
+  };
+  auto find_tab = [&](const std::wstring& p) -> int {
+    for (size_t i = 0; i < tab_paths_.size(); ++i) {
+      if (same_path(tab_paths_[i], p)) {
+        return static_cast<int>(i);
+      }
+    }
+    return -1;
+  };
+  auto set_vault_title = [&](size_t idx) {
+    EnsureTabStates();
+    if (idx < tab_states_.size()) {
+      tab_states_[idx].title_hint = L"账号库";
+    }
+  };
+  if (vault_path.empty()) {
+    // Feature off: drop the managed tab if present (keep file on disk).
+    for (size_t i = 0; i < tab_paths_.size();) {
+      if (IsVaultAccountsNotePath(tab_paths_[i])) {
+        tab_paths_.erase(tab_paths_.begin() +
+                         static_cast<std::ptrdiff_t>(i));
+        if (i < tab_states_.size()) {
+          tab_states_.erase(tab_states_.begin() +
+                            static_cast<std::ptrdiff_t>(i));
+        }
+        if (static_cast<int>(i) < tab_index_) {
+          --tab_index_;
+        } else if (tab_index_ >= static_cast<int>(tab_paths_.size())) {
+          tab_index_ = tab_paths_.empty()
+                           ? 0
+                           : static_cast<int>(tab_paths_.size()) - 1;
+        }
+        continue;
+      }
+      ++i;
+    }
+    EnsureTabStates();
+    SchedulePersistTabs();
+    return;
+  }
+  EnsureTabStates();
+  const int existing = find_tab(vault_path);
+  if (existing < 0) {
+    const bool had_tabs = !tab_paths_.empty();
+    if (tab_paths_.size() >= 12) {
+      // Prefer showing the vault mirror: replace the last non-pinned tab.
+      int victim = static_cast<int>(tab_paths_.size()) - 1;
+      for (int i = victim; i >= 0; --i) {
+        bool pinned = false;
+        for (const auto& pin : pinned_paths_) {
+          if (same_path(pin, tab_paths_[static_cast<size_t>(i)])) {
+            pinned = true;
+            break;
+          }
+        }
+        if (!pinned) {
+          victim = i;
+          break;
+        }
+      }
+      tab_paths_[static_cast<size_t>(victim)] = vault_path;
+      set_vault_title(static_cast<size_t>(victim));
+      if (tab_index_ == victim) {
+        path_ = vault_path;
+      }
+    } else {
+      // Keep tab_states_ aligned — insert path+state together (otherwise the
+      // vault tab inherits the previous first tab's title_hint and the left
+      // rail shows a duplicate wrong name instead of「账号库」).
+      TabState st;
+      st.wrap = word_wrap_;
+      st.title_hint = L"账号库";
+      tab_paths_.insert(tab_paths_.begin(), vault_path);
+      tab_states_.insert(tab_states_.begin(), st);
+      if (had_tabs) {
+        ++tab_index_;
+      } else {
+        tab_index_ = 0;
+        path_ = vault_path;
+      }
+    }
+  } else {
+    tab_paths_[static_cast<size_t>(existing)] = vault_path;
+    set_vault_title(static_cast<size_t>(existing));
+    if (tab_index_ == existing) {
+      path_ = vault_path;
+    }
+  }
+  // Pin so it stays near the top of「全部笔记」(market: default/system notes).
+  {
+    bool pinned = false;
+    for (const auto& pin : pinned_paths_) {
+      if (same_path(pin, vault_path)) {
+        pinned = true;
+        break;
+      }
+    }
+    if (!pinned) {
+      pinned_paths_.insert(pinned_paths_.begin(), vault_path);
+    }
+  }
+  EnsureTabStates();
+  SchedulePersistTabs();
+}
+
+void NotesWindow::ClearVaultClipboardIfOurs() {
+  if (vault_clip_secret_.empty()) {
+    return;
+  }
+  if (!OpenClipboard(hwnd_)) {
+    return;
+  }
+  if (IsClipboardFormatAvailable(CF_UNICODETEXT)) {
+    HANDLE mem = GetClipboardData(CF_UNICODETEXT);
+    if (mem) {
+      const wchar_t* text = static_cast<const wchar_t*>(GlobalLock(mem));
+      if (text && vault_clip_secret_ == text) {
+        EmptyClipboard();
+      }
+      if (text) {
+        GlobalUnlock(mem);
+      }
+    }
+  }
+  CloseClipboard();
+  vault_clip_secret_.clear();
+}
+
+void NotesWindow::CopyVaultField(int index, const std::wstring& field,
+                                 const std::wstring& title,
+                                 const std::wstring& user) {
+  if (!IsVaultAccountsNotePath(path_)) {
+    return;
+  }
+  const AppPrefs prefs = LoadAppPrefs();
+  if (!prefs.vault_enabled) {
+    if (status_) {
+      SetWindowTextW(status_, L"账号功能未开启");
+    }
+    return;
+  }
+  std::wstring f = field.empty() ? L"pass" : field;
+  for (wchar_t& c : f) {
+    if (c >= L'A' && c <= L'Z') {
+      c = static_cast<wchar_t>(c - L'A' + L'a');
+    }
+  }
+  std::wstring value;
+  if (index >= 0) {
+    value = FindVaultLocalField(index, f);
+  } else if (f == L"pass" || f == L"password") {
+    value = FindVaultLocalPassword(title, user);
+  }
+  if (value.empty()) {
+    if (status_) {
+      SetWindowTextW(status_, L"未找到可复制内容");
+    }
+    return;
+  }
+  if (!OpenClipboard(hwnd_)) {
+    return;
+  }
+  EmptyClipboard();
+  const size_t bytes = (value.size() + 1) * sizeof(wchar_t);
+  HGLOBAL mem = GlobalAlloc(GMEM_MOVEABLE, bytes);
+  if (!mem) {
+    CloseClipboard();
+    return;
+  }
+  void* dst = GlobalLock(mem);
+  memcpy(dst, value.c_str(), bytes);
+  GlobalUnlock(mem);
+  SetClipboardData(CF_UNICODETEXT, mem);
+  CloseClipboard();
+  if (vault_clip_timer_) {
+    KillTimer(hwnd_, vault_clip_timer_);
+    vault_clip_timer_ = 0;
+  }
+  const bool is_pass = (f == L"pass" || f == L"password");
+  const int clear_sec = prefs.vault_clipboard_clear_seconds;
+  std::wstring tip =
+      is_pass ? L"密码已复制"
+              : (f == L"user" || f == L"username") ? L"用户名已复制"
+              : (f == L"url")                     ? L"网址已复制"
+                                                  : L"备注已复制";
+  if (is_pass && clear_sec > 0) {
+    vault_clip_secret_ = value;
+    vault_clip_timer_ =
+        SetTimer(hwnd_, kVaultClipTimer, static_cast<UINT>(clear_sec) * 1000u,
+                 nullptr);
+    tip += L" · ";
+    tip += std::to_wstring(clear_sec);
+    tip += L" 秒后清空";
+  } else {
+    vault_clip_secret_.clear();
+  }
+  if (status_) {
+    SetWindowTextW(status_, tip.c_str());
+  }
+}
+
+bool NotesWindow::TryCopyVaultPasswordAtCaret() {
+  if (!IsVaultAccountsNotePath(path_) || !edit_) {
+    return false;
+  }
+  CHARRANGE cr{};
+  SendMessageW(edit_, EM_EXGETSEL, 0, reinterpret_cast<LPARAM>(&cr));
+  const int line =
+      static_cast<int>(SendMessageW(edit_, EM_EXLINEFROMCHAR, 0, cr.cpMin));
+  const int line_len =
+      static_cast<int>(SendMessageW(edit_, EM_LINELENGTH, cr.cpMin, 0));
+  if (line_len <= 0) {
+    return false;
+  }
+  std::wstring line_buf(static_cast<size_t>(line_len) + 1, L'\0');
+  *reinterpret_cast<WORD*>(line_buf.data()) =
+      static_cast<WORD>(line_len + 1);
+  const int got = static_cast<int>(
+      SendMessageW(edit_, EM_GETLINE, line, reinterpret_cast<LPARAM>(line_buf.data())));
+  if (got <= 0) {
+    return false;
+  }
+  line_buf.resize(static_cast<size_t>(got));
+  if (line_buf.find(L"密码") == std::wstring::npos) {
+    return false;
+  }
+  if (line_buf.find(L'\u2022') == std::wstring::npos &&
+      line_buf.find(L'*') == std::wstring::npos) {
+    return false;
+  }
+  std::wstring title;
+  std::wstring user;
+  for (int i = line - 1; i >= 0; --i) {
+    const LONG idx =
+        static_cast<LONG>(SendMessageW(edit_, EM_LINEINDEX, i, 0));
+    if (idx < 0) {
+      break;
+    }
+    const int len =
+        static_cast<int>(SendMessageW(edit_, EM_LINELENGTH, idx, 0));
+    if (len <= 0) {
+      continue;
+    }
+    std::wstring buf(static_cast<size_t>(len) + 1, L'\0');
+    *reinterpret_cast<WORD*>(buf.data()) = static_cast<WORD>(len + 1);
+    const int n = static_cast<int>(
+        SendMessageW(edit_, EM_GETLINE, i, reinterpret_cast<LPARAM>(buf.data())));
+    if (n <= 0) {
+      continue;
+    }
+    buf.resize(static_cast<size_t>(n));
+    if (user.empty() && buf.find(L"用户名") != std::wstring::npos) {
+      size_t colon = buf.find(L'：');
+      if (colon == std::wstring::npos) {
+        colon = buf.find(L':');
+      }
+      if (colon != std::wstring::npos && colon + 1 < buf.size()) {
+        user = buf.substr(colon + 1);
+        while (!user.empty() &&
+               (user.front() == L' ' || user.front() == L'`')) {
+          user.erase(user.begin());
+        }
+        while (!user.empty() &&
+               (user.back() == L' ' || user.back() == L'`')) {
+          user.pop_back();
+        }
+      }
+    }
+    if (!buf.empty() && buf[0] == L'#') {
+      size_t start = 0;
+      while (start < buf.size() && buf[start] == L'#') {
+        ++start;
+      }
+      if (start > 0 && start < buf.size() &&
+          (buf[start] == L' ' || buf[start] == L'\t')) {
+        while (start < buf.size() &&
+               (buf[start] == L' ' || buf[start] == L'\t')) {
+          ++start;
+        }
+        title = buf.substr(start);
+        break;
+      }
+    }
+  }
+  if (title.empty()) {
+    return false;
+  }
+  CopyVaultField(-1, L"pass", title, user);
+  return true;
 }
 
 void NotesWindow::PersistViewSettings() {
@@ -2427,10 +2771,14 @@ std::wstring NotesWindow::NoteDisplayName(const std::wstring& path,
       ext = leaf.substr(dot);  // includes '.'
     }
   }
+  // Managed vault mirror — never inherit a stale title_hint from another tab.
+  if (IsVaultAccountsNotePath(path)) {
+    name = L"账号库";
+  }
   const bool md = PathIsMarkdownFile(path);
   const std::wstring key = NormalizePathKey(path);
   // Title-as-name is Markdown-only (Typora). Plain files keep Explorer names.
-  if (md) {
+  if (name.empty() && md) {
     for (size_t i = 0; i < tab_paths_.size(); ++i) {
       if (_wcsicmp(NormalizePathKey(tab_paths_[i]).c_str(), key.c_str()) !=
           0) {
@@ -4210,6 +4558,19 @@ void NotesWindow::ShowEditMode() {
 }
 
 void NotesWindow::Save(bool authoritative_pull) {
+  // Managed vault mirror: rewrite masked .md + refresh HTML view (no Toast edit).
+  if (IsVaultAccountsNotePath(path_)) {
+    const AppPrefs prefs = LoadAppPrefs();
+    if (prefs.vault_enabled) {
+      ignore_dirty_until_ = GetTickCount64() + 600;
+      SyncVaultAccountsNote(true);
+      dirty_ = false;
+      ShowVaultAccountsHtmlView();
+      RefreshTitle();
+      UpdateStatusBar();
+      return;
+    }
+  }
   // Arm before Pull/SetWindowText — EN_CHANGE + Toast posts during Save must
   // not keep the tab disc after a successful write (Typora / VS Code).
   ignore_dirty_until_ = GetTickCount64() + 600;
@@ -5260,10 +5621,55 @@ void NotesWindow::SyncFromWysiwyg() {
 }
 
 
+void NotesWindow::ShowVaultAccountsHtmlView() {
+  if (toast_) {
+    return;
+  }
+  const AppPrefs prefs = LoadAppPrefs();
+  SyncVaultAccountsNote(prefs.vault_enabled);
+  vault_html_view_ = true;
+  wysiwyg_ = true;  // LayoutClient sizes the WebView host as the main stage.
+  dirty_ = false;
+  if (title_edit_) {
+    ShowWindow(title_edit_, SW_HIDE);
+  }
+  if (edit_) {
+    ShowWindow(edit_, SW_HIDE);
+  }
+  if (gutter_) {
+    ShowWindow(gutter_, SW_HIDE);
+  }
+  if (preview_web_.Host()) {
+    preview_web_.Hide();
+  }
+  web_.ShowVaultAccounts(BuildVaultAccountsUiJson());
+  web_.Show();
+  web_.Resize();
+  LayoutClient();
+  ApplyWysiwygVisibility();
+  RefreshTitle();
+  if (status_) {
+    SetWindowTextW(status_, L"账号库 · 网页视图 · 点「复制」写入剪贴板");
+  }
+}
+
+void NotesWindow::LeaveVaultAccountsHtmlViewIfNeeded() {
+  if (!vault_html_view_) {
+    return;
+  }
+  vault_html_view_ = false;
+  web_.ShowWysiwygEditor();
+}
+
 void NotesWindow::EnsureMarkdownEditor(bool force_reload) {
   if (toast_) {
     return;
   }
+  if (IsVaultAccountsNotePath(path_)) {
+    ShowVaultAccountsHtmlView();
+    return;
+  }
+  LeaveVaultAccountsHtmlViewIfNeeded();
   if (!PathLooksMarkdown()) {
     if (wysiwyg_) {
       SyncFromWysiwyg();
@@ -5374,6 +5780,18 @@ void NotesWindow::EnsureTabStates() {
 
 void NotesWindow::ApplyWysiwygVisibility() {
   if (!edit_) {
+    return;
+  }
+  if (vault_html_view_) {
+    if (title_edit_) {
+      ShowWindow(title_edit_, SW_HIDE);
+    }
+    web_.Show();
+    web_.Resize();
+    ShowWindow(edit_, SW_HIDE);
+    if (gutter_) {
+      ShowWindow(gutter_, SW_HIDE);
+    }
     return;
   }
   // Non-Markdown must never keep WW / title chrome (Explorer/Notepad parity).
@@ -5491,6 +5909,9 @@ void NotesWindow::ApplyTitleFont() {
 }
 
 int NotesWindow::TitleChromeHeight() const {
+  if (vault_html_view_) {
+    return 0;  // HTML vault page has its own hero title.
+  }
   HDC hdc = GetDC(hwnd_ ? hwnd_ : nullptr);
   const int dpi = hdc ? GetDeviceCaps(hdc, LOGPIXELSY) : 96;
   if (hdc) {
@@ -7162,6 +7583,21 @@ void NotesWindow::Present() {
     Show();
     return;
   }
+  // Refresh vault mirror when DeskNote is raised (accounts may have changed).
+  const std::wstring active_before = path_;
+  EnsureVaultAccountsNote();
+  if (IsVaultAccountsNotePath(path_) ||
+      IsVaultAccountsNotePath(active_before)) {
+    if (!tab_paths_.empty()) {
+      if (tab_index_ < 0 ||
+          tab_index_ >= static_cast<int>(tab_paths_.size())) {
+        tab_index_ = 0;
+      }
+      path_ = tab_paths_[static_cast<size_t>(tab_index_)];
+    }
+    RebuildTabControl();
+    Load();
+  }
   ShowWindow(hwnd_, SW_SHOWMAXIMIZED);
   SetForegroundWindow(hwnd_);
   LayoutClient();
@@ -8461,6 +8897,11 @@ LRESULT CALLBACK NotesWindow::EditProc(HWND hwnd, UINT msg, WPARAM wparam,
                                         LPARAM lparam) {
   auto* self = reinterpret_cast<NotesWindow*>(
       GetWindowLongPtrW(GetParent(hwnd), GWLP_USERDATA));
+  if (self && msg == WM_LBUTTONDBLCLK) {
+    if (self->TryCopyVaultPasswordAtCaret()) {
+      return 0;
+    }
+  }
   if (self && msg == WM_DROPFILES) {
     return SendMessageW(self->hwnd_, WM_DROPFILES, wparam, lparam);
   }
@@ -9343,6 +9784,15 @@ LRESULT NotesWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
       }
       if (wparam == kPersistTabsTimer) {
         PersistTabs();
+        return 0;
+      }
+      if (wparam == kVaultClipTimer) {
+        KillTimer(hwnd_, kVaultClipTimer);
+        vault_clip_timer_ = 0;
+        ClearVaultClipboardIfOurs();
+        if (status_) {
+          SetWindowTextW(status_, L"剪贴板密码已清空");
+        }
         return 0;
       }
       if (wparam == kSyncFilenameTimer) {

@@ -94,7 +94,8 @@ bool IsDeskNoteShellHtmlUri(const std::wstring& uri) {
     return true;
   }
   return lower.find(L"wysiwyg_native.html") != std::wstring::npos ||
-         lower.find(L"viewer_native.html") != std::wstring::npos;
+         lower.find(L"viewer_native.html") != std::wstring::npos ||
+         lower.find(L"vault_accounts.html") != std::wstring::npos;
 }
 
 std::wstring ParentDir(const std::wstring& path) {
@@ -235,6 +236,9 @@ std::wstring FindAsset(const std::wstring& rel) {
 
 std::wstring FindWysiwygHtml() { return FindAsset(L"md_preview\\wysiwyg_native.html"); }
 std::wstring FindViewerHtml() { return FindAsset(L"md_preview\\viewer_native.html"); }
+std::wstring FindVaultAccountsHtml() {
+  return FindAsset(L"md_preview\\vault_accounts.html");
+}
 
 std::wstring FileUrlFromPath(const std::wstring& path) {
   std::wstring abs = path;
@@ -482,7 +486,7 @@ bool NotesWebView::Create(HWND parent) {
                               [this](ICoreWebView2*,
                                      ICoreWebView2NavigationStartingEventArgs*
                                          args) -> HRESULT {
-                                if (!args || !on_external_drop) {
+                                if (!args) {
                                   return S_OK;
                                 }
                                 LPWSTR uri_raw = nullptr;
@@ -492,6 +496,34 @@ bool NotesWebView::Create(HWND parent) {
                                 }
                                 const std::wstring uri(uri_raw);
                                 CoTaskMemFree(uri_raw);
+                                if (uri.rfind(L"desknote-vault://", 0) == 0) {
+                                  args->put_Cancel(TRUE);
+                                  if (on_vault_copy) {
+                                    auto query =
+                                        [&](const wchar_t* key) -> std::wstring {
+                                      const std::wstring needle =
+                                          std::wstring(key) + L"=";
+                                      const size_t p = uri.find(needle);
+                                      if (p == std::wstring::npos) {
+                                        return {};
+                                      }
+                                      size_t start = p + needle.size();
+                                      size_t end = uri.find(L'&', start);
+                                      if (end == std::wstring::npos) {
+                                        end = uri.size();
+                                      }
+                                      return uri.substr(start, end - start);
+                                    };
+                                    const std::wstring i_s = query(L"i");
+                                    const int index =
+                                        i_s.empty() ? -1 : _wtoi(i_s.c_str());
+                                    on_vault_copy(index, query(L"f"), L"", L"");
+                                  }
+                                  return S_OK;
+                                }
+                                if (!on_external_drop) {
+                                  return S_OK;
+                                }
                                 if (_wcsnicmp(uri.c_str(), L"file:", 5) != 0) {
                                   return S_OK;
                                 }
@@ -557,15 +589,23 @@ void NotesWebView::NavigateHome() {
   if (!web) {
     return;
   }
-  const std::wstring html =
-      kind_ == Kind::kViewer ? FindViewerHtml() : FindWysiwygHtml();
+  std::wstring html;
+  std::wstring leaf;
+  if (kind_ == Kind::kVaultAccounts) {
+    html = FindVaultAccountsHtml();
+    leaf = L"vault_accounts.html";
+  } else if (kind_ == Kind::kViewer) {
+    html = FindViewerHtml();
+    leaf = L"viewer_native.html";
+  } else {
+    html = FindWysiwygHtml();
+    leaf = L"wysiwyg_native.html";
+  }
   if (html.empty()) {
     return;
   }
   ready_ = false;
   content_ready_ = false;
-  const std::wstring leaf = kind_ == Kind::kViewer ? L"viewer_native.html"
-                                                   : L"wysiwyg_native.html";
   const std::wstring token = AssetCacheToken(html);
   // Prefer virtual host (mapped in Create). Fall back to file:// if mapping
   // failed on older runtimes — still works, just slower cache semantics.
@@ -585,8 +625,97 @@ void NotesWebView::NavigateHome() {
   web->Navigate((FileUrlFromPath(html) + L"?v=" + token).c_str());
 }
 
+void NotesWebView::PushVaultAccountsData() {
+  auto* web = static_cast<ICoreWebView2*>(webview_);
+  if (!web || kind_ != Kind::kVaultAccounts) {
+    return;
+  }
+  std::wstring json = L"{\"type\":\"setEntries\",\"entries\":";
+  json += pending_vault_json_.empty() ? L"[]" : pending_vault_json_;
+  json += L"}";
+  web->PostWebMessageAsJson(json.c_str());
+  content_ready_ = true;
+}
+
+void NotesWebView::PushVaultPassReveal(int index, const std::wstring& pass) {
+  auto* web = static_cast<ICoreWebView2*>(webview_);
+  if (!web || kind_ != Kind::kVaultAccounts || index < 0) {
+    return;
+  }
+  // Escape for JSON string value.
+  std::wstring esc;
+  esc.reserve(pass.size() + 8);
+  for (wchar_t c : pass) {
+    switch (c) {
+      case L'\\':
+        esc += L"\\\\";
+        break;
+      case L'"':
+        esc += L"\\\"";
+        break;
+      case L'\n':
+        esc += L"\\n";
+        break;
+      case L'\r':
+        esc += L"\\r";
+        break;
+      case L'\t':
+        esc += L"\\t";
+        break;
+      default:
+        if (c < 0x20) {
+          wchar_t buf[8];
+          swprintf_s(buf, L"\\u%04x", static_cast<unsigned>(c));
+          esc += buf;
+        } else {
+          esc.push_back(c);
+        }
+        break;
+    }
+  }
+  std::wstring json = L"{\"type\":\"revealPass\",\"i\":";
+  json += std::to_wstring(index);
+  json += L",\"pass\":\"";
+  json += esc;
+  json += L"\"}";
+  web->PostWebMessageAsJson(json.c_str());
+}
+
+void NotesWebView::ShowVaultAccounts(const std::wstring& entries_json) {
+  pending_vault_json_ =
+      entries_json.empty() ? L"[]" : entries_json;
+  if (kind_ != Kind::kVaultAccounts || !webview_) {
+    kind_ = Kind::kVaultAccounts;
+    NavigateHome();
+    return;
+  }
+  if (ready_) {
+    PushVaultAccountsData();
+    if (on_content_ready) {
+      on_content_ready();
+    }
+  } else {
+    NavigateHome();
+  }
+}
+
+void NotesWebView::ShowWysiwygEditor() {
+  if (kind_ == Kind::kWysiwyg && webview_ && ready_) {
+    return;
+  }
+  kind_ = Kind::kWysiwyg;
+  NavigateHome();
+}
+
 void NotesWebView::OnReady() {
   ready_ = true;
+  if (kind_ == Kind::kVaultAccounts) {
+    PushVaultAccountsData();
+    if (on_content_ready) {
+      on_content_ready();
+    }
+    return;
+  }
   // Prefer explicit pending push; else re-push cache. Always call SetMarkdown
   // for WYSIWYG — even "" — so Toast boots (skipping empty left a blank host).
   std::wstring md = pending_set_;
@@ -639,7 +768,9 @@ void NotesWebView::OnWebMessage(const std::wstring& json) {
       }
     }
   } else if (type == L"needContent") {
-    if (on_need_content) {
+    if (kind_ == Kind::kVaultAccounts) {
+      PushVaultAccountsData();
+    } else if (on_need_content) {
       on_need_content();
     } else if (!pending_md_.empty()) {
       SetMarkdown(pending_md_);
@@ -671,9 +802,45 @@ void NotesWebView::OnWebMessage(const std::wstring& json) {
     }
   } else if (type == L"openExternal") {
     const std::wstring href = JsonStringField(json, L"href");
-    if (!href.empty()) {
+    if (href.rfind(L"desknote-vault://", 0) == 0) {
+      if (on_vault_copy) {
+        auto query = [&](const wchar_t* key) -> std::wstring {
+          const std::wstring needle = std::wstring(L"") + key + L"=";
+          const size_t p = href.find(needle);
+          if (p == std::wstring::npos) {
+            return {};
+          }
+          size_t start = p + needle.size();
+          size_t end = href.find(L'&', start);
+          if (end == std::wstring::npos) {
+            end = href.size();
+          }
+          return href.substr(start, end - start);
+        };
+        const std::wstring i_s = query(L"i");
+        const int index = i_s.empty() ? -1 : _wtoi(i_s.c_str());
+        on_vault_copy(index, query(L"f"), L"", L"");
+      }
+    } else if (!href.empty()) {
       ShellExecuteW(nullptr, L"open", href.c_str(), nullptr, nullptr,
                     SW_SHOWNORMAL);
+    }
+  } else if (type == L"vaultCopy") {
+    if (on_vault_copy) {
+      const std::wstring i_s = JsonStringField(json, L"i");
+      const int index = i_s.empty() ? -1 : _wtoi(i_s.c_str());
+      std::wstring field = JsonStringField(json, L"field");
+      if (field.empty()) {
+        field = JsonStringField(json, L"f");
+      }
+      on_vault_copy(index, field, JsonStringField(json, L"title"),
+                    JsonStringField(json, L"user"));
+    }
+  } else if (type == L"vaultReveal") {
+    if (on_vault_reveal) {
+      const std::wstring i_s = JsonStringField(json, L"i");
+      const int index = i_s.empty() ? -1 : _wtoi(i_s.c_str());
+      on_vault_reveal(index);
     }
   }
 }

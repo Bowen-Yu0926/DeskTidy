@@ -546,59 +546,29 @@ void PreloadIconsParallel(const std::vector<std::pair<std::wstring, int>>& jobs)
   if (jobs.empty()) {
     return;
   }
-  // 1) Collect only the cold icons (not yet in the process-wide cache). Most
-  //    refreshes hit 100% cache — spawning a thread pool + CoInitializeEx for
-  //    those was the bulk of the per-refresh cost (hundreds of ms even with
-  //    zero actual loads).
+  // 1) Collect only the cold icons (not yet in the process-wide cache).
   std::vector<std::pair<std::wstring, int>> cold;
   cold.reserve(jobs.size());
-  for (const auto& job : jobs) {
-    const std::wstring key = IconCacheKey(job.first, job.second);
+  {
     std::lock_guard<std::mutex> lk(g_master_icon_cache_mutex);
-    if (g_master_icon_cache.find(key) == g_master_icon_cache.end()) {
-      cold.push_back(job);
+    for (const auto& job : jobs) {
+      const std::wstring key = IconCacheKey(job.first, job.second);
+      if (g_master_icon_cache.find(key) == g_master_icon_cache.end()) {
+        cold.push_back(job);
+      }
     }
   }
   if (cold.empty()) {
     return;
   }
-  // 2) Parallel-load only the cold subset. SHGetImageList / IImageList::GetIcon
-  //    are COM calls — each worker must init COM or the load can fail
-  //    (CO_E_NOTINITIALIZED) on some machines.
-  const unsigned hw = std::thread::hardware_concurrency();
-  const unsigned nthreads = (std::max)(1u, (std::min)(8u, hw ? hw : 4u));
-  std::atomic<size_t> next{0};
-  std::vector<std::thread> pool;
-  pool.reserve(nthreads);
-  auto worker = [&cold, &next]() {
-    CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
-    for (;;) {
-      const size_t i = next.fetch_add(1, std::memory_order_relaxed);
-      if (i >= cold.size()) {
-        break;
-      }
-      HICON icon = LoadItemIcon(cold[i].first, cold[i].second);
-      if (icon) {
-        DestroyIcon(icon);  // cache keeps the master; our clone is disposable
-      }
+  // 2) Safe sequential preload on the current thread. Third-party shell extensions
+  //    (such as BaiduNetdisk biz_shellext64, Lenovo LHShield64, etc.) hook into
+  //    IShellItemImageFactory / SHGetFileInfo and are NOT thread-safe; calling them
+  //    concurrently from ephemeral worker threads corrupts their heap (0xc0000374).
+  for (const auto& item : cold) {
+    HICON icon = LoadItemIcon(item.first, item.second);
+    if (icon) {
+      DestroyIcon(icon);  // cache keeps the master; our clone is disposable
     }
-    CoUninitialize();
-  };
-  try {
-    for (unsigned t = 0; t < nthreads; ++t) {
-      pool.emplace_back(worker);
-    }
-  } catch (...) {
-    // Thread creation failed mid-way — join what we spawned before unwinding,
-    // otherwise the destructor of a joinable std::thread calls std::terminate.
-    for (auto& th : pool) {
-      if (th.joinable()) {
-        th.join();
-      }
-    }
-    throw;
-  }
-  for (auto& th : pool) {
-    th.join();
   }
 }

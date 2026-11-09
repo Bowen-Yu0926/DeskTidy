@@ -23,6 +23,8 @@ std::function<void()> g_on_click;
 bool g_clickable = false;
 int g_ww = 280;
 int g_hh = 38;
+int g_rgn_ww = 0;
+int g_rgn_hh = 0;
 
 int MeasureToastWidth(HDC hdc, const std::wstring& text) {
   RECT m{0, 0, 0, 0};
@@ -55,8 +57,11 @@ void PlaceToastWindow(HWND hwnd, HWND anchor, HWND clear_above) {
     int stack_top = ar.top;
     if (clear_above && IsWindow(clear_above) && IsWindowVisible(clear_above)) {
       RECT cr{};
-      GetWindowRect(clear_above, &cr);
-      stack_top = (std::min)(stack_top, static_cast<int>(cr.top));
+      if (GetWindowRect(clear_above, &cr)) {
+        if (cr.bottom >= ar.top - 200 && cr.top < ar.top) {
+          stack_top = (std::min)(stack_top, static_cast<int>(cr.top));
+        }
+      }
     }
     y = stack_top - hh - 10;
     if (y < work.top + 4) {
@@ -72,8 +77,12 @@ void PlaceToastWindow(HWND hwnd, HWND anchor, HWND clear_above) {
     y = work.top + 28;
   }
   SetWindowPos(hwnd, nullptr, x, y, ww, hh, SWP_NOZORDER | SWP_NOACTIVATE);
-  HRGN rgn = CreateRoundRectRgn(0, 0, ww + 1, hh + 1, 16, 16);
-  SetWindowRgn(hwnd, rgn, TRUE);
+  if (ww != g_rgn_ww || hh != g_rgn_hh) {
+    HRGN rgn = CreateRoundRectRgn(0, 0, ww + 1, hh + 1, 16, 16);
+    SetWindowRgn(hwnd, rgn, TRUE);
+    g_rgn_ww = ww;
+    g_rgn_hh = hh;
+  }
 }
 
 void ArmDismissTimer(HWND hwnd, UINT ms) {
@@ -168,6 +177,9 @@ LRESULT CALLBACK ToastProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
         DestroyWindow(hwnd);
       } else if (wparam == 2 && g_follow && IsWindow(g_follow)) {
         PlaceToastWindow(hwnd, g_follow, g_clear_above);
+        // Keep speech in the desktop band while following the pet — owner-only
+        // popups float in the app Z-order and cover browsers (market: Fences /
+        // Rainmeter OnDesktop chrome stays under APPWINDOWs).
         if (!IsAttachedToDesktop(hwnd)) {
           AttachOverlayToDesktop(hwnd, true);
         }
@@ -175,11 +187,15 @@ LRESULT CALLBACK ToastProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
       }
       return 0;
     case WM_DESTROY:
-      g_hwnd = nullptr;
-      g_follow = nullptr;
-      g_clear_above = nullptr;
-      g_on_click = nullptr;
-      g_clickable = false;
+      if (hwnd == g_hwnd) {
+        g_hwnd = nullptr;
+        g_follow = nullptr;
+        g_clear_above = nullptr;
+        g_on_click = nullptr;
+        g_clickable = false;
+        g_rgn_ww = 0;
+        g_rgn_hh = 0;
+      }
       return 0;
     default:
       break;
@@ -192,6 +208,18 @@ void ShowToastImpl(HWND anchor, HWND clear_above, const std::wstring& text,
   if (text.empty()) {
     return;
   }
+  // 1. 先安全销毁旧 toast 实例，避免 DestroyWindow 同步触发 WM_DESTROY 冲掉新状态
+  if (g_hwnd) {
+    HWND old = g_hwnd;
+    g_hwnd = nullptr;
+    if (g_timer) {
+      KillTimer(old, g_timer);
+      g_timer = 0;
+    }
+    KillTimer(old, 2);
+    DestroyWindow(old);
+  }
+  // 2. 赋值本次最新的跟随与显示状态
   g_text = text;
   g_follow = (anchor && IsWindow(anchor)) ? anchor : nullptr;
   g_clear_above =
@@ -214,15 +242,9 @@ void ShowToastImpl(HWND anchor, HWND clear_above, const std::wstring& text,
     g_ww = MeasureToastWidth(screen, g_text);
     ReleaseDC(nullptr, screen);
   }
-  if (g_hwnd) {
-    if (g_timer) {
-      KillTimer(g_hwnd, g_timer);
-      g_timer = 0;
-    }
-    KillTimer(g_hwnd, 2);
-    DestroyWindow(g_hwnd);
-    g_hwnd = nullptr;
-  }
+  // Pet speech must SoftSeat to Progman/WorkerW (same as the pet). Creating
+  // with pet as owner does NOT put the popup in the desktop band — it still
+  // rises in the normal APPWINDOW Z-order and covers the browser.
   g_hwnd = CreateWindowExW(
       WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_LAYERED, kClass, L"",
       WS_POPUP, 0, 0, g_ww, g_hh, nullptr, nullptr, inst, nullptr);
@@ -232,8 +254,6 @@ void ShowToastImpl(HWND anchor, HWND clear_above, const std::wstring& text,
   PlaceToastWindow(g_hwnd, g_follow, g_clear_above);
   SetLayeredWindowAttributes(g_hwnd, 0, 235, LWA_ALPHA);
   if (g_follow) {
-    // 宠物台词气泡属于桌面层，绝不允许 WS_EX_TOPMOST / HWND_TOPMOST
-    // 必须随同宠物挂在桌面宿主层，确保前台有软件时严格处于软件下方
     ShowWindow(g_hwnd, SW_SHOWNOACTIVATE);
     AttachOverlayToDesktop(g_hwnd, true);
     RaiseOverlayInDesktopBand(g_hwnd);

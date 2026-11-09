@@ -239,6 +239,21 @@
     if (!a) return;
     var href = a.getAttribute("href") || "";
     if (href.indexOf("#") === 0) return;
+    if (href.indexOf("desknote-vault://") === 0) {
+      ev.preventDefault();
+      var q = {};
+      href.replace(/[?&]([^=]+)=([^&]*)/g, function (_, k, v) {
+        q[k] = decodeURIComponent(v || "");
+      });
+      post({
+        type: "vaultCopy",
+        i: q.i || "",
+        field: q.f || q.field || "pass",
+        title: "",
+        user: ""
+      });
+      return;
+    }
     if (/^(https?:|mailto:|file:)/i.test(href)) {
       ev.preventDefault();
       post({ type: "openExternal", href: href });
