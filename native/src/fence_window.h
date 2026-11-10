@@ -32,11 +32,11 @@ class FenceWindow {
   using PathsFn =
       std::function<DWORD(FenceWindow*, const std::vector<std::wstring>&)>;
   using DragDoneFn = std::function<void(FenceWindow*)>;
-  // `drop` is cursor screen pos when unpinning from a drag; otherwise cursor.
-  using UnpinFn =
-      std::function<void(FenceWindow*, const std::wstring& path, POINT drop)>;
+  // `drop` = screen seat for drag-unpin; nullptr = menu unpin (auto-pack).
+  using UnpinFn = std::function<void(FenceWindow*, const std::wstring& path,
+                                     const POINT* drop)>;
   using UnpinManyFn = std::function<void(
-      FenceWindow*, const std::vector<std::wstring>& paths, POINT drop)>;
+      FenceWindow*, const std::vector<std::wstring>& paths, const POINT* drop)>;
   using PathReplaceFn =
       std::function<void(const std::wstring& from, const std::wstring& to)>;
   using PageFn = std::function<void(FenceWindow*, int page)>;
@@ -47,6 +47,9 @@ class FenceWindow {
   // Paste with clipboard effect: move = true for cut (Preferred DropEffect MOVE).
   using PasteFn = std::function<void(FenceWindow*,
                                      const std::vector<std::wstring>&, bool)>;
+  // Shell New landed on Desktop — pin as-is (do not FO_COPY).
+  using CreatedFn =
+      std::function<void(FenceWindow*, const std::vector<std::wstring>&)>;
   using QueryFencesFn = std::function<std::vector<FenceMoveTarget>()>;
   using MoveToFenceFn = std::function<void(
       FenceWindow*, const std::vector<std::wstring>&, const std::string&)>;
@@ -83,7 +86,11 @@ class FenceWindow {
   void SetPages(std::vector<int> pages);
   bool OnPage(int page) const;
   void TogglePageMembership(int page);
+  // Drop page `deleted` and renumber higher indexes (page bar delete).
+  void RemapPagesAfterDelete(int deleted);
   void SetTitle(const std::wstring& title);
+  // Painted caption: fence title at portal root; folder leaf when drilled in.
+  std::wstring DisplayTitle() const;
   void SetStyleId(const std::string& style_id);
   const std::string& StyleId() const { return style_id_; }
   FenceLayout CurrentLayout() const;
@@ -116,6 +123,7 @@ class FenceWindow {
   void SetOnStyleChanged(StyleFn fn) { on_style_changed_ = std::move(fn); }
   void SetOnPortal(PortalFn fn) { on_portal_ = std::move(fn); }
   void SetOnPasted(PasteFn fn) { on_pasted_ = std::move(fn); }
+  void SetOnCreated(CreatedFn fn) { on_created_ = std::move(fn); }
   void SetQueryFences(QueryFencesFn fn) { on_query_fences_ = std::move(fn); }
   void SetOnMoveToFence(MoveToFenceFn fn) {
     on_move_to_fence_ = std::move(fn);
@@ -128,10 +136,11 @@ class FenceWindow {
   void SetOnReorder(ReorderFn fn) { on_reorder_ = std::move(fn); }
   void SetOnPathsDroppedAt(DropAtFn fn) { on_paths_dropped_at_ = std::move(fn); }
   void SetOnZoomChanged(ZoomFn fn) { on_zoom_changed_ = std::move(fn); }
-  // P1-13: pin-transfer drop. Returns the DROPEFFECT to advertise (NONE = reject).
+  // P1-13: pin-transfer drop. `at` = visual insert index (-1 = append).
+  // Returns the DROPEFFECT to advertise (NONE = reject).
   using PinDropFn = std::function<DWORD(
       FenceWindow*, const std::wstring& src_fence_id,
-      const std::vector<std::wstring>& paths, bool commit)>;
+      const std::vector<std::wstring>& paths, bool commit, int at)>;
   void SetOnPinDrop(PinDropFn fn) { on_pin_drop_ = std::move(fn); }
   // P1-12: fired once when a pin-transfer drag ends (Drop/Escape) — hides the
   // floating drop hint owned by App.
@@ -155,6 +164,8 @@ class FenceWindow {
   void InsertPinOrder(const std::vector<std::wstring>& paths, int at);
   // Remove every occurrence of `paths` from the manual pin order.
   void RemovePinOrder(const std::vector<std::wstring>& paths);
+  // Rename / retarget: keep manual seat when the path changes.
+  void RetargetPinOrder(const std::wstring& from, const std::wstring& to);
   // H3: per-page geometry / visibility.
   void SetPageGeometry(int page, const FencePageGeometry& geo);
   const std::map<int, FencePageGeometry>& PageGeometries() const {
@@ -176,6 +187,8 @@ class FenceWindow {
   void ScaleGeometryForDpi(int old_dpi, int new_dpi);
 
   void SetItems(std::vector<DesktopItem> items);
+  // After STA icon preload: fill nullptr cells from the master cache + Present.
+  bool FillMissingIcons();
   void ClearIcons();
   const std::vector<DesktopItem> ItemSnapshot() const;
   void SetSortBy(const std::string& sort_by);
@@ -188,6 +201,11 @@ class FenceWindow {
   void PasteClipboardFiles();
   void SetPortalPath(const std::wstring& path);
   const std::wstring& PortalPath() const { return portal_path_; }
+  // Fences Folder Portal: current browse dir (root or drilled-in child).
+  const std::wstring& PortalBrowsePath() const;
+  bool PortalCanGoUp() const;
+  bool NavigatePortalInto(const std::wstring& folder);
+  bool PortalGoUp();
   bool IsCollapsed() const { return collapsed_; }
   void SetCollapsed(bool collapsed);
   void ToggleCollapsed();
@@ -198,11 +216,15 @@ class FenceWindow {
   }
   void CopySelection();
   void CutSelection();
-  void DeleteSelection();
+  void DeleteSelection(bool permanent = false);
   void SelectAll();
   void ClearSelection();
   void BeginInlineRename();
   void FinishInlineRename(bool commit);
+  // Fences: blank-menu「重命名」→ title-bar inline EDIT (not Mist dialog).
+  void BeginTitleInlineRename();
+  // Explorer/Fences: type letter prefix to jump to matching icon.
+  void TypeAheadFind(wchar_t ch);
 
  private:
   struct Cell {
@@ -219,12 +241,13 @@ class FenceWindow {
     Bottom = 8,
   };
 
-  // Title-bar chrome buttons (Python: collapse + lock; dissolve for delete).
+  // Title-bar chrome: portal-up (left) + collapse/lock/dissolve (right).
   enum class HeaderBtn : int {
     None = 0,
     Collapse = 1,
     Lock = 2,
     Dissolve = 3,
+    PortalUp = 4,
   };
 
   static LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
@@ -245,7 +268,8 @@ class FenceWindow {
   bool IconLabelRect(size_t index, RECT* out) const;
   Edge HitTestEdge(int x, int y) const;
   bool IsSystemFence() const;
-  void HeaderBtnRects(RECT* collapse, RECT* lock, RECT* dissolve) const;
+  void HeaderBtnRects(RECT* collapse, RECT* lock, RECT* dissolve,
+                      RECT* portal_up = nullptr) const;
   HeaderBtn HitTestHeaderBtn(int x, int y) const;
   void ActivateHeaderBtn(HeaderBtn btn);
   void OpenItem(int index);
@@ -304,6 +328,9 @@ class FenceWindow {
   HWND hwnd_ = nullptr;
   HWND tip_ = nullptr;
   int tip_index_ = -1;
+  std::wstring tip_text_;
+  bool TitleLabelRect(RECT* out) const;
+  bool CaptionFitsLabel(const std::wstring& text, const RECT& label) const;
   bool dragging_ = false;
   bool drag_moved_ = false;
   bool resizing_ = false;
@@ -313,6 +340,8 @@ class FenceWindow {
   // Manual double-click fallback (in case class lacks CS_DBLCLKS).
   int last_icon_click_ = -1;
   DWORD last_icon_click_tick_ = 0;
+  std::wstring typeahead_;
+  DWORD typeahead_tick_ = 0;
   POINT drag_offset_{};
   POINT press_client_{};
   RECT resize_start_rc_{};
@@ -346,6 +375,7 @@ class FenceWindow {
   StyleFn on_style_changed_;
   PortalFn on_portal_;
   PasteFn on_pasted_;
+  CreatedFn on_created_;
   QueryFencesFn on_query_fences_;
   MoveToFenceFn on_move_to_fence_;
   MoveToPageFn on_move_to_page_;
@@ -360,6 +390,8 @@ class FenceWindow {
   PinDropFn on_pin_drop_;
   DragDoneFn on_pin_drag_end_;
   std::wstring portal_path_;
+  // Empty → browsing portal_path_ root. Non-empty → in-portal cwd.
+  std::wstring portal_cwd_;
   bool collapsed_ = false;
   bool position_locked_ = false;
   HeaderBtn header_press_ = HeaderBtn::None;
@@ -453,10 +485,21 @@ class FenceWindow {
   // Reused ULW back-buffer — CreateDIBSection every Present was a hot-path tax.
   void ReleaseLayerBuffer();
   bool EnsureLayerBuffer(int w, int h);
+  void InvalidatePanelChromeCache();
   HDC layer_dc_ = nullptr;
   HBITMAP layer_dib_ = nullptr;
   HGDIOBJ layer_old_ = nullptr;
   void* layer_bits_ = nullptr;
   int layer_buf_w_ = 0;
   int layer_buf_h_ = 0;
+  // Frosted panel chrome (pre-Paint). Hit skips GDI+ gradient path when
+  // size/style unchanged — icons/text still redraw via Paint every Present.
+  std::vector<BYTE> panel_chrome_;
+  int panel_chrome_w_ = 0;
+  int panel_chrome_h_ = 0;
+  COLORREF panel_chrome_bg_ = 0;
+  COLORREF panel_chrome_accent_ = 0;
+  BYTE panel_chrome_alpha_ = 0;
+  bool panel_chrome_light_ = false;
+  int panel_chrome_radius_ = -1;
 };

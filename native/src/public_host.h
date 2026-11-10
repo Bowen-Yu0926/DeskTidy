@@ -16,7 +16,10 @@
 
 namespace Gdiplus {
 class Bitmap;
+class Font;
+class FontFamily;
 class Graphics;
+class StringFormat;
 }  // namespace Gdiplus
 
 // Loose desktop float host (Fences / Explorer public icons).
@@ -38,12 +41,15 @@ class PublicHost {
   bool HasItems() const { return !slots_.empty(); }
   bool HasSelection() const;
   void SetItems(std::vector<DesktopItem> items);
+  bool FillMissingIcons();
   void SetPlacements(FloatPlacementMap placements);
   void SetBlockedRects(std::vector<RECT> rects);
   void Reflow();
   void AttachToDesktopLayer();
   // Write current Layout seats back into placements_ (+ on_placements_changed).
   void PersistSlotPlacements();
+  // Explorer/Fences: snap loose floats to the icon grid (nearest free cells).
+  void AlignIconsToGrid();
   void SetOnPathReplaced(
       std::function<void(const std::wstring&, const std::wstring&)> fn) {
     on_path_replaced_ = std::move(fn);
@@ -83,6 +89,9 @@ class PublicHost {
   std::vector<std::pair<std::wstring, RECT>> SlotScreenRects() const;
   // Organized mode: blank DefView click → start float marquee (Explorer/Fences).
   void BeginRubberFromScreen(POINT screen, bool additive);
+  // Fences / Explorer: inline label EDIT (F2 / context Rename / slow name click).
+  void BeginInlineRename();
+  void FinishInlineRename(bool commit);
 
  private:
   struct Slot {
@@ -125,9 +134,15 @@ class PublicHost {
   std::vector<std::wstring> SelectedPaths() const;
   void CopySelection();
   void CutSelection();
-  void DeleteSelection();
+  void DeleteSelection(bool permanent = false);
   void RenameSelection();
   void OpenSelection();
+  bool IconLabelRect(size_t index, RECT* out) const;
+  void NavigateSelection(int dx, int dy, bool extend);
+  void HandlePublicHotkey(int vk, bool ctrl, bool shift);
+  void TypeAheadFind(wchar_t ch);
+  void SelectBetween(int from, int to);
+  int FocusedSlotIndex() const;
 
   HWND hwnd_ = nullptr;
   HWND marquee_hwnd_ = nullptr;
@@ -178,9 +193,28 @@ class PublicHost {
   std::unordered_map<IconCacheKey, Gdiplus::Bitmap*, IconCacheKeyHash>
       icon_cache_;
   void ClearIconCache();
-  void DrawIconCached(Gdiplus::Graphics& g, HICON icon, int x, int y, int dest);
+  void DrawIconCached(Gdiplus::Graphics& g, HICON icon, int x, int y, int dest,
+                      BYTE opacity = 255);
+  void EnsureCaptionFonts();
+  void ReleaseCaptionFonts();
+  Gdiplus::FontFamily* caption_family_ = nullptr;
+  Gdiplus::Font* caption_font_ = nullptr;
+  Gdiplus::StringFormat* caption_fmt_ = nullptr;
   std::vector<char> selected_;
   int selection_anchor_ = -1;
+  HWND rename_edit_ = nullptr;
+  int rename_index_ = -1;
+  WNDPROC rename_proc_ = nullptr;
+  int last_icon_click_ = -1;
+  DWORD last_icon_click_tick_ = 0;
+  std::wstring typeahead_;
+  DWORD typeahead_tick_ = 0;
+  HWND tip_ = nullptr;
+  int tip_index_ = -1;
+  std::wstring tip_text_;
+  void EnsureTooltip();
+  void UpdateHoverTip(int index);
+  bool CaptionFitsLabel(const std::wstring& text, const RECT& label) const;
   int current_page_ = 0;
   FloatPlacementMap placements_;
   std::vector<Slot> slots_;

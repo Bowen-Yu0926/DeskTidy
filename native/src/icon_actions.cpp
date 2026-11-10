@@ -310,16 +310,21 @@ bool ShowShellPathProperties(HWND owner, const std::wstring& path) {
 }
 
 IconFsResult RecycleShellPaths(HWND owner,
-                              const std::vector<std::wstring>& paths) {
+                              const std::vector<std::wstring>& paths,
+                              bool permanent) {
   if (paths.empty()) {
     return IconFsResult::Cancelled;
   }
   if (paths.size() == 1) {
-    return RecycleShellPath(owner, paths[0]);
+    return RecycleShellPath(owner, paths[0], permanent);
   }
   const std::wstring prompt =
-      L"将选中的 " + std::to_wstring(paths.size()) + L" 项移到回收站？";
-  if (!MistConfirm(owner, L"删除", prompt.c_str(), MistMsgTone::Warn)) {
+      permanent
+          ? (L"永久删除选中的 " + std::to_wstring(paths.size()) +
+             L" 项？此操作无法撤销。")
+          : (L"将选中的 " + std::to_wstring(paths.size()) + L" 项移到回收站？");
+  if (!MistConfirm(owner, permanent ? L"永久删除" : L"删除", prompt.c_str(),
+                   MistMsgTone::Warn)) {
     return IconFsResult::Cancelled;
   }
   // P1-11: capture namespace CLSID before delete so Explorer icons can return.
@@ -338,10 +343,11 @@ IconFsResult RecycleShellPaths(HWND owner,
   op.hwnd = owner;
   op.wFunc = FO_DELETE;
   op.pFrom = from.c_str();
-  op.fFlags = FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_SILENT;
+  // Explorer: Del → recycle (FOF_ALLOWUNDO); Shift+Del → permanent.
+  op.fFlags = (permanent ? 0 : FOF_ALLOWUNDO) | FOF_NOCONFIRMATION | FOF_SILENT;
   const int rc = SHFileOperationW(&op);
   if (rc != 0 || op.fAnyOperationsAborted) {
-    ShowToast(L"未能移到回收站");
+    ShowToast(permanent ? L"未能永久删除" : L"未能移到回收站");
     return IconFsResult::Failed;
   }
   for (const auto& clsid : ns_clsids) {
@@ -352,8 +358,12 @@ IconFsResult RecycleShellPaths(HWND owner,
   return IconFsResult::Ok;
 }
 
-IconFsResult RecycleShellPath(HWND owner, const std::wstring& path) {
-  if (!MistConfirm(owner, L"删除", L"将此项移到回收站？", MistMsgTone::Warn)) {
+IconFsResult RecycleShellPath(HWND owner, const std::wstring& path,
+                              bool permanent) {
+  if (!MistConfirm(owner, permanent ? L"永久删除" : L"删除",
+                   permanent ? L"永久删除此项？此操作无法撤销。"
+                             : L"将此项移到回收站？",
+                   MistMsgTone::Warn)) {
     return IconFsResult::Cancelled;
   }
   const std::wstring ns_clsid = GetLnkNamespaceClsid(path);
@@ -363,10 +373,10 @@ IconFsResult RecycleShellPath(HWND owner, const std::wstring& path) {
   op.hwnd = owner;
   op.wFunc = FO_DELETE;
   op.pFrom = from.c_str();
-  op.fFlags = FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_SILENT;
+  op.fFlags = (permanent ? 0 : FOF_ALLOWUNDO) | FOF_NOCONFIRMATION | FOF_SILENT;
   const int rc = SHFileOperationW(&op);
   if (rc != 0 || op.fAnyOperationsAborted) {
-    ShowToast(L"未能移到回收站");
+    ShowToast(permanent ? L"未能永久删除" : L"未能移到回收站");
     return IconFsResult::Failed;
   }
   if (!ns_clsid.empty()) {
@@ -383,16 +393,18 @@ int TrackIconShellMenu(HWND owner, POINT screen, bool include_unpin) {
   AppendMenuW(menu, MF_STRING, 4, L"复制");
   AppendMenuW(menu, MF_STRING, 5, L"剪切");
   AppendMenuW(menu, MF_STRING, 6, L"复制路径");
-  AppendMenuW(menu, MF_STRING, 7, L"重命名…");
+  AppendMenuW(menu, MF_STRING, 7, L"重命名");
   AppendMenuW(menu, MF_STRING, 8, L"属性");
   AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
   AppendMenuW(menu, MF_STRING, 9, L"删除");
   if (include_unpin) {
     AppendMenuW(menu, MF_STRING, 3, L"取消钉选");
   }
-  SetForegroundWindow(owner);
-  const int cmd = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_NONOTIFY, screen.x,
-                                 screen.y, 0, owner, nullptr);
+  // Avoid SetForegroundWindow(owner): desktop-band overlays (fence/dock) would
+  // climb over APPWINDOWs. TrackPopupMenu still needs a message hwnd.
+  const int cmd =
+      TrackPopupMenu(menu, TPM_RETURNCMD | TPM_NONOTIFY | TPM_RIGHTBUTTON,
+                     screen.x, screen.y, 0, owner, nullptr);
   DestroyMenu(menu);
   return cmd;
 }

@@ -217,9 +217,29 @@ std::wstring BuildState(Ctx* ctx) {
 }  // namespace
 
 std::vector<std::wstring> LoadWhitelist() {
+  // Short cache: icon RMB used to re-read+parse JSON every click.
+  static std::vector<std::wstring> cached;
+  static FILETIME cached_write{};
+  static bool have_cache = false;
+  const std::wstring path = WhitelistFile();
+  WIN32_FILE_ATTRIBUTE_DATA fad{};
+  FILETIME write{};
+  if (GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &fad)) {
+    write = fad.ftLastWriteTime;
+    if (have_cache && CompareFileTime(&write, &cached_write) == 0) {
+      return cached;
+    }
+  } else if (have_cache && cached_write.dwLowDateTime == 0 &&
+             cached_write.dwHighDateTime == 0) {
+    return cached;
+  }
+
   std::vector<std::wstring> out;
-  std::ifstream in(WhitelistFile());
+  std::ifstream in(path);
   if (!in) {
+    cached.clear();
+    cached_write = {};
+    have_cache = true;
     return out;
   }
   std::ostringstream ss;
@@ -270,6 +290,9 @@ std::vector<std::wstring> LoadWhitelist() {
     }
   }
   Dedup(&cleaned);
+  cached = cleaned;
+  cached_write = write;
+  have_cache = true;
   return cleaned;
 }
 
@@ -286,7 +309,12 @@ bool SaveWhitelist(const std::vector<std::wstring>& names) {
     out << "\n";
   }
   out << "  ]\n}\n";
-  return AtomicWriteUtf8File(WhitelistFile(), out.str());
+  const bool ok = AtomicWriteUtf8File(WhitelistFile(), out.str());
+  // Bust LoadWhitelist cache after write.
+  if (ok) {
+    LoadWhitelist();
+  }
+  return ok;
 }
 
 bool IsWhitelisted(const std::wstring& path_or_name,

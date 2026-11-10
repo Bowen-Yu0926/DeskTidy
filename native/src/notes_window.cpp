@@ -359,7 +359,7 @@ COLORREF ColorFromCssHex(const std::string& hex) {
   return RGB(r, g, b);
 }
 
-bool RecyclePathsViaShellOp(const std::vector<std::wstring>& paths) {
+bool RecyclePathsViaShellOp(HWND owner, const std::vector<std::wstring>& paths) {
   std::wstring from;
   for (const auto& p : paths) {
     if (p.empty()) {
@@ -373,14 +373,14 @@ bool RecyclePathsViaShellOp(const std::vector<std::wstring>& paths) {
   }
   from.push_back(L'\0');
   SHFILEOPSTRUCTW op{};
-  op.hwnd = nullptr;
+  op.hwnd = owner;
   op.wFunc = FO_DELETE;
   op.pFrom = from.c_str();
   op.fFlags = FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_SILENT | FOF_NOERRORUI;
   return SHFileOperationW(&op) == 0 && !op.fAnyOperationsAborted;
 }
 
-bool RecyclePathsQuiet(HWND /*owner*/, const std::vector<std::wstring>& paths) {
+bool RecyclePathsQuiet(HWND owner, const std::vector<std::wstring>& paths) {
   if (paths.empty()) {
     return false;
   }
@@ -390,6 +390,9 @@ bool RecyclePathsQuiet(HWND /*owner*/, const std::vector<std::wstring>& paths) {
   HRESULT hr = CoCreateInstance(CLSID_FileOperation, nullptr, CLSCTX_ALL,
                                 IID_PPV_ARGS(&op));
   if (SUCCEEDED(hr) && op) {
+    if (owner && IsWindow(owner)) {
+      op->SetOwnerWindow(owner);
+    }
     op->SetOperationFlags(FOF_ALLOWUNDO | FOF_NO_UI | FOF_NOCONFIRMMKDIR);
     int queued = 0;
     for (const auto& p : paths) {
@@ -419,7 +422,7 @@ bool RecyclePathsQuiet(HWND /*owner*/, const std::vector<std::wstring>& paths) {
       op->Release();
     }
   }
-  const bool ok = RecyclePathsViaShellOp(paths);
+  const bool ok = RecyclePathsViaShellOp(owner, paths);
   if (ok) {
     InvalidateNotesFileCache();
   }
@@ -3189,8 +3192,10 @@ void NotesWindow::PaintTabBar(HDC hdc) {
                    pinned, pin_hot);
     SetTextColor(hdc, on ? text_color_ : RGB(72, 80, 92));
     const int text_left = chip.left + 26;
+    // 账号库 is a fixed system tab — no × (VS Code / sticky-tab class).
+    const bool locked = IsVaultAccountsNotePath(path_s);
     // Save glyph sits left of × (market: dirty disc / saved check).
-    const int save_cx = chip.right - 38;
+    const int save_cx = locked ? (chip.right - 14) : (chip.right - 38);
     // Active tab only — path compare broke after title→filename rename
     // (status said 已修改 while glyph stayed on the saved check).
     const bool tab_dirty = on && dirty_;
@@ -3204,23 +3209,26 @@ void NotesWindow::PaintTabBar(HDC hdc) {
         g, static_cast<float>(save_cx),
         (static_cast<float>(chip.top + chip.bottom)) * 0.5f, tab_dirty);
 
-    // Close always visible (faint); hot plate on hover.
-    const bool close_hot = hover && tab_hover_zone_ == 2;
-    RECT close_rc{chip.right - 26, chip.top + 6, chip.right - 6,
-                  chip.bottom - 6};
-    if (close_hot) {
-      Gdiplus::GraphicsPath cp;
-      GpAddRoundRect(&cp, static_cast<float>(close_rc.left),
-                     static_cast<float>(close_rc.top),
-                     static_cast<float>(close_rc.right - close_rc.left),
-                     static_cast<float>(close_rc.bottom - close_rc.top), 6.f);
-      Gdiplus::SolidBrush cbg(Gdiplus::Color(255, 220, 225, 232));
-      g.FillPath(&cbg, &cp);
+    if (!locked) {
+      // Close always visible (faint); hot plate on hover.
+      const bool close_hot = hover && tab_hover_zone_ == 2;
+      RECT close_rc{chip.right - 26, chip.top + 6, chip.right - 6,
+                    chip.bottom - 6};
+      if (close_hot) {
+        Gdiplus::GraphicsPath cp;
+        GpAddRoundRect(&cp, static_cast<float>(close_rc.left),
+                       static_cast<float>(close_rc.top),
+                       static_cast<float>(close_rc.right - close_rc.left),
+                       static_cast<float>(close_rc.bottom - close_rc.top), 6.f);
+        Gdiplus::SolidBrush cbg(Gdiplus::Color(255, 220, 225, 232));
+        g.FillPath(&cbg, &cp);
+      }
+      SetTextColor(hdc,
+                   close_hot ? text_color_
+                             : (on ? RGB(120, 128, 140) : RGB(168, 174, 184)));
+      DrawTextW(hdc, L"×", -1, &close_rc,
+                DT_CENTER | DT_VCENTER | DT_SINGLELINE);
     }
-    SetTextColor(hdc, close_hot ? text_color_
-                                : (on ? RGB(120, 128, 140) : RGB(168, 174, 184)));
-    DrawTextW(hdc, L"×", -1, &close_rc,
-              DT_CENTER | DT_VCENTER | DT_SINGLELINE);
     if (old_f) {
       SelectObject(hdc, old_f);
     }
@@ -3287,6 +3295,11 @@ int NotesWindow::HitTestTabBar(POINT client, int* out_zone) const {
         zone = 1;
       } else if (client.x >= chip.right - kCloseIn) {
         zone = 2;
+      }
+      // Locked 账号库: no close hit target (pin stays for visual sticky affordance).
+      if (zone == 2 && i < tab_paths_.size() &&
+          IsVaultAccountsNotePath(tab_paths_[i])) {
+        zone = 0;
       }
       *out_zone = zone;
     }
@@ -4250,7 +4263,24 @@ void NotesWindow::NewTab() {
   }
 }
 
+bool NotesWindow::IsLockedAccountsTab(int index) const {
+  if (index < 0 || index >= static_cast<int>(tab_paths_.size())) {
+    return false;
+  }
+  return IsVaultAccountsNotePath(tab_paths_[static_cast<size_t>(index)]);
+}
+
+void NotesWindow::NotifyAccountsTabLocked() {
+  if (status_) {
+    SetWindowTextW(status_, L"账号库为固定页签，不可关闭或删除");
+  }
+}
+
 void NotesWindow::CloseTabOnly() {
+  if (IsLockedAccountsTab(tab_index_)) {
+    NotifyAccountsTabLocked();
+    return;
+  }
   // Silent autosave (Notepad++ / Fences-class: closing a tab does not discard).
   if (!path_.empty()) {
     Save(true);
@@ -4277,6 +4307,10 @@ void NotesWindow::CloseTabOnlyAt(int index) {
   if (index < 0 || index >= static_cast<int>(tab_paths_.size())) {
     return;
   }
+  if (IsLockedAccountsTab(index)) {
+    NotifyAccountsTabLocked();
+    return;
+  }
   if (index != tab_index_) {
     SwitchToTab(index, true);
   }
@@ -4285,6 +4319,10 @@ void NotesWindow::CloseTabOnlyAt(int index) {
 
 void NotesWindow::DeleteAndCloseTabAt(int index, bool ask_confirm) {
   if (index < 0 || index >= static_cast<int>(tab_paths_.size())) {
+    return;
+  }
+  if (IsLockedAccountsTab(index)) {
+    NotifyAccountsTabLocked();
     return;
   }
   EnsureTabStates();
@@ -4340,11 +4378,11 @@ void NotesWindow::DeleteAndCloseTabAt(int index, bool ask_confirm) {
     if (tab_index_ < 0) {
       tab_index_ = 0;
     }
-    // RebuildSidebar reflects the recycle — no separate SidebarRemovePaths.
-    SyncTabsAndSidebar(true, true);
+    SidebarRemovePaths({path});
+    SyncTabsAndSidebar(true, false);
     return;
   }
-  // Other tab deleted — keep the live editor; drop one tree row + chips.
+    // Other tab deleted — keep the live editor; drop one tree row + chips.
   if (tab_index_ < 0) {
     tab_index_ = 0;
   }
@@ -4900,16 +4938,40 @@ void NotesWindow::CloseOtherTabs(int keep_index) {
   Save();
   EnsureTabStates();
   const std::wstring keep = tab_paths_[static_cast<size_t>(keep_index)];
-  TabState st{};
-  if (keep_index < static_cast<int>(tab_states_.size())) {
-    st = tab_states_[static_cast<size_t>(keep_index)];
+  // Keep the requested tab + locked 账号库 (system sticky tab).
+  std::vector<std::wstring> next_paths;
+  std::vector<TabState> next_states;
+  next_paths.reserve(tab_paths_.size());
+  next_states.reserve(tab_paths_.size());
+  for (size_t i = 0; i < tab_paths_.size(); ++i) {
+    if (static_cast<int>(i) != keep_index &&
+        !IsVaultAccountsNotePath(tab_paths_[i])) {
+      continue;
+    }
+    next_paths.push_back(tab_paths_[i]);
+    if (i < tab_states_.size()) {
+      next_states.push_back(tab_states_[i]);
+    } else {
+      next_states.push_back({});
+    }
   }
-  tab_paths_.assign(1, keep);
-  tab_states_.assign(1, st);
+  if (next_paths.empty()) {
+    return;
+  }
+  tab_paths_ = std::move(next_paths);
+  tab_states_ = std::move(next_states);
   tab_index_ = 0;
-  path_ = keep;
+  const std::wstring keep_key = NormalizePathKey(keep);
+  for (size_t i = 0; i < tab_paths_.size(); ++i) {
+    if (_wcsicmp(NormalizePathKey(tab_paths_[i]).c_str(), keep_key.c_str()) ==
+        0) {
+      tab_index_ = static_cast<int>(i);
+      break;
+    }
+  }
+  path_ = tab_paths_[static_cast<size_t>(tab_index_)];
   RebuildTabControl();
-  SwitchToTab(0, false);
+  SwitchToTab(tab_index_, false);
   PersistTabs();
 }
 
@@ -4919,13 +4981,32 @@ void NotesWindow::CloseTabsToTheRight(int index) {
   }
   Save();
   EnsureTabStates();
-  tab_paths_.erase(tab_paths_.begin() + index + 1, tab_paths_.end());
-  if (static_cast<int>(tab_states_.size()) > index + 1) {
-    tab_states_.erase(tab_states_.begin() + index + 1, tab_states_.end());
+  std::vector<std::wstring> next_paths;
+  std::vector<TabState> next_states;
+  next_paths.reserve(tab_paths_.size());
+  next_states.reserve(tab_paths_.size());
+  for (size_t i = 0; i < tab_paths_.size(); ++i) {
+    if (static_cast<int>(i) > index &&
+        !IsVaultAccountsNotePath(tab_paths_[i])) {
+      continue;
+    }
+    next_paths.push_back(tab_paths_[i]);
+    if (i < tab_states_.size()) {
+      next_states.push_back(tab_states_[i]);
+    } else {
+      next_states.push_back({});
+    }
   }
-  if (tab_index_ > index) {
-    tab_index_ = index;
-    path_ = tab_paths_[static_cast<size_t>(index)];
+  tab_paths_ = std::move(next_paths);
+  tab_states_ = std::move(next_states);
+  if (tab_index_ >= static_cast<int>(tab_paths_.size())) {
+    tab_index_ = static_cast<int>(tab_paths_.size()) - 1;
+  }
+  if (tab_index_ < 0) {
+    tab_index_ = 0;
+  }
+  if (!tab_paths_.empty()) {
+    path_ = tab_paths_[static_cast<size_t>(tab_index_)];
   }
   RebuildTabControl();
   SwitchToTab(tab_index_, false);
@@ -5271,18 +5352,19 @@ void NotesWindow::HandleTabContextMenu(int index, POINT screen_pt) {
     return;
   }
   const std::wstring path = tab_paths_[static_cast<size_t>(index)];
+  const bool locked = IsVaultAccountsNotePath(path);
   HMENU m = CreatePopupMenu();
-  AppendMenuW(m, MF_STRING, kTabClose, L"关闭");
+  AppendMenuW(m, MF_STRING | (locked ? MF_GRAYED : 0), kTabClose, L"关闭");
   AppendMenuW(m, MF_STRING, kTabCloseOthers, L"关闭其他页签");
   AppendMenuW(m, MF_STRING, kTabCloseRight, L"关闭右侧页签");
   AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
-  AppendMenuW(m, MF_STRING, kTabRename, L"重命名");
-  AppendMenuW(m, MF_STRING, kTabPin,
+  AppendMenuW(m, MF_STRING | (locked ? MF_GRAYED : 0), kTabRename, L"重命名");
+  AppendMenuW(m, MF_STRING | (locked ? MF_GRAYED : 0), kTabPin,
               PathIsPinned(path) ? L"取消置顶" : L"置顶");
   AppendMenuW(m, MF_STRING, kTabReveal, L"打开文件所在目录");
   AppendMenuW(m, MF_STRING, kTabCopyPath, L"复制路径");
   AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
-  AppendMenuW(m, MF_STRING, kTabDelete, L"删除");
+  AppendMenuW(m, MF_STRING | (locked ? MF_GRAYED : 0), kTabDelete, L"删除");
   const int cmd =
       TrackPopupMenu(m, TPM_RETURNCMD | TPM_NONOTIFY, screen_pt.x, screen_pt.y,
                      0, hwnd_, nullptr);
@@ -5310,6 +5392,10 @@ void NotesWindow::HandleTabContextMenu(int index, POINT screen_pt) {
 
 void NotesWindow::RenameTabAt(int index) {
   if (index < 0 || index >= static_cast<int>(tab_paths_.size())) {
+    return;
+  }
+  if (IsLockedAccountsTab(index)) {
+    NotifyAccountsTabLocked();
     return;
   }
   const std::wstring path = tab_paths_[static_cast<size_t>(index)];
@@ -7923,6 +8009,11 @@ void NotesWindow::TogglePinPath(const std::wstring& path) {
   if (path.empty()) {
     return;
   }
+  // 账号库 stays pinned like a system sticky tab.
+  if (IsVaultAccountsNotePath(path)) {
+    NotifyAccountsTabLocked();
+    return;
+  }
   const std::wstring norm = NormalizePathKey(path);
   for (size_t i = 0; i < pinned_paths_.size(); ++i) {
     if (_wcsicmp(NormalizePathKey(pinned_paths_[i]).c_str(), norm.c_str()) ==
@@ -8141,7 +8232,7 @@ void NotesWindow::RebuildSidebar() {
   }
   SendMessageW(sidebar_, WM_SETREDRAW, TRUE, 0);
   RedrawWindow(sidebar_, nullptr, nullptr,
-               RDW_ERASE | RDW_FRAME | RDW_INVALIDATE | RDW_ALLCHILDREN);
+               RDW_INVALIDATE | RDW_FRAME | RDW_ALLCHILDREN | RDW_UPDATENOW);
   if (sidebar_healed) {
     SchedulePersistTabs();
     RebuildTabControl();
@@ -8279,7 +8370,7 @@ void NotesWindow::SidebarRemovePaths(const std::vector<std::wstring>& paths) {
   }
   SendMessageW(sidebar_, WM_SETREDRAW, TRUE, 0);
   RedrawWindow(sidebar_, nullptr, nullptr,
-               RDW_ERASE | RDW_FRAME | RDW_INVALIDATE | RDW_ALLCHILDREN);
+               RDW_INVALIDATE | RDW_FRAME | RDW_ALLCHILDREN | RDW_UPDATENOW);
 }
 
 void NotesWindow::HighlightSidebarPath(const std::wstring& path) {
@@ -8446,6 +8537,30 @@ void NotesWindow::DeleteSidebarSelected() {
     }
     paths = std::move(uniq);
   }
+  // Managed 账号库.md cannot be recycled from the library rail.
+  {
+    std::vector<std::wstring> allowed;
+    allowed.reserve(paths.size());
+    bool blocked_vault = false;
+    for (const auto& p : paths) {
+      if (IsVaultAccountsNotePath(p)) {
+        blocked_vault = true;
+        continue;
+      }
+      allowed.push_back(p);
+    }
+    if (blocked_vault && allowed.empty()) {
+      NotifyAccountsTabLocked();
+      return;
+    }
+    if (blocked_vault) {
+      NotifyAccountsTabLocked();
+    }
+    paths = std::move(allowed);
+  }
+  if (paths.empty()) {
+    return;
+  }
   std::wstring prompt;
   if (paths.size() == 1) {
     prompt = L"删除此文件？将移入回收站。";
@@ -8507,7 +8622,8 @@ void NotesWindow::DeleteSidebarSelected() {
       SidebarUpsertFile(path_);
     }
   } else if (need_switch) {
-    SyncTabsAndSidebar(true, true);
+    SidebarRemovePaths(paths);
+    SyncTabsAndSidebar(true, false);
   } else {
     SidebarRemovePaths(paths);
     tab_chips_dirty_ = true;

@@ -343,3 +343,13 @@ bool ClipboardSetFiles(HWND owner, const std::vector<std::wstring>& paths,
   CloseClipboard();
   return true;
 }
+
+void ClipboardConsumeCut() {
+  // Explorer empties the clipboard after a completed cut-paste. Clear both
+  // Win32 and OLE views so leftover Preferred DropEffect=MOVE cannot unpin.
+  if (OpenClipboard(nullptr)) {
+    EmptyClipboard();
+    CloseClipboard();
+  }
+  OleSetClipboard(nullptr);
+}

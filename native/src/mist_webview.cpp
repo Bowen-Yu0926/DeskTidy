@@ -389,6 +389,13 @@ void MistWebDialogPushState(MistWebDialog* dlg) {
   MistWebDialogPostJson(dlg, dlg->build_state());
 }
 
+void MistWebDialogFocus(MistWebDialog* dlg) {
+  MistFocusDialog(dlg);
+  if (dlg) {
+    MistWebDialogPostJson(dlg, L"{\"type\":\"focus\"}");
+  }
+}
+
 void MistWebDialogClose(MistWebDialog* dlg) {
   if (dlg && dlg->hwnd) {
     DestroyWindow(dlg->hwnd);
@@ -407,7 +414,7 @@ void MistWebDialogRun(MistWebDialog* dlg, const wchar_t* title, int width,
     wc.lpfnWndProc = MistWndProc;
     wc.hInstance = GetModuleHandleW(nullptr);
     wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
-    wc.hbrBackground = CreateSolidBrush(RGB(0xEE, 0xF1, 0xF6));
+    wc.hbrBackground = nullptr;
     wc.lpszClassName = kClass;
     RegisterClassExW(&wc);
     registered = true;
@@ -471,6 +478,8 @@ void MistWebDialogRun(MistWebDialog* dlg, const wchar_t* title, int width,
   }
   if (dlg->disable_owner && dlg->owner) {
     EnableWindow(dlg->owner, TRUE);
-    SetForegroundWindow(dlg->owner);
+    if (GetForegroundWindow() != dlg->owner) {
+      SetForegroundWindow(dlg->owner);
+    }
   }
 }

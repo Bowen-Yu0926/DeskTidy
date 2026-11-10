@@ -753,6 +753,43 @@ void LoadCategoriesBoth(CategoryFenceMap* fence_map,
   LoadCategories(fence_map, filename_rules);
 }
 
+std::string ResolveCategoryFenceId(const std::wstring& path,
+                                   const CategoryFenceMap& cat_map,
+                                   const FilenameRulesMap& filename_rules) {
+  if (path.empty() || cat_map.empty() || filename_rules.empty()) {
+    return {};
+  }
+  const std::wstring lower_name = FoldLower(BaseNameOf(path));
+  if (lower_name.empty()) {
+    return {};
+  }
+  for (const auto& kv : filename_rules) {
+    if (kv.first.empty() || kv.second.empty()) {
+      continue;
+    }
+    bool hit = false;
+    for (const auto& pat_raw : kv.second) {
+      const std::wstring pat = FoldLower(pat_raw);
+      if (pat.empty()) {
+        continue;
+      }
+      if (FnmatchImpl(lower_name.c_str(), pat.c_str()) ||
+          lower_name.find(pat) != std::wstring::npos) {
+        hit = true;
+        break;
+      }
+    }
+    if (!hit) {
+      continue;
+    }
+    const auto fit = cat_map.find(kv.first);
+    if (fit != cat_map.end() && !fit->second.empty()) {
+      return fit->second;
+    }
+  }
+  return {};
+}
+
 bool SaveCategoryFenceMap(const CategoryFenceMap& map) {
   CategoryFenceMap fence_map = map;
   FilenameRulesMap filename_rules = LoadFilenameRules();

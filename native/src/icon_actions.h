@@ -14,9 +14,12 @@ bool CopyShellPathText(HWND owner, const std::wstring& path);
 IconFsResult RenameShellPath(HWND owner, const std::wstring& path,
                              std::wstring* dest);
 bool ShowShellPathProperties(HWND owner, const std::wstring& path);
-IconFsResult RecycleShellPath(HWND owner, const std::wstring& path);
+// permanent=false → recycle (FOF_ALLOWUNDO); true → Explorer Shift+Delete.
+IconFsResult RecycleShellPath(HWND owner, const std::wstring& path,
+                              bool permanent = false);
 IconFsResult RecycleShellPaths(HWND owner,
-                              const std::vector<std::wstring>& paths);
+                              const std::vector<std::wstring>& paths,
+                              bool permanent = false);
 
 // Explorer-style "name (2).ext" collision destination inside dest_dir.
 std::wstring UniqueDestPath(const std::wstring& dest_dir,

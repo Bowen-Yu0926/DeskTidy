@@ -1855,13 +1855,23 @@ void PetWindow::EndDrag(POINT release) {
   }
 }
 
+const std::vector<WindowLedge>& PetWindow::CachedWindowLedges() {
+  const ULONGLONG now = GetTickCount64();
+  if (!ledge_cache_.empty() && now - ledge_cache_ms_ < kLedgeCacheTtlMs) {
+    return ledge_cache_;
+  }
+  ledge_cache_ = ListWindowLedges(hwnd_);
+  ledge_cache_ms_ = now;
+  return ledge_cache_;
+}
+
 void PetWindow::StartClimb() {
   if (!hwnd_) {
     return;
   }
   RECT self{};
   GetWindowRect(hwnd_, &self);
-  const auto ledges = ListWindowLedges(hwnd_);
+  const auto& ledges = CachedWindowLedges();
   if (ledges.empty()) {
     ShowToast(L"附近没有可攀的窗台");
     return;
@@ -2058,10 +2068,12 @@ void PetWindow::ShowContextMenu(POINT screen) {
   AppendMenuW(menu, MF_STRING, 1, L"走走");
   AppendMenuW(menu, MF_STRING, 2, L"跌落");
   AppendMenuW(menu, MF_STRING, 3, L"待机");
-  SetForegroundWindow(hwnd_);
+  // Do not SetForegroundWindow(hwnd_) — pet sits in the desktop band; FG
+  // would lift it over APPWINDOWs (same Fences-class rule as fences).
   const int cmd =
-      TrackPopupMenu(menu, TPM_RETURNCMD | TPM_NONOTIFY, screen.x, screen.y, 0,
-                     hwnd_, nullptr);
+      TrackPopupMenu(menu, TPM_RETURNCMD | TPM_NONOTIFY | TPM_RIGHTBUTTON,
+                     screen.x, screen.y, 0, hwnd_, nullptr);
+  PostMessageW(hwnd_, WM_NULL, 0, 0);
   DestroyMenu(menu);
   if (cmd == 5) {
     follow_cursor_ = !follow_cursor_;
@@ -3245,21 +3257,22 @@ void PetWindow::AttachToDesktopLayer() {
   if (!hwnd_) {
     return;
   }
-  // AIGC START
   if (!AttachOverlayToDesktop(hwnd_, true)) {
     ForceAttachOverlayToDesktop(hwnd_, true);
   }
+  RaiseOverlayInDesktopBand(hwnd_);
   if (pages_) {
     if (!AttachOverlayToDesktop(pages_, true)) {
       ForceAttachOverlayToDesktop(pages_, true);
     }
+    RaiseOverlayInDesktopBand(pages_);
   }
   if (menu_) {
     if (!AttachOverlayToDesktop(menu_, true)) {
       ForceAttachOverlayToDesktop(menu_, true);
     }
+    RaiseOverlayInDesktopBand(menu_);
   }
-  // AIGC END
 }
 
 void PetWindow::RefreshLayer() {
@@ -3316,8 +3329,9 @@ int PetWindow::WantedTickMs() const {
   if (PtInRect(&rc, pt)) {
     return 33;
   }
-  // Soft bob / ZZZ only — market desktop pets idle at ~4–5 Hz when unhovered.
-  return 220;
+  // Soft bob / ZZZ only — market desktop pets idle ~1 Hz when unhovered
+  // (was ~5 Hz ULW and burned CPU with many apps open).
+  return 1000;
 }
 
 void PetWindow::Tick() {
@@ -3384,15 +3398,26 @@ void PetWindow::Tick() {
   bool need_present =
       present_dirty_ || frame_changed || hearts_active || had_hearts;
   if (!need_present && live_fx) {
-    // Standing poses (idle/wait/sleep/perch): ~5 Hz. Active walk/play: ~15 Hz.
+    // Standing poses: ~1–2 Hz soft bob. Active walk/play: ~15 Hz.
     const DWORD soft_gap =
         (pose_ == L"idle" || pose_ == L"sleep" || pose_ == L"perch" ||
          pose_ == L"wait")
-            ? 200u
+            ? 1000u
             : 66u;
     if (last_soft_present_ms_ == 0 ||
         now - last_soft_present_ms_ >= soft_gap) {
-      need_present = true;
+      // Skip full Present when bob/frame/facing unchanged (still memset+ULW
+      // was ~2Hz idle CPU with many apps open).
+      const PetMotion motion =
+          ComputePetMotion(character_, pose_, anim_tick_);
+      const int bob_y = static_cast<int>(std::lround(motion.bob));
+      if (present_content_valid_ && present_frame_i_ == frame_i_ &&
+          present_facing_ == facing_ && present_bob_y_ == bob_y &&
+          present_anim_tick_ == static_cast<int>(anim_tick_)) {
+        last_soft_present_ms_ = now;
+      } else {
+        need_present = true;
+      }
     }
   }
   if (need_present) {
@@ -3606,6 +3631,7 @@ void PetWindow::Paint(HDC hdc) {
   // a black halo on UpdateLayeredWindow (straight alpha vs premultiplied).
   const PetMotion motion = ComputePetMotion(character_, pose_, anim_tick_);
   const int bob_y = static_cast<int>(std::lround(motion.bob));
+  present_bob_y_ = bob_y;
 
   EnsureGdiplus();
   if (pargb && bw > 0 && bh > 0) {
@@ -3854,10 +3880,81 @@ void PetWindow::Present() {
   HDC mem = present_dc_;
   void* bits = present_bits_;
   std::memset(bits, 0, static_cast<size_t>(w) * static_cast<size_t>(h) * 4);
-  Paint(mem);
-  // GDI+ → HDC writes straight alpha; ULW_ALPHA needs premultiplied. Soft
-  // presents are already throttled (~5 Hz idle), so a full pass is fine.
-  {
+
+  // Idle soft bob: blit cached PARGB cel with Y offset — skip GDI+ HDC round
+  // trip + full-buffer premultiply (was the main idle CPU with pets visible).
+  bool soft_pargb = false;
+  if (hearts_.empty() && pose_ != L"sleep" && pose_ != L"lie") {
+    const BYTE* pargb = nullptr;
+    int bw = 0;
+    int bh = 0;
+    bw = sprite_w_;
+    bh = sprite_h_;
+    if (!frames_pargb_.empty()) {
+      const int idx =
+          (std::min)(frame_i_, static_cast<int>(frames_pargb_.size()) - 1);
+      if (idx >= 0 &&
+          static_cast<size_t>(idx) < frames_pargb_.size() &&
+          static_cast<int>(frames_pargb_[static_cast<size_t>(idx)].size()) >=
+              bw * bh * 4) {
+        pargb = frames_pargb_[static_cast<size_t>(idx)].data();
+        if (facing_ < 0) {
+          EnsureFlippedPargbCel(static_cast<size_t>(idx));
+          if (static_cast<size_t>(idx) < frames_pargb_flip_.size() &&
+              !frames_pargb_flip_[static_cast<size_t>(idx)].empty()) {
+            pargb = frames_pargb_flip_[static_cast<size_t>(idx)].data();
+          }
+        }
+      }
+    } else if (!sprite_pargb_.empty() &&
+               static_cast<int>(sprite_pargb_.size()) >= bw * bh * 4) {
+      pargb = sprite_pargb_.data();
+      if (facing_ < 0) {
+        if (sprite_pargb_flip_.empty()) {
+          sprite_pargb_flip_.resize(sprite_pargb_.size());
+          for (int y = 0; y < bh; ++y) {
+            const BYTE* row =
+                sprite_pargb_.data() + static_cast<size_t>(y) * bw * 4;
+            BYTE* out =
+                sprite_pargb_flip_.data() + static_cast<size_t>(y) * bw * 4;
+            for (int x = 0; x < bw; ++x) {
+              const BYTE* p = row + (bw - 1 - x) * 4;
+              BYTE* q = out + x * 4;
+              q[0] = p[0];
+              q[1] = p[1];
+              q[2] = p[2];
+              q[3] = p[3];
+            }
+          }
+        }
+        if (!sprite_pargb_flip_.empty()) {
+          pargb = sprite_pargb_flip_.data();
+        }
+      }
+    }
+    // 1:1 pixel pets only — scaled sprites still need GDI+ DrawImage.
+    if (pargb && bw > 0 && bh > 0 && bw == w && bh == h) {
+      const PetMotion motion =
+          ComputePetMotion(character_, pose_, anim_tick_);
+      const int bob_y = static_cast<int>(std::lround(motion.bob));
+      present_bob_y_ = bob_y;
+      auto* dst = static_cast<BYTE*>(bits);
+      const int stride = w * 4;
+      for (int y = 0; y < bh; ++y) {
+        const int dy = y + bob_y;
+        if (dy < 0 || dy >= h) {
+          continue;
+        }
+        std::memcpy(dst + static_cast<size_t>(dy) * stride,
+                    pargb + static_cast<size_t>(y) * stride,
+                    static_cast<size_t>(stride));
+      }
+      soft_pargb = true;
+    }
+  }
+  if (!soft_pargb) {
+    Paint(mem);
+    // GDI+ → HDC writes straight alpha; ULW_ALPHA needs premultiplied.
     auto* px = static_cast<BYTE*>(bits);
     const size_t n = static_cast<size_t>(w) * static_cast<size_t>(h);
     for (size_t i = 0; i < n; ++i) {

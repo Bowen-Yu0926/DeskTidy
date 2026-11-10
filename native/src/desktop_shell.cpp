@@ -1,11 +1,16 @@
 #include "desktop_shell.h"
 
+#include "log.h"
+
 #include <algorithm>
 #include <cstdint>
 #include <cwchar>
 
 #ifndef GWLP_HWNDPARENT
 #define GWLP_HWNDPARENT (-8)
+#endif
+#ifndef WS_EX_NOREDIRECTIONBITMAP
+#define WS_EX_NOREDIRECTIONBITMAP 0x00200000L
 #endif
 
 namespace {
@@ -211,6 +216,49 @@ bool IsWallpaperWorkerW(HWND hwnd) {
   return FindWindowExW(hwnd, nullptr, L"SHELLDLL_DefView", nullptr) == nullptr;
 }
 
+bool IsRaisedDesktopShell() {
+  // Win11 24H2+ servicing: Progman created with WS_EX_NOREDIRECTIONBITMAP;
+  // DefView is a layered child. GDI/ULW children of DefView go blank — seat
+  // must stay top-level owned by Progman/WorkerW (never SetParent→DefView).
+  HWND progman = FindWindowW(L"Progman", nullptr);
+  if (!IsWindowAlive(progman)) {
+    return false;
+  }
+  return (GetWindowLongPtrW(progman, GWL_EXSTYLE) &
+          WS_EX_NOREDIRECTIONBITMAP) != 0;
+}
+
+void LogDesktopShellCompatProfile() {
+  OSVERSIONINFOEXW vi{};
+  vi.dwOSVersionInfoSize = sizeof(vi);
+  // RtlGetVersion is honest on Win10+ (GetVersionEx is capped / lied).
+  using RtlGetVersionFn = LONG(WINAPI*)(OSVERSIONINFOEXW*);
+  HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+  DWORD major = 0;
+  DWORD minor = 0;
+  DWORD build = 0;
+  if (ntdll) {
+    auto rtl = reinterpret_cast<RtlGetVersionFn>(
+        GetProcAddress(ntdll, "RtlGetVersion"));
+    if (rtl && rtl(&vi) == 0) {
+      major = vi.dwMajorVersion;
+      minor = vi.dwMinorVersion;
+      build = vi.dwBuildNumber;
+    }
+  }
+  const DefViewHost host = FindDefViewHost();
+  wchar_t host_cls[64] = {};
+  if (host.host) {
+    GetClassNameW(host.host, host_cls, 64);
+  }
+  const bool raised = IsRaisedDesktopShell();
+  const bool show_desk = IsShowDesktopActive();
+  LogLine(L"[compat] os=%u.%u.%u raised_desktop=%d defview_host=%s "
+          L"show_desktop=%d strategy=single-binary-runtime-branch",
+          major, minor, build, raised ? 1 : 0,
+          host_cls[0] ? host_cls : L"(none)", show_desk ? 1 : 0);
+}
+
 bool IsAttachedToDesktop(HWND hwnd, const DefViewHost* cached) {
   if (!IsWindowAlive(hwnd)) {
     return false;
@@ -280,11 +328,19 @@ bool AttachOverlayToDesktop(HWND hwnd, bool show) {
   }
 
   if (IsAttachedToDesktop(hwnd, &host)) {
+    // Raised desktop (24H2+): prefer Progman/WorkerW owner, not DefView —
+    // DefView-owned seats were a migration leftover and can blank ULW.
+    if (IsRaisedDesktopShell() && host.host &&
+        OwnerOf(hwnd) == host.defview && host.defview != host.host) {
+      SoftSeatToOwner(hwnd, host.host, show);
+    }
+    // Already seated: do not Raise on every Attach (Fences/Rainmeter keep
+    // chrome quiet under open apps). Callers that need a band flip Raise
+    // explicitly after show-desktop / burial recovery.
     if (show) {
-      RaiseOverlayInDesktopBand(hwnd);
       ShowOverlayNoActivate(hwnd);
     }
-    return true;
+    return IsAttachedToDesktop(hwnd, &host);
   }
 
   if (!SoftSeatToOwner(hwnd, host.host, show)) {
@@ -326,25 +382,38 @@ bool IsExplorerDesktopForeground() {
   }
 
   HWND cur = fg;
-  for (int hop = 0; hop < 6 && IsWindowAlive(cur); ++hop) {
+  for (int hop = 0; hop < 8 && IsWindowAlive(cur); ++hop) {
     wchar_t cls[64] = {};
     if (GetClassNameW(cur, cls, 64) > 0) {
-      // 任务栏及其现代组件绝非桌面！点击托盘/任务栏/开始菜单绝不可误判为切换到桌面
+      // Taskbar / XAML islands are never the desktop (Win10 tray + Win11
+      // centered taskbar / Start).
       if (wcscmp(cls, L"Shell_TrayWnd") == 0 ||
           wcscmp(cls, L"Shell_SecondaryTrayWnd") == 0 ||
           wcscmp(cls, L"XamlExplorerHostIslandWindow") == 0 ||
-          wcscmp(cls, L"Windows.UI.Composition.DesktopWindowContentBridge") == 0) {
+          wcscmp(cls, L"Windows.UI.Composition.DesktopWindowContentBridge") ==
+              0) {
         return false;
       }
-      // 真正的桌面外壳宿主（点击桌面壁纸/图标）
+      // Only Progman / WorkerW / DefView count as desktop shell hosts.
+      // SysListView32 / DirectUIHWND also appear inside Explorer folder
+      // windows (Win10 + Win11) — requiring an ancestor host avoids treating
+      // "open Folder" as show-desktop / band-lift.
       if (wcscmp(cls, L"Progman") == 0 || wcscmp(cls, L"WorkerW") == 0 ||
-          wcscmp(cls, L"SHELLDLL_DefView") == 0 ||
-          wcscmp(cls, L"SysListView32") == 0 ||
-          wcscmp(cls, L"DirectUIHWND") == 0) {
+          wcscmp(cls, L"SHELLDLL_DefView") == 0) {
         return true;
       }
     }
+    // Climb real parent first (child SysListView32/DirectUI → DefView), then
+    // owner. Avoid GetParent()'s owner-for-popup quirk via ParentOf().
     HWND parent = ParentOf(cur);
+    if (!parent) {
+      // WS_CHILD under DefView: ParentOf uses style bit; some shell children
+      // still need GetAncestor when style is atypical.
+      parent = GetAncestor(cur, GA_PARENT);
+      if (parent == GetDesktopWindow()) {
+        parent = nullptr;
+      }
+    }
     if (!parent) {
       parent = OwnerOf(cur);
     }
@@ -383,6 +452,7 @@ bool IsShowDesktopActive() {
   if (!host.defview || !IsWindowAlive(host.defview)) {
     return false;
   }
+  // Classic Win+D: shell marks DefView / Progman TOPMOST.
   if ((GetWindowLongPtrW(host.defview, GWL_EXSTYLE) & WS_EX_TOPMOST) != 0) {
     return true;
   }
@@ -390,20 +460,91 @@ bool IsShowDesktopActive() {
       (GetWindowLongPtrW(host.host, GWL_EXSTYLE) & WS_EX_TOPMOST) != 0) {
     return true;
   }
-  // Modern Windows 10/11: Show Desktop does not set WS_EX_TOPMOST on DefView.
-  // When Explorer desktop shell is foreground and no fullscreen app cover is live,
-  // show-desktop is active.
-  return IsExplorerDesktopForeground();
+  // Modern Win10/11 often skips DefView TOPMOST. Do NOT equate Explorer FG
+  // with show-desktop: clicking blank wallpaper focuses Progman while
+  // APPWINDOWs stay above the band — Fences keeps overlays under those apps.
+  // Only treat desktop FG as show-desktop when no restored non-shell window
+  // sits above the DefView host (apps minimized / covered by Win+D).
+  if (!IsExplorerDesktopForeground()) {
+    return false;
+  }
+  HWND anchor = host.host ? host.host : host.defview;
+  if (!anchor || !IsWindowAlive(anchor)) {
+    return false;
+  }
+  HWND cur = anchor;
+  for (int i = 0; i < 128; ++i) {
+    HWND prev = GetWindow(cur, GW_HWNDPREV);
+    if (!prev || prev == cur) {
+      break;
+    }
+    cur = prev;
+    if (!IsWindowVisible(cur) || IsIconic(cur)) {
+      continue;
+    }
+    DWORD pid = 0;
+    GetWindowThreadProcessId(cur, &pid);
+    if (pid == GetCurrentProcessId()) {
+      continue;
+    }
+    wchar_t cls[64] = {};
+    GetClassNameW(cur, cls, 64);
+    if (wcscmp(cls, L"WorkerW") == 0 || wcscmp(cls, L"Progman") == 0 ||
+        wcscmp(cls, L"Shell_TrayWnd") == 0 ||
+        wcscmp(cls, L"Shell_SecondaryTrayWnd") == 0) {
+      continue;
+    }
+    return false;
+  }
+  return true;
+}
+
+bool IsAppsForegroundQuiet() {
+  // Equivalent to:
+  //   !IsExplorerDesktopForeground() &&
+  //   !(IsShowDesktopActive() && !HasVisibleFullscreenCover())
+  // but skips EnumWindows cover scan unless DefView is TOPMOST (Win+D).
+  if (IsExplorerDesktopForeground()) {
+    return false;
+  }
+  const DefViewHost host = FindDefViewHost();
+  const bool topmost_desk =
+      (host.defview && IsWindowAlive(host.defview) &&
+       (GetWindowLongPtrW(host.defview, GWL_EXSTYLE) & WS_EX_TOPMOST) != 0) ||
+      (host.host && IsWindowAlive(host.host) &&
+       (GetWindowLongPtrW(host.host, GWL_EXSTYLE) & WS_EX_TOPMOST) != 0);
+  if (!topmost_desk) {
+    return true;
+  }
+  return HasVisibleFullscreenCover();
 }
 
 namespace {
+
+// One restore pass raises N overlays; reuse the same "window above DefView"
+// answer for ~80ms so we do not walk Z-order once per fence/pet/page-bar.
+HWND g_above_cache = nullptr;
+HWND g_above_host = nullptr;
+ULONGLONG g_above_tick = 0;
+constexpr ULONGLONG kAboveCacheTtlMs = 80;
+
+HWND g_cover_cache = nullptr;
+ULONGLONG g_cover_tick = 0;
+bool g_cover_valid = false;
+constexpr ULONGLONG kCoverCacheTtlMs = 400;
 
 HWND WindowAboveDefView(HWND defview, HWND host, HWND self) {
   HWND anchor = host ? host : defview;
   if (!anchor || !IsWindow(anchor)) {
     return nullptr;
   }
+  const ULONGLONG now = GetTickCount64();
+  if (g_above_host == anchor && now - g_above_tick < kAboveCacheTtlMs &&
+      (!g_above_cache || IsWindow(g_above_cache))) {
+    return (g_above_cache == self) ? nullptr : g_above_cache;
+  }
   HWND cur = anchor;
+  HWND found = nullptr;
   for (int i = 0; i < 128; ++i) {
     HWND prev = GetWindow(cur, GW_HWNDPREV);
     if (!prev || prev == cur) {
@@ -422,12 +563,32 @@ HWND WindowAboveDefView(HWND defview, HWND host, HWND self) {
         if (wcscmp(cls, L"WorkerW") != 0 && wcscmp(cls, L"Progman") != 0 &&
             wcscmp(cls, L"Shell_TrayWnd") != 0 &&
             wcscmp(cls, L"Shell_SecondaryTrayWnd") != 0) {
-          return cur;
+          found = cur;
+          break;
         }
       }
     }
   }
-  return nullptr;
+  g_above_host = anchor;
+  g_above_cache = found;
+  g_above_tick = now;
+  return found;
+}
+
+bool AlreadyStackedAfter(HWND hwnd, HWND insert_after) {
+  if (!IsWindowAlive(hwnd)) {
+    return false;
+  }
+  if (insert_after == HWND_TOP) {
+    return GetWindow(hwnd, GW_HWNDPREV) == nullptr;
+  }
+  if (insert_after == HWND_BOTTOM) {
+    return GetWindow(hwnd, GW_HWNDNEXT) == nullptr;
+  }
+  if (!insert_after || !IsWindow(insert_after)) {
+    return false;
+  }
+  return GetWindow(hwnd, GW_HWNDPREV) == insert_after;
 }
 
 bool CoversMonitorRect(HWND hwnd, const RECT& mon) {
@@ -488,21 +649,36 @@ BOOL CALLBACK EnumFullscreenCoverProc(HWND hwnd, LPARAM lp) {
 }  // namespace
 
 HWND FindFullscreenCoverWindow() {
+  const ULONGLONG now = GetTickCount64();
+  if (g_cover_valid && now - g_cover_tick < kCoverCacheTtlMs &&
+      (!g_cover_cache || (IsWindow(g_cover_cache) && IsWindowVisible(g_cover_cache) &&
+                          !IsIconic(g_cover_cache)))) {
+    return g_cover_cache;
+  }
   HWND fg = GetForegroundWindow();
   HMONITOR mon = MonitorFromWindow(fg ? fg : GetDesktopWindow(),
                                    MONITOR_DEFAULTTONEAREST);
   MONITORINFO mi{sizeof(mi)};
   if (!GetMonitorInfoW(mon, &mi)) {
+    g_cover_cache = nullptr;
+    g_cover_valid = true;
+    g_cover_tick = now;
     return nullptr;
   }
   if (fg && IsWindowVisible(fg) && !IsIconic(fg) &&
       !IsShellFullscreenClass(fg) && CoversMonitorRect(fg, mi.rcMonitor)) {
+    g_cover_cache = fg;
+    g_cover_valid = true;
+    g_cover_tick = now;
     return fg;
   }
   CoverEnumCtx ctx;
   ctx.mon = mi.rcMonitor;
   ctx.own_pid = GetCurrentProcessId();
   EnumWindows(EnumFullscreenCoverProc, reinterpret_cast<LPARAM>(&ctx));
+  g_cover_cache = ctx.found;
+  g_cover_valid = true;
+  g_cover_tick = now;
   return ctx.found;
 }
 
@@ -563,8 +739,8 @@ void RaiseOverlayInDesktopBand(HWND hwnd) {
   if (self_topmost) {
     SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, flags);
   }
-  // 1. 若处于显示桌面模式（Win+D / 点击桌面壁纸且无全屏覆盖），桌面覆盖层随桌面显示在顶层
-  // 2. 若正常有应用窗口/弹窗，必须沉在最底部应用窗口的下方，绝不覆盖应用或弹窗
+  // Win+D show-desktop → TOP with the shell. Mere desktop FG (click wallpaper
+  // with apps still restored) must keep overlays under APPWINDOWs (Fences).
   HWND insert_after = HWND_BOTTOM;
   if (IsShowDesktopActive()) {
     insert_after = HWND_TOP;
@@ -587,17 +763,21 @@ void RaiseOverlayInDesktopBand(HWND hwnd) {
       }
     }
   }
-  SetWindowPos(hwnd, insert_after, 0, 0, 0, 0, flags);
+  // Skip no-op restacks: many open apps + N overlays × settle ticks used to
+  // thrash DWM and make window drags feel stuck.
+  if (!AlreadyStackedAfter(hwnd, insert_after)) {
+    SetWindowPos(hwnd, insert_after, 0, 0, 0, 0, flags);
+  }
   if (want_show) {
     ShowOverlayNoActivate(hwnd);
   }
 }
 
-bool IsOverlayAboveDefView(HWND hwnd) {
+bool IsOverlayAboveDefView(HWND hwnd, const DefViewHost* cached) {
   if (!IsWindowAlive(hwnd)) {
     return false;
   }
-  const DefViewHost host = FindDefViewHost();
+  const DefViewHost host = cached ? *cached : FindDefViewHost();
   if (!host.defview || !host.host) {
     return true;
   }

@@ -33,6 +33,8 @@ class PetWindow {
   // P2-24: 33ms when active/hovered, 100ms when idle pose and pointer away.
   int WantedTickMs() const;
   void StartClimb();
+  // TTL-cached EnumWindows ledge scan (~1 Hz).
+  const std::vector<WindowLedge>& CachedWindowLedges();
   void SetOnTrash(TrashFn fn) { on_trash_ = std::move(fn); }
   void SetOnPage(PageFn fn) { on_page_ = std::move(fn); }
   // Right-click page chip → create fence on that page (Python create_fence_requested).
@@ -282,6 +284,7 @@ class PetWindow {
   int present_frame_i_ = -1;
   int present_facing_ = 0;
   int present_anim_tick_ = -1;
+  int present_bob_y_ = 0x7fffffff;
   HCURSOR drag_size_cursor_ = nullptr;
   // Left-facing flip cache (dst DIB held selected in flip_dc_).
   HDC flip_dc_ = nullptr;

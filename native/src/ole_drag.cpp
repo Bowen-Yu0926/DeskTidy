@@ -651,10 +651,13 @@ HBITMAP BuildIconStackBitmap(const std::vector<std::wstring>& paths, int* out_w,
     return nullptr;
   }
   const int stack_n = (std::min)(3, static_cast<int>(paths.size()));
+  const int total_n = static_cast<int>(paths.size());
   const int icon = GetSystemMetrics(SM_CXICON);
   const int gap = (std::max)(6, icon / 8);
-  const int w = icon + (stack_n - 1) * gap;
-  const int h = icon + (stack_n - 1) * gap;
+  // Explorer/Fences: multi-drag shows a count badge (+N / N).
+  const int badge = (total_n > 1) ? (std::max)(18, icon / 3) : 0;
+  const int w = icon + (stack_n - 1) * gap + (badge ? badge / 3 : 0);
+  const int h = icon + (stack_n - 1) * gap + (badge ? badge / 3 : 0);
   *out_w = w;
   *out_h = h;
   *out_hot_x = icon / 2;
@@ -684,6 +687,42 @@ HBITMAP BuildIconStackBitmap(const std::vector<std::wstring>& paths, int* out_w,
     DrawIconEx(mem, i * gap, i * gap, sfi.hIcon, icon, icon, 0, nullptr,
                DI_NORMAL);
     DestroyIcon(sfi.hIcon);
+  }
+  if (badge > 0) {
+    const int bx = w - badge;
+    const int by = h - badge;
+    HBRUSH blue = CreateSolidBrush(RGB(0, 120, 215));
+    HBRUSH old_br = static_cast<HBRUSH>(SelectObject(mem, blue));
+    HPEN pen = CreatePen(PS_SOLID, 1, RGB(255, 255, 255));
+    HGDIOBJ old_pen = SelectObject(mem, pen);
+    Ellipse(mem, bx, by, bx + badge, by + badge);
+    SelectObject(mem, old_pen);
+    SelectObject(mem, old_br);
+    DeleteObject(pen);
+    DeleteObject(blue);
+    wchar_t label[16] = {};
+    if (total_n > 9) {
+      swprintf_s(label, L"%d", total_n);
+    } else {
+      swprintf_s(label, L"%d", total_n);
+    }
+    SetBkMode(mem, TRANSPARENT);
+    SetTextColor(mem, RGB(255, 255, 255));
+    HFONT font =
+        CreateFontW(-(std::max)(10, badge * 2 / 3), 0, 0, 0, FW_BOLD, FALSE,
+                    FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
+                    CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+                    DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+    HGDIOBJ old_font = font ? SelectObject(mem, font) : nullptr;
+    RECT tr{bx, by, bx + badge, by + badge};
+    DrawTextW(mem, label, -1, &tr,
+              DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOCLIP);
+    if (old_font) {
+      SelectObject(mem, old_font);
+    }
+    if (font) {
+      DeleteObject(font);
+    }
   }
   SelectObject(mem, old);
   DeleteDC(mem);

@@ -103,27 +103,33 @@ LRESULT CALLBACK LowLevelMouseProc(int code, WPARAM wparam, LPARAM lparam) {
   return CallNextHookEx(g_mouse_hook, code, wparam, lparam);
 }
 
-LRESULT CALLBACK LowLevelKeyboardProc(int code, WPARAM wparam, LPARAM lparam) {
-  if (code == HC_ACTION && g_paste_msg && g_notify && IsWindow(g_notify)) {
-    const auto* info = reinterpret_cast<KBDLLHOOKSTRUCT*>(lparam);
-    if (info && (wparam == WM_KEYDOWN || wparam == WM_SYSKEYDOWN) &&
-        info->vkCode == 'V' &&
-        (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0 &&
-        (GetAsyncKeyState(VK_MENU) & 0x8000) == 0 &&
-        ForegroundIsDesktopShell()) {
-      const DWORD now = GetTickCount();
-      if (now - g_last_paste_ms >= 200) {
-        g_last_paste_ms = now;
-        PostMessageW(g_notify, g_paste_msg, 0, 0);
-        // Swallow so a half-hidden DefView does not also try (and fail) paste.
-        return 1;
-      }
-    }
-  }
-  return CallNextHookEx(nullptr, code, wparam, lparam);
-}
-
 }  // namespace
+
+bool TryHandleDesktopPasteLlKey(WPARAM wparam, LPARAM lparam) {
+  if (!g_paste_msg || !g_notify || !IsWindow(g_notify)) {
+    return false;
+  }
+  if (wparam != WM_KEYDOWN && wparam != WM_SYSKEYDOWN) {
+    return false;
+  }
+  const auto* info = reinterpret_cast<KBDLLHOOKSTRUCT*>(lparam);
+  if (!info || info->vkCode != 'V') {
+    return false;
+  }
+  if ((GetAsyncKeyState(VK_CONTROL) & 0x8000) == 0 ||
+      (GetAsyncKeyState(VK_MENU) & 0x8000) != 0 ||
+      !ForegroundIsDesktopShell()) {
+    return false;
+  }
+  const DWORD now = GetTickCount();
+  if (now - g_last_paste_ms < 200) {
+    return false;
+  }
+  g_last_paste_ms = now;
+  PostMessageW(g_notify, g_paste_msg, 0, 0);
+  // Swallow so a half-hidden DefView does not also try (and fail) paste.
+  return true;
+}
 
 bool IsDesktopBlankPoint(int screen_x, int screen_y) {
   POINT pt{screen_x, screen_y};
@@ -165,10 +171,7 @@ void StartDesktopDblClickMonitor(HWND notify_hwnd, UINT notify_msg,
     g_mouse_hook = SetWindowsHookExW(WH_MOUSE_LL, LowLevelMouseProc,
                                      GetModuleHandleW(nullptr), 0);
   }
-  if (g_paste_msg && !g_key_hook) {
-    g_key_hook = SetWindowsHookExW(WH_KEYBOARD_LL, LowLevelKeyboardProc,
-                                   GetModuleHandleW(nullptr), 0);
-  }
+  // Keyboard paste rides App's single WH_KEYBOARD_LL (no second key hook).
 }
 
 void StopDesktopDblClickMonitor() {

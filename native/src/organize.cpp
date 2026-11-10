@@ -59,6 +59,9 @@ int OrganizeApplyDefaultPins(PinMap* pins, const std::vector<DesktopItem>& items
     return 0;
   }
   const auto wl = LoadWhitelist();
+  CategoryFenceMap cat_map;
+  FilenameRulesMap filename_rules;
+  LoadCategoriesBoth(&cat_map, &filename_rules);
   int n = 0;
   for (const auto& it : items) {
     if (ShouldSkipVirtual(it, *pins, wl, reassign)) {
@@ -70,6 +73,10 @@ int OrganizeApplyDefaultPins(PinMap* pins, const std::vector<DesktopItem>& items
     std::string target;
     if (fences && !fences->empty()) {
       target = ResolveFenceByKind(it, *fences, current_page);
+    }
+    // Settings 类别分区映射 / 文件名规则 (organize_categories.json).
+    if (target.empty()) {
+      target = ResolveCategoryFenceId(it.path, cat_map, filename_rules);
     }
     if (target.empty()) {
       // Empty pin map: ResolveFenceId must not echo a stale software-side pin.
@@ -95,6 +102,9 @@ std::vector<std::wstring> OrganizePreviewVirtualPins(
     const std::vector<FenceLayout>* fences, int current_page) {
   std::vector<std::wstring> lines;
   const auto wl = LoadWhitelist();
+  CategoryFenceMap cat_map;
+  FilenameRulesMap filename_rules;
+  LoadCategoriesBoth(&cat_map, &filename_rules);
   for (const auto& it : items) {
     if (ShouldSkipVirtual(it, pins, wl, /*reassign=*/false)) {
       continue;
@@ -102,6 +112,9 @@ std::vector<std::wstring> OrganizePreviewVirtualPins(
     std::string target;
     if (fences && !fences->empty()) {
       target = ResolveFenceByKind(it, *fences, current_page);
+    }
+    if (target.empty()) {
+      target = ResolveCategoryFenceId(it.path, cat_map, filename_rules);
     }
     if (target.empty()) {
       target = ResolveFenceId(it.path, it.is_link, pins, rules, software_id,
@@ -354,7 +367,8 @@ std::vector<DesktopItem> ScanPortalItems(
         item.name.size() >= 4 &&
         _wcsicmp(item.name.c_str() + item.name.size() - 4, L".lnk") == 0;
     out.push_back(std::move(item));
-    if (out.size() >= 200) {
+    // Soft safety only — Fences/Explorer portals show full folder membership.
+    if (out.size() >= 10000) {
       break;
     }
   } while (FindNextFileW(find, &fd));

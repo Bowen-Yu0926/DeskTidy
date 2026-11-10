@@ -34,5 +34,7 @@ class DesktopWatch {
   // Portal/extras can point at huge directories — throttle their full scan so
   // the 2s tick only re-stamps them at a slower cadence (see kPortalRescanMs).
   ULONGLONG extra_stamp_ms_ = 0;
+  // Desktop/Public membership stamp cadence (SHChangeNotify is primary).
+  ULONGLONG desk_stamp_ms_ = 0;
   bool primed_ = false;
 };

@@ -133,17 +133,20 @@ class App {
   void UnpinPaths(const std::vector<std::wstring>& paths,
                   const POINT* drop = nullptr);
   void RetargetPin(const std::wstring& from, const std::wstring& to);
-  // P1-13: move pins from `src` fence to `dst` fence (pin_order tail), persist,
-  // refresh both fences. Returns false (no mutation) for src==dst / missing dst.
+  // P1-13: move pins from `src` to `dst` (insert at `at`, -1 = append).
+  // Returns false (no mutation) for src==dst / missing dst / portal src.
   bool TransferPins(const std::wstring& src, const std::wstring& dst,
-                    const std::vector<std::wstring>& paths);
+                    const std::vector<std::wstring>& paths, int at = -1);
   void TogglePeek();
   void EnsureFencesVisible();
   void ToggleFencesVisible();
   void SaveLayoutSnapshot();
   void RestoreLayoutSnapshot();
   void OpenMinutes();
-  void RebuildPublicItems();
+  // Optional pre_scanned avoids a second ScanDesktopItems (+ vector copy) when
+  // the caller already holds a fresh desktop list (RefreshDesktopIcons).
+  void RebuildPublicItems(
+      const std::vector<DesktopItem>* pre_scanned = nullptr);
   // Post-OLE unpin: ForceAttach + Present after the drag loop settles.
   void ScheduleRevealPublicFloats();
   void RevealPublicFloatsNow();
@@ -183,6 +186,7 @@ class App {
   HWND MessageHwnd() const { return message_hwnd_; }
   // P1-28: LL-hook fallback when WM_HOTKEY is swallowed (exclusive fullscreen).
   void TryDispatchLlHotkey(UINT vk);
+  void RebuildLlHotkeyVkIndex();
 
  private:
   static LRESULT CALLBACK TrayWndProc(HWND, UINT, WPARAM, LPARAM);
@@ -201,9 +205,13 @@ class App {
                        const std::vector<std::wstring>& paths);
   void OnPathsPasted(FenceWindow* fence, const std::vector<std::wstring>& paths,
                      bool move);
+  // Shell New on a virtual fence: pin the landed Desktop path (no FO_COPY).
+  void OnPathsCreated(FenceWindow* fence,
+                      const std::vector<std::wstring>& paths);
   // P1-13: pin-transfer drop handler + floating hint lifecycle.
   DWORD OnPinDropped(FenceWindow* fence, const std::wstring& src_fence_id,
-                     const std::vector<std::wstring>& paths, bool commit);
+                     const std::vector<std::wstring>& paths, bool commit,
+                     int at = -1);
   void UpdatePinDragHint(POINT cursor, const PinDragHint& hint);
   void HidePinDragHint();
   void DissolveFence(FenceWindow* fence);
@@ -294,12 +302,16 @@ class App {
   ULONGLONG pin_prune_last_ms_ = 0;
   RuleMap rules_;
   std::vector<HotkeyDef> hotkeys_;
+  // Fast LL-hook filter: only bound VKs pay GetAsyncKeyState + scan cost.
+  bool ll_hotkey_vk_[256] = {};
   HotkeyRelay hotkey_relay_;
   DesktopWatch desktop_watch_;
   ULONG shell_notify_id_ = 0;
   PIDLIST_ABSOLUTE shell_notify_pidls_[2]{};
   int shell_notify_pidl_count_ = 0;
   AppPrefs prefs_;
+  // Last dock membership — skip SetItems/icon reload when unchanged.
+  std::vector<DesktopItem> last_dock_items_;
   std::string display_fp_;
   // Throttle the 2s watch-tick fingerprint recompute (EnumDisplayMonitors +
   // per-monitor CreateDCW/GetDeviceCaps) — WM_DISPLAYCHANGE already converges
@@ -327,9 +339,13 @@ class App {
   NOTIFYICONDATAW nid_{};
   bool tray_added_ = false;
   UINT_PTR restore_timer_ = 0;
+  // Adaptive keepalive: 4s on desktop / unhealthy, ~10s under apps FG (quiet).
+  UINT restore_tick_ms_ = 4000;
   UINT_PTR pet_timer_ = 0;
-  UINT pet_tick_ms_ = 50;
+  UINT pet_tick_ms_ = 200;
   UINT_PTR watch_timer_ = 0;
+  // Adaptive folder/chrome poll: 2s on desktop, ~8s under apps FG.
+  UINT watch_tick_ms_ = 2000;
   UINT_PTR update_timer_ = 0;
   int update_progress_last_pct_ = -1;
   UINT_PTR vault_timer_ = 0;

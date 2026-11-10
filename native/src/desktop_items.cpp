@@ -10,7 +10,9 @@
 
 #include <algorithm>
 #include <atomic>
+#include <condition_variable>
 #include <cstring>
+#include <deque>
 #include <mutex>
 #include <objbase.h>
 #include <string>
@@ -59,6 +61,8 @@ constexpr ULONGLONG kScanCacheTtlMs = 2500;
 ULONGLONG g_scan_tick = 0;
 std::vector<DesktopItem> g_scan_cache;
 
+std::wstring ScanDedupKey(const std::wstring& path);
+
 void AppendFolder(const std::wstring& folder, std::vector<DesktopItem>* out) {
   if (folder.empty()) {
     return;
@@ -95,6 +99,8 @@ void AppendFolder(const std::wstring& folder, std::vector<DesktopItem>* out) {
     // SHGetFileInfo(DISPLAYNAME) is ~1–5ms per call. Ordinary files keep the
     // FindFirst name (Fences-class); only resolve shell display names for
     // shortcuts / internet shortcuts where the caption differs from the file.
+    // Cache by path + FindData mtime so scan-cache misses don't re-query every
+    // paste/notify storm.
     if (item.is_link) {
       if (EndsWithIgnoreCase(item.name, L".lnk") && item.name.size() > 4) {
         item.name.resize(item.name.size() - 4);
@@ -102,12 +108,11 @@ void AppendFolder(const std::wstring& folder, std::vector<DesktopItem>* out) {
                  item.name.size() > 4) {
         item.name.resize(item.name.size() - 4);
       }
-      SHFILEINFOW sfi{};
-      if (SHGetFileInfoW(item.path.c_str(), 0, &sfi, sizeof(sfi),
-                         SHGFI_DISPLAYNAME) &&
-          sfi.szDisplayName[0] != L'\0') {
-        item.name = sfi.szDisplayName;
-      }
+      ULARGE_INTEGER mtime{};
+      mtime.LowPart = fd.ftLastWriteTime.dwLowDateTime;
+      mtime.HighPart = fd.ftLastWriteTime.dwHighDateTime;
+      item.name =
+          ResolveCachedLinkDisplayName(item.path, item.name, mtime.QuadPart);
     }
     out->push_back(std::move(item));
   } while (FindNextFileW(h, &fd));
@@ -248,7 +253,35 @@ void DestroyMasterIconCache() {
 
 }  // namespace
 
-std::vector<DesktopItem> ScanDesktopItems() {
+std::wstring ResolveCachedLinkDisplayName(const std::wstring& path,
+                                          const std::wstring& stem_fallback,
+                                          ULONGLONG mtime_quad) {
+  const std::wstring dkey =
+      ScanDedupKey(path) + L"@" + std::to_wstring(mtime_quad);
+  static std::mutex s_disp_mu;
+  static std::unordered_map<std::wstring, std::wstring> s_disp_cache;
+  {
+    std::lock_guard<std::mutex> lk(s_disp_mu);
+    auto hit = s_disp_cache.find(dkey);
+    if (hit != s_disp_cache.end()) {
+      return hit->second;
+    }
+  }
+  std::wstring name = stem_fallback;
+  SHFILEINFOW sfi{};
+  if (SHGetFileInfoW(path.c_str(), 0, &sfi, sizeof(sfi), SHGFI_DISPLAYNAME) &&
+      sfi.szDisplayName[0] != L'\0') {
+    name = sfi.szDisplayName;
+  }
+  std::lock_guard<std::mutex> lk(s_disp_mu);
+  if (s_disp_cache.size() > 2048) {
+    s_disp_cache.clear();
+  }
+  s_disp_cache.emplace(dkey, name);
+  return name;
+}
+
+const std::vector<DesktopItem>& ScanDesktopItemsRef() {
   const ULONGLONG now = GetTickCount64();
   if (!g_scan_cache.empty() && now - g_scan_tick < kScanCacheTtlMs) {
     return g_scan_cache;
@@ -275,9 +308,13 @@ std::vector<DesktopItem> ScanDesktopItems() {
     }
     unique.push_back(std::move(it));
   }
-  g_scan_cache = unique;
+  g_scan_cache = std::move(unique);
   g_scan_tick = now;
-  return unique;
+  return g_scan_cache;
+}
+
+std::vector<DesktopItem> ScanDesktopItems() {
+  return ScanDesktopItemsRef();
 }
 
 void InvalidateDesktopScanCache() {
@@ -289,6 +326,7 @@ void InvalidateDesktopScanCache() {
 }
 
 void ClearItemIconCache() {
+  ShutdownIconPreloadWorker();
   DestroyMasterIconCache();
 }
 
@@ -542,11 +580,83 @@ HICON LoadItemIcon(const std::wstring& path, int size_px) {
   return CopyIcon(master);
 }
 
-void PreloadIconsParallel(const std::vector<std::pair<std::wstring, int>>& jobs) {
-  if (jobs.empty()) {
+bool ItemIconCached(const std::wstring& path, int size_px) {
+  if (path.empty()) {
+    return false;
+  }
+  const std::wstring key = IconCacheKey(path, size_px);
+  std::lock_guard<std::mutex> lk(g_master_icon_cache_mutex);
+  return g_master_icon_cache.find(key) != g_master_icon_cache.end();
+}
+
+namespace {
+
+struct IconPreloadBatch {
+  std::vector<std::pair<std::wstring, int>> jobs;
+  HWND notify = nullptr;
+  UINT done_msg = 0;
+};
+
+std::mutex g_icon_worker_mu;
+std::condition_variable g_icon_worker_cv;
+std::deque<IconPreloadBatch> g_icon_worker_q;
+std::thread g_icon_worker;
+bool g_icon_worker_started = false;
+bool g_icon_worker_stop = false;
+
+void IconWorkerMain() {
+  // Dedicated STA: shell extensions often assume apartment COM. Keep ONE
+  // long-lived thread — ephemeral pools crashed with 0xc0000374.
+  CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+  for (;;) {
+    IconPreloadBatch batch;
+    {
+      std::unique_lock<std::mutex> lk(g_icon_worker_mu);
+      g_icon_worker_cv.wait(lk, [] {
+        return g_icon_worker_stop || !g_icon_worker_q.empty();
+      });
+      if (g_icon_worker_stop && g_icon_worker_q.empty()) {
+        break;
+      }
+      batch = std::move(g_icon_worker_q.front());
+      g_icon_worker_q.pop_front();
+    }
+    for (const auto& item : batch.jobs) {
+      if (g_icon_worker_stop) {
+        break;
+      }
+      HICON icon = LoadItemIcon(item.first, item.second);
+      if (icon) {
+        DestroyIcon(icon);
+      }
+    }
+    if (batch.notify && batch.done_msg && IsWindow(batch.notify)) {
+      PostMessageW(batch.notify, batch.done_msg, 0, 0);
+    }
+  }
+  CoUninitialize();
+}
+
+void EnsureIconWorker() {
+  std::lock_guard<std::mutex> lk(g_icon_worker_mu);
+  if (g_icon_worker_started) {
     return;
   }
-  // 1) Collect only the cold icons (not yet in the process-wide cache).
+  g_icon_worker_stop = false;
+  g_icon_worker = std::thread(IconWorkerMain);
+  g_icon_worker_started = true;
+}
+
+}  // namespace
+
+void PreloadIconsAsync(const std::vector<std::pair<std::wstring, int>>& jobs,
+                       HWND notify, UINT done_msg) {
+  if (jobs.empty()) {
+    if (notify && done_msg && IsWindow(notify)) {
+      PostMessageW(notify, done_msg, 0, 0);
+    }
+    return;
+  }
   std::vector<std::pair<std::wstring, int>> cold;
   cold.reserve(jobs.size());
   {
@@ -559,16 +669,58 @@ void PreloadIconsParallel(const std::vector<std::pair<std::wstring, int>>& jobs)
     }
   }
   if (cold.empty()) {
+    if (notify && done_msg && IsWindow(notify)) {
+      PostMessageW(notify, done_msg, 0, 0);
+    }
     return;
   }
-  // 2) Safe sequential preload on the current thread. Third-party shell extensions
-  //    (such as BaiduNetdisk biz_shellext64, Lenovo LHShield64, etc.) hook into
-  //    IShellItemImageFactory / SHGetFileInfo and are NOT thread-safe; calling them
-  //    concurrently from ephemeral worker threads corrupts their heap (0xc0000374).
-  for (const auto& item : cold) {
-    HICON icon = LoadItemIcon(item.first, item.second);
-    if (icon) {
-      DestroyIcon(icon);  // cache keeps the master; our clone is disposable
+  EnsureIconWorker();
+  {
+    std::lock_guard<std::mutex> lk(g_icon_worker_mu);
+    // Merge into the latest pending batch when possible so fence+public
+    // preloads from one RefreshDesktopIcons share a single completion msg.
+    if (!g_icon_worker_q.empty() &&
+        g_icon_worker_q.back().notify == notify &&
+        g_icon_worker_q.back().done_msg == done_msg) {
+      auto& pending = g_icon_worker_q.back().jobs;
+      pending.insert(pending.end(), cold.begin(), cold.end());
+    } else {
+      IconPreloadBatch batch;
+      batch.jobs = std::move(cold);
+      batch.notify = notify;
+      batch.done_msg = done_msg;
+      g_icon_worker_q.push_back(std::move(batch));
     }
   }
+  g_icon_worker_cv.notify_one();
+}
+
+void PreloadIconsNotifyApp(
+    const std::vector<std::pair<std::wstring, int>>& jobs) {
+  HWND msg = FindWindowW(L"DeskTidyNativeMsg", L"DeskTidyNative");
+  PreloadIconsAsync(jobs, msg, kDeskTidyMsgIconsPreloaded);
+}
+
+void PreloadIconsParallel(const std::vector<std::pair<std::wstring, int>>& jobs) {
+  // Non-blocking: UI must not serial-extract shell icons. Completion is best
+  // effort without a notify hwnd (next paint/SetItems hits the cache).
+  PreloadIconsAsync(jobs, nullptr, 0);
+}
+
+void ShutdownIconPreloadWorker() {
+  {
+    std::lock_guard<std::mutex> lk(g_icon_worker_mu);
+    if (!g_icon_worker_started) {
+      return;
+    }
+    g_icon_worker_stop = true;
+    g_icon_worker_q.clear();
+  }
+  g_icon_worker_cv.notify_all();
+  if (g_icon_worker.joinable()) {
+    g_icon_worker.join();
+  }
+  std::lock_guard<std::mutex> lk(g_icon_worker_mu);
+  g_icon_worker_started = false;
+  g_icon_worker_stop = false;
 }

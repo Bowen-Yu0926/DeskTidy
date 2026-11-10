@@ -20,6 +20,7 @@ class DockWindow {
   void SetVisible(bool on);
   HWND Hwnd() const { return hwnd_; }
   void SetItems(std::vector<DesktopItem> items);
+  bool FillMissingIcons();
   // P1-10: read dock items from the settings UI field (comma-separated paths,
   // "ext_dock_items") — validates existence, caps at 8, renders.
   void SetItemsFromCsv(const std::wstring& csv);
@@ -38,6 +39,7 @@ class DockWindow {
   void SetOnRemoved(std::function<void(const std::wstring&)> fn) {
     on_removed_ = std::move(fn);
   }
+  void FinishInlineRename(bool commit);
 
  private:
   struct Slot {
@@ -70,6 +72,7 @@ class DockWindow {
   void RebuildIcons();
 
   void ShowSlotMenu(int index, POINT screen);
+  void BeginInlineRename(int index);
   void EnsureTooltip();
   void UpdateHoverTip(int index);
   void ApplyPaths(const std::vector<std::wstring>& paths);
@@ -79,6 +82,9 @@ class DockWindow {
 
   HWND hwnd_ = nullptr;
   HWND tip_ = nullptr;
+  HWND rename_edit_ = nullptr;
+  int rename_index_ = -1;
+  WNDPROC rename_proc_ = nullptr;
   bool want_visible_ = false;
   std::wstring edge_ = L"bottom";
   BYTE fill_alpha_ = 217;  // ≈ 0.85

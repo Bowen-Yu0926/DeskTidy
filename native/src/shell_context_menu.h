@@ -8,9 +8,12 @@
 
 struct ShellMenuExtra {
   std::wstring label;
-  int id = 0;  // 1..99
+  // Leaf command id in 1..99. Parents with children may use 0.
+  int id = 0;
   bool enabled = true;
   bool checked = false;
+  // Non-empty → cascading submenu (Fences-style Sort / View / Opacity).
+  std::vector<ShellMenuExtra> children;
 };
 
 // Cascading 「移动到分页」→ page → fence. `pages` = membership (empty → page 0).
@@ -33,6 +36,13 @@ using ShellVerbFn = std::function<void(const std::wstring& verb)>;
 // Fired immediately before InvokeCommand runs (not for extras, rename or
 // cancel) so callers can snapshot the folder before the shell mutates it.
 using ShellBeforeInvokeFn = std::function<void()>;
+// If set and returns true for a verb, host handles it (no InvokeCommand).
+// Used like CMF_CANRENAME: virtual-fence Paste → pin paste, not Desktop FO.
+using ShellInterceptFn = std::function<bool(const std::wstring& verb)>;
+
+// Fences / Explorer: only filesystem-mutating verbs warrant a desktop rescan.
+// open / properties / copy / cut stay quiet (cut ghost follows clipboard).
+bool ShellVerbNeedsDesktopRescan(const std::wstring& verb);
 
 // Host Explorer IContextMenu for filesystem path(s). Prepends extras (ids 1..99).
 // Returns extra id if chosen; 0 if cancelled or a shell verb ran; -1 if menu
@@ -41,7 +51,8 @@ int TrackShellContextMenu(HWND owner, POINT screen,
                           const std::vector<std::wstring>& paths,
                           const std::vector<ShellMenuExtra>& extras = {},
                           ShellVerbFn on_verb = nullptr,
-                          ShellBeforeInvokeFn on_before_invoke = nullptr);
+                          ShellBeforeInvokeFn on_before_invoke = nullptr,
+                          ShellInterceptFn on_intercept = nullptr);
 
 // Host Explorer's FOLDER BACKGROUND IContextMenu (New / Paste / View /
 // Personalize / Refresh / Undo / Sort-by, ...) for a directory's blank area.
@@ -52,4 +63,5 @@ int TrackShellFolderBackgroundMenu(HWND owner, POINT screen,
                                    const std::wstring& folder,
                                    const std::vector<ShellMenuExtra>& extras = {},
                                    ShellVerbFn on_verb = nullptr,
-                                   ShellBeforeInvokeFn on_before_invoke = nullptr);
+                                   ShellBeforeInvokeFn on_before_invoke = nullptr,
+                                   ShellInterceptFn on_intercept = nullptr);

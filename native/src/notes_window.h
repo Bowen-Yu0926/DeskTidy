@@ -199,6 +199,9 @@ class NotesWindow {
   void CloseTabOnlyAt(int index);
   // 删文件并移除页签；ask_confirm 为 false 时跳过弹窗（调用方已确认）。
   void DeleteAndCloseTabAt(int index, bool ask_confirm);
+  // 账号库.md — fixed system tab (cannot close / delete / rename / unpin).
+  bool IsLockedAccountsTab(int index) const;
+  void NotifyAccountsTabLocked();
   void CloseOtherTabs(int keep_index);
   void CloseTabsToTheRight(int index);
   void InsertMdStrike();

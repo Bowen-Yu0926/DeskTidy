@@ -102,6 +102,11 @@ std::wstring SerializeCategoryFenceMap(const CategoryFenceMap& map);
 CategoryFenceMap ParseCategoryFenceMapText(const std::wstring& text);
 std::wstring SerializeFilenameRules(const FilenameRulesMap& map);
 FilenameRulesMap ParseFilenameRulesText(const std::wstring& text);
+// Match basename against filename_rules globs → category_fence_map fence id.
+// Empty = no category hit (caller falls through to extension RuleMap).
+std::string ResolveCategoryFenceId(const std::wstring& path,
+                                   const CategoryFenceMap& cat_map,
+                                   const FilenameRulesMap& filename_rules);
 
 // Validate a rule pattern + target fence id. Returns "" when acceptable, else a
 // user-facing reason (UTF-8) to reject the rule without writing it.

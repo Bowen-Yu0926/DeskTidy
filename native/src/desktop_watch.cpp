@@ -5,10 +5,11 @@
 namespace {
 
 // Portal folders may be huge (user can point one at a tree with tens of
-// thousands of files). Desktop/public-desktop are small and stamped every
-// 2s tick; extras are re-stamped only when this cadence elapses. Shell
-// notifications still drive the authoritative refresh independently.
+// thousands of files). Desktop/Public are also FindFirstFile-hashed — with
+// SHChangeNotify as the primary signal, both use a slower poll cadence so the
+// 2s watch timer does not hitch the UI thread on large/OneDrive desktops.
 constexpr ULONGLONG kPortalRescanMs = 10000;
+constexpr ULONGLONG kDesktopRescanMs = 10000;
 
 std::wstring Known(REFKNOWNFOLDERID id) {
   PWSTR p = nullptr;
@@ -91,6 +92,11 @@ bool DesktopWatch::StampEq(const FolderStamp& a, const FolderStamp& b) {
 }
 
 void DesktopWatch::SetExtraFolders(const std::vector<std::wstring>& folders) {
+  // Watch tick rebuilds this every period — skip when portal set unchanged
+  // (avoids per-folder StampFolder on new entries / O(n²) stamp remap).
+  if (folders == extra_) {
+    return;
+  }
   std::vector<FolderStamp> next;
   next.reserve(folders.size());
   for (const auto& folder : folders) {
@@ -120,18 +126,32 @@ void DesktopWatch::Reset() {
     extra_stamp_.push_back(StampFolder(folder));
   }
   extra_stamp_ms_ = GetTickCount64();
+  desk_stamp_ms_ = extra_stamp_ms_;
   primed_ = true;
 }
 
 bool DesktopWatch::PollChanged() {
-  const FolderStamp u = StampFolder(Known(FOLDERID_Desktop));
-  const FolderStamp p = StampFolder(Known(FOLDERID_PublicDesktop));
+  bool changed = false;
   bool extra_changed = false;
-  // Throttle the portal/extras scan: they can be arbitrarily large, so a full
-  // FindFirstFile+hash pass every 2s would hitch the UI thread. Re-stamp only
-  // when the cadence elapses; shell events already trigger the authoritative
-  // refresh. New/changed portal lists are still stamped by SetExtraFolders.
+  // Throttle Desktop/Public + portal full hashes. Shell notifications drive
+  // the authoritative refresh; this poll is a OneDrive/quirk backup only.
   const ULONGLONG now_ms = GetTickCount64();
+  const bool restamp_desk =
+      !primed_ || now_ms - desk_stamp_ms_ >= kDesktopRescanMs;
+  if (restamp_desk) {
+    desk_stamp_ms_ = now_ms;
+    const FolderStamp u = StampFolder(Known(FOLDERID_Desktop));
+    const FolderStamp p = StampFolder(Known(FOLDERID_PublicDesktop));
+    if (!primed_) {
+      user_ = u;
+      public_ = p;
+      primed_ = true;
+    } else if (!StampEq(u, user_) || !StampEq(p, public_)) {
+      user_ = u;
+      public_ = p;
+      changed = true;
+    }
+  }
   const bool restamp_extras =
       !extra_.empty() && now_ms - extra_stamp_ms_ >= kPortalRescanMs;
   if (restamp_extras) {
@@ -147,16 +167,5 @@ bool DesktopWatch::PollChanged() {
       extra_stamp_[i] = now;
     }
   }
-  if (!primed_) {
-    user_ = u;
-    public_ = p;
-    primed_ = true;
-    return false;
-  }
-  if (!StampEq(u, user_) || !StampEq(p, public_) || extra_changed) {
-    user_ = u;
-    public_ = p;
-    return true;
-  }
-  return false;
+  return changed || extra_changed;
 }

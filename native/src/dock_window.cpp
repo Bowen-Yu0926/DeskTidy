@@ -4,9 +4,13 @@
 #include "desktop_shell.h"
 #include "display_geom.h"
 #include "icon_actions.h"
+#include "shell_context_menu.h"
+#include "toast.h"
 
 #include <CommCtrl.h>
 #include <Shellapi.h>
+#include <ShlObj.h>
+#include <imm.h>
 #include <windowsx.h>
 
 #include <objidl.h>
@@ -18,6 +22,7 @@
 
 #pragma comment(lib, "gdiplus.lib")
 #pragma comment(lib, "comctl32.lib")
+#pragma comment(lib, "imm32.lib")
 
 namespace {
 constexpr wchar_t kClassName[] = L"DeskTidyNativeDock";
@@ -82,6 +87,8 @@ void DockWindow::ApplyPaths(const std::vector<std::wstring>& paths) {
     }
   }
   slots_.clear();
+  std::vector<std::pair<std::wstring, int>> cold;
+  const int icon_sz = HostMetrics().icon;
   for (const auto& path : paths) {
     if (slots_.size() >= 8) {
       break;
@@ -106,13 +113,23 @@ void DockWindow::ApplyPaths(const std::vector<std::wstring>& paths) {
         s.item.name.resize(dot);
       }
     }
-    SHFILEINFOW sfi{};
-    if (SHGetFileInfoW(path.c_str(), 0, &sfi, sizeof(sfi), SHGFI_DISPLAYNAME) &&
-        sfi.szDisplayName[0]) {
-      s.item.name = sfi.szDisplayName;
+    if (s.item.is_link) {
+      SHFILEINFOW sfi{};
+      if (SHGetFileInfoW(path.c_str(), 0, &sfi, sizeof(sfi),
+                         SHGFI_DISPLAYNAME) &&
+          sfi.szDisplayName[0]) {
+        s.item.name = sfi.szDisplayName;
+      }
     }
-    s.icon = LoadItemIcon(path, HostMetrics().icon);
+    if (ItemIconCached(path, icon_sz)) {
+      s.icon = LoadItemIcon(path, icon_sz);
+    } else {
+      cold.emplace_back(path, icon_sz);
+    }
     slots_.push_back(std::move(s));
+  }
+  if (!cold.empty()) {
+    PreloadIconsNotifyApp(cold);
   }
   LayoutSlots();
   ApplyVisibility();
@@ -158,6 +175,12 @@ bool DockWindow::Create(HINSTANCE instance) {
 }
 
 void DockWindow::Destroy() {
+  if (rename_edit_) {
+    HWND edit = rename_edit_;
+    rename_edit_ = nullptr;
+    rename_index_ = -1;
+    DestroyWindow(edit);
+  }
   for (auto& s : slots_) {
     if (s.icon) {
       DestroyIcon(s.icon);
@@ -251,11 +274,10 @@ void DockWindow::AttachToDesktopLayer() {
   if (!hwnd_) {
     return;
   }
-  // AIGC START
   if (!AttachOverlayToDesktop(hwnd_, true)) {
     ForceAttachOverlayToDesktop(hwnd_, true);
   }
-  // AIGC END
+  RaiseOverlayInDesktopBand(hwnd_);
 }
 
 void DockWindow::SetItems(std::vector<DesktopItem> items) {
@@ -266,6 +288,8 @@ void DockWindow::SetItems(std::vector<DesktopItem> items) {
   }
   slots_.clear();
   slots_.reserve((std::min)(items.size(), size_t{8}));
+  const int icon_sz = HostMetrics().icon;
+  std::vector<std::pair<std::wstring, int>> cold;
   for (auto& item : items) {
     if (slots_.size() >= 8) {
       break;
@@ -276,11 +300,42 @@ void DockWindow::SetItems(std::vector<DesktopItem> items) {
     }
     Slot s;
     s.item = std::move(item);
-    s.icon = LoadItemIcon(s.item.path, HostMetrics().icon);
+    if (ItemIconCached(s.item.path, icon_sz)) {
+      s.icon = LoadItemIcon(s.item.path, icon_sz);
+    } else if (!s.item.path.empty()) {
+      cold.emplace_back(s.item.path, icon_sz);
+    }
     slots_.push_back(std::move(s));
+  }
+  if (!cold.empty()) {
+    PreloadIconsNotifyApp(cold);
   }
   LayoutSlots();
   ApplyVisibility();
+}
+
+bool DockWindow::FillMissingIcons() {
+  const int icon_sz = metrics_.icon > 0 ? metrics_.icon : HostMetrics().icon;
+  bool any = false;
+  for (auto& s : slots_) {
+    if (s.icon || s.item.path.empty()) {
+      continue;
+    }
+    if (!ItemIconCached(s.item.path, icon_sz)) {
+      continue;
+    }
+    s.icon = LoadItemIcon(s.item.path, icon_sz);
+    if (s.icon) {
+      any = true;
+    }
+  }
+  if (!any) {
+    return false;
+  }
+  if (hwnd_ && IsWindowVisible(hwnd_) && !IsIconic(hwnd_)) {
+    Present();
+  }
+  return true;
 }
 
 DockWindow::Metrics DockWindow::HostMetrics() const {
@@ -321,12 +376,20 @@ RECT DockWindow::HostWorkArea() const {
 
 void DockWindow::RebuildIcons() {
   const int icon = metrics_.icon > 0 ? metrics_.icon : HostMetrics().icon;
+  std::vector<std::pair<std::wstring, int>> cold;
   for (auto& s : slots_) {
     if (s.icon) {
       DestroyIcon(s.icon);
       s.icon = nullptr;
     }
-    s.icon = LoadItemIcon(s.item.path, icon);
+    if (ItemIconCached(s.item.path, icon)) {
+      s.icon = LoadItemIcon(s.item.path, icon);
+    } else if (!s.item.path.empty()) {
+      cold.emplace_back(s.item.path, icon);
+    }
+  }
+  if (!cold.empty()) {
+    PreloadIconsNotifyApp(cold);
   }
 }
 
@@ -406,31 +469,180 @@ void DockWindow::LayoutSlots() {
   Present();
 }
 
+namespace {
+bool DockRenameEditImeComposing(HWND hwnd) {
+  HIMC himc = ImmGetContext(hwnd);
+  if (!himc) {
+    return false;
+  }
+  const LONG bytes =
+      ImmGetCompositionStringW(himc, GCS_COMPSTR, nullptr, 0);
+  ImmReleaseContext(hwnd, himc);
+  return bytes > 0;
+}
+
+LRESULT CALLBACK DockRenameEditProc(HWND hwnd, UINT msg, WPARAM wparam,
+                                    LPARAM lparam) {
+  auto* self =
+      reinterpret_cast<DockWindow*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+  if (msg == WM_KEYDOWN && (wparam == VK_RETURN || wparam == VK_ESCAPE)) {
+    if (wparam == VK_RETURN && DockRenameEditImeComposing(hwnd)) {
+      WNDPROC old = reinterpret_cast<WNDPROC>(GetPropW(hwnd, L"oldproc"));
+      if (old) {
+        return CallWindowProcW(old, hwnd, msg, wparam, lparam);
+      }
+      return DefWindowProcW(hwnd, msg, wparam, lparam);
+    }
+    if (self) {
+      self->FinishInlineRename(wparam == VK_RETURN);
+    }
+    return 0;
+  }
+  if (msg == WM_KILLFOCUS) {
+    if (self) {
+      self->FinishInlineRename(true);
+    }
+    return 0;
+  }
+  WNDPROC old = reinterpret_cast<WNDPROC>(GetPropW(hwnd, L"oldproc"));
+  if (old) {
+    return CallWindowProcW(old, hwnd, msg, wparam, lparam);
+  }
+  return DefWindowProcW(hwnd, msg, wparam, lparam);
+}
+}  // namespace
+
+void DockWindow::BeginInlineRename(int index) {
+  if (!hwnd_ || index < 0 || index >= static_cast<int>(slots_.size())) {
+    return;
+  }
+  if (rename_edit_) {
+    DestroyWindow(rename_edit_);
+    rename_edit_ = nullptr;
+  }
+  rename_index_ = index;
+  const RECT& b = slots_[static_cast<size_t>(index)].bounds;
+  POINT origin{b.left, b.bottom + 2};
+  ClientToScreen(hwnd_, &origin);
+  const int edit_w = (std::max)(96, static_cast<int>(b.right - b.left) + 40);
+  const int edit_h = 22;
+  rename_edit_ = CreateWindowExW(
+      WS_EX_TOOLWINDOW | WS_EX_TOPMOST, L"EDIT",
+      slots_[static_cast<size_t>(index)].item.name.c_str(),
+      WS_POPUP | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL, origin.x, origin.y,
+      edit_w, edit_h, hwnd_, nullptr, GetModuleHandleW(nullptr), nullptr);
+  if (!rename_edit_) {
+    rename_index_ = -1;
+    return;
+  }
+  rename_proc_ = reinterpret_cast<WNDPROC>(
+      SetWindowLongPtrW(rename_edit_, GWLP_WNDPROC,
+                        reinterpret_cast<LONG_PTR>(DockRenameEditProc)));
+  SetPropW(rename_edit_, L"oldproc", reinterpret_cast<HANDLE>(rename_proc_));
+  SetWindowLongPtrW(rename_edit_, GWLP_USERDATA,
+                     reinterpret_cast<LONG_PTR>(this));
+  const std::wstring& name = slots_[static_cast<size_t>(index)].item.name;
+  const std::wstring& path = slots_[static_cast<size_t>(index)].item.path;
+  const DWORD attr = GetFileAttributesW(path.c_str());
+  const bool is_dir =
+      attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_DIRECTORY);
+  int sel_end = -1;
+  if (!is_dir) {
+    const size_t dot = name.find_last_of(L'.');
+    if (dot != std::wstring::npos && dot > 0) {
+      sel_end = static_cast<int>(dot);
+    }
+  }
+  SendMessageW(rename_edit_, EM_SETSEL, 0, sel_end);
+  SetFocus(rename_edit_);
+}
+
+void DockWindow::FinishInlineRename(bool commit) {
+  if (!rename_edit_) {
+    return;
+  }
+  HWND edit = rename_edit_;
+  rename_edit_ = nullptr;
+  wchar_t buf[260] = {};
+  GetWindowTextW(edit, buf, 260);
+  const int index = rename_index_;
+  rename_index_ = -1;
+  DestroyWindow(edit);
+  if (!commit || index < 0 || index >= static_cast<int>(slots_.size())) {
+    return;
+  }
+  const std::wstring old_path = slots_[static_cast<size_t>(index)].item.path;
+  const RenamePlan plan = PlanRename(old_path, buf);
+  if (!plan.valid) {
+    if (buf[0]) {
+      ShowToast(plan.error);
+    }
+    return;
+  }
+  if (GetFileAttributesW(plan.dest.c_str()) != INVALID_FILE_ATTRIBUTES) {
+    ShowToast(L"该名称已存在");
+    return;
+  }
+  if (!MoveFileW(old_path.c_str(), plan.dest.c_str())) {
+    ShowToast(L"无法重命名，文件可能被占用");
+    return;
+  }
+  SHChangeNotify(SHCNE_RENAMEITEM, SHCNF_PATHW, old_path.c_str(),
+                 plan.dest.c_str());
+  if (on_path_replaced_) {
+    on_path_replaced_(old_path, plan.dest);
+  }
+}
+
 void DockWindow::ShowSlotMenu(int index, POINT screen) {
   if (index < 0 || index >= static_cast<int>(slots_.size())) {
     return;
   }
   const std::wstring path = slots_[static_cast<size_t>(index)].item.path;
-  const int cmd = TrackIconShellMenu(hwnd_, screen, false);
-  if (cmd == 1) {
-    OpenShellPath(path);
-  } else if (cmd == 2) {
-    RevealShellPath(path);
-  } else if (cmd == 4 || cmd == 5) {
-    CopyOrCutShellPath(hwnd_, path, cmd == 5);
-  } else if (cmd == 6) {
-    CopyShellPathText(hwnd_, path);
-  } else if (cmd == 7) {
-    std::wstring dest;
-    if (RenameShellPath(hwnd_, path, &dest) == IconFsResult::Ok &&
-        on_path_replaced_) {
-      on_path_replaced_(path, dest);
+  // Explorer/Fences: full IContextMenu; rename is host inline EDIT.
+  bool rename_picked = false;
+  bool verb_ran = false;
+  ShellVerbFn on_verb = [&](const std::wstring& verb) {
+    if (verb == L"rename") {
+      rename_picked = true;
+      return;
     }
-  } else if (cmd == 8) {
-    ShowShellPathProperties(hwnd_, path);
-  } else if (cmd == 9) {
-    if (RecycleShellPath(hwnd_, path) == IconFsResult::Ok && on_removed_) {
+    verb_ran = true;
+  };
+  const int shell_cmd =
+      TrackShellContextMenu(hwnd_, screen, {path}, {}, on_verb, nullptr);
+  if (shell_cmd == 0) {
+    if (rename_picked) {
+      BeginInlineRename(index);
+      return;
+    }
+    if (!verb_ran) {
+      return;
+    }
+    if (GetFileAttributesW(path.c_str()) == INVALID_FILE_ATTRIBUTES &&
+        on_removed_) {
       on_removed_(path);
+    }
+    return;
+  }
+  if (shell_cmd < 0) {
+    const int cmd = TrackIconShellMenu(hwnd_, screen, false);
+    if (cmd == 1) {
+      OpenShellPath(path);
+    } else if (cmd == 2) {
+      RevealShellPath(path);
+    } else if (cmd == 4 || cmd == 5) {
+      CopyOrCutShellPath(hwnd_, path, cmd == 5);
+    } else if (cmd == 6) {
+      CopyShellPathText(hwnd_, path);
+    } else if (cmd == 7) {
+      BeginInlineRename(index);
+    } else if (cmd == 8) {
+      ShowShellPathProperties(hwnd_, path);
+    } else if (cmd == 9) {
+      if (RecycleShellPath(hwnd_, path) == IconFsResult::Ok && on_removed_) {
+        on_removed_(path);
+      }
     }
   }
 }

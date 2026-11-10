@@ -24,15 +24,24 @@ struct DefViewHost {
 DefViewHost FindDefViewHost();
 void InvalidateDefViewCache();
 bool IsWallpaperWorkerW(HWND hwnd);
+// Win11 24H2+ "raised desktop": Progman has WS_EX_NOREDIRECTIONBITMAP.
+// Runtime detect (Fences-class) — one binary for Win10 + Win11, no split builds.
+bool IsRaisedDesktopShell();
 bool IsAttachedToDesktop(HWND hwnd, const DefViewHost* cached = nullptr);
 bool AttachOverlayToDesktop(HWND hwnd, bool show = true);
 bool ForceAttachOverlayToDesktop(HWND hwnd, bool show = true);
 bool DetachOverlayFromDesktop(HWND hwnd);
 void PlaceOverlayInDesktopBand(HWND hwnd, bool force = false);
 void RaiseOverlayInDesktopBand(HWND hwnd);
-bool IsOverlayAboveDefView(HWND hwnd);
+bool IsOverlayAboveDefView(HWND hwnd, const DefViewHost* cached = nullptr);
 bool IsExplorerDesktopForeground();
 bool IsShowDesktopActive();
+// True when normal apps own FG (not Explorer desktop / Win+D). Fences-class
+// quiet chrome: skip band restack probes. Avoids EnumWindows cover scans on
+// the common multi-app path (cover only matters for TOPMOST show-desktop).
+bool IsAppsForegroundQuiet();
+// Boot / diagnostics: OS build + DefView host + raised-desktop bit (one line).
+void LogDesktopShellCompatProfile();
 // Monitor-covering APPWINDOW still visible (borderless/fullscreen game).
 // Fences/Rainmeter: do not ride DefView TOPMOST over a live cover — that only
 // "lifts fences" without actually showing the desktop.

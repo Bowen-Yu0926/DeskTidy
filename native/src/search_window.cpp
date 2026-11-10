@@ -5,6 +5,7 @@
 #include "icon_actions.h"
 #include "mist_webview.h"
 #include "paths_util.h"
+#include "shell_context_menu.h"
 #include "tool_paths.h"
 
 #include <ShlObj.h>
@@ -865,33 +866,75 @@ void SearchWindow::ContextAt(int index, int screen_x, int screen_y) {
   }
   const std::wstring path = results_[static_cast<size_t>(index)];
   POINT pt{screen_x, screen_y};
-  const int cmd = TrackIconShellMenu(hwnd_, pt, false);
-  if (cmd == 1) {
-    OpenAt(index);
-  } else if (cmd == 2) {
-    RevealAt(index);
-  } else if (cmd == 4 || cmd == 5) {
-    CopyOrCutShellPath(hwnd_, path, cmd == 5);
-  } else if (cmd == 6) {
-    CopyShellPathText(hwnd_, path);
-  } else if (cmd == 7) {
-    std::wstring dest;
-    if (RenameShellPath(hwnd_, path, &dest) == IconFsResult::Ok) {
-      results_[static_cast<size_t>(index)] = dest;
-      if (on_path_replaced_) {
-        on_path_replaced_(path, dest);
-      }
-      PushState();
+  // Explorer/Fences: full IContextMenu. Search is APPWINDOW (not desktop band)
+  // so rename can use the shell dialog.
+  bool rename_picked = false;
+  bool verb_ran = false;
+  ShellVerbFn on_verb = [&](const std::wstring& verb) {
+    if (verb == L"rename") {
+      rename_picked = true;
+      return;
     }
-  } else if (cmd == 8) {
-    ShowShellPathProperties(hwnd_, path);
-  } else if (cmd == 9) {
-    if (RecycleShellPath(hwnd_, path) == IconFsResult::Ok) {
+    verb_ran = true;
+  };
+  const int shell_cmd =
+      TrackShellContextMenu(hwnd_, pt, {path}, {}, on_verb, nullptr);
+  if (shell_cmd == 0) {
+    if (rename_picked) {
+      std::wstring dest;
+      if (RenameShellPath(hwnd_, path, &dest) == IconFsResult::Ok) {
+        results_[static_cast<size_t>(index)] = dest;
+        if (on_path_replaced_) {
+          on_path_replaced_(path, dest);
+        }
+        PushState();
+      }
+      return;
+    }
+    if (!verb_ran) {
+      return;
+    }
+    if (GetFileAttributesW(path.c_str()) == INVALID_FILE_ATTRIBUTES) {
       results_.erase(results_.begin() + index);
       if (on_removed_) {
         on_removed_(path);
       }
       PushState();
+    } else {
+      // Path may have been renamed by a shell extension — refresh label.
+      PushState();
+    }
+    return;
+  }
+  if (shell_cmd < 0) {
+    const int cmd = TrackIconShellMenu(hwnd_, pt, false);
+    if (cmd == 1) {
+      OpenAt(index);
+    } else if (cmd == 2) {
+      RevealAt(index);
+    } else if (cmd == 4 || cmd == 5) {
+      CopyOrCutShellPath(hwnd_, path, cmd == 5);
+    } else if (cmd == 6) {
+      CopyShellPathText(hwnd_, path);
+    } else if (cmd == 7) {
+      std::wstring dest;
+      if (RenameShellPath(hwnd_, path, &dest) == IconFsResult::Ok) {
+        results_[static_cast<size_t>(index)] = dest;
+        if (on_path_replaced_) {
+          on_path_replaced_(path, dest);
+        }
+        PushState();
+      }
+    } else if (cmd == 8) {
+      ShowShellPathProperties(hwnd_, path);
+    } else if (cmd == 9) {
+      if (RecycleShellPath(hwnd_, path) == IconFsResult::Ok) {
+        results_.erase(results_.begin() + index);
+        if (on_removed_) {
+          on_removed_(path);
+        }
+        PushState();
+      }
     }
   }
 }

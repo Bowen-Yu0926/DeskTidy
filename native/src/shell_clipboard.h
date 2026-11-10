@@ -16,3 +16,6 @@ bool ClipboardGetFilesWithEffect(std::vector<std::wstring>* paths, bool* cut);
 bool ClipboardSetText(HWND owner, const std::wstring& text);
 // True when the clipboard holds this path with Preferred DropEffect = move.
 bool ClipboardPathIsCut(const std::wstring& path);
+// After a successful Cut→Paste: clear the clipboard so a later blank-desktop
+// paste cannot re-apply the cut (Explorer / Fences one-shot cut).
+void ClipboardConsumeCut();

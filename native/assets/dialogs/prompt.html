@@ -119,7 +119,14 @@
     el.select();
   }
   window.applyState = function(m) {
-    if (!m || m.type !== 'state') return;
+    if (!m) return;
+    // Host asks to restore caret after empty OK / IME glitch.
+    if (m.type === 'focus') {
+      focusVal();
+      setTimeout(focusVal, 40);
+      return;
+    }
+    if (m.type !== 'state') return;
     if (m.title) document.getElementById('title').textContent = m.title;
     document.getElementById('label').textContent = m.label || '';
     document.getElementById('val').value = m.value || '';
@@ -134,8 +141,17 @@
   document.getElementById('cancel').onclick = () => post({ type: 'action', id: 'cancel' });
   document.getElementById('close').onclick = () => post({ type: 'action', id: 'cancel' });
   document.getElementById('val').onkeydown = e => {
-    if (e.key === 'Enter') document.getElementById('ok').click();
-    if (e.key === 'Escape') document.getElementById('cancel').click();
+    // Explorer/IME: Enter while composing only commits the candidate — must
+    // NOT submit the dialog, or caret dies and only number keys still work.
+    if (e.isComposing || e.keyCode === 229) return;
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      document.getElementById('ok').click();
+    }
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      document.getElementById('cancel').click();
+    }
   };
   try {
     chrome.webview.addEventListener('message', ev => {

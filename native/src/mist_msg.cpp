@@ -248,6 +248,9 @@ std::wstring MistPromptText(HWND owner, const wchar_t* title,
       }
       if (result.empty()) {
         answered = false;
+        // Empty OK / premature Enter during IME — restore caret so the user
+        // can keep typing (otherwise only number-key candidate pick works).
+        MistWebDialogFocus(&dlg);
         return false;  // Keep open — empty not allowed.
       }
       accepted = true;

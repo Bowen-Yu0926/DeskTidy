@@ -45,6 +45,8 @@ void MistWebDialogRun(MistWebDialog* dlg, const wchar_t* title, int width,
 void MistWebDialogClose(MistWebDialog* dlg);
 void MistWebDialogPushState(MistWebDialog* dlg);
 void MistWebDialogPostJson(MistWebDialog* dlg, const std::wstring& json);
+// Re-assert host + WebView2 keyboard focus (rename prompt after IME / empty OK).
+void MistWebDialogFocus(MistWebDialog* dlg);
 
 std::wstring MistJsonEscape(const std::wstring& s);
 std::wstring MistJsonStringField(const std::wstring& json, const wchar_t* key);

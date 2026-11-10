@@ -238,20 +238,25 @@ std::wstring CanonicalVerb(IContextMenu* pcm, UINT offset) {
   return L"";
 }
 
-int TrackCommon(HWND owner, POINT screen, IContextMenu* pcm, UINT cmf_flags,
-                bool can_rename, const std::vector<ShellMenuExtra>& extras,
-                const ShellVerbFn& on_verb,
-                const ShellBeforeInvokeFn& on_before_invoke) {
-  HMENU menu = CreatePopupMenu();
-  if (!menu) {
-    return -1;
-  }
-
-  // DeskTidy extras at the top (ids 1..99), then a separator, then shell items.
-  UINT index = 0;
+bool AppendShellExtras(HMENU menu, const std::vector<ShellMenuExtra>& extras) {
+  bool any = false;
   for (const auto& ex : extras) {
+    if (ex.label.empty()) {
+      continue;
+    }
+    if (!ex.children.empty()) {
+      HMENU sub = CreatePopupMenu();
+      if (!sub) {
+        continue;
+      }
+      AppendShellExtras(sub, ex.children);
+      AppendMenuW(menu, MF_POPUP | (ex.enabled ? 0 : MF_GRAYED),
+                  reinterpret_cast<UINT_PTR>(sub), ex.label.c_str());
+      any = true;
+      continue;
+    }
     if (ex.id < static_cast<int>(kCustomIdFirst) ||
-        ex.id > static_cast<int>(kCustomIdLast) || ex.label.empty()) {
+        ex.id > static_cast<int>(kCustomIdLast)) {
       continue;
     }
     UINT flags = MF_STRING;
@@ -262,9 +267,23 @@ int TrackCommon(HWND owner, POINT screen, IContextMenu* pcm, UINT cmf_flags,
       flags |= MF_CHECKED;
     }
     AppendMenuW(menu, flags, static_cast<UINT>(ex.id), ex.label.c_str());
-    ++index;
+    any = true;
   }
-  if (!extras.empty()) {
+  return any;
+}
+
+int TrackCommon(HWND owner, POINT screen, IContextMenu* pcm, UINT cmf_flags,
+                bool can_rename, const std::vector<ShellMenuExtra>& extras,
+                const ShellVerbFn& on_verb,
+                const ShellBeforeInvokeFn& on_before_invoke,
+                const ShellInterceptFn& on_intercept) {
+  HMENU menu = CreatePopupMenu();
+  if (!menu) {
+    return -1;
+  }
+
+  // DeskTidy extras at the top (ids 1..99 + cascading children), then shell.
+  if (AppendShellExtras(menu, extras)) {
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
   }
 
@@ -281,11 +300,29 @@ int TrackCommon(HWND owner, POINT screen, IContextMenu* pcm, UINT cmf_flags,
   pcm->QueryInterface(IID_IContextMenu2, reinterpret_cast<void**>(&g_pcm2));
   pcm->QueryInterface(IID_IContextMenu3, reinterpret_cast<void**>(&g_pcm3));
 
-  SetForegroundWindow(owner);
+  // Fences/Explorer: never SetForegroundWindow(fence/dock). That lifts the
+  // desktop-band overlay over APPWINDOWs (WeChat/VS Code). Arm the invisible
+  // TOOLWINDOW host instead — TrackPopupMenu already routes messages there.
+  HWND track = g_host ? g_host : owner;
+  if (!track) {
+    DestroyMenu(menu);
+    if (g_pcm3) {
+      g_pcm3->Release();
+      g_pcm3 = nullptr;
+    }
+    if (g_pcm2) {
+      g_pcm2->Release();
+      g_pcm2 = nullptr;
+    }
+    return -1;
+  }
+  SetForegroundWindow(track);
   const int cmd =
       TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, screen.x, screen.y,
-                     0, g_host ? g_host : owner, nullptr);
-  PostMessageW(owner, WM_NULL, 0, 0);
+                     0, track, nullptr);
+  if (owner) {
+    PostMessageW(owner, WM_NULL, 0, 0);
+  }
 
   int result = 0;
   if (cmd >= static_cast<int>(kCustomIdFirst) &&
@@ -300,6 +337,12 @@ int TrackCommon(HWND owner, POINT screen, IContextMenu* pcm, UINT cmf_flags,
         on_verb(verb);
       }
       LogLine(L"[menu] shell verb=rename (host handles inline rename)");
+      result = 0;
+    } else if (on_intercept && on_intercept(verb)) {
+      if (on_verb) {
+        on_verb(verb);
+      }
+      LogLine(L"[menu] shell verb=%s (host intercepted)", verb.c_str());
       result = 0;
     } else {
       if (on_before_invoke) {
@@ -336,11 +379,43 @@ int TrackCommon(HWND owner, POINT screen, IContextMenu* pcm, UINT cmf_flags,
 
 }  // namespace
 
+bool ShellVerbNeedsDesktopRescan(const std::wstring& verb) {
+  // Unknown/empty after Invoke: treat as mutating (safer than missing a delete).
+  if (verb.empty()) {
+    return true;
+  }
+  if (verb == L"delete" || verb == L"recycle") {
+    return true;
+  }
+  if (verb == L"paste" || verb == L"pastelink" || verb == L"pasteto") {
+    return true;
+  }
+  if (verb == L"undo" || verb == L"redo") {
+    return true;
+  }
+  if (verb == L"refresh") {
+    return true;
+  }
+  if (verb == L"link" || verb == L"createlink") {
+    return true;
+  }
+  if (verb == L"move" || verb == L"moveto" || verb == L"copyto") {
+    return true;
+  }
+  // Shell "New → …" verbs are typically "newfolder" / "new.*" style.
+  if (verb == L"new" || verb.rfind(L"new", 0) == 0) {
+    return true;
+  }
+  // open / properties / copy / cut / explore / edit / print → quiet.
+  return false;
+}
+
 int TrackShellContextMenu(HWND owner, POINT screen,
                           const std::vector<std::wstring>& paths,
                           const std::vector<ShellMenuExtra>& extras,
                           ShellVerbFn on_verb,
-                          ShellBeforeInvokeFn on_before_invoke) {
+                          ShellBeforeInvokeFn on_before_invoke,
+                          ShellInterceptFn on_intercept) {
   if (paths.empty()) {
     return -1;
   }
@@ -365,7 +440,7 @@ int TrackShellContextMenu(HWND owner, POINT screen,
                             : (CMF_NORMAL | CMF_EXPLORE);
   const int rc =
       TrackCommon(owner, screen, pcm, flags, single, extras, on_verb,
-                  on_before_invoke);
+                  on_before_invoke, on_intercept);
   pcm->Release();
   return rc;
 }
@@ -374,7 +449,8 @@ int TrackShellFolderBackgroundMenu(HWND owner, POINT screen,
                                    const std::wstring& folder,
                                    const std::vector<ShellMenuExtra>& extras,
                                    ShellVerbFn on_verb,
-                                   ShellBeforeInvokeFn on_before_invoke) {
+                                   ShellBeforeInvokeFn on_before_invoke,
+                                   ShellInterceptFn on_intercept) {
   if (folder.empty()) {
     return -1;
   }
@@ -396,7 +472,7 @@ int TrackShellFolderBackgroundMenu(HWND owner, POINT screen,
 
   const int rc = TrackCommon(owner, screen, pcm, CMF_NORMAL | CMF_EXPLORE,
                              /*can_rename=*/false, extras, on_verb,
-                             on_before_invoke);
+                             on_before_invoke, on_intercept);
   pcm->Release();
   return rc;
 }
@@ -465,12 +541,17 @@ std::string TrackMoveToPageThenFenceMenu(
                 names[pi].c_str());
   }
 
-  if (owner) {
-    SetForegroundWindow(owner);
+  // Same as TrackCommon: FG the toolwindow host, not the fence (keeps band).
+  HWND track = EnsureMenuHost(GetModuleHandleW(nullptr));
+  if (!track) {
+    track = owner ? owner : GetDesktopWindow();
+  }
+  if (track) {
+    SetForegroundWindow(track);
   }
   const int cmd =
       TrackPopupMenu(root, TPM_RETURNCMD | TPM_NONOTIFY, screen.x, screen.y, 0,
-                     owner ? owner : GetDesktopWindow(), nullptr);
+                     track, nullptr);
   DestroyMenu(root);
   if (cmd <= 0 || cmd >= static_cast<int>(cmd_ids.size())) {
     return {};

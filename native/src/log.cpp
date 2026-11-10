@@ -121,7 +121,14 @@ void WriteCore(const char* utf8, size_t len) {
   WriteFile(h, utf8, static_cast<DWORD>(len), &written, nullptr);
   const char nl = '\n';
   WriteFile(h, &nl, 1, &written, nullptr);
-  FlushFileBuffers(h);
+  // Flush at most ~2 Hz. Every-line FlushFileBuffers stalled the UI during
+  // RefreshDesktopIcons / shell-notify log storms (N fences × sync disk).
+  static ULONGLONG s_last_flush_ms = 0;
+  const ULONGLONG now = GetTickCount64();
+  if (now - s_last_flush_ms >= 500) {
+    FlushFileBuffers(h);
+    s_last_flush_ms = now;
+  }
   CloseHandle(h);
   LeaveCriticalSection(&g_lock);
 }

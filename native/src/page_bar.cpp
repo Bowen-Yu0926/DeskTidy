@@ -627,12 +627,11 @@ void PageBar::AttachToDesktopLayer() {
   if (!hwnd_) {
     return;
   }
-  // AIGC START
-  // Keepalive Raise is SWP_NOREDRAW — cheaper than a buried blank page bar.
+  // Keepalive Raise is SWP_NOREDRAW and skips no-op restacks.
   if (!AttachOverlayToDesktop(hwnd_, true)) {
     ForceAttachOverlayToDesktop(hwnd_, true);
   }
-  // AIGC END
+  RaiseOverlayInDesktopBand(hwnd_);
 }
 
 int PageBar::HitTest(int x, int y) const {
@@ -721,7 +720,7 @@ void PageBar::ShowPageContextMenu(int page_index) {
   AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(color_menu), L"页签颜色");
   POINT pt{};
   GetCursorPos(&pt);
-  SetForegroundWindow(hwnd_);
+  // Desktop-band chrome: no SetForegroundWindow — keeps page bar under apps.
   const int cmd = TrackPopupMenu(
       menu, TPM_RETURNCMD | TPM_NONOTIFY | TPM_RIGHTBUTTON, pt.x, pt.y, 0,
       hwnd_, nullptr);
