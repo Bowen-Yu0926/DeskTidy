@@ -42,10 +42,11 @@ using PinDragMoveFn = std::function<void(POINT cursor, const PinDragHint&)>;
 void SetPinDragMoveFn(PinDragMoveFn fn);
 
 // How CF_HDROP effects are advertised to the OLE source (Explorer).
-// VirtualPin must stay COPY so pin-only fences never delete the source file.
+// VirtualPin never MOVE (pin-only must not delete the source). LINK is still
+// allowed for Alt / Ctrl+Shift (Desktop .lnk then pin).
 enum class FileDropSemantics {
   Physical,    // Explorer: same-volume MOVE, cross-volume COPY (+ Ctrl/Shift)
-  VirtualPin,  // DeskTidy plain fence / notes: always COPY
+  VirtualPin,  // DeskTidy plain fence / notes: COPY, or LINK on Alt/Ctrl+Shift
   PreferMove,  // Pet trash / recycle-like sinks
 };
 
@@ -131,3 +132,9 @@ class PathDropTarget : public IDropTarget {
 
 bool RegisterPathDropTarget(HWND hwnd, PathDropTarget* target);
 void RevokePathDropTarget(HWND hwnd);
+
+// Fences / Explorer Ctrl+C·X: shell IDataObject on the OLE clipboard with
+// Preferred DropEffect (COPY vs MOVE). Prefer this over raw Win32 CF_HDROP —
+// Win11 Explorer paste often requires a real Shell IDList Array.
+bool ShellOleSetClipboardFiles(const std::vector<std::wstring>& paths,
+                               bool cut);

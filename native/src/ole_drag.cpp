@@ -57,9 +57,8 @@ void BeginOleDragVisual(IDataObject* data,
                         const std::vector<std::wstring>& paths);
 void EndOleDragVisual();
 
-bool PinDragOverDesktopUnpinZone(POINT pt) {
-  return IsPointOverDesktopUnpinZone(pt);
-}
+// PinDragOverDesktopUnpinZone is defined outside this anonymous namespace
+// (see below) so other TUs can link it.
 
 // The Recycle Bin desktop icon sits on the same DefView as the blank desktop,
 // but it is a legitimate CF_HDROP target (delete). Detect it so the release
@@ -171,7 +170,9 @@ class SimpleDropSource : public IDropSource {
       g_desktop_unpin_requested = false;
       return DRAGDROP_S_CANCEL;
     }
-    if ((key_state & MK_LBUTTON) == 0) {
+    // Explorer: left- or right-button drag; drop when neither button is down
+    // (right-drag sinks show Copy/Move/Create-shortcut menu).
+    if ((key_state & (MK_LBUTTON | MK_RBUTTON)) == 0) {
       // Pin / float drag released over desktop/public → cancel OLE so Explorer
       // never sees same-folder CF_HDROP (「源和目标文件名相同」). Pin caller
       // unpins; float caller keeps prior seats (no rewrite).
@@ -907,7 +908,73 @@ IDataObject* CreateShellDataObject(const std::vector<std::wstring>& paths) {
   return new (std::nothrow) HdropDataObject(hdrop);
 }
 
+CLIPFORMAT PreferredDropEffectFormat() {
+  static CLIPFORMAT fmt = 0;
+  if (!fmt) {
+    fmt = static_cast<CLIPFORMAT>(
+        RegisterClipboardFormatW(CFSTR_PREFERREDDROPEFFECT));
+  }
+  return fmt;
+}
+
+bool AttachPreferredDropEffect(IDataObject* data, bool cut) {
+  if (!data) {
+    return false;
+  }
+  const CLIPFORMAT fmt = PreferredDropEffectFormat();
+  if (!fmt) {
+    return false;
+  }
+  HGLOBAL mem = GlobalAlloc(GHND, sizeof(DWORD));
+  if (!mem) {
+    return false;
+  }
+  auto* pe = static_cast<DWORD*>(GlobalLock(mem));
+  if (!pe) {
+    GlobalFree(mem);
+    return false;
+  }
+  *pe = cut ? DROPEFFECT_MOVE : DROPEFFECT_COPY;
+  GlobalUnlock(mem);
+  FORMATETC fe{fmt, nullptr, DVASPECT_CONTENT, -1, TYMED_HGLOBAL};
+  STGMEDIUM stg{};
+  stg.tymed = TYMED_HGLOBAL;
+  stg.hGlobal = mem;
+  if (FAILED(data->SetData(&fe, &stg, TRUE))) {
+    GlobalFree(mem);
+    return false;
+  }
+  return true;
+}
+
+bool OleSetClipboardFilesImpl(const std::vector<std::wstring>& paths,
+                              bool cut) {
+  if (paths.empty()) {
+    return false;
+  }
+  IDataObject* data = CreateShellDataObject(paths);
+  if (!data) {
+    return false;
+  }
+  // Cut ghost / paste MOVE: Explorer reads Preferred DropEffect from OLE.
+  // Shell BindToHandler objects accept SetData; HdropDataObject stores via
+  // ExtraMediumStore. Failure still leaves a usable CF_HDROP copy clipboard.
+  AttachPreferredDropEffect(data, cut);
+  const HRESULT hr = OleSetClipboard(data);
+  data->Release();
+  return SUCCEEDED(hr);
+}
+
 }  // namespace
+
+bool ShellOleSetClipboardFiles(const std::vector<std::wstring>& paths,
+                               bool cut) {
+  return OleSetClipboardFilesImpl(paths, cut);
+}
+
+bool PinDragOverDesktopUnpinZone(POINT pt) {
+  return IsPointOverDesktopUnpinZone(pt);
+}
 
 bool ShellDoDragFiles(const std::vector<std::wstring>& paths,
                       bool cancel_desktop_self_drop) {
@@ -1159,9 +1226,19 @@ DWORD PathDropTarget::ResolveFileEffect(DWORD key_state, DWORD allowed,
     return DROPEFFECT_NONE;
   }
   switch (ActiveSemantics()) {
-    case FileDropSemantics::VirtualPin:
+    case FileDropSemantics::VirtualPin: {
+      // Pin-only never MOVE (would delete source). Still honor Alt /
+      // Ctrl+Shift → LINK so the cursor matches Fences and DropAt can
+      // land a Desktop .lnk then pin it.
+      const bool ctrl = (key_state & MK_CONTROL) != 0;
+      const bool shift = (key_state & MK_SHIFT) != 0;
+      const bool alt = (key_state & MK_ALT) != 0;
+      if (((ctrl && shift) || alt) && (allowed & DROPEFFECT_LINK)) {
+        return DROPEFFECT_LINK;
+      }
       return (allowed & DROPEFFECT_COPY) ? DROPEFFECT_COPY
                                          : DROPEFFECT_NONE;
+    }
     case FileDropSemantics::PreferMove:
       if (allowed & DROPEFFECT_MOVE) {
         return DROPEFFECT_MOVE;

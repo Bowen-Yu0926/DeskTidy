@@ -14,6 +14,7 @@ class PinnedImage {
   void Destroy();
   void Show();
   HWND Hwnd() const { return hwnd_; }
+  const std::wstring& Path() const { return path_; }
   static LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
 
  private:

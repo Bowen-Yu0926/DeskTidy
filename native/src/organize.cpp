@@ -20,6 +20,19 @@ std::string NormalizeOrganizeTarget(std::string id) {
   return id;
 }
 
+bool FenceIdAlive(const std::string& id,
+                  const std::vector<FenceLayout>* fences) {
+  if (id.empty() || !fences) {
+    return false;
+  }
+  for (const auto& f : *fences) {
+    if (f.id == id) {
+      return true;
+    }
+  }
+  return false;
+}
+
 std::wstring TitleForFence(
     const std::string& id,
     const std::unordered_map<std::string, std::wstring>& titles) {
@@ -31,14 +44,18 @@ std::wstring TitleForFence(
 }
 
 bool ShouldSkipVirtual(const DesktopItem& it, const PinMap& pins,
-                       const std::vector<std::wstring>& wl, bool /*reassign*/) {
-  // Fences-class: only organize loose public-desktop floats. Anything already
-  // pinned into a fence stays where the user put it (incl. explicit reassign).
-  const std::string* pin = FindPin(pins, it.path);
-  if (pin && !pin->empty()) {
-    return true;
+                       const std::vector<std::wstring>& wl, bool reassign,
+                       bool honor_suppress) {
+  // 一键整理：已钉选保持用户座位。重新整理：按当前规则允许换区。
+  if (!reassign) {
+    const std::string* pin = FindPin(pins, it.path);
+    if (pin && !pin->empty()) {
+      return true;
+    }
   }
-  if (IsOrganizeSuppressed(it.path)) {
+  // Watch/quiet honors unpin suppress; explicit organize / reassign does not
+  // (Fences: user-triggered tidy can reclaim floats).
+  if (honor_suppress && IsOrganizeSuppressed(it.path)) {
     return true;
   }
   if (IsWhitelisted(it.path, wl) || IsWhitelisted(it.name, wl)) {
@@ -49,14 +66,17 @@ bool ShouldSkipVirtual(const DesktopItem& it, const PinMap& pins,
 
 }  // namespace
 
-int OrganizeApplyDefaultPins(PinMap* pins, const std::vector<DesktopItem>& items,
-                             const RuleMap& rules,
-                             const std::string& software_id,
-                             const std::string& common_id,
-                             const std::vector<FenceLayout>* fences,
-                             int current_page, bool reassign) {
+int OrganizeApplyDefaultPins(
+    PinMap* pins, const std::vector<DesktopItem>& items, const RuleMap& rules,
+    const std::string& software_id, const std::string& common_id,
+    const std::vector<FenceLayout>* fences, int current_page, bool reassign,
+    bool honor_suppress,
+    std::vector<std::pair<std::wstring, std::string>>* ordered_changes) {
   if (!pins) {
     return 0;
+  }
+  if (ordered_changes) {
+    ordered_changes->clear();
   }
   const auto wl = LoadWhitelist();
   CategoryFenceMap cat_map;
@@ -64,7 +84,7 @@ int OrganizeApplyDefaultPins(PinMap* pins, const std::vector<DesktopItem>& items
   LoadCategoriesBoth(&cat_map, &filename_rules);
   int n = 0;
   for (const auto& it : items) {
-    if (ShouldSkipVirtual(it, *pins, wl, reassign)) {
+    if (ShouldSkipVirtual(it, *pins, wl, reassign, honor_suppress)) {
       continue;
     }
     const std::string* existing = FindPin(*pins, it.path);
@@ -85,10 +105,18 @@ int OrganizeApplyDefaultPins(PinMap* pins, const std::vector<DesktopItem>& items
                              common_id);
     }
     target = NormalizeOrganizeTarget(std::move(target));
+    // Dead fence_id (deleted partition / stale category map) → skip. Pinning
+    // to a ghost id hides the icon from every fence and the public strip.
+    if (!FenceIdAlive(target, fences)) {
+      continue;
+    }
     if (!prev.empty() && prev == target) {
       continue;
     }
     SetPin(pins, it.path, target);
+    if (ordered_changes) {
+      ordered_changes->emplace_back(it.path, target);
+    }
     ++n;
   }
   return n;
@@ -106,7 +134,8 @@ std::vector<std::wstring> OrganizePreviewVirtualPins(
   FilenameRulesMap filename_rules;
   LoadCategoriesBoth(&cat_map, &filename_rules);
   for (const auto& it : items) {
-    if (ShouldSkipVirtual(it, pins, wl, /*reassign=*/false)) {
+    if (ShouldSkipVirtual(it, pins, wl, /*reassign=*/false,
+                          /*honor_suppress=*/true)) {
       continue;
     }
     std::string target;
@@ -121,6 +150,9 @@ std::vector<std::wstring> OrganizePreviewVirtualPins(
                              common_id);
     }
     target = NormalizeOrganizeTarget(std::move(target));
+    if (!FenceIdAlive(target, fences)) {
+      continue;
+    }
     const std::wstring name = it.name.empty() ? it.path : it.name;
     lines.push_back(name + L" → " + TitleForFence(target, fence_titles));
     if (lines.size() >= 80) {

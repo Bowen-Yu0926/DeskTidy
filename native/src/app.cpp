@@ -29,6 +29,8 @@
 #include "layout_editor.h"
 #include "python_layout_sync.h"
 #include "shell_clipboard.h"
+#include "shell_context_menu.h"
+#include "pin_store.h"
 #include "brand_mark.h"
 #include "namespace_icons.h"
 #include "shell_icons.h"
@@ -112,6 +114,8 @@ constexpr UINT kMsgRevealPublic = WM_APP + 54;
 constexpr UINT kMsgSeatUnderApps = WM_APP + 56;
 // FG hook posts only this — never call Shell/Z-order APIs inside WinEvent.
 constexpr UINT kMsgFgChanged = WM_APP + 57;
+// Organized blank wallpaper RMB → Desktop background menu (Paste/New/Undo).
+constexpr UINT kMsgDesktopBlankRClick = WM_APP + 58;
 // kDeskTidyMsgIconsPreloaded (desktop_items.h) — STA icon preload done.
 constexpr DWORD kTrayOpenDebounceMs = 450;
 // Min interval between full DisplayFingerprint() recomputes on the 2s watch
@@ -121,6 +125,10 @@ constexpr DWORD kTrayOpenDebounceMs = 450;
 constexpr ULONGLONG kDisplayFingerprintIntervalMs = 10000;
 constexpr wchar_t kMsgClass[] = L"DeskTidyNativeMsg";
 bool g_organize_busy = false;
+// Coalesce organize requests while a worker runs (watch + manual + reassign).
+bool g_organize_pending = false;
+bool g_organize_pending_quiet = true;
+bool g_organize_pending_reassign = false;
 // Count monitors encoded in a DisplayFingerprint() string ("|"-joined panels).
 int CountMonitorsInFingerprint(const std::string& fp) {
   if (fp.empty()) {
@@ -134,6 +142,101 @@ int CountMonitorsInFingerprint(const std::string& fp) {
   }
   return n;
 }
+
+std::wstring ParentDirOf(const std::wstring& path) {
+  const size_t slash = path.find_last_of(L"\\/");
+  return slash == std::wstring::npos ? std::wstring() : path.substr(0, slash);
+}
+
+bool PathIsUnderRoot(const std::wstring& path, const std::wstring& root) {
+  if (root.empty() || path.size() <= root.size()) {
+    return false;
+  }
+  if (_wcsnicmp(path.c_str(), root.c_str(), root.size()) != 0) {
+    return false;
+  }
+  const wchar_t sep = path[root.size()];
+  return sep == L'\\' || sep == L'/';
+}
+
+bool PathIsDesktopChild(const std::wstring& path, const std::wstring& desk) {
+  return !desk.empty() &&
+         _wcsicmp(ParentDirOf(path).c_str(), desk.c_str()) == 0;
+}
+
+// Folder Portal → virtual fence: FO onto Desktop first so the same path is not
+// dual-listed (portal scan + pin). Explorer off-Desktop pin-only stays intact.
+DWORD LandPortalSourcesOnDesktop(
+    HWND owner, const std::vector<std::unique_ptr<FenceWindow>>& fences,
+    const std::vector<std::wstring>& paths, std::vector<std::wstring>* out) {
+  if (!out) {
+    return DROPEFFECT_NONE;
+  }
+  out->clear();
+  out->reserve(paths.size());
+  PWSTR desk_raw = nullptr;
+  std::wstring desk;
+  if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Desktop, 0, nullptr, &desk_raw)) &&
+      desk_raw) {
+    desk = desk_raw;
+    CoTaskMemFree(desk_raw);
+  }
+  std::vector<std::wstring> portal_roots;
+  for (const auto& f : fences) {
+    if (!f || f->PortalPath().empty()) {
+      continue;
+    }
+    portal_roots.push_back(f->PortalPath());
+  }
+  const bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+  const bool shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+  int moved = 0;
+  int ok = 0;
+  for (const auto& src : paths) {
+    if (src.empty()) {
+      continue;
+    }
+    bool from_portal = false;
+    for (const auto& root : portal_roots) {
+      if (PathIsUnderRoot(src, root)) {
+        from_portal = true;
+        break;
+      }
+    }
+    if (!from_portal || PathIsDesktopChild(src, desk) || desk.empty()) {
+      out->push_back(src);
+      ++ok;
+      continue;
+    }
+    bool do_move = SameVolume(src, desk);
+    if (ctrl) {
+      do_move = false;
+    }
+    if (shift) {
+      do_move = true;
+    }
+    std::wstring dest;
+    if (!MoveOrCopyFileIntoDir(owner, src, desk, do_move, &dest) ||
+        dest.empty()) {
+      continue;
+    }
+    SuppressOrganizePath(src);
+    SuppressOrganizePath(dest);
+    out->push_back(dest);
+    ++ok;
+    if (do_move) {
+      ++moved;
+    }
+  }
+  if (ok <= 0) {
+    return DROPEFFECT_NONE;
+  }
+  if (moved == ok) {
+    return DROPEFFECT_MOVE;
+  }
+  return DROPEFFECT_COPY;
+}
+
 App* g_app_for_hook = nullptr;
 HWND g_band_hwnd = nullptr;
 HHOOK g_kb_hook = nullptr;
@@ -294,6 +397,8 @@ void HidePinHintWindow() {
 struct OrganizeJobResult {
   PinMap pins;
   PinMap pins_at_start;
+  // Scan-order (path, fence_id) for pin_order append — not unordered_map iter.
+  std::vector<std::pair<std::wstring, std::string>> neu;
   int n = 0;
   int hosted = 0;
   bool quiet = false;
@@ -474,7 +579,7 @@ static void NudgePetClearOfFences(
     if (!f || !f->Hwnd() || !IsWindowVisible(f->Hwnd())) {
       continue;
     }
-    if (f->Page() != current_page) {
+    if (!f->VisibleOnPage(current_page)) {
       continue;
     }
     RECT wr{};
@@ -494,11 +599,12 @@ void App::WireFence(FenceWindow* fence) {
     if (!moved) {
       return;
     }
-    const int page = moved->Page();
+    // Snap against fences on the page the user is viewing (pages[] membership).
+    const int page = current_page_;
     std::vector<FenceWindow*> list;
     std::vector<LayoutRect> rects;
     for (auto& f : fences_) {
-      if (!f || f->Page() != page || f->IsCollapsed()) {
+      if (!f || !f->OnPage(page) || f->IsCollapsed()) {
         continue;
       }
       RECT r{};
@@ -609,9 +715,64 @@ void App::WireFence(FenceWindow* fence) {
              int at) -> DWORD {
         // Virtual fence: SetPin + insert order. Portal: real import only —
         // pin_order does not apply (Fences Folder Portal).
-        if (f && f->PortalPath().empty()) {
+        // Alt / Ctrl+Shift: land .lnk on Desktop then pin the shortcut at the
+        // drop seat (Fences) — never pin the untouched source path.
+        if (f && f->PortalPath().empty() && WantDropLinkEffect()) {
+          PWSTR desk_raw = nullptr;
+          std::wstring desk;
+          if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Desktop, 0, nullptr,
+                                             &desk_raw)) &&
+              desk_raw) {
+            desk = desk_raw;
+            CoTaskMemFree(desk_raw);
+          }
+          if (desk.empty()) {
+            return DROPEFFECT_NONE;
+          }
+          HWND owner = settings_.Hwnd() ? settings_.Hwnd() : message_hwnd_;
+          std::vector<std::wstring> landed;
+          landed.reserve(paths.size());
+          for (const auto& src : paths) {
+            std::wstring dest;
+            if (!CreateShortcutIntoDir(owner, src, desk, &dest) ||
+                dest.empty()) {
+              continue;
+            }
+            SuppressOrganizePath(dest);
+            landed.push_back(dest);
+          }
+          if (landed.empty()) {
+            return DROPEFFECT_NONE;
+          }
           f->SetSortBy("manual");
-          f->InsertPinOrder(paths, at);
+          f->InsertPinOrder(landed, at);
+          // paste=true skips WantDropLinkEffect inside HandleIncomingPaths
+          // (shortcuts already materialized).
+          HandleIncomingPaths(f, landed, /*paste=*/true, /*move=*/false);
+          PersistLayouts();
+          ShowToast(L"已创建快捷方式 " + std::to_wstring(landed.size()) +
+                    L" 项");
+          return DROPEFFECT_LINK;
+        }
+        if (f && f->PortalPath().empty()) {
+          // Portal-folder sources: land on Desktop first (avoid dual-list),
+          // then pin the Desktop path at the drop seat.
+          HWND owner = settings_.Hwnd() ? settings_.Hwnd() : message_hwnd_;
+          std::vector<std::wstring> resolved;
+          const DWORD land =
+              LandPortalSourcesOnDesktop(owner, fences_, paths, &resolved);
+          if (resolved.empty()) {
+            return DROPEFFECT_NONE;
+          }
+          f->SetSortBy("manual");
+          f->InsertPinOrder(resolved, at);
+          // paste=true: pin only (landing / link already done above).
+          HandleIncomingPaths(f, resolved, /*paste=*/true, /*move=*/false);
+          PersistLayouts();
+          // Virtual pin is COPY to the OLE source; portal→Desktop FO already
+          // ran inside LandPortalSourcesOnDesktop (never ask source to delete).
+          (void)land;
+          return DROPEFFECT_COPY;
         }
         const DWORD eff = OnPathsDropped(f, paths);
         PersistLayouts();
@@ -651,6 +812,10 @@ void App::WireFence(FenceWindow* fence) {
     if (!f) {
       return;
     }
+    if (PageLockedForFences(page) || PageLockedForFences(f->Page())) {
+      ShowToast(L"该页面已锁定，无法移动分区");
+      return;
+    }
     f->SetPage(page);
     PersistLayouts();
     ApplyPageVisibility();
@@ -673,16 +838,28 @@ void App::WireFence(FenceWindow* fence) {
     RefreshDesktopIcons();
   });
   fence->SetOnPasted([this](FenceWindow* f,
-                            const std::vector<std::wstring>& paths, bool move) {
-    OnPathsPasted(f, paths, move);
+                            const std::vector<std::wstring>& paths, bool move,
+                            bool as_link) {
+    OnPathsPasted(f, paths, move, as_link);
   });
   fence->SetOnCreated([this](FenceWindow* f,
                              const std::vector<std::wstring>& paths) {
     OnPathsCreated(f, paths);
   });
+  fence->SetOnUndo([this]() { RepinFromUndoStack(); });
   fence->SetOnRefresh([this](FenceWindow*) {
     InvalidateDesktopScanCache();
     RefreshDesktopIcons();
+  });
+  // Fences / Explorer: only one selection context — activating a fence clears
+  // other fences and public floats.
+  fence->SetOnActivated([this](FenceWindow* self) {
+    for (auto& f : fences_) {
+      if (f && f.get() != self) {
+        f->ClearSelection();
+      }
+    }
+    public_host_.ClearSelection();
   });
   fence->SetOnDissolve([this](FenceWindow* f) { DissolveFence(f); });
   fence->SetOnMoveToFence(
@@ -1264,11 +1441,19 @@ bool App::Init(HINSTANCE instance) {
   // Same path as fence refresh: drop scan TTL cache then rebuild fences + floats.
   // RebuildPublicItems alone kept a warm ScanDesktopItems cache and skipped
   // portal fences — paste/new via shell menu looked like a no-op until 刷新.
+  public_host_.SetOnActivated([this]() {
+    for (auto& f : fences_) {
+      if (f && f->VisibleOnPage(current_page_)) {
+        f->ClearSelection();
+      }
+    }
+  });
   public_host_.SetOnRefresh([this]() {
     InvalidateDesktopScanCache();
     RefreshDesktopIcons();
   });
-  public_host_.SetOnPaste([this]() { OnDesktopPaste(); });
+  public_host_.SetOnPaste([this](bool as_link) { OnDesktopPaste(as_link); });
+  public_host_.SetOnUndo([this]() { RepinFromUndoStack(); });
   public_host_.SetOnPathsDropped(
       [this](const std::vector<std::wstring>& paths) -> DWORD {
         return OnDesktopDropPaths(paths);
@@ -1379,8 +1564,33 @@ bool App::Init(HINSTANCE instance) {
       return false;
     }
   }
-  // Reconcile pin_order with pins.json: collapse corrupt "\\\\" paths and append
-  // missing membership so manual sort / grid matches the real pin set.
+  // Drop pins aimed at fence ids that no longer exist (deleted partitions /
+  // stale category maps) so icons reappear as floats instead of vanishing.
+  {
+    std::unordered_set<std::string> live;
+    for (const auto& f : fences_) {
+      if (f && !f->Id().empty()) {
+        live.insert(f->Id());
+      }
+    }
+    std::vector<std::wstring> dead;
+    for (const auto& kv : pins_) {
+      if (kv.second.empty() || live.find(kv.second) != live.end()) {
+        continue;
+      }
+      dead.push_back(kv.first);
+    }
+    if (!dead.empty()) {
+      for (const auto& p : dead) {
+        ClearPin(&pins_, p);
+      }
+      SavePins(pins_);
+      LogLine(L"[pin] boot dropped %d stale fence_id pin(s)",
+              static_cast<int>(dead.size()));
+    }
+  }
+  // Reconcile pin_order with pins.json: collapse corrupt "\\\\" paths, drop
+  // empty/stale seats (Fences packs top-left), and append missing membership.
   for (auto& fence : fences_) {
     if (!fence) {
       continue;
@@ -1402,6 +1612,9 @@ bool App::Init(HINSTANCE instance) {
       return s;
     };
     for (size_t i = 0; i < order.size(); ++i) {
+      if (order[i].empty()) {
+        continue;  // strip legacy "" sentinels
+      }
       const auto* pin = FindPin(pins_, order[i]);
       if (!pin || *pin != fid) {
         continue;
@@ -1487,6 +1700,7 @@ bool App::Init(HINSTANCE instance) {
   ReconcileNamespaceIconsOnStartup(true);
   SetDesktopIconsVisible(false);
   icons_visible_intent_ = false;
+  SetDesktopOrganizedBlankMenu(true);
   // Loose floats mirror the intent, not Explorer's (lagging) live state.
   if (message_hwnd_) {
     SetTimer(message_hwnd_, kTimerIconsRefresh, 600, nullptr);
@@ -1500,7 +1714,8 @@ bool App::Init(HINSTANCE instance) {
   // One-binary Win10/Win11 profile (Fences-class runtime branch, not split builds).
   LogDesktopShellCompatProfile();
   StartDesktopDblClickMonitor(message_hwnd_, kMsgDesktopDblClick,
-                              kMsgDesktopBlankDown, kMsgDesktopPaste);
+                              kMsgDesktopBlankDown, kMsgDesktopPaste,
+                              kMsgDesktopBlankRClick);
   settings_.SetOnExit([this]() { HandleSettingsClose(); });
   settings_.SetOnHideToTray([this]() {
     // P2-1: tray balloon (Shell_NotifyIcon NIF_INFO), not the custom toast.
@@ -1762,12 +1977,28 @@ void App::TryDispatchLlHotkey(UINT vk) {
 void App::SetIconsVisible(bool visible, bool toast) {
   icons_visible_intent_ = visible;
   SetDesktopIconsVisible(visible);
+  // Organized: blank wallpaper RMB is hosted (DefView Paste can't seat floats).
+  SetDesktopOrganizedBlankMenu(!visible);
+  // Stock vs organized (Fences-class): showing Explorer icons hides fence
+  // chrome so pins are not double-painted on DefView. Hiding icons restores
+  // the tidy layer. Public floats already follow !icons_visible_intent_.
+  if (visible) {
+    for (auto& f : fences_) {
+      if (f) {
+        f->HideTransient();
+      }
+    }
+    public_host_.Hide();
+  } else if (!fences_hidden_ && !peek_active_) {
+    ApplyPageVisibility();
+  }
   // Explorer applies the toggle asynchronously; defer the float refresh.
   if (message_hwnd_) {
     SetTimer(message_hwnd_, kTimerIconsRefresh, 400, nullptr);
   }
   if (toast) {
-    ShowToast(visible ? L"已显示桌面图标" : L"已隐藏桌面图标");
+    ShowToast(visible ? L"已显示桌面图标（库存桌面）"
+                      : L"已隐藏桌面图标（整理桌面）");
   }
 }
 
@@ -1792,26 +2023,44 @@ void App::DispatchHotkey(const std::string& id) {
   } else if (id == "screenshot" || id == "shot") {
     StartRegionCapture();
   } else if (id == "show_screenshot" || id == "fullscreen") {
-    // F2贴图：剪贴板优先贴图（Snipaste/PixPin体验）
-    if (PinClipboardImage()) {
-      return;
+    // F2 /「显示贴图」: fill the desktop pin stack up to screenshot_max_pins
+    // from newest recent shots (settings「同时贴图最多 N 张」).
+    int max_pins = prefs_.screenshot_max_pins;
+    if (max_pins < 1) {
+      max_pins = 1;
     }
-    if (!recent_shots_.empty()) {
-      if (recent_shot_i_ >= recent_shots_.size()) {
-        recent_shot_i_ = 0;
+    if (max_pins > 8) {
+      max_pins = 8;
+    }
+    // New clipboard image (external copy) can occupy one slot first.
+    PinClipboardImage();
+    int added = 0;
+    for (const auto& path : recent_shots_) {
+      if (static_cast<int>(pins_img_.size()) >= max_pins) {
+        break;
       }
-      PinImage(recent_shots_[recent_shot_i_++]);
-      return;
-    }
-    if (!pins_img_.empty()) {
-      for (auto& p : pins_img_) {
-        if (p) {
-          p->Show();
-        }
+      if (path.empty() || IsPathPinned(path)) {
+        continue;
       }
+      const size_t before = pins_img_.size();
+      PinImage(path);
+      if (pins_img_.size() > before) {
+        ++added;
+      }
+    }
+    if (pins_img_.empty()) {
+      ShowToast(L"剪贴板中无图片，请先截图或复制图片 (F2贴图)");
       return;
     }
-    ShowToast(L"剪贴板中无图片，请先截图或复制图片 (F2贴图)");
+    for (auto& p : pins_img_) {
+      if (p) {
+        p->Show();
+      }
+    }
+    if (added > 0) {
+      ShowToast(L"已贴图 " + std::to_wstring(static_cast<int>(pins_img_.size())) +
+                L"/" + std::to_wstring(max_pins) + L" 张");
+    }
   } else if (id == "screen_record" || id == "record") {
     if (!prefs_.record_enabled && !IsScreenRecording()) {
       ShowToast(L"录屏未启用 — 请在设置 → 扩展功能中打开");
@@ -2128,12 +2377,33 @@ void App::StartRegionCapture() {
             recent_shots_.resize(12);
           }
           recent_shot_i_ = 0;
+          // Overlay already copied pixels to the clipboard before this cb.
+          last_capture_clipboard_seq_ = GetClipboardSequenceNumber();
         }
         if (pin) {
           PinImage(path);
+          // Mark so the next F2 does not pin the same shot again.
+          RememberPinClipboardSeq();
         }
       },
       auto_pin);
+}
+
+void App::RememberPinClipboardSeq() {
+  last_pin_clipboard_seq_ = GetClipboardSequenceNumber();
+}
+
+bool App::IsPathPinned(const std::wstring& path) const {
+  if (path.empty()) {
+    return false;
+  }
+  for (const auto& p : pins_img_) {
+    if (p && !p->Path().empty() &&
+        _wcsicmp(p->Path().c_str(), path.c_str()) == 0) {
+      return true;
+    }
+  }
+  return false;
 }
 
 static int GetPngEncoderClsid(CLSID* pClsid) {
@@ -2158,6 +2428,16 @@ void App::PinImage(const std::wstring& path) {
   if (path.empty()) {
     return;
   }
+  // Same path already open → just raise it (Snipaste: no duplicate sticker).
+  if (IsPathPinned(path)) {
+    for (auto& p : pins_img_) {
+      if (p && _wcsicmp(p->Path().c_str(), path.c_str()) == 0) {
+        p->Show();
+        break;
+      }
+    }
+    return;
+  }
   int max_pins = prefs_.screenshot_max_pins;
   if (max_pins < 1) {
     max_pins = 1;
@@ -2180,6 +2460,13 @@ void App::PinImage(const std::wstring& path) {
 }
 
 bool App::PinClipboardImage() {
+  // Unchanged clipboard → caller cycles recent_shots_ (multi-pin of different
+  // captures). Previously every F2 re-saved CF_BITMAP to a new clip_pin_*.png
+  // and stacked identical stickers.
+  const DWORD seq = GetClipboardSequenceNumber();
+  if (seq != 0 && seq == last_pin_clipboard_seq_) {
+    return false;
+  }
   if (!OpenClipboard(nullptr)) {
     return false;
   }
@@ -2211,18 +2498,42 @@ bool App::PinClipboardImage() {
     }
   }
 
-  // 2. 检查剪贴板中直接复制的位图 (CF_BITMAP)
-  if (file_path.empty() && IsClipboardFormatAvailable(CF_BITMAP)) {
+  // 2. 检查剪贴板中直接复制的位图 (CF_BITMAP / CF_DIB)
+  if (file_path.empty() && (IsClipboardFormatAvailable(CF_BITMAP) ||
+                            IsClipboardFormatAvailable(CF_DIB))) {
     HBITMAP raw = static_cast<HBITMAP>(GetClipboardData(CF_BITMAP));
     if (raw) {
-      clip_bmp = static_cast<HBITMAP>(CopyImage(raw, IMAGE_BITMAP, 0, 0, LR_COPYRETURNORG));
+      clip_bmp = static_cast<HBITMAP>(
+          CopyImage(raw, IMAGE_BITMAP, 0, 0, LR_COPYRETURNORG));
     }
   }
 
   CloseClipboard();
 
   if (!file_path.empty()) {
+    if (IsPathPinned(file_path)) {
+      RememberPinClipboardSeq();
+      return false;
+    }
     PinImage(file_path);
+    recent_shots_.insert(recent_shots_.begin(), file_path);
+    if (recent_shots_.size() > 12) {
+      recent_shots_.resize(12);
+    }
+    RememberPinClipboardSeq();
+    return true;
+  }
+
+  // Capture already saved a PNG and filled the clipboard — pin that file
+  // instead of writing a twin clip_pin_*.png of the same pixels.
+  if (seq != 0 && seq == last_capture_clipboard_seq_ &&
+      !recent_shots_.empty() && !IsPathPinned(recent_shots_[0])) {
+    if (clip_bmp) {
+      DeleteObject(clip_bmp);
+      clip_bmp = nullptr;
+    }
+    PinImage(recent_shots_[0]);
+    RememberPinClipboardSeq();
     return true;
   }
 
@@ -2230,7 +2541,8 @@ bool App::PinClipboardImage() {
     const std::wstring dir = JoinPath(NativeDataDir(), L"pins");
     CreateDirectoryW(dir.c_str(), nullptr);
     const ULONGLONG tick = GetTickCount64();
-    const std::wstring out_path = JoinPath(dir, L"clip_pin_" + std::to_wstring(tick) + L".png");
+    const std::wstring out_path =
+        JoinPath(dir, L"clip_pin_" + std::to_wstring(tick) + L".png");
 
     ULONG_PTR token = 0;
     Gdiplus::GdiplusStartupInput input;
@@ -2247,6 +2559,11 @@ bool App::PinClipboardImage() {
 
     if (GetFileAttributesW(out_path.c_str()) != INVALID_FILE_ATTRIBUTES) {
       PinImage(out_path);
+      recent_shots_.insert(recent_shots_.begin(), out_path);
+      if (recent_shots_.size() > 12) {
+        recent_shots_.resize(12);
+      }
+      RememberPinClipboardSeq();
       return true;
     }
   }
@@ -2378,6 +2695,27 @@ void App::DispatchSettingsCommand(const std::wstring& id) {
       PersistLayouts();
       PushExtensionSettings();
       ShowToast(f->IsPositionLocked() ? L"已锁定分区位置" : L"已解锁分区位置");
+    }
+    return;
+  }
+  if (id.rfind(L"fence_toggle_visible:", 0) == 0) {
+    const int index = _wtoi(id.c_str() + 21);
+    if (index >= 0 && index < static_cast<int>(fences_.size()) &&
+        fences_[static_cast<size_t>(index)]) {
+      FenceWindow* f = fences_[static_cast<size_t>(index)].get();
+      const bool now_vis = f->VisibleOnPage(f->Page());
+      if (now_vis) {
+        f->Hide();
+        ShowToast(L"已隐藏分区");
+      } else {
+        // Restore persist flag; ApplyPageVisibility seats HWND only on
+        // the current page (other pages stay soft-parked until switch).
+        f->Show();
+        PersistLayouts();
+        ApplyPageVisibility();
+        ShowToast(L"已显示分区");
+      }
+      PushExtensionSettings();
     }
     return;
   }
@@ -2779,9 +3117,8 @@ void App::OnVaultHidden() {
 void App::TogglePeek() {
   peek_active_ = !peek_active_;
   if (peek_active_) {
-    // Peek: raise current-page fences (and the dock) to topmost, interactive —
-    // never hide them. Python detaches the overlay from DefView and sets
-    // TOPMOST so the partitions float above all windows.
+    // Peek: raise current-page fences, public floats, and the dock to topmost
+    // (Fences: whole organized layer above apps; loose icons stay clickable).
     auto raise_topmost = [](HWND hwnd) {
       if (!hwnd || !IsWindow(hwnd)) {
         return;
@@ -2792,11 +3129,16 @@ void App::TogglePeek() {
       ShowWindow(hwnd, SW_SHOWNOACTIVATE);
     };
     for (auto& fence : fences_) {
-      if (!fence || !fence->Hwnd() || fence->Page() != current_page_) {
+      if (!fence || !fence->Hwnd() ||
+          !fence->VisibleOnPage(current_page_)) {
         continue;
       }
       raise_topmost(fence->Hwnd());
       fence->RefreshLayer();
+    }
+    if (public_visible_ && public_host_.Hwnd() && public_host_.HasItems()) {
+      raise_topmost(public_host_.Hwnd());
+      public_host_.RefreshLayer();
     }
     if (dock_visible_) {
       raise_topmost(dock_.Hwnd());
@@ -2874,8 +3216,9 @@ void App::ReloadFencesFromState(const AppState& state, bool heal_geometry) {
   dock_visible_ = prefs_.dock_visible;
   pet_visible_ = state.pet_visible;
   // Snapshot / layout file may have rewritten pins.json — reload or the UI
-  // keeps the pre-apply pin map and looks unchanged.
+  // keeps the pre-apply pin map and looks unchanged. Same for float seats.
   pins_ = LoadPins();
+  float_placements_ = LoadFloatPlacements();
   AppState healed = state;
   if (heal_geometry) {
     HealFenceLayouts(&healed.fences);
@@ -2988,6 +3331,15 @@ void App::OnDisplayChangeTimerFired() {
   } else {
     display_change_stage_ = 0;
   }
+}
+
+bool App::PageLockedForFences(int page) const {
+  // User-toggled lock only. Pages 0/1 are locked for PAGE delete (IsPageLocked)
+  // but still allow fence create (page_bar / Python P0-11).
+  if (page < 2 || page >= static_cast<int>(page_locked_.size())) {
+    return false;
+  }
+  return page_locked_[static_cast<size_t>(page)];
 }
 
 void App::TogglePageLock(int page) {
@@ -3361,10 +3713,15 @@ void App::PushExtensionSettings() {
     card.index = static_cast<int>(i);
     card.title = f->Title();
     card.page = f->Page();
+    card.pages = f->Pages();
+    if (card.pages.empty()) {
+      card.pages.push_back(card.page);
+    }
     card.style_id = f->StyleId();
     card.organize_kinds = f->OrganizeKinds();
     card.system_fence = f->Id().rfind("system_", 0) == 0;
     card.position_locked = f->IsPositionLocked();
+    card.visible = f->VisibleOnPage(f->Page());
     int alpha = f->Opacity();
     if (alpha < 0) {
       const FenceStylePreset* st = FenceStyleById(f->StyleId());
@@ -3595,7 +3952,9 @@ void App::OnDesktopBlankDoubleClick() {
 }
 
 void App::OnDesktopBlankLeftDown(LPARAM screen_pt) {
-  // Same as Explorer / Fences: click outside a fence drops icon selection.
+  // Same as Explorer / Fences: click outside a fence drops icon selection
+  // and clears keyboard activation (Ctrl+C… stop targeting that fence).
+  ClearFenceKeyTarget();
   // Only current-page visible fences — hidden pages must not PresentLayered.
   for (auto& fence : fences_) {
     if (fence && fence->VisibleOnPage(current_page_)) {
@@ -3609,34 +3968,283 @@ void App::OnDesktopBlankLeftDown(LPARAM screen_pt) {
     POINT pt{GET_X_LPARAM(screen_pt), GET_Y_LPARAM(screen_pt)};
     const bool additive = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
     public_host_.BeginRubberFromScreen(pt, additive);
+  } else if (public_host_.HasSelection()) {
+    // Stock desktop / no floats to rubber: still drop float selection like
+    // Explorer clears when clicking empty wallpaper.
+    public_host_.ClearSelection();
+  }
+  // Organized: blank wallpaper is the DefView stand-in — keep keyboard on the
+  // float host (Ctrl+A / typeahead / Ctrl+Shift+N) like Explorer desktop focus.
+  if (!icons_visible_intent_ && public_host_.Hwnd()) {
+    SetFenceKeyTarget(public_host_.Hwnd());
   }
   // AIGC END
 }
 
-void App::OnDesktopPaste() {
+void App::OnDesktopBlankRightClick(LPARAM screen_pt) {
+  // Organized wallpaper blank: host Explorer Desktop background menu so Paste
+  // / New / Undo seat floats (DefView listview is hidden — Fences parity).
+  if (icons_visible_intent_) {
+    return;
+  }
+  // Blank RMB activates the float layer for subsequent chords (Explorer focus).
+  if (public_host_.Hwnd()) {
+    SetFenceKeyTarget(public_host_.Hwnd());
+  }
+  POINT screen{GET_X_LPARAM(screen_pt), GET_Y_LPARAM(screen_pt)};
+  PWSTR desk_raw = nullptr;
+  std::wstring desk;
+  if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Desktop, 0, nullptr, &desk_raw)) &&
+      desk_raw) {
+    desk = desk_raw;
+    CoTaskMemFree(desk_raw);
+  }
+  if (desk.empty()) {
+    return;
+  }
+  std::vector<std::wstring> desk_before;
+  auto list_desk = [&desk]() {
+    std::vector<std::wstring> out;
+    WIN32_FIND_DATAW fd{};
+    HANDLE find = FindFirstFileW((desk + L"\\*").c_str(), &fd);
+    if (find == INVALID_HANDLE_VALUE) {
+      return out;
+    }
+    do {
+      if (wcscmp(fd.cFileName, L".") == 0 || wcscmp(fd.cFileName, L"..") == 0) {
+        continue;
+      }
+      out.push_back(desk + L"\\" + fd.cFileName);
+    } while (FindNextFileW(find, &fd));
+    FindClose(find);
+    return out;
+  };
+  ShellBeforeInvokeFn on_before = [&]() { desk_before = list_desk(); };
+  ShellInterceptFn on_intercept = [this](const std::wstring& verb) {
+    if (verb == L"paste" || verb == L"pasteto") {
+      OnDesktopPaste(/*as_link=*/false);
+      return true;
+    }
+    if (verb == L"pastelink") {
+      OnDesktopPaste(/*as_link=*/true);
+      return true;
+    }
+    return false;
+  };
+  ShellVerbFn on_verb = [this, &desk_before, &list_desk](const std::wstring& verb) {
+    if (verb == L"paste" || verb == L"pastelink" || verb == L"pasteto") {
+      return;
+    }
+    if (verb == L"undo") {
+      RepinFromUndoStack();
+    }
+    if (!ShellVerbNeedsDesktopRescan(verb)) {
+      return;
+    }
+    if (verb == L"newfolder" || verb.rfind(L"new", 0) == 0) {
+      const auto after = list_desk();
+      for (const auto& p : after) {
+        bool was = false;
+        for (const auto& b : desk_before) {
+          if (_wcsicmp(b.c_str(), p.c_str()) == 0) {
+            was = true;
+            break;
+          }
+        }
+        if (!was) {
+          SuppressOrganizePath(p, 24.0 * 3600.0);
+        }
+      }
+    }
+    InvalidateDesktopScanCache();
+    RefreshDesktopIcons();
+  };
+  TrackShellFolderBackgroundMenu(message_hwnd_, screen, desk, {}, on_verb,
+                                 on_before, on_intercept);
+}
+
+void App::RememberPinUndo(const std::wstring& path,
+                          const std::string& fence_id) {
+  if (path.empty() || fence_id.empty()) {
+    return;
+  }
+  const std::wstring key = NormalizePinKey(path);
+  const ULONGLONG now = GetTickCount64();
+  for (auto& e : pin_undo_) {
+    if (NormalizePinKey(e.path) == key) {
+      e.fence_id = fence_id;
+      e.tick = now;
+      return;
+    }
+  }
+  pin_undo_.push_back({path, fence_id, now});
+  if (pin_undo_.size() > 32) {
+    pin_undo_.erase(pin_undo_.begin());
+  }
+}
+
+void App::RepinFromUndoStack() {
+  const ULONGLONG now = GetTickCount64();
+  // Drop stale entries (>90s) — Explorer Undo is only meaningful near the op.
+  pin_undo_.erase(
+      std::remove_if(pin_undo_.begin(), pin_undo_.end(),
+                     [now](const PinUndoEntry& e) {
+                       return now - e.tick > 90000ULL;
+                     }),
+      pin_undo_.end());
+  if (pin_undo_.empty()) {
+    InvalidateDesktopScanCache();
+    RefreshDesktopIcons();
+    return;
+  }
+  std::vector<PinUndoEntry> keep;
+  bool any = false;
+  for (const auto& e : pin_undo_) {
+    if (GetFileAttributesW(e.path.c_str()) == INVALID_FILE_ATTRIBUTES) {
+      keep.push_back(e);
+      continue;
+    }
+    FenceWindow* fence = nullptr;
+    for (auto& f : fences_) {
+      if (f && f->Id() == e.fence_id) {
+        fence = f.get();
+        break;
+      }
+    }
+    if (!fence) {
+      keep.push_back(e);
+      continue;
+    }
+    SuppressOrganizePath(e.path, 24.0 * 3600.0);
+    SetPin(&pins_, e.path, e.fence_id);
+    fence->SetSortBy("manual");
+    fence->InsertPinOrder({e.path}, -1);
+    any = true;
+  }
+  pin_undo_ = std::move(keep);
+  if (any) {
+    BumpPinsEpoch();
+    SavePins(pins_);
+    PersistLayouts();
+  }
+  InvalidateDesktopScanCache();
+  RefreshDesktopIcons();
+}
+
+void App::TryShellUndoAndRepin() {
+  if (icons_visible_intent_) {
+    return;
+  }
+  PWSTR desk_raw = nullptr;
+  std::wstring desk;
+  if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Desktop, 0, nullptr, &desk_raw)) &&
+      desk_raw) {
+    desk = desk_raw;
+    CoTaskMemFree(desk_raw);
+  }
+  if (!desk.empty()) {
+    InvokeShellFolderVerb(message_hwnd_, desk, L"undo");
+  }
+  RepinFromUndoStack();
+}
+
+void App::OnDesktopPaste(bool as_link) {
   // Stock view: Explorer DefView owns paste. Organized view hides the listview,
   // so we land CF_HDROP into the Desktop folder and show floats (Fences).
   if (icons_visible_intent_) {
     return;
   }
-  // Read cut/copy before PasteClipboardToDesktopFolder (it reopens the clipboard).
+  // Read cut/copy before PasteClipboard* (it reopens the clipboard).
   std::vector<std::wstring> clip;
   bool cut = false;
   if (!ClipboardGetFilesWithEffect(&clip, &cut) || clip.empty()) {
     ShowToast(L"剪贴板里没有文件");
     return;
   }
+  // Explorer: single selected float folder → paste into it (not Desktop root).
+  const std::wstring into = public_host_.SelectedSingleDirectory();
   std::vector<std::wstring> landed;
-  const int n =
-      PasteClipboardToDesktopFolder(message_hwnd_ ? message_hwnd_ : nullptr,
-                                    &landed);
+  HWND owner = message_hwnd_ ? message_hwnd_ : nullptr;
+  int n = 0;
+  if (!into.empty()) {
+    if (as_link) {
+      n = PasteClipboardLinksIntoDir(owner, into, &landed);
+    } else {
+      for (const auto& src : clip) {
+        std::wstring dest;
+        if (MoveOrCopyFileIntoDir(owner, src, into, cut, &dest) &&
+            !dest.empty()) {
+          SuppressOrganizePath(dest);
+          landed.push_back(dest);
+          ++n;
+        }
+      }
+      if (cut && n > 0) {
+        ClipboardConsumeCut();
+      }
+    }
+    if (n <= 0) {
+      ShowToast(L"无法粘贴到所选文件夹");
+      return;
+    }
+    ShowToast(L"已粘贴 " + std::to_wstring(n) + L" 项");
+    InvalidateDesktopScanCache();
+    RefreshDesktopIcons();
+    return;
+  }
+  if (as_link) {
+    PWSTR desk_raw = nullptr;
+    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Desktop, 0, nullptr, &desk_raw)) &&
+        desk_raw) {
+      const std::wstring desk = desk_raw;
+      CoTaskMemFree(desk_raw);
+      n = PasteClipboardLinksIntoDir(owner, desk, &landed);
+    }
+  } else {
+    n = PasteClipboardToDesktopFolder(owner, &landed);
+  }
   if (n <= 0) {
     ShowToast(L"剪贴板里没有文件");
     return;
   }
+  // Explorer / Fences: seat new floats near the cursor (or recent blank RMB).
+  POINT seat{};
+  GetCursorPos(&seat);
+  {
+    POINT rclick{};
+    ULONGLONG tick = 0;
+    if (GetLastDesktopRightClick(&rclick, &tick) &&
+        GetTickCount64() - tick < 8000) {
+      seat = rclick;
+    }
+  }
+  auto seat_landed_floats = [&]() {
+    const IconGridMetrics grid = QueryIconGridMetrics();
+    const int step = (std::max)(48, grid.cell_w);
+    int cascade = 0;
+    for (const auto& p : landed) {
+      if (p.empty()) {
+        continue;
+      }
+      POINT pt{seat.x + cascade * step / 4, seat.y + cascade * step / 4};
+      UpsertFloatPlacement(&float_placements_, p, current_page_, pt);
+      ++cascade;
+    }
+    if (!landed.empty()) {
+      SaveFloatPlacements(float_placements_);
+    }
+  };
   for (const auto& p : landed) {
     SuppressOrganizePath(p);
-    LogLine(L"[paste] landed: %s", p.c_str());
+    LogLine(L"[paste] landed%s: %s", as_link ? L" link" : L"", p.c_str());
+  }
+  if (as_link) {
+    seat_landed_floats();
+    InvalidateDesktopScanCache();
+    RefreshDesktopIcons();
+    public_host_.SelectPaths(landed);
+    ShowToast(L"已创建快捷方式 " + std::to_wstring(n) + L" 项");
+    return;
   }
   if (cut) {
     // Fences: Cut → blank desktop releases the virtual pin (Desktop self-MOVE
@@ -3661,7 +4269,8 @@ void App::OnDesktopPaste() {
       add(p);
     }
     if (!to_unpin.empty()) {
-      UnpinPaths(to_unpin, nullptr);
+      UnpinPaths(to_unpin, &seat);
+      seat_landed_floats();
       ClipboardConsumeCut();
       last_manual_refresh_ = GetTickCount64();
       ShowToast(L"已粘贴 " + std::to_wstring(n) + L" 项到桌面");
@@ -3671,6 +4280,7 @@ void App::OnDesktopPaste() {
   if (cut) {
     ClipboardConsumeCut();
   }
+  seat_landed_floats();
   InvalidateDesktopScanCache();
   RefreshDesktopIcons();
   {
@@ -3687,6 +4297,7 @@ void App::OnDesktopPaste() {
             public_host_.HasItems() ? 1 : 0, public_visible_ ? 1 : 0);
   }
   last_manual_refresh_ = GetTickCount64();  // suppress trailing SHChangeNotify rescan
+  public_host_.SelectPaths(landed);
   ShowToast(L"已粘贴 " + std::to_wstring(n) + L" 项到桌面");
 }
 
@@ -3704,18 +4315,28 @@ DWORD App::OnDesktopDropPaths(const std::vector<std::wstring>& paths) {
   HWND owner = message_hwnd_ ? message_hwnd_ : nullptr;
   int ok = 0;
   int moved = 0;
-  // AIGC START
-  // Fences/Explorer: ignore Desktop self-drop; same-volume default MOVE;
-  // Ctrl=copy, Shift=move (matches PathDropTarget::ResolveFileEffect).
+  // Fences/Explorer: ignore Desktop self-drop; Alt/Ctrl+Shift → .lnk;
+  // same-volume default MOVE; Ctrl=copy, Shift=move.
   auto parent_of = [](const std::wstring& p) -> std::wstring {
     const size_t slash = p.find_last_of(L"\\/");
     return slash == std::wstring::npos ? std::wstring() : p.substr(0, slash);
   };
+  const bool want_link = WantDropLinkEffect();
   const bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
   const bool shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
-  // AIGC END
   for (const auto& src : paths) {
     if (_wcsicmp(parent_of(src).c_str(), desk.c_str()) == 0) {
+      continue;
+    }
+    std::wstring dest;
+    if (want_link) {
+      if (!CreateShortcutIntoDir(owner, src, desk, &dest)) {
+        continue;
+      }
+      ++ok;
+      if (!dest.empty()) {
+        SuppressOrganizePath(dest);
+      }
       continue;
     }
     bool do_move = SameVolume(src, desk);
@@ -3725,7 +4346,6 @@ DWORD App::OnDesktopDropPaths(const std::vector<std::wstring>& paths) {
     if (shift) {
       do_move = true;
     }
-    std::wstring dest;
     if (MoveOrCopyFileIntoDir(owner, src, desk, do_move, &dest)) {
       ++ok;
       if (do_move) {
@@ -3742,6 +4362,10 @@ DWORD App::OnDesktopDropPaths(const std::vector<std::wstring>& paths) {
   }
   InvalidateDesktopScanCache();
   RefreshDesktopIcons();
+  if (want_link) {
+    ShowToast(L"已创建快捷方式 " + std::to_wstring(ok) + L" 项");
+    return DROPEFFECT_LINK;
+  }
   if (moved == ok) {
     ShowToast(L"已移动到桌面 " + std::to_wstring(ok) + L" 项");
     return DROPEFFECT_MOVE;
@@ -3902,8 +4526,8 @@ void App::HideOffPageFences() {
     if (!fence || !fence->Hwnd()) {
       continue;
     }
-    const bool want =
-        !fences_hidden_ && fence->VisibleOnPage(current_page_);
+    const bool want = !fences_hidden_ && !icons_visible_intent_ &&
+                      fence->VisibleOnPage(current_page_);
     if (want) {
       continue;
     }
@@ -3954,8 +4578,8 @@ void App::SeatAllFencesUnderApps() {
     if (!fence || !fence->Hwnd()) {
       continue;
     }
-    const bool want =
-        !fences_hidden_ && !peek_active_ && fence->VisibleOnPage(current_page_);
+    const bool want = !fences_hidden_ && !icons_visible_intent_ &&
+                      !peek_active_ && fence->VisibleOnPage(current_page_);
     if (!want) {
       continue;
     }
@@ -4370,6 +4994,7 @@ void App::AddPage() {
     return;
   }
   page_names_.push_back(NextPageName(page_names_.size() + 1));
+  page_locked_.resize(page_names_.size(), false);
   SyncPageChrome();
   SetPage(static_cast<int>(page_names_.size()) - 1);
   ShowToast(L"已添加页面");
@@ -4407,6 +5032,10 @@ void App::CreateFenceOnPage(int page, bool switch_to_page) {
   const int max_page = (std::max)(0, static_cast<int>(page_names_.size()) - 1);
   if (page < 0 || page > max_page) {
     page = (std::min)(max_page, current_page_);
+  }
+  if (PageLockedForFences(page)) {
+    ShowToast(L"该页面已锁定，无法新建分区");
+    return;
   }
   const RECT work = PrimaryWorkArea();
   // Design default with content_min floor (two icon rows) and work clamp.
@@ -4451,39 +5080,12 @@ void App::CreateFenceOnPage(int page, bool switch_to_page) {
 }
 
 void App::EnsureOrganizeFencesForEmptyPages() {
-  // After virtual organize: make sure there is somewhere for "file" items to
-  // land. ResolveFenceByKind already falls through to other pages, so a global
-  // file fence (system_docs) is enough — do NOT rewrite empty organize_kinds.
-  // Empty kinds =「不参与整理」(UI / default「其他」); adopting them as file was
-  // stomping user intent every organize (logs: empty-page fences adopted=1).
-  auto has_file_kind = [](const std::vector<std::string>& kinds) {
-    for (const auto& k : kinds) {
-      if (k == "file") {
-        return true;
-      }
-    }
-    return false;
-  };
-  bool global_file = false;
-  for (const auto& fence : fences_) {
-    if (fence && has_file_kind(fence->OrganizeKinds())) {
-      global_file = true;
-      break;
-    }
-  }
-  if (global_file) {
-    return;
-  }
-  // No file landing zone anywhere — create one on the current page (or 0).
-  const int page =
-      (current_page_ >= 0 &&
-       current_page_ < static_cast<int>(page_names_.size()))
-          ? current_page_
-          : 0;
-  CreateFenceOnPage(page, /*switch_to_page=*/false);
-  PersistLayouts();
-  RefreshSettingsList();
-  LogLine(L"[organize] empty-page fences created=1 (no global file zone)");
+  // No-op (market / Fences): deleting a user fence must stay deleted.
+  // Previously every OrganizeVirtual (incl. quiet watch) spawned a page-named
+  // 「工作」file fence when page 0 had only 常用/其他 — so dissolve → recreate.
+  // ResolveFenceByKind already falls back to other pages' file zones
+  // (system_docs); leftover icons stay floats until the user creates a zone.
+  (void)this;
 }
 
 void App::DeletePageAt(int page) {
@@ -4517,6 +5119,10 @@ void App::DeletePageAt(int page) {
     }
   }
   page_names_.erase(page_names_.begin() + page);
+  // Keep lock flags aligned with page_names_ (same index space).
+  if (page < static_cast<int>(page_locked_.size())) {
+    page_locked_.erase(page_locked_.begin() + page);
+  }
   for (auto& fence : fences_) {
     if (!fence) {
       continue;
@@ -4756,18 +5362,133 @@ void App::OnPathsCreated(FenceWindow* fence,
     return;
   }
   // Fences New: shell already created the Desktop item — pin that path only.
+  // Ctrl-drag / Create-shortcut may have InsertPinOrder'd the drop seat already;
+  // only append paths that are not yet listed.
   for (const auto& p : paths) {
     SuppressOrganizePath(p, 24.0 * 3600.0);
   }
   fence->SetSortBy("manual");
-  fence->InsertPinOrder(paths, -1);
+  const auto order = fence->PinOrder();
+  std::vector<std::wstring> missing;
+  missing.reserve(paths.size());
+  for (const auto& p : paths) {
+    bool listed = false;
+    const std::wstring key = NormalizePinKey(p);
+    for (const auto& o : order) {
+      if (!o.empty() && NormalizePinKey(o) == key) {
+        listed = true;
+        break;
+      }
+    }
+    if (!listed) {
+      missing.push_back(p);
+    }
+  }
+  if (!missing.empty()) {
+    fence->InsertPinOrder(missing, -1);
+  }
   PersistLayouts();
-  HandleIncomingPaths(fence, paths, /*paste=*/false, /*move=*/false);
+  // paste=true: paths already on Desktop (New / Ctrl-drag copy / .lnk) —
+  // skip WantDropLinkEffect rematerialize while modifiers may still be held.
+  HandleIncomingPaths(fence, paths, /*paste=*/true, /*move=*/false);
+  fence->SelectPaths(paths);
 }
 
 void App::OnPathsPasted(FenceWindow* fence,
-                        const std::vector<std::wstring>& paths, bool move) {
+                        const std::vector<std::wstring>& paths, bool move,
+                        bool as_link) {
   if (!fence || paths.empty()) {
+    return;
+  }
+  HWND owner = settings_.Hwnd() ? settings_.Hwnd() : message_hwnd_;
+  // Explorer: exactly one selected folder → paste into that directory.
+  const std::wstring into_folder = fence->SelectedSingleDirectory();
+  if (!into_folder.empty()) {
+    std::vector<std::wstring> landed;
+    landed.reserve(paths.size());
+    if (as_link) {
+      for (const auto& src : paths) {
+        std::wstring dest;
+        if (!CreateShortcutIntoDir(owner, src, into_folder, &dest) ||
+            dest.empty()) {
+          continue;
+        }
+        SuppressOrganizePath(dest);
+        landed.push_back(dest);
+      }
+      if (landed.empty()) {
+        ShowToast(L"无法创建快捷方式");
+        return;
+      }
+      ShowToast(L"已创建快捷方式 " + std::to_wstring(landed.size()) + L" 项");
+    } else {
+      for (const auto& src : paths) {
+        std::wstring dest;
+        if (!MoveOrCopyFileIntoDir(owner, src, into_folder, move, &dest) ||
+            dest.empty()) {
+          continue;
+        }
+        SuppressOrganizePath(dest);
+        landed.push_back(dest);
+      }
+      if (landed.empty()) {
+        ShowToast(L"无法粘贴到所选文件夹");
+        return;
+      }
+      if (move) {
+        ClipboardConsumeCut();
+      }
+      ShowToast(L"已粘贴 " + std::to_wstring(landed.size()) + L" 项");
+    }
+    // Contents live inside the folder — do not pin each child into the fence.
+    // Portal may be browsing the destination (or its parent) — force rescan.
+    InvalidateDesktopScanCache();
+    RefreshDesktopIcons();
+    return;
+  }
+  // Explorer 「粘贴快捷方式」: land .lnk then pin (virtual) / into portal cwd.
+  if (as_link) {
+    std::wstring dest_dir = fence->PortalBrowsePath();
+    if (dest_dir.empty()) {
+      PWSTR desk_raw = nullptr;
+      if (SUCCEEDED(
+              SHGetKnownFolderPath(FOLDERID_Desktop, 0, nullptr, &desk_raw)) &&
+          desk_raw) {
+        dest_dir = desk_raw;
+        CoTaskMemFree(desk_raw);
+      }
+    }
+    if (dest_dir.empty()) {
+      ShowToast(L"无法创建快捷方式");
+      return;
+    }
+    std::vector<std::wstring> landed;
+    landed.reserve(paths.size());
+    for (const auto& src : paths) {
+      std::wstring dest;
+      if (!CreateShortcutIntoDir(owner, src, dest_dir, &dest) || dest.empty()) {
+        continue;
+      }
+      SuppressOrganizePath(dest);
+      landed.push_back(dest);
+    }
+    if (landed.empty()) {
+      ShowToast(L"无法创建快捷方式");
+      return;
+    }
+    if (fence->PortalPath().empty()) {
+      fence->SetSortBy("manual");
+      fence->InsertPinOrder(landed, -1);
+      PersistLayouts();
+      // paste=true: .lnk already landed — skip WantDropLinkEffect rematerialize.
+      HandleIncomingPaths(fence, landed, /*paste=*/true, /*move=*/false);
+      fence->SelectPaths(landed);
+    } else {
+      InvalidateDesktopScanCache();
+      RefreshDesktopIcons();
+      fence->SelectPaths(landed);
+    }
+    ShowToast(L"已创建快捷方式 " + std::to_wstring(landed.size()) + L" 项");
     return;
   }
   // Portal: real import into mirrored folder (HandleIncomingPaths).
@@ -4783,6 +5504,21 @@ void App::OnPathsPasted(FenceWindow* fence,
   //  - Cut + already on Desktop → pin-transfer (Desktop self-MOVE is a no-op)
   //  - Copy + already on Desktop → FO_COPY duplicate, then pin the copy
   //  - Off-Desktop → land on Desktop (MOVE/COPY) then pin
+  // Same-fence Cut→Paste: Explorer no-op — keep seats, just clear cut mark.
+  if (move) {
+    bool all_here = true;
+    for (const auto& p : paths) {
+      const std::string* cur = FindPin(pins_, p);
+      if (!cur || *cur != fence->Id()) {
+        all_here = false;
+        break;
+      }
+    }
+    if (all_here) {
+      ClipboardConsumeCut();
+      return;
+    }
+  }
   PWSTR desk_raw = nullptr;
   std::wstring desk;
   if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Desktop, 0, nullptr, &desk_raw)) &&
@@ -4790,19 +5526,13 @@ void App::OnPathsPasted(FenceWindow* fence,
     desk = desk_raw;
     CoTaskMemFree(desk_raw);
   }
-  auto parent_of = [](const std::wstring& p) -> std::wstring {
-    const size_t slash = p.find_last_of(L"\\/");
-    return slash == std::wstring::npos ? std::wstring() : p.substr(0, slash);
-  };
   std::vector<std::wstring> landed;
   landed.reserve(paths.size());
-  HWND owner = settings_.Hwnd() ? settings_.Hwnd() : message_hwnd_;
   for (const auto& src : paths) {
     if (src.empty()) {
       continue;
     }
-    const bool on_desk =
-        !desk.empty() && _wcsicmp(parent_of(src).c_str(), desk.c_str()) == 0;
+    const bool on_desk = PathIsDesktopChild(src, desk);
     if (on_desk && move) {
       landed.push_back(src);
       continue;
@@ -4847,11 +5577,14 @@ void App::OnPathsPasted(FenceWindow* fence,
     ShowToast(L"无法粘贴到分区");
     return;
   }
-  if (fence->SortBy() == "manual") {
-    fence->InsertPinOrder(landed, -1);
-    PersistLayouts();
-  }
+  // Match New / DropAt: paste appends seats and switches to manual so
+  // name/date sort cannot scramble freshly pasted icons (Fences).
+  fence->SetSortBy("manual");
+  fence->InsertPinOrder(landed, -1);
+  PersistLayouts();
   HandleIncomingPaths(fence, landed, /*paste=*/true, /*move=*/false);
+  // Explorer: selection follows the items just pasted.
+  fence->SelectPaths(landed);
   if (move) {
     ClipboardConsumeCut();
   }
@@ -4865,9 +5598,54 @@ DWORD App::HandleIncomingPaths(FenceWindow* fence,
   }
   const std::wstring portal = fence->PortalPath();
   if (portal.empty()) {
-    // Plain fence: pin, never move the file (matches Python).
+    // Plain fence: pin Desktop paths (Explorer→fence pin-only stays).
+    // Fallback Alt-drop (no DropAt): materialize .lnk then pin those paths.
+    // Portal-folder sources: land on Desktop first (DropAt usually did this).
+    std::vector<std::wstring> to_pin = paths;
+    DWORD land_eff = DROPEFFECT_COPY;
+    const bool want_link = !paste && WantDropLinkEffect();
+    if (want_link) {
+      PWSTR desk_raw = nullptr;
+      std::wstring desk;
+      if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Desktop, 0, nullptr,
+                                         &desk_raw)) &&
+          desk_raw) {
+        desk = desk_raw;
+        CoTaskMemFree(desk_raw);
+      }
+      to_pin.clear();
+      if (!desk.empty()) {
+        HWND owner = settings_.Hwnd() ? settings_.Hwnd() : message_hwnd_;
+        to_pin.reserve(paths.size());
+        for (const auto& src : paths) {
+          std::wstring dest;
+          if (!CreateShortcutIntoDir(owner, src, desk, &dest) || dest.empty()) {
+            continue;
+          }
+          SuppressOrganizePath(dest);
+          to_pin.push_back(dest);
+        }
+      }
+      if (to_pin.empty()) {
+        return DROPEFFECT_NONE;
+      }
+      fence->SetSortBy("manual");
+      fence->InsertPinOrder(to_pin, -1);
+      land_eff = DROPEFFECT_LINK;
+    } else if (!paste) {
+      HWND owner = settings_.Hwnd() ? settings_.Hwnd() : message_hwnd_;
+      std::vector<std::wstring> resolved;
+      land_eff =
+          LandPortalSourcesOnDesktop(owner, fences_, paths, &resolved);
+      if (resolved.empty()) {
+        return DROPEFFECT_NONE;
+      }
+      to_pin = std::move(resolved);
+      fence->SetSortBy("manual");
+      fence->InsertPinOrder(to_pin, -1);
+    }
     const std::string dst_id = fence->Id();
-    for (const auto& p : paths) {
+    for (const auto& p : to_pin) {
       SuppressOrganizePath(p);
       // Re-pin from another virtual fence: drop stale pin_order there first.
       if (const std::string* cur = FindPin(pins_, p)) {
@@ -4890,6 +5668,14 @@ DWORD App::HandleIncomingPaths(FenceWindow* fence,
     // (empty fence flash → later twin with a resurrected float).
     InvalidateDesktopScanCache();
     RefreshDesktopIcons();
+    if (want_link) {
+      PersistLayouts();
+      ShowToast(L"已创建快捷方式 " + std::to_wstring(to_pin.size()) + L" 项");
+      return DROPEFFECT_LINK;
+    }
+    if (land_eff == DROPEFFECT_MOVE || land_eff == DROPEFFECT_COPY) {
+      return land_eff;
+    }
     return DROPEFFECT_COPY;
   }
 
@@ -4898,12 +5684,33 @@ DWORD App::HandleIncomingPaths(FenceWindow* fence,
   std::vector<std::wstring> failed;
   std::vector<std::wstring> landed;
   int moved_ok = 0;
+  int linked_ok = 0;
   bool pins_cleared = false;
   bool floats_cleared = false;
+  const bool want_link = !paste && WantDropLinkEffect();
   const bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
   const bool shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
   for (const auto& src : paths) {
-    // AIGC START
+    // Explorer: refuse dropping a folder into itself or its descendant.
+    if (src.empty() || _wcsicmp(src.c_str(), dest_dir.c_str()) == 0 ||
+        IsStrictPathPrefix(src, dest_dir)) {
+      continue;
+    }
+    std::wstring dest;
+    if (want_link) {
+      if (CreateShortcutIntoDir(settings_.Hwnd(), src, dest_dir, &dest)) {
+        if (!dest.empty()) {
+          SuppressOrganizePath(dest);
+        }
+        landed.push_back(dest.empty() ? src : dest);
+        ++linked_ok;
+      } else {
+        failed.push_back(src);
+        LogLine(L"[portal] link failed (%s) -> %s", src.c_str(),
+                dest_dir.c_str());
+      }
+      continue;
+    }
     // Drag (non-paste): Explorer modifiers + same-volume default MOVE.
     bool should_move = paste ? move : SameVolume(src, dest_dir);
     if (!paste) {
@@ -4914,8 +5721,6 @@ DWORD App::HandleIncomingPaths(FenceWindow* fence,
         should_move = true;
       }
     }
-    // AIGC END
-    std::wstring dest;
     if (MoveOrCopyFileIntoDir(settings_.Hwnd(), src, dest_dir, should_move,
                               &dest)) {
       if (!dest.empty() && _wcsicmp(dest.c_str(), src.c_str()) != 0) {
@@ -4970,7 +5775,9 @@ DWORD App::HandleIncomingPaths(FenceWindow* fence,
   RefreshDesktopIcons();
 
   if (failed.empty()) {
-    const wchar_t* verb = paste ? (move ? L"已移动" : L"已复制") : L"已导入";
+    const wchar_t* verb = want_link ? L"已创建快捷方式"
+                                    : (paste ? (move ? L"已移动" : L"已复制")
+                                             : L"已导入");
     ShowToast(std::wstring(verb) + L" " + std::to_wstring(landed.size()) +
               L" 项");
   } else {
@@ -4985,15 +5792,17 @@ DWORD App::HandleIncomingPaths(FenceWindow* fence,
     }
     MistAlert(settings_.Hwnd(), L"导入失败", msg.c_str(), MistMsgTone::Warn);
   }
-  // AIGC START
   if (landed.empty()) {
     return DROPEFFECT_NONE;
+  }
+  if (want_link && linked_ok == static_cast<int>(landed.size()) &&
+      failed.empty()) {
+    return DROPEFFECT_LINK;
   }
   if (moved_ok == static_cast<int>(landed.size()) && failed.empty()) {
     return DROPEFFECT_MOVE;
   }
   return DROPEFFECT_COPY;
-  // AIGC END
 }
 
 void App::UnpinPath(const std::wstring& path, const POINT* drop) {
@@ -5041,6 +5850,22 @@ void App::UnpinPaths(const std::vector<std::wstring>& paths,
   // (cascade multi-unpin along the icon grid). Menu unpin with drop==null
   // still auto-packs via PublicHost::Layout (has_pos=false).
   // Do NOT Present on this stack: ULW during OLE teardown stays blank.
+  //
+  // Pin-only model may hold off-Desktop paths (Downloads/…). Floats only
+  // render Desktop-scan items — land onto Desktop first (Explorer FO
+  // semantics: same-volume MOVE, Ctrl=COPY, Shift=MOVE, Alt=.lnk).
+  PWSTR desk_raw = nullptr;
+  std::wstring desk;
+  if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Desktop, 0, nullptr, &desk_raw)) &&
+      desk_raw) {
+    desk = desk_raw;
+    CoTaskMemFree(desk_raw);
+  }
+  const bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+  const bool shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+  const bool want_link = WantDropLinkEffect();
+  HWND owner = message_hwnd_ ? message_hwnd_ : settings_.Hwnd();
+
   bool pins_changed = false;
   bool floats_changed = false;
   bool order_changed = false;
@@ -5068,32 +5893,74 @@ void App::UnpinPaths(const std::vector<std::wstring>& paths,
     }
     ClearPin(&pins_, path);
     pins_changed = true;
-    if (GetFileAttributesW(path.c_str()) == INVALID_FILE_ATTRIBUTES) {
+
+    std::wstring float_path = path;
+    const bool src_missing =
+        GetFileAttributesW(path.c_str()) == INVALID_FILE_ATTRIBUTES;
+    if (src_missing) {
       EraseFloatPlacement(&float_placements_, path);
       floats_changed = true;
       continue;
     }
+    if (!desk.empty() && !PathIsDesktopChild(path, desk)) {
+      // Namespace / shell pseudo-paths cannot FO onto Desktop.
+      const bool shell_ns =
+          path.size() >= 3 && path[0] == L':' && path[1] == L':';
+      if (shell_ns) {
+        EraseFloatPlacement(&float_placements_, path);
+        floats_changed = true;
+        continue;
+      }
+      std::wstring dest;
+      bool ok = false;
+      if (want_link) {
+        ok = CreateShortcutIntoDir(owner, path, desk, &dest);
+      } else {
+        bool do_move = SameVolume(path, desk);
+        if (ctrl) {
+          do_move = false;
+        }
+        if (shift) {
+          do_move = true;
+        }
+        ok = MoveOrCopyFileIntoDir(owner, path, desk, do_move, &dest);
+        if (ok) {
+          SuppressOrganizePath(path);
+        }
+      }
+      if (!ok || dest.empty()) {
+        EraseFloatPlacement(&float_placements_, path);
+        floats_changed = true;
+        LogLine(L"[public] unpin land-failed: %s", path.c_str());
+        continue;
+      }
+      SuppressOrganizePath(dest, 24.0 * 3600.0);
+      EraseFloatPlacement(&float_placements_, path);
+      float_path = dest;
+      LogLine(L"[public] unpin landed off-desk -> %s", float_path.c_str());
+    }
+
     if (drop) {
       POINT seat{*drop};
       seat.x += cascade * step_x;
-      UpsertFloatPlacement(&float_placements_, path, current_page_, seat);
-      auto it = float_placements_.find(NormalizePinKey(path));
+      UpsertFloatPlacement(&float_placements_, float_path, current_page_, seat);
+      auto it = float_placements_.find(NormalizePinKey(float_path));
       if (it != float_placements_.end()) {
         it->second.page_local = false;
-        it->second.path = path;
+        it->second.path = float_path;
       }
       ++cascade;
     } else {
-      SetFloatPage(&float_placements_, path, current_page_,
+      SetFloatPage(&float_placements_, float_path, current_page_,
                    /*page_local=*/false);
-      auto it = float_placements_.find(NormalizePinKey(path));
+      auto it = float_placements_.find(NormalizePinKey(float_path));
       if (it != float_placements_.end()) {
         it->second.has_pos = false;
-        it->second.path = path;
+        it->second.path = float_path;
       }
     }
     floats_changed = true;
-    icon_jobs.emplace_back(path, grid.icon_size);
+    icon_jobs.emplace_back(float_path, grid.icon_size);
   }
   if (pins_changed) {
     BumpPinsEpoch();
@@ -5118,6 +5985,92 @@ void App::UnpinPaths(const std::vector<std::wstring>& paths,
   LogLine(L"[public] unpin defer-present paths=%d has_items=%d",
           static_cast<int>(paths.size()), public_host_.HasItems() ? 1 : 0);
   ScheduleRevealPublicFloats();
+}
+
+void App::MaybeSuppressDesktopShellNew(const std::wstring& path) {
+  if (path.empty()) {
+    return;
+  }
+  PWSTR desk_raw = nullptr;
+  std::wstring desk;
+  if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Desktop, 0, nullptr, &desk_raw)) &&
+      desk_raw) {
+    desk = desk_raw;
+    CoTaskMemFree(desk_raw);
+  }
+  PWSTR pub_raw = nullptr;
+  std::wstring pub;
+  if (SUCCEEDED(
+          SHGetKnownFolderPath(FOLDERID_PublicDesktop, 0, nullptr, &pub_raw)) &&
+      pub_raw) {
+    pub = pub_raw;
+    CoTaskMemFree(pub_raw);
+  }
+  if (!PathIsDesktopChild(path, desk) && !PathIsDesktopChild(path, pub)) {
+    return;
+  }
+  ULONGLONG tick = 0;
+  POINT pt{};
+  const bool recent_rclick =
+      GetLastDesktopRightClick(&pt, &tick) && tick != 0 &&
+      (GetTickCount64() - tick) < 15000ull;
+  // Shell New default names (zh/en) even if RMB was slightly older.
+  const size_t slash = path.find_last_of(L"\\/");
+  const std::wstring name =
+      slash == std::wstring::npos ? path : path.substr(slash + 1);
+  const bool looks_new =
+      name.rfind(L"新建", 0) == 0 || name.rfind(L"New folder", 0) == 0 ||
+      name.rfind(L"New Folder", 0) == 0 ||
+      name.rfind(L"New Text Document", 0) == 0 ||
+      name.rfind(L"New Microsoft", 0) == 0;
+  if (!recent_rclick && !looks_new) {
+    return;
+  }
+  SuppressOrganizePath(path, 24.0 * 3600.0);
+  LogLine(L"[organize] suppress DefView New: %s", path.c_str());
+}
+
+void App::ForgetDeletedDesktopPath(const std::wstring& path) {
+  if (path.empty()) {
+    return;
+  }
+  const std::wstring key = NormalizePinKey(path);
+  bool pins_changed = false;
+  bool order_changed = false;
+  bool floats_changed = false;
+  if (const std::string* fid = FindPin(pins_, path)) {
+    RememberPinUndo(path, *fid);
+    for (auto& f : fences_) {
+      if (!f) {
+        continue;
+      }
+      const auto before = f->PinOrder();
+      f->RemovePinOrder({path});
+      if (f->PinOrder() != before) {
+        order_changed = true;
+      }
+    }
+    ClearPin(&pins_, path);
+    pins_changed = true;
+  }
+  if (float_placements_.erase(key) > 0) {
+    floats_changed = true;
+  }
+  pin_missing_since_.erase(key);
+  if (!pins_changed && !floats_changed) {
+    return;
+  }
+  if (pins_changed) {
+    BumpPinsEpoch();
+    SavePins(pins_);
+  }
+  if (order_changed) {
+    PersistLayouts();
+  }
+  if (floats_changed) {
+    SaveFloatPlacements(float_placements_);
+  }
+  LogLine(L"[pin] shell delete forgot: %s", path.c_str());
 }
 
 void App::RetargetPin(const std::wstring& from, const std::wstring& to) {
@@ -5247,29 +6200,45 @@ DWORD App::OnPinDropped(FenceWindow* fence, const std::wstring& src_fence_id,
       }
     }
     if (!commit) {
-      return DROPEFFECT_MOVE;
+      // Match Explorer/Fences modifiers on Folder Portal import.
+      if (WantDropLinkEffect()) {
+        return DROPEFFECT_LINK;
+      }
+      if ((GetKeyState(VK_CONTROL) & 0x8000) != 0) {
+        return DROPEFFECT_COPY;
+      }
+      if ((GetKeyState(VK_SHIFT) & 0x8000) != 0) {
+        return DROPEFFECT_MOVE;
+      }
+      const std::wstring dest = fence->PortalBrowsePath();
+      if (!paths.empty() && !dest.empty() && SameVolume(paths.front(), dest)) {
+        return DROPEFFECT_MOVE;
+      }
+      return DROPEFFECT_COPY;
     }
     const DWORD eff =
         HandleIncomingPaths(fence, paths, /*paste=*/false, /*move=*/false);
     if (eff == DROPEFFECT_NONE) {
       return DROPEFFECT_NONE;
     }
-    // Successful import: leave the virtual fence (pin → portal file).
-    for (const auto& p : paths) {
-      ClearPin(&pins_, p);
-      EraseFloatPlacement(&float_placements_, p);
-    }
-    for (auto& f : fences_) {
-      if (f && WidenUtf8(f->Id()) == src_fence_id) {
-        f->RemovePinOrder(paths);
-        break;
+    // Only MOVE leaves the virtual fence; COPY/LINK keep the source pin.
+    if (eff == DROPEFFECT_MOVE) {
+      for (const auto& p : paths) {
+        ClearPin(&pins_, p);
+        EraseFloatPlacement(&float_placements_, p);
       }
+      for (auto& f : fences_) {
+        if (f && WidenUtf8(f->Id()) == src_fence_id) {
+          f->RemovePinOrder(paths);
+          break;
+        }
+      }
+      BumpPinsEpoch();
+      SavePins(pins_);
+      SaveFloatPlacements(float_placements_);
+      PersistLayouts();
+      RefreshDesktopIcons();
     }
-    BumpPinsEpoch();
-    SavePins(pins_);
-    SaveFloatPlacements(float_placements_);
-    PersistLayouts();
-    RefreshDesktopIcons();
     return eff;
   }
   if (commit) {
@@ -5301,8 +6270,14 @@ void App::UpdatePinDragHint(POINT cursor, const PinDragHint& hint) {
   if (hint.invalid) {
     text = L"无法放置";
   } else if (hint.over_target) {
-    // Portal targets accept pin-drags as folder import (see OnPinDropped).
-    text = L"松开移到目标分区";
+    // Portal import honors modifiers; virtual↔virtual transfer stays MOVE.
+    if (WantDropLinkEffect()) {
+      text = L"松开创建快捷方式";
+    } else if ((GetKeyState(VK_CONTROL) & 0x8000) != 0) {
+      text = L"松开复制到目标";
+    } else {
+      text = L"松开移到目标分区";
+    }
   } else if (hint.over_desktop) {
     text = L"松开移回桌面";
   } else {
@@ -5329,9 +6304,9 @@ void App::MoveDesktopItemsToFence(const std::vector<std::wstring>& paths,
   if (!target) {
     return;
   }
-  // Fences Folder Portal: 「移动到分区」= import into the mirrored folder.
+  // Fences Folder Portal: 「移动到分区」= MOVE into the mirrored folder.
   if (!target->PortalPath().empty()) {
-    HandleIncomingPaths(target, paths, /*paste=*/false, /*move=*/false);
+    HandleIncomingPaths(target, paths, /*paste=*/true, /*move=*/true);
     return;
   }
   std::vector<std::wstring> moved;
@@ -5589,9 +6564,11 @@ void App::PruneStickyMissingPins() {
     if (float_alive) {
       // Delete + re-copy (or Explorer replace) during the grace window used to
       // keep the old page and hide the icon on the page the user is viewing.
+      // page_local (「移动到分页」) must stay on its page — do not yank to
+      // current_page_ across a brief FS hole (Fences page-bound icons).
       auto miss = pin_missing_since_.find(path);
       if (miss != pin_missing_since_.end()) {
-        if (it->second.page != current_page_) {
+        if (!it->second.page_local && it->second.page != current_page_) {
           it->second.page = current_page_;
           it->second.has_pos = false;
           it->second.path = path;
@@ -5662,11 +6639,19 @@ void App::RefreshDesktopIcons() {
   // desktop files can surface as public/loose floats (P0-2/P0-3).
   // One NormalizePinKey per desktop item: build by_fence + scanned + float
   // icon paths together (was 2–3 passes of FindPin/normalize).
+  std::unordered_set<std::string> live_fence_ids;
+  live_fence_ids.reserve(fences_.size() * 2 + 4);
+  for (const auto& f : fences_) {
+    if (f && !f->Id().empty()) {
+      live_fence_ids.insert(f->Id());
+    }
+  }
   std::unordered_map<std::string, std::vector<DesktopItem>> by_fence;
   std::unordered_set<std::wstring> scanned;
   scanned.reserve(items.size() * 2 + pins_.size() + 8);
   std::vector<std::wstring> unpinned_paths;
   unpinned_paths.reserve(items.size());
+  std::vector<std::wstring> dead_pin_paths;
   for (const auto& it : items) {
     const std::wstring key = NormalizePinKey(it.path);
     scanned.insert(key);
@@ -5678,6 +6663,13 @@ void App::RefreshDesktopIcons() {
     std::string target = pit->second;
     if (target == "system_software") {
       target = "system_software_side";
+    }
+    // Stale fence_id (partition deleted): drop pin so the icon resurfaces as
+    // a public float instead of vanishing from every layer (Fences).
+    if (live_fence_ids.find(target) == live_fence_ids.end()) {
+      dead_pin_paths.push_back(it.path);
+      unpinned_paths.push_back(it.path);
+      continue;
     }
     by_fence[target].push_back(it);
   }
@@ -5725,7 +6717,20 @@ void App::RefreshDesktopIcons() {
     if (target == "system_software") {
       target = "system_software_side";
     }
+    if (live_fence_ids.find(target) == live_fence_ids.end()) {
+      dead_pin_paths.push_back(path);
+      continue;
+    }
     by_fence[target].push_back(std::move(extra));
+  }
+  if (!dead_pin_paths.empty()) {
+    for (const auto& p : dead_pin_paths) {
+      ClearPin(&pins_, p);
+    }
+    BumpPinsEpoch();
+    SavePins(pins_);
+    LogLine(L"[pin] dropped %d stale fence_id pin(s)",
+            static_cast<int>(dead_pin_paths.size()));
   }
 
   // Prefer in-memory prefs — LoadExcludePatterns() re-reads app_prefs.json
@@ -5918,14 +6923,17 @@ void App::ApplyPageVisibility() {
     if (!fence) {
       continue;
     }
-    if (!fences_hidden_ && fence->VisibleOnPage(current_page_)) {
+    // icons_visible_intent_: stock desktop — keep fences off DefView.
+    if (!fences_hidden_ && !icons_visible_intent_ &&
+        fence->VisibleOnPage(current_page_)) {
       fence->Show();
     } else {
       fence->HideTransient();
     }
   }
   const bool pet_hosts = pet_visible_ && pet_.ShowPageBubbles();
-  const bool show_page_bar = !pet_hosts && prefs_.show_page_indicator;
+  const bool show_page_bar =
+      !icons_visible_intent_ && !pet_hosts && prefs_.show_page_indicator;
   if (show_page_bar) {
     page_bar_.SetPage(current_page_);
     page_bar_.Show();
@@ -5936,15 +6944,19 @@ void App::ApplyPageVisibility() {
   } else {
     page_bar_.Hide();
   }
-  if (dock_visible_ &&
+  if (!icons_visible_intent_ && dock_visible_ &&
       (!dock_.Hwnd() || !IsWindowVisible(dock_.Hwnd()))) {
     dock_.Show();
+  } else if (icons_visible_intent_) {
+    dock_.SetVisible(false);
   }
-  if (pet_visible_ &&
+  if (!icons_visible_intent_ && pet_visible_ &&
       (!pet_.Hwnd() || !IsWindowVisible(pet_.Hwnd()))) {
     pet_.Show();
+  } else if (icons_visible_intent_) {
+    pet_.SetVisible(false);
   }
-  if (public_visible_ && public_host_.HasItems() &&
+  if (!icons_visible_intent_ && public_visible_ && public_host_.HasItems() &&
       (!public_host_.Hwnd() || !IsWindowVisible(public_host_.Hwnd()))) {
     public_host_.Show();
   }
@@ -5990,7 +7002,8 @@ void App::SetPage(int page) {
   std::vector<FenceWindow*> arrivals;
   for (auto& fence : fences_) {
     if (!fence || !fence->Hwnd()) continue;
-    const bool want = !fences_hidden_ && !peek_active_ && fence->VisibleOnPage(current_page_);
+    const bool want = !fences_hidden_ && !icons_visible_intent_ &&
+                      !peek_active_ && fence->VisibleOnPage(current_page_);
     if (want) {
       arrivals.push_back(fence.get());
     } else {
@@ -6166,10 +7179,12 @@ void App::ScheduleDesktopContentRefresh() {
 void App::OnDesktopContentRefresh() {
   rules_ = LoadRules();
   InvalidateDesktopScanCache();
+  // Always refresh first (Fences / Explorer): portal & desktop icons must
+  // update even when the organize worker is still busy. Watch organize is
+  // best-effort on top — never block the FS refresh path.
+  RefreshDesktopIcons();
   if (prefs_.auto_organize_watch) {
     OrganizeVirtual(true);
-  } else {
-    RefreshDesktopIcons();
   }
   // Folder→Desktop copy churn can leave a mapped fence with an empty layered
   // buffer or buried under DefView. Only re-Present when dirty / buried —
@@ -6357,7 +7372,7 @@ void App::RestoreDesktopChrome() {
         !fence->VisibleOnPage(current_page_)) {
       continue;
     }
-    if (fences_hidden_ || peek_active_) {
+    if (fences_hidden_ || peek_active_ || icons_visible_intent_) {
       continue;
     }
     if (!IsWindowVisible(fence->Hwnd()) || IsIconic(fence->Hwnd())) {
@@ -6410,6 +7425,14 @@ void App::RestoreDesktopChrome() {
 void App::OrganizeVirtual(bool quiet, bool reassign) {
   // P2-16: heavy scan + pin resolve off the UI thread (Python organize worker).
   if (g_organize_busy) {
+    // Queue the strongest follow-up: reassign > manual > quiet watch.
+    g_organize_pending = true;
+    if (reassign) {
+      g_organize_pending_reassign = true;
+      g_organize_pending_quiet = false;
+    } else if (!quiet) {
+      g_organize_pending_quiet = false;
+    }
     if (!quiet) {
       ShowToast(L"正在整理，请稍候…");
     }
@@ -6419,6 +7442,9 @@ void App::OrganizeVirtual(bool quiet, bool reassign) {
     return;
   }
   g_organize_busy = true;
+  g_organize_pending = false;
+  g_organize_pending_quiet = true;
+  g_organize_pending_reassign = false;
   if (!quiet) {
     ShowToast(L"正在整理…");
   }
@@ -6442,31 +7468,33 @@ void App::OrganizeVirtual(bool quiet, bool reassign) {
   HWND msg_hwnd = message_hwnd_;
   ReapFinishedWorkers();
   const int current_page = current_page_;
-  workers_.emplace_back([job, rules, msg_hwnd, layouts, current_page,
-                         reassign]() {
+  const bool honor_suppress = quiet && !reassign;
+  workers_.emplace_back([job, rules, msg_hwnd, layouts, current_page, reassign,
+                         honor_suppress]() {
     const auto items = ScanDesktopItems();
     job->n = OrganizeApplyDefaultPins(&job->pins, items, rules,
                                       "system_software", "system_docs",
-                                      &layouts, current_page, reassign) +
+                                      &layouts, current_page, reassign,
+                                      honor_suppress, &job->neu) +
              job->hosted;
     if (!PostMessageW(msg_hwnd, kMsgOrganizeDone, 0,
                       reinterpret_cast<LPARAM>(job))) {
       delete job;
       g_organize_busy = false;
+      // Cannot reach OnOrganizeDone — drop pending rather than spin forever.
+      g_organize_pending = false;
+      g_organize_pending_quiet = true;
+      g_organize_pending_reassign = false;
     }
   });
 }
 
 void App::OrganizeReassign() {
-  if (g_organize_busy) {
-    ShowToast(L"正在整理，请稍候…");
-    return;
-  }
-  // Fences-class: same skip as 一键整理 — already-pinned fence icons stay put.
-  // Only loose public floats are (re)assigned. Keep the confirm copy honest.
+  // 与设置页一致：按当前规则重排全部（含已归入），只改钉选归属。
+  // Busy → OrganizeVirtual queues a follow-up reassign after the current job.
   const std::wstring tip =
-      L"按当前分区规则整理桌面上的公共浮层图标？\n\n"
-      L"已钉进分区的图标不会被挪动。\n"
+      L"按当前分区规则重新分配桌面上的全部项目？\n\n"
+      L"已钉进分区的图标也会按新规则换区。\n"
       L"只改分区归属，不移动、不删除任何文件。";
   if (!MistConfirm(settings_.Hwnd() ? settings_.Hwnd() : message_hwnd_,
                    L"重新整理", tip.c_str(), MistMsgTone::Warn)) {
@@ -6477,14 +7505,39 @@ void App::OrganizeReassign() {
 
 void App::OnOrganizeDone(OrganizeJobResult* job) {
   g_organize_busy = false;
+  const bool run_pending = g_organize_pending;
+  const bool pending_quiet = g_organize_pending_quiet;
+  const bool pending_reassign = g_organize_pending_reassign;
+  g_organize_pending = false;
+  g_organize_pending_quiet = true;
+  g_organize_pending_reassign = false;
+  auto drain_pending = [&]() {
+    if (!run_pending) {
+      return;
+    }
+    if (pending_reassign) {
+      OrganizeVirtual(/*quiet=*/false, /*reassign=*/true);
+      return;
+    }
+    if (!pending_quiet) {
+      OrganizeVirtual(/*quiet=*/false, /*reassign=*/false);
+      return;
+    }
+    if (prefs_.auto_organize_watch) {
+      OrganizeVirtual(true);
+    }
+  };
   if (!job) {
+    drain_pending();
     return;
   }
   const bool quiet = job->quiet;
   const bool reassign = job->reassign;
   int applied = 0;
-  // New membership for pin_order append (manual seats stay stable).
-  std::vector<std::pair<std::wstring, std::string>> neu;
+  // path → previous fence id (reassign 时从旧分区 pin_order 摘掉).
+  std::unordered_map<std::wstring, std::string> left_old;
+  // Scan-order membership changes (filled by OrganizeApplyDefaultPins).
+  std::vector<std::pair<std::wstring, std::string>> neu = std::move(job->neu);
   if (reassign) {
     // Full remap: only apply if pins_ was not edited while the worker ran.
     if (job->pins_epoch != pins_epoch_) {
@@ -6492,14 +7545,17 @@ void App::OnOrganizeDone(OrganizeJobResult* job) {
       delete job;
       RefreshDesktopIcons();
       ShowToast(L"整理期间钉选有变动，请重试");
+      if (run_pending && prefs_.auto_organize_watch) {
+        OrganizeVirtual(true);
+      }
       return;
     }
-    for (const auto& kv : job->pins) {
-      const auto it = job->pins_at_start.find(kv.first);
-      if (it != job->pins_at_start.end() && it->second == kv.second) {
-        continue;
+    for (const auto& kv : neu) {
+      const auto it = job->pins_at_start.find(NormalizePinKey(kv.first));
+      if (it != job->pins_at_start.end() && !it->second.empty() &&
+          it->second != kv.second) {
+        left_old[kv.first] = it->second;
       }
-      neu.emplace_back(kv.first, kv.second);
     }
     applied = job->n;
     pins_ = std::move(job->pins);
@@ -6507,18 +7563,17 @@ void App::OnOrganizeDone(OrganizeJobResult* job) {
     // Virtual organize only pins leftovers (Fences-class). Merge new pins onto
     // the live map — never replace pins_ wholesale, never retarget anything
     // already in a fence (已在分区的不参与整理).
-    for (const auto& kv : job->pins) {
-      const auto it = job->pins_at_start.find(kv.first);
-      if (it != job->pins_at_start.end() && it->second == kv.second) {
-        continue;  // unchanged from job start
-      }
+    std::vector<std::pair<std::wstring, std::string>> accepted;
+    accepted.reserve(neu.size());
+    for (const auto& kv : neu) {
       if (FindPin(pins_, kv.first)) {
         continue;  // already pinned — leave seat alone
       }
       SetPin(&pins_, kv.first, kv.second);
-      neu.emplace_back(kv.first, kv.second);
+      accepted.push_back(kv);
       ++applied;
     }
+    neu = std::move(accepted);
   }
   delete job;
   LogLine(L"[organize] virtual quiet=%d reassign=%d pins_applied=%d",
@@ -6528,8 +7583,23 @@ void App::OnOrganizeDone(OrganizeJobResult* job) {
   }
   // Fences-class: newly organized icons append to each fence's pin_order so
   // manual sort / next refresh keeps seat (boot reconcile used to be the only
-  // writer — order was lost until restart).
-  if (!neu.empty()) {
+  // writer — order was lost until restart). Keep scan encounter order.
+  if (!neu.empty() || !left_old.empty()) {
+    if (!left_old.empty()) {
+      std::unordered_map<std::string, std::vector<std::wstring>> leave;
+      for (const auto& kv : left_old) {
+        leave[kv.second].push_back(kv.first);
+      }
+      for (auto& f : fences_) {
+        if (!f) {
+          continue;
+        }
+        const auto it = leave.find(f->Id());
+        if (it != leave.end() && !it->second.empty()) {
+          f->RemovePinOrder(it->second);
+        }
+      }
+    }
     std::unordered_map<std::string, std::vector<std::wstring>> by_fence;
     for (const auto& kv : neu) {
       by_fence[kv.second].push_back(kv.first);
@@ -6571,15 +7641,17 @@ void App::OnOrganizeDone(OrganizeJobResult* job) {
     if (applied > 0) {
       ShowToast(L"已自动钉选 " + std::to_wstring(applied) + L" 项");
     }
-    return;
-  }
-  wchar_t buf[160];
-  if (reassign) {
-    swprintf_s(buf, L"重新整理完成：%d 项按规则换了分区。", applied);
   } else {
-    swprintf_s(buf, L"虚拟整理完成：写入 %d 条钉选。", applied);
+    wchar_t buf[160];
+    if (reassign) {
+      swprintf_s(buf, L"重新整理完成：%d 项按规则换了分区。", applied);
+    } else {
+      swprintf_s(buf, L"虚拟整理完成：写入 %d 条钉选。", applied);
+    }
+    ShowToast(buf);
   }
-  ShowToast(buf);
+  // Drain coalesced organize requests that arrived while this job ran.
+  drain_pending();
 }
 
 void App::SetOrganizeStartup(bool on) {
@@ -6648,6 +7720,10 @@ void App::EditRules() {
 }
 
 void App::AddFence() {
+  if (PageLockedForFences(current_page_)) {
+    ShowToast(L"该页面已锁定，无法新建分区");
+    return;
+  }
   if (!fence_region_.Begin(instance_, [this](const RECT& screen) {
         AddFenceAtRect(screen);
       })) {
@@ -6661,6 +7737,10 @@ void App::AddFence() {
 }
 
 void App::AddFenceAtRect(const RECT& screen) {
+  if (PageLockedForFences(current_page_)) {
+    ShowToast(L"该页面已锁定，无法新建分区");
+    return;
+  }
   FenceLayout layout;
   layout.id = MakeFenceId();
   layout.title = L"新建分区";
@@ -6675,6 +7755,9 @@ void App::AddFenceAtRect(const RECT& screen) {
   layout.w = (std::max)(kFenceMinW, drawn_w);
   layout.h = (std::max)(kFenceMinH, drawn_h);
   layout.page = current_page_;
+  layout.pages = {current_page_};
+  // Align with page-bar create: default file landing zone (empty = 不参与整理).
+  layout.organize_kinds = {"file"};
   layout.style_id = prefs_.theme_id.empty() ? "navy" : prefs_.theme_id; // 跟随当前分区样式，不联动全局主题
   if (!SpawnFence(layout)) {
     return;
@@ -6751,9 +7834,11 @@ void App::AddFenceAtRect(const RECT& screen) {
     BumpPinsEpoch();
     SavePins(pins_);
     SaveFloatPlacements(float_placements_);
-    // Keep pin_order of the new fence in scoop encounter order.
+    // Fences: scoop preserves on-screen encounter order as manual seats
+    // (default sort_by=name would ignore pin_order and scramble icons).
     if (!fences_.empty() && fences_.back() &&
         fences_.back()->Id() == layout.id) {
+      fences_.back()->SetSortBy("manual");
       fences_.back()->InsertPinOrder(scooped_paths, -1);
     }
     RefreshDesktopIcons();
@@ -6787,6 +7872,10 @@ void App::DissolveFence(FenceWindow* fence) {
     MistAlert(settings_.Hwnd(), L"解散分区",
               L"系统分区不可删除。\n\n可清空内容或隐藏，但不会删除系统分区本身。",
               MistMsgTone::Info);
+    return;
+  }
+  if (PageLockedForFences(fence->Page())) {
+    ShowToast(L"该页面已锁定，无法删除分区");
     return;
   }
   const std::wstring tip =
@@ -6853,7 +7942,15 @@ void App::SetFencePageAt(int index, int page) {
   if (index < 0 || index >= static_cast<int>(fences_.size())) {
     return;
   }
-  fences_[static_cast<size_t>(index)]->SetPage(page);
+  FenceWindow* f = fences_[static_cast<size_t>(index)].get();
+  if (!f) {
+    return;
+  }
+  if (PageLockedForFences(page) || PageLockedForFences(f->Page())) {
+    ShowToast(L"该页面已锁定，无法移动分区");
+    return;
+  }
+  f->SetPage(page);
   PersistLayouts();
   ApplyPageVisibility();
   RefreshSettingsList();
@@ -6952,6 +8049,8 @@ LRESULT CALLBACK App::TrayWndProc(HWND hwnd, UINT msg, WPARAM wparam,
       if (lock) {
         std::wstring rename_from;
         std::wstring rename_to;
+        std::wstring deleted_path;
+        std::wstring created_path;
         if ((event & (SHCNE_RENAMEITEM | SHCNE_RENAMEFOLDER)) != 0 && pidls) {
           wchar_t buf[MAX_PATH] = {};
           if (pidls[0] && SHGetPathFromIDListW(pidls[0], buf) && buf[0]) {
@@ -6960,6 +8059,18 @@ LRESULT CALLBACK App::TrayWndProc(HWND hwnd, UINT msg, WPARAM wparam,
           buf[0] = 0;
           if (pidls[1] && SHGetPathFromIDListW(pidls[1], buf) && buf[0]) {
             rename_to = buf;
+          }
+        } else if ((event & (SHCNE_DELETE | SHCNE_RMDIR)) != 0 && pidls &&
+                   pidls[0]) {
+          wchar_t buf[MAX_PATH] = {};
+          if (SHGetPathFromIDListW(pidls[0], buf) && buf[0]) {
+            deleted_path = buf;
+          }
+        } else if ((event & (SHCNE_CREATE | SHCNE_MKDIR)) != 0 && pidls &&
+                   pidls[0]) {
+          wchar_t buf[MAX_PATH] = {};
+          if (SHGetPathFromIDListW(pidls[0], buf) && buf[0]) {
+            created_path = buf;
           }
         }
         const long membership =
@@ -6971,6 +8082,16 @@ LRESULT CALLBACK App::TrayWndProc(HWND hwnd, UINT msg, WPARAM wparam,
         if (!rename_from.empty() && !rename_to.empty() &&
             NormalizePinKey(rename_from) != NormalizePinKey(rename_to)) {
           self->RetargetPin(rename_from, rename_to);
+        }
+        // Explorer Cut/Delete: drop pin now — sticky 45s prune is too late and
+        // can retarget a same-name Desktop arrival into the old fence.
+        if (!deleted_path.empty()) {
+          self->ForgetDeletedDesktopPath(deleted_path);
+        }
+        // DefView「新建」on blank wallpaper (float host is only a tight bbox):
+        // keep as loose float — same SuppressOrganize as PublicHost New.
+        if (!created_path.empty()) {
+          self->MaybeSuppressDesktopShellNew(created_path);
         }
         if (refresh) {
           self->ScheduleDesktopContentRefresh();
@@ -6985,7 +8106,10 @@ LRESULT CALLBACK App::TrayWndProc(HWND hwnd, UINT msg, WPARAM wparam,
       self->OnDesktopBlankLeftDown(lparam);
       return 0;
     case kMsgDesktopPaste:
-      self->OnDesktopPaste();
+      self->OnDesktopPaste(wparam != 0);
+      return 0;
+    case kMsgDesktopBlankRClick:
+      self->OnDesktopBlankRightClick(lparam);
       return 0;
     case kDeskTidyMsgIconsPreloaded:
       for (auto& fence : self->fences_) {
@@ -7139,10 +8263,17 @@ LRESULT CALLBACK App::TrayWndProc(HWND hwnd, UINT msg, WPARAM wparam,
           return 0;
         }
         self->OnDisplayTopologyMaybeChanged();
+        // Watch portal root + drilled-in cwd (scan uses PortalBrowsePath).
         std::vector<std::wstring> portals;
         for (const auto& fence : self->fences_) {
-          if (fence && !fence->PortalPath().empty()) {
-            portals.push_back(fence->PortalPath());
+          if (!fence || fence->PortalPath().empty()) {
+            continue;
+          }
+          portals.push_back(fence->PortalPath());
+          const std::wstring browse = fence->PortalBrowsePath();
+          if (!browse.empty() &&
+              _wcsicmp(browse.c_str(), fence->PortalPath().c_str()) != 0) {
+            portals.push_back(browse);
           }
         }
         self->desktop_watch_.SetExtraFolders(portals);

@@ -477,6 +477,44 @@ int TrackShellFolderBackgroundMenu(HWND owner, POINT screen,
   return rc;
 }
 
+bool InvokeShellFolderVerb(HWND owner, const std::wstring& folder,
+                           const wchar_t* verb) {
+  if (folder.empty() || !verb || !verb[0]) {
+    return false;
+  }
+  HINSTANCE instance = GetModuleHandleW(nullptr);
+  HWND host = EnsureMenuHost(instance);
+  if (!host) {
+    host = owner;
+  }
+  if (!host) {
+    return false;
+  }
+  IContextMenu* pcm = nullptr;
+  if (FAILED(AcquireBackgroundContextMenu(host, folder, &pcm)) || !pcm) {
+    return false;
+  }
+  char verb_a[64] = {};
+  WideCharToMultiByte(CP_ACP, 0, verb, -1, verb_a, 63, nullptr, nullptr);
+  CMINVOKECOMMANDINFOEX info{};
+  info.cbSize = sizeof(info);
+  info.fMask = CMIC_MASK_UNICODE;
+  info.hwnd = owner ? owner : host;
+  info.lpVerb = verb_a;
+  info.lpVerbW = verb;
+  info.nShow = SW_SHOWNORMAL;
+  const HRESULT hr =
+      pcm->InvokeCommand(reinterpret_cast<CMINVOKECOMMANDINFO*>(&info));
+  pcm->Release();
+  if (FAILED(hr)) {
+    LogLine(L"[menu] InvokeShellFolderVerb(%s) failed hr=0x%08lx", verb,
+            static_cast<unsigned long>(hr));
+    return false;
+  }
+  LogLine(L"[menu] InvokeShellFolderVerb(%s) ok", verb);
+  return true;
+}
+
 std::string TrackMoveToPageThenFenceMenu(
     HWND owner, POINT screen, const std::vector<std::wstring>& page_names,
     const std::vector<MoveFenceMenuTarget>& fences,

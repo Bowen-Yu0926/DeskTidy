@@ -1,13 +1,16 @@
 #pragma once
 
+#include "notes_cloud_sync.h"
 #include "notes_library.h"
 #include "notes_webview.h"
 #include "ole_drag.h"
+#include "online_notes_window.h"
 #include "paths_util.h"
 
 #include <Windows.h>
 #include <CommCtrl.h>
 
+#include <map>
 #include <set>
 #include <string>
 #include <vector>
@@ -58,7 +61,9 @@ class NotesWindow {
   void ReloadFromDisk();
   void PromptGotoLine();
   // authoritative_pull: Toast getMarkdown before write (close / Ctrl+S).
-  void Save(bool authoritative_pull = false);
+  // push_cloud: also VaultHttpUpdateNote for sync-attributed files.
+  // Tab switches pass false so switching never blocks on the network.
+  void Save(bool authoritative_pull = false, bool push_cloud = true);
   void SaveAs();
   // Notepad++ 式：打开系统 hosts（保存时遇 ACL 走提权）。
   void OpenHostsFile();
@@ -165,6 +170,9 @@ class NotesWindow {
   void HighlightSidebarPath(const std::wstring& path);
   void TogglePinPath(const std::wstring& path);
   bool PathIsPinned(const std::wstring& path) const;
+  // Tab lock: locked tabs cannot be deleted; 账号库 is always locked.
+  void ToggleLockPath(const std::wstring& path);
+  bool PathIsLocked(const std::wstring& path) const;
   // Keep pinned open tabs on the left (Python pin-to-front).
   void ApplyPinnedTabOrder();
   static std::wstring NormalizePathKey(const std::wstring& path);
@@ -199,9 +207,10 @@ class NotesWindow {
   void CloseTabOnlyAt(int index);
   // 删文件并移除页签；ask_confirm 为 false 时跳过弹窗（调用方已确认）。
   void DeleteAndCloseTabAt(int index, bool ask_confirm);
-  // 账号库.md — fixed system tab (cannot close / delete / rename / unpin).
+  // 账号库.md — fixed system tab (cannot close / delete / rename / unlock).
   bool IsLockedAccountsTab(int index) const;
   void NotifyAccountsTabLocked();
+  void NotifyTabDeleteLocked();
   void CloseOtherTabs(int keep_index);
   void CloseTabsToTheRight(int index);
   void InsertMdStrike();
@@ -317,7 +326,28 @@ class NotesWindow {
   HWND sidebar_ = nullptr;
   HWND sidebar_search_ = nullptr;
   HWND sidebar_new_ = nullptr;
+  HWND sidebar_online_ = nullptr;  // ☁ open / create online notes
   HWND sidebar_refresh_ = nullptr;
+  void EnsureOnlineNotesPanel();
+  void OpenOnlineNotes(bool create_new);
+  void EnsureLibraryRail();
+  // refresh_online: hit network for cloud list (refresh / login / CRUD).
+  // Otherwise reuse library_online_cache_ so tab switches stay snappy.
+  void PushLibraryRailState(bool refresh_online = false);
+  void UpdateLibraryRailActiveOnly();
+  void HandleLibraryRailAction(const std::wstring& json);
+  // JSON queued from library WebView; run off WebMessageReceived (Mist freezes).
+  std::wstring pending_library_action_json_;
+  void OpenOnlineNoteInEditor(int note_id);
+  void NewOnlineNoteInEditor();
+  void EnsureLibraryCloudLogin();
+  void ConvertPathToCloud(const std::wstring& path);
+  void ConvertPathToLocal(const std::wstring& path, int note_id);
+  void SyncRefreshFromCloud();
+  bool PathIsCloudSynced(const std::wstring& path) const;
+  void LoadAndSweepCloudSync();
+  // Fire-and-forget VaultHttpUpdateNote (local save already done).
+  void QueueCloudNotePush(int note_id, std::wstring title, std::wstring body);
   HWND sidebar_results_ = nullptr;
   HWND status_ = nullptr;
   HWND mode_strip_ = nullptr;  // Top-right 预览/编辑 toggle chip.
@@ -353,6 +383,8 @@ class NotesWindow {
   std::vector<std::wstring> sidebar_multi_;
   std::wstring sidebar_anchor_path_;
   std::vector<std::wstring> pinned_paths_;
+  // User-locked note paths (delete blocked). 账号库 is locked without listing.
+  std::vector<std::wstring> locked_paths_;
   std::vector<NoteSearchHit> sidebar_hits_;
   std::vector<TabState> tab_states_;
   int tab_index_ = 0;
@@ -385,6 +417,23 @@ class NotesWindow {
   bool word_wrap_ = true;
   NotesWebView web_;
   NotesWebView preview_web_;
+  NotesWebView library_web_;  // Unified online+local list (notes_library.html)
+  struct LibraryOnlineItem {
+    int id = 0;
+    std::wstring title;
+    std::wstring updated_at;
+  };
+  struct OnlineBodyCache {
+    std::wstring title;
+    std::wstring body;
+  };
+  std::vector<LibraryOnlineItem> library_online_cache_;
+  bool library_online_stale_ = true;
+  std::map<int, OnlineBodyCache> online_body_cache_;
+  NoteCloudSyncStore cloud_sync_;
+  // Tab switch: defer Toast SetMarkdown so chrome paints before JSON escape.
+  std::wstring pending_tab_markdown_;
+  bool has_pending_tab_markdown_ = false;
   PathDropTarget* drop_target_ = nullptr;
   WNDPROC edit_proc_ = nullptr;
   WNDPROC title_edit_proc_ = nullptr;
@@ -436,4 +485,5 @@ class NotesWindow {
   UINT_PTR vault_clip_timer_ = 0;
   std::wstring vault_clip_secret_;
   bool vault_html_view_ = false;
+  OnlineNotesWindow online_notes_;
 };

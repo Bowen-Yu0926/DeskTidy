@@ -84,7 +84,8 @@ class App {
   void RemoveCurrentPage();
   void RenameCurrentPage();
   void CreateFenceOnPage(int page, bool switch_to_page = true);
-  // P2-9: empty pages get a document fence during virtual organize.
+  // Formerly auto-spawned a page-named file fence after organize; kept as a
+  // no-op so call sites stay, without resurrecting dissolved fences (Fences).
   void EnsureOrganizeFencesForEmptyPages();
   void DeletePageAt(int page);
   void RenamePageAt(int page);
@@ -133,6 +134,11 @@ class App {
   void UnpinPaths(const std::vector<std::wstring>& paths,
                   const POINT* drop = nullptr);
   void RetargetPin(const std::wstring& from, const std::wstring& to);
+  // Explorer Cut/Delete of a Desktop item: drop pin/float immediately (do not
+  // wait for the 45s sticky prune — same-name arrivals must not be stolen).
+  void ForgetDeletedDesktopPath(const std::wstring& path);
+  // DefView blank「新建」→ keep as float (match PublicHost New suppress).
+  void MaybeSuppressDesktopShellNew(const std::wstring& path);
   // P1-13: move pins from `src` to `dst` (insert at `at`, -1 = append).
   // Returns false (no mutation) for src==dst / missing dst / portal src.
   bool TransferPins(const std::wstring& src, const std::wstring& dst,
@@ -158,6 +164,9 @@ class App {
   void DispatchSettingsCommand(const std::wstring& id);
   void PinImage(const std::wstring& path);
   bool PinClipboardImage();
+  // True when an open pin already shows this file (case-insensitive).
+  bool IsPathPinned(const std::wstring& path) const;
+  void RememberPinClipboardSeq();
   void ReregisterHotkeys();
   // P1-28: start/update elevated hotkey helper relay.
   void SyncHotkeyRelay();
@@ -172,8 +181,15 @@ class App {
   void OnDesktopBlankDoubleClick();
   // Explorer / Fences: left-click blank desktop clears fence icon selection.
   void OnDesktopBlankLeftDown(LPARAM screen_pt);
+  // Organized mode: blank wallpaper RMB → Desktop background menu (Paste/New).
+  void OnDesktopBlankRightClick(LPARAM screen_pt);
   // Organized mode: paste clipboard files onto the real Desktop folder (floats).
-  void OnDesktopPaste();
+  // as_link: Explorer 「粘贴快捷方式」→ land .lnk (source untouched).
+  void OnDesktopPaste(bool as_link = false);
+  // Fence/public Ctrl+Z or blank Undo: shell undo then re-pin remembered paths.
+  void TryShellUndoAndRepin();
+  void RememberPinUndo(const std::wstring& path, const std::string& fence_id);
+  void RepinFromUndoStack();
   // Explorer drop onto public float chrome → Desktop folder. Returns OLE effect.
   DWORD OnDesktopDropPaths(const std::vector<std::wstring>& paths);
   // P1-6: double-click toggles stock Explorer desktop ↔ organized DeskTidy view.
@@ -204,7 +220,7 @@ class App {
   DWORD OnPathsDropped(FenceWindow* fence,
                        const std::vector<std::wstring>& paths);
   void OnPathsPasted(FenceWindow* fence, const std::vector<std::wstring>& paths,
-                     bool move);
+                     bool move, bool as_link = false);
   // Shell New on a virtual fence: pin the landed Desktop path (no FO_COPY).
   void OnPathsCreated(FenceWindow* fence,
                       const std::vector<std::wstring>& paths);
@@ -229,6 +245,10 @@ class App {
   void HealLayoutsNow(bool toast);
   void OnDisplayTopologyMaybeChanged();
   void TogglePageLock(int page);
+  // User-toggled page lock: block fence create / dissolve / move-onto.
+  // Pages 0/1 stay create-friendly (page_bar / Python); page delete is gated
+  // separately via IsPageLocked / hard-coded system pages.
+  bool PageLockedForFences(int page) const;
   // U4: single converge action for WM_DISPLAYCHANGE (scale + reload).
   void ConvergeDisplayChange();
   void OnDisplayChangeTimerFired();
@@ -292,12 +312,24 @@ class App {
   // Newest-first paths for show_screenshot walk (Python recent stack).
   std::vector<std::wstring> recent_shots_;
   size_t recent_shot_i_ = 0;
+  // Snipaste/PixPin: F2 only re-reads clipboard when its sequence changes;
+  // otherwise cycle recent_shots_ so the same bitmap is not pinned again.
+  DWORD last_pin_clipboard_seq_ = 0;
+  // Clipboard sequence right after our region capture (path already on disk).
+  DWORD last_capture_clipboard_seq_ = 0;
   PinMap pins_;
   FloatPlacementMap float_placements_;
   // Bumped on every interactive pin mutate; organize workers snapshot this so
   // OnOrganizeDone can drop stale results instead of clobbering a fresh drop.
   unsigned long long pins_epoch_ = 0;
   void BumpPinsEpoch() { ++pins_epoch_; }
+  // TTL stack: recycle/unpin-from-delete → Ctrl+Z re-pins after shell Undo.
+  struct PinUndoEntry {
+    std::wstring path;
+    std::string fence_id;
+    ULONGLONG tick = 0;
+  };
+  std::vector<PinUndoEntry> pin_undo_;
   std::unordered_map<std::wstring, ULONGLONG> pin_missing_since_;
   ULONGLONG pin_prune_last_ms_ = 0;
   RuleMap rules_;

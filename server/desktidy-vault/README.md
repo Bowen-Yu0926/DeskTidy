@@ -35,6 +35,13 @@ Base: `https://bowen-yu0926.byethost10.com/desktidy-vault/`
 | POST | `credentials` | Bearer | `{title,username,password,url,note}` |
 | PUT | `credentials/{id}` | Bearer | same |
 | DELETE | `credentials/{id}` | Bearer | |
+| GET | `notes` | Bearer | list `{id,title,updated_at,…}` (no body) |
+| GET | `notes/{id}` | Bearer | full note incl. `body` |
+| POST | `notes` | Bearer | `{title,body}` |
+| PUT | `notes/{id}` | Bearer | `{title,body}` |
+| DELETE | `notes/{id}` | Bearer | |
+
+`vault_notes` is created automatically on first notes call (`CREATE TABLE IF NOT EXISTS`), or import updated `schema.sql`.
 
 Fallback without rewrite: `index.php?r=auth/login`
 

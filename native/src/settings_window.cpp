@@ -745,7 +745,18 @@ std::wstring SettingsWindow::BuildStateJson() const {
     json += JsonEscape(c.title);
     json += L"\",\"page\":";
     json += std::to_wstring(c.page);
-    json += L",\"style_id\":\"";
+    json += L",\"pages\":[";
+    if (c.pages.empty()) {
+      json += std::to_wstring(c.page);
+    } else {
+      for (size_t pi = 0; pi < c.pages.size(); ++pi) {
+        if (pi) {
+          json += L',';
+        }
+        json += std::to_wstring(c.pages[pi]);
+      }
+    }
+    json += L"],\"style_id\":\"";
     json += JsonEscape(WidenUtf8(c.style_id));
     json += L"\",\"opacity_pct\":";
     json += std::to_wstring(c.opacity_pct);
@@ -753,6 +764,8 @@ std::wstring SettingsWindow::BuildStateJson() const {
     json += c.system_fence ? L"true" : L"false";
     json += L",\"position_locked\":";
     json += c.position_locked ? L"true" : L"false";
+    json += L",\"visible\":";
+    json += c.visible ? L"true" : L"false";
     json += L",\"organize_kinds\":[";
     for (size_t k = 0; k < c.organize_kinds.size(); ++k) {
       if (k) {
@@ -1187,6 +1200,9 @@ void SettingsWindow::DispatchAction(const std::wstring& json) {
                 L"|" + title);
   } else if (id == L"fence_toggle_lock" && on_command_) {
     on_command_(L"fence_toggle_lock:" +
+                std::to_wstring(JsonIntField(json, L"index", 0)));
+  } else if (id == L"fence_toggle_visible" && on_command_) {
+    on_command_(L"fence_toggle_visible:" +
                 std::to_wstring(JsonIntField(json, L"index", 0)));
   } else if (id == L"toggle_page_lock" && on_command_) {
     on_command_(L"toggle_page_lock:" +

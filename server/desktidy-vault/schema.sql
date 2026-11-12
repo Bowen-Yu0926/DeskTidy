@@ -51,3 +51,17 @@ CREATE TABLE IF NOT EXISTS vault_credentials (
   KEY idx_vault_credentials_sort (user_id, pinned, sort_order),
   CONSTRAINT fk_vault_credentials_user FOREIGN KEY (user_id) REFERENCES vault_users (id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS vault_notes (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  user_id BIGINT UNSIGNED NOT NULL,
+  title VARCHAR(200) NOT NULL,
+  body_enc MEDIUMTEXT NOT NULL,
+  enc_ver TINYINT NOT NULL DEFAULT 0,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  KEY idx_vault_notes_user (user_id),
+  KEY idx_vault_notes_updated (user_id, updated_at),
+  CONSTRAINT fk_vault_notes_user FOREIGN KEY (user_id) REFERENCES vault_users (id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

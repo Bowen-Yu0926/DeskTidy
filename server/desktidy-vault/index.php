@@ -4,6 +4,7 @@ declare(strict_types=1);
 require_once __DIR__ . '/lib/http.php';
 require_once __DIR__ . '/lib/auth_lib.php';
 require_once __DIR__ . '/lib/credentials.php';
+require_once __DIR__ . '/lib/notes.php';
 
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     vault_json_ok(['pong' => true]);
@@ -76,6 +77,25 @@ try {
         }
         if ($method === 'DELETE') {
             vault_handle_credentials_delete($id);
+        }
+    }
+
+    if ($path === 'notes' && $method === 'GET') {
+        vault_handle_notes_list();
+    }
+    if ($path === 'notes' && $method === 'POST') {
+        vault_handle_notes_create();
+    }
+    if (preg_match('#^notes/(\d+)$#', $path, $m)) {
+        $id = (int)$m[1];
+        if ($method === 'GET') {
+            vault_handle_notes_get($id);
+        }
+        if ($method === 'PUT' || $method === 'PATCH') {
+            vault_handle_notes_update($id);
+        }
+        if ($method === 'DELETE') {
+            vault_handle_notes_delete($id);
         }
     }
 

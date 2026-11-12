@@ -1,5 +1,7 @@
 #include "fence_window.h"
 
+#include "fence_keys.h"
+
 #include "desktop_shell.h"
 #include "display_geom.h"
 #include "fence_style.h"
@@ -58,6 +60,8 @@ constexpr int kExtFencePortalSet = 7;
 constexpr int kExtFencePortalClear = 8;
 constexpr int kExtFencePortalUp = 9;
 constexpr int kExtFenceSortName = 10;
+constexpr int kExtFenceAutoHide = 15;
+constexpr UINT kTimerAutoHide = 77;
 constexpr int kExtFenceSortDate = 11;
 constexpr int kExtFenceSortSize = 12;
 constexpr int kExtFenceSortType = 13;
@@ -406,13 +410,9 @@ void FenceWindow::SetPage(int page) {
     page = 0;
   }
   page_ = page;
-  // Move-to-page (settings / page-bar): keep VisibleOnPage in sync. Leaving
-  // pages_ on the old singleton made OnPage(new) false → blank destination.
-  if (pages_.empty() || (pages_.size() == 1 && pages_[0] != page_)) {
-    pages_ = {page_};
-  } else if (!OnPage(page_)) {
-    pages_.push_back(page_);
-  }
+  // Settings / page-bar 「移动到页」: replace membership (true move).
+  // Multi-page add/remove stays on TogglePageMembership (fence menu).
+  pages_ = {page_};
 }
 
 void FenceWindow::SetPages(std::vector<int> pages) {
@@ -906,15 +906,24 @@ void FenceWindow::InsertPinOrder(const std::vector<std::wstring>& paths,
   if (!cells_.empty()) {
     base.reserve(cells_.size());
     for (const auto& c : cells_) {
-      base.push_back(c.item.path);
+      if (!c.item.path.empty()) {
+        base.push_back(c.item.path);
+      }
     }
   } else {
-    base = pin_order_;
+    for (const auto& p : pin_order_) {
+      if (!p.empty()) {
+        base.push_back(p);
+      }
+    }
   }
   auto is_dropped = [&](const std::wstring& p) {
+    if (p.empty()) {
+      return false;
+    }
     const std::wstring key = NormalizePinKey(p);
     for (const auto& d : paths) {
-      if (NormalizePinKey(d) == key) {
+      if (!d.empty() && NormalizePinKey(d) == key) {
         return true;
       }
     }
@@ -938,10 +947,14 @@ void FenceWindow::InsertPinOrder(const std::vector<std::wstring>& paths,
 }
 
 void FenceWindow::RemovePinOrder(const std::vector<std::wstring>& paths) {
+  // Fences packs to top-left: mid-remove collapses the seat (no empty holes).
   auto is_dropped = [&](const std::wstring& p) {
+    if (p.empty()) {
+      return true;  // also strip any legacy "" sentinels
+    }
     const std::wstring key = NormalizePinKey(p);
     for (const auto& d : paths) {
-      if (NormalizePinKey(d) == key) {
+      if (!d.empty() && NormalizePinKey(d) == key) {
         return true;
       }
     }
@@ -968,7 +981,12 @@ void FenceWindow::RetargetPinOrder(const std::wstring& from,
     return;
   }
   // Drop any pre-existing `to` seat so the renamed path keeps a single slot.
+  // Leave "" holes untouched.
   for (auto it = pin_order_.begin(); it != pin_order_.end();) {
+    if (it->empty()) {
+      ++it;
+      continue;
+    }
     if (NormalizePinKey(*it) == to_key) {
       it = pin_order_.erase(it);
     } else {
@@ -977,6 +995,9 @@ void FenceWindow::RetargetPinOrder(const std::wstring& from,
   }
   bool hit = false;
   for (auto& p : pin_order_) {
+    if (p.empty()) {
+      continue;
+    }
     if (NormalizePinKey(p) == from_key) {
       p = to;
       hit = true;
@@ -1012,22 +1033,26 @@ void FenceWindow::SetDropHighlight(bool on) {
 
 void FenceWindow::UpdateOleDropPreview(int x, int y) {
   const bool recycle = IsRecycleBinIconAt(x, y);
-  const int insert = recycle ? -1 : InsertIndexAt(x, y);
+  const bool folder = !recycle && !DirectoryIconAt(x, y).empty();
+  const int insert = (recycle || folder) ? -1 : InsertIndexAt(x, y);
   if (drop_preview_ && drop_over_recycle_ == recycle &&
-      drop_insert_ == insert && drop_pt_.x == x && drop_pt_.y == y) {
+      drop_over_folder_ == folder && drop_insert_ == insert &&
+      drop_pt_.x == x && drop_pt_.y == y) {
     return;
   }
   const bool structural =
-      !drop_preview_ || drop_over_recycle_ != recycle || drop_insert_ != insert;
+      !drop_preview_ || drop_over_recycle_ != recycle ||
+      drop_over_folder_ != folder || drop_insert_ != insert;
   drop_preview_ = true;
   drop_over_recycle_ = recycle;
+  drop_over_folder_ = folder;
   drop_insert_ = insert;
   drop_pt_ = {x, y};
   drop_highlight_ = false;
   if (!hwnd_) {
     return;
   }
-  // Insert/recycle changes: immediate. Ghost cursor only: ~30fps.
+  // Insert/recycle/folder changes: immediate. Ghost cursor only: ~30fps.
   const DWORD now = GetTickCount();
   if (structural || last_ole_preview_present_ms_ == 0 ||
       now - last_ole_preview_present_ms_ >= 33u) {
@@ -1038,11 +1063,12 @@ void FenceWindow::UpdateOleDropPreview(int x, int y) {
 
 void FenceWindow::ClearOleDropPreview() {
   if (!drop_preview_ && !drop_highlight_ && !drop_over_recycle_ &&
-      drop_insert_ < 0) {
+      !drop_over_folder_ && drop_insert_ < 0) {
     return;
   }
   drop_preview_ = false;
   drop_over_recycle_ = false;
+  drop_over_folder_ = false;
   drop_insert_ = -1;
   drop_pt_ = {};
   drop_highlight_ = false;
@@ -1135,6 +1161,7 @@ bool FenceWindow::Create(HINSTANCE instance, const FenceLayout& layout) {
   style_id_ = NormalizeFenceStyleId(layout.style_id);
   portal_path_ = layout.portal_path;
   collapsed_ = layout.collapsed;
+  auto_hide_ = layout.auto_hide;
   position_locked_ = layout.position_locked;
   sort_by_ = layout.sort_by.empty() ? "name" : layout.sort_by;
   view_mode_ = (layout.view_mode == "list") ? "list" : "grid";
@@ -1192,7 +1219,7 @@ bool FenceWindow::Create(HINSTANCE instance, const FenceLayout& layout) {
   return true;
 }
 
-void FenceWindow::SetCollapsed(bool collapsed) {
+void FenceWindow::SetCollapsed(bool collapsed, bool persist) {
   if (!hwnd_) {
     collapsed_ = collapsed;
     return;
@@ -1215,7 +1242,8 @@ void FenceWindow::SetCollapsed(bool collapsed) {
   }
   LayoutCells();
   PresentLayered();
-  if (on_moved_) {
+  // Auto-hide hover expand/collapse must not rewrite layout.json every move.
+  if (persist && on_moved_) {
     on_moved_(this);
   }
 }
@@ -1224,7 +1252,24 @@ void FenceWindow::ToggleCollapsed() {
   if (!collapsible_) {
     return;
   }
-  SetCollapsed(!collapsed_);
+  SetCollapsed(!collapsed_, /*persist=*/true);
+}
+
+void FenceWindow::SetAutoHide(bool on) {
+  if (auto_hide_ == on) {
+    return;
+  }
+  auto_hide_ = on;
+  if (hwnd_) {
+    KillTimer(hwnd_, kTimerAutoHide);
+  }
+  // Fences: enabling Auto-hide rests in the collapsed title strip.
+  if (auto_hide_ && collapsible_ && !collapsed_) {
+    SetCollapsed(true, /*persist=*/false);
+  }
+  if (on_moved_) {
+    on_moved_(this);
+  }
 }
 
 void FenceWindow::SetPositionLocked(bool locked) {
@@ -1259,6 +1304,11 @@ void FenceWindow::EnsureDropTarget() {
                          ? DROPEFFECT_MOVE
                          : DROPEFFECT_NONE;
             }
+            // Explorer: drop onto a folder icon → import into that folder.
+            const std::wstring folder = DirectoryIconAt(pt.x, pt.y);
+            if (!folder.empty()) {
+              return ImportPathsIntoDirectory(paths, folder, proposed);
+            }
             if (on_paths_dropped_at_) {
               // F1: derive insertion index from the drop point (cursor is still
               // at the drop location when PathDropTarget::Drop fires).
@@ -1284,6 +1334,21 @@ void FenceWindow::EnsureDropTarget() {
                          ? DROPEFFECT_MOVE
                          : DROPEFFECT_NONE;
             }
+            const std::wstring folder = DirectoryIconAt(pt.x, pt.y);
+            if (!folder.empty()) {
+              // Explorer: Ctrl=copy, Shift=move, Alt/Ctrl+Shift=.lnk.
+              DWORD effect = DROPEFFECT_MOVE;
+              if (WantDropLinkEffect()) {
+                effect = DROPEFFECT_LINK;
+              } else if ((GetKeyState(VK_CONTROL) & 0x8000) != 0 &&
+                         (GetKeyState(VK_SHIFT) & 0x8000) == 0) {
+                effect = DROPEFFECT_COPY;
+              }
+              if (!commit) {
+                return effect;
+              }
+              return ImportPathsIntoDirectory(paths, folder, effect);
+            }
             if (on_pin_drop_) {
               // Fences: drop seat decides pin_order insert (not always append).
               const int at = InsertIndexAt(pt.x, pt.y);
@@ -1294,12 +1359,36 @@ void FenceWindow::EnsureDropTarget() {
   drop_target_->SetHighlightFn([this](bool on) {
     if (!on) {
       ClearOleDropPreview();
+      if (auto_hide_ && !collapsed_ && collapsible_ && !dragging_ &&
+          !resizing_ && !icon_dragging_ && !rubber_ && !rename_edit_) {
+        SetTimer(hwnd_, kTimerAutoHide, 350, nullptr);
+      }
+      return;
+    }
+    if (auto_hide_) {
+      KillTimer(hwnd_, kTimerAutoHide);
+      if (collapsed_ && collapsible_) {
+        SetCollapsed(false, /*persist=*/false);
+      }
     }
   });
   drop_target_->SetDragOverFn([this](POINTL spt, bool active) {
     if (!active) {
       ClearOleDropPreview();
+      // Fences Auto-hide: OLE leave → same delayed collapse as WM_MOUSELEAVE.
+      if (auto_hide_ && !collapsed_ && collapsible_ && !dragging_ &&
+          !resizing_ && !icon_dragging_ && !rubber_ && !rename_edit_) {
+        SetTimer(hwnd_, kTimerAutoHide, 350, nullptr);
+      }
       return;
+    }
+    // Fences Auto-hide: expand on drag-over so insert seats are visible.
+    if (auto_hide_) {
+      KillTimer(hwnd_, kTimerAutoHide);
+      if (collapsed_ && collapsible_ && !dragging_ && !resizing_ &&
+          !icon_dragging_ && !rubber_ && !rename_edit_) {
+        SetCollapsed(false, /*persist=*/false);
+      }
     }
     POINT pt{spt.x, spt.y};
     ScreenToClient(hwnd_, &pt);
@@ -1316,11 +1405,23 @@ void FenceWindow::EnsureDropTarget() {
     if (IsRecycleBinIconAt(pt.x, pt.y)) {
       return FileDropSemantics::PreferMove;
     }
+    // Folder icon: physical import (volume/Ctrl/Shift), not virtual pin.
+    if (!DirectoryIconAt(pt.x, pt.y).empty()) {
+      return FileDropSemantics::Physical;
+    }
     return portal_path_.empty() ? FileDropSemantics::VirtualPin
                                 : FileDropSemantics::Physical;
   });
-  drop_target_->SetDestDirProvider(
-      [this]() { return PortalBrowsePath(); });
+  drop_target_->SetDestDirProvider([this]() {
+    POINT pt{};
+    GetCursorPos(&pt);
+    ScreenToClient(hwnd_, &pt);
+    const std::wstring folder = DirectoryIconAt(pt.x, pt.y);
+    if (!folder.empty()) {
+      return folder;
+    }
+    return PortalBrowsePath();
+  });
   // AIGC END
   if (!RegisterPathDropTarget(hwnd_, drop_target_)) {
     drop_target_->Release();
@@ -1329,6 +1430,9 @@ void FenceWindow::EnsureDropTarget() {
 }
 
 void FenceWindow::Destroy() {
+  if (GetFenceKeyTarget() == hwnd_) {
+    ClearFenceKeyTarget();
+  }
   ClearIcons();
   ReleaseFonts();
   ReleaseLayerBuffer();
@@ -1490,6 +1594,9 @@ const std::vector<DesktopItem> FenceWindow::ItemSnapshot() const {
   std::vector<DesktopItem> out;
   out.reserve(cells_.size());
   for (const auto& c : cells_) {
+    if (c.item.path.empty()) {
+      continue;  // sparse seats are not membership
+    }
     out.push_back(c.item);
   }
   return out;
@@ -1528,6 +1635,7 @@ FenceLayout FenceWindow::CurrentLayout() const {
   fl.style_id = style_id_;
   fl.portal_path = portal_path_;
   fl.collapsed = collapsed_;
+  fl.auto_hide = auto_hide_;
   fl.position_locked = position_locked_;
   fl.sort_by = sort_by_;
   fl.view_mode = view_mode_;
@@ -1562,10 +1670,16 @@ bool FenceWindow::Show() {
   // Callers (SetPage / RestoreDesktopChrome) already filter VisibleOnPage for
   // the *current* app page. Do not gate on page_ alone — that is only the
   // primary membership and no-op'd multi-page / soft-park restores.
+  // Fence-level show: clear hide on every membership page (Fences parity —
+  // Hide must not resurrect when switching to another pages_ entry).
   visible_ = true;
-  auto it = page_geometries_.find(page_);
-  if (it != page_geometries_.end()) {
-    it->second.visible = true;
+  for (auto& kv : page_geometries_) {
+    kv.second.visible = true;
+  }
+  if (page_geometries_.find(page_) == page_geometries_.end()) {
+    FencePageGeometry geo = GeometryForPage(page_);
+    geo.visible = true;
+    page_geometries_[page_] = geo;
   }
   // Win+D minimizes desktop-owned overlays: IsWindowVisible stays TRUE while
   // IsIconic is set, and SW_SHOWNOACTIVATE cannot un-minimize. Treat iconic as
@@ -1597,11 +1711,13 @@ bool FenceWindow::Show() {
 
 void FenceWindow::Hide() {
   // Persist user-hide so ApplyPageVisibility does not resurrect (P1-2).
+  // Fence-level: clear every page_geometries_ row — multi-page membership
+  // used to leave sibling pages visible=true and resurrect on page switch.
   visible_ = false;
-  auto it = page_geometries_.find(page_);
-  if (it != page_geometries_.end()) {
-    it->second.visible = false;
-  } else {
+  for (auto& kv : page_geometries_) {
+    kv.second.visible = false;
+  }
+  if (page_geometries_.find(page_) == page_geometries_.end()) {
     FencePageGeometry geo = GeometryForPage(page_);
     geo.visible = false;
     page_geometries_[page_] = geo;
@@ -1702,25 +1818,30 @@ void FenceWindow::SetItems(std::vector<DesktopItem> items) {
   // are actually replaced/destroyed (same-seat refresh used to wipe it every
   // watch tick and force cold Present).
   const std::vector<DesktopItem> before = ItemSnapshot();
-  // Dock-class early-out: identical membership + every cell already has an
+  // Dock-class early-out: identical membership + every filled cell has an
   // icon → skip clear/rebuild/sort/layout (RefreshDesktopIcons spam).
-  if (!items.empty() && DesktopItemListsIdentityEqual(before, items) &&
-      cells_.size() == items.size()) {
+  // Sparse seats: cells_.size() may exceed items.size() (empty holes).
+  {
+    size_t filled = 0;
     bool all_icons = true;
     for (const auto& c : cells_) {
+      if (c.item.path.empty()) {
+        continue;
+      }
+      ++filled;
       if (!c.icon) {
         all_icons = false;
-        break;
       }
     }
-    if (all_icons) {
+    if (!items.empty() && filled == items.size() &&
+        DesktopItemListsIdentityEqual(before, items) && all_icons) {
       return;
     }
   }
   std::unordered_map<std::wstring, HICON> reuse;
   reuse.reserve(cells_.size());
   for (auto& c : cells_) {
-    if (c.icon) {
+    if (c.icon && !c.item.path.empty()) {
       reuse.emplace(NormalizePinKey(c.item.path), c.icon);
       c.icon = nullptr;
     }
@@ -1755,14 +1876,18 @@ void FenceWindow::SetItems(std::vector<DesktopItem> items) {
     }
   }
   // Manual: honor pin_order_ (drop insert / drag reorder). Else name/date/…
+  // Fences packs from top-left — skip empty/missing entries (no sparse seats).
   if (sort_by_ == "manual" && !pin_order_.empty()) {
     std::vector<Cell> ordered;
     ordered.reserve(cells_.size());
     std::vector<char> used(cells_.size(), 0);
     auto match = [&](const std::wstring& want) -> int {
+      if (want.empty()) {
+        return -1;
+      }
       const std::wstring key = NormalizePinKey(want);
       for (size_t i = 0; i < cells_.size(); ++i) {
-        if (used[i]) {
+        if (used[i] || cells_[i].item.path.empty()) {
           continue;
         }
         if (NormalizePinKey(cells_[i].item.path) == key) {
@@ -1780,7 +1905,7 @@ void FenceWindow::SetItems(std::vector<DesktopItem> items) {
       ordered.push_back(std::move(cells_[static_cast<size_t>(i)]));
     }
     for (size_t i = 0; i < cells_.size(); ++i) {
-      if (!used[i]) {
+      if (!used[i] && !cells_[i].item.path.empty()) {
         ordered.push_back(std::move(cells_[i]));
       }
     }
@@ -1801,6 +1926,7 @@ void FenceWindow::SetItems(std::vector<DesktopItem> items) {
     scroll_y_ = 0;
     selected_.assign(cells_.size(), 0);
     selection_anchor_ = -1;
+    selection_focus_ = -1;
   }
   LayoutCells();
   if (!hwnd_) {
@@ -1868,6 +1994,7 @@ void FenceWindow::SetSortBy(const std::string& sort_by) {
   SortCells();
   selected_.assign(cells_.size(), 0);
   selection_anchor_ = -1;
+  selection_focus_ = -1;
   LayoutCells();
   if (hwnd_) {
     PresentLayered();
@@ -2122,6 +2249,10 @@ bool FenceWindow::IconContentRect(size_t index, RECT* out) const {
   if (!out || index >= cells_.size()) {
     return false;
   }
+  // Empty seats take grid space but are not hittable (Fences sparse grid).
+  if (cells_[index].item.path.empty()) {
+    return false;
+  }
   const RECT& b = cells_[index].bounds;
   if (view_mode_ == "list") {
     // List rows: whole row is the hit target (Explorer details-style).
@@ -2254,6 +2385,8 @@ void FenceWindow::ApplyRubberBandSelection() {
   }
   if (!rubber_additive_) {
     std::fill(selected_.begin(), selected_.end(), static_cast<char>(0));
+    selection_anchor_ = -1;
+    selection_focus_ = -1;
   }
   const int l = (std::min)(rubber_a_.x, rubber_b_.x);
   const int t = (std::min)(rubber_a_.y, rubber_b_.y);
@@ -2270,50 +2403,103 @@ void FenceWindow::ApplyRubberBandSelection() {
                        content.bottom < t || content.top > b);
     if (hit) {
       selected_[i] = 1;
-      selection_anchor_ = static_cast<int>(i);
+      // Ctrl+marquee: keep mark; only move focus to the last hit.
+      if (selection_anchor_ < 0) {
+        selection_anchor_ = static_cast<int>(i);
+      }
+      selection_focus_ = static_cast<int>(i);
     }
   }
 }
 
 void FenceWindow::OpenSelectedItems() {
-  const auto paths = SelectedPaths();
-  if (paths.empty()) {
+  if (SelectedPaths().empty()) {
     return;
   }
+  // Shift+Enter: open externally (portal folders → Explorer, not drill-in).
+  // Ctrl+Enter: new Explorer window for folders (same as Ctrl+dblclick).
+  const bool external = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
+  const bool ctrl_new =
+      !external && (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
   for (size_t i = 0; i < selected_.size() && i < cells_.size(); ++i) {
-    if (selected_[i]) {
-      OpenItem(static_cast<int>(i));
+    if (!selected_[i] || cells_[i].item.path.empty()) {
+      continue;
+    }
+    if (ctrl_new) {
+      ExploreShellPath(cells_[i].item.path);
+    } else {
+      OpenItem(static_cast<int>(i), external);
     }
   }
 }
 
-void FenceWindow::NavigateSelection(int dx, int dy, bool extend) {
+void FenceWindow::NavigateSelection(int dx, int dy, bool extend,
+                                    bool focus_only) {
   if (cells_.empty()) {
     return;
   }
   const int cols = GridColumnCount();
-  int cur = selection_anchor_;
-  if (cur < 0 || cur >= static_cast<int>(cells_.size())) {
+  const int n = static_cast<int>(cells_.size());
+  auto occupied = [&](int i) {
+    return i >= 0 && i < n && !cells_[static_cast<size_t>(i)].item.path.empty();
+  };
+  // Shift-extend moves the focus end; plain arrows move from focus/anchor.
+  int cur = selection_focus_;
+  if (cur < 0 || cur >= n || !occupied(cur)) {
+    cur = selection_anchor_;
+  }
+  if (cur < 0 || cur >= n || !occupied(cur)) {
     cur = -1;
     for (size_t i = 0; i < selected_.size() && i < cells_.size(); ++i) {
-      if (selected_[i]) {
+      if (selected_[i] && occupied(static_cast<int>(i))) {
         cur = static_cast<int>(i);
         break;
       }
     }
   }
   if (cur < 0) {
-    SelectOnly(0);
+    // First occupied seat (sparse pin grids may start with empties).
+    for (int i = 0; i < n; ++i) {
+      if (occupied(i)) {
+        if (focus_only) {
+          selection_focus_ = i;
+          if (selection_anchor_ < 0) {
+            selection_anchor_ = i;
+          }
+          EnsureCellVisible(i);
+          PresentLayered();
+        } else {
+          SelectOnly(i);
+          EnsureCellVisible(i);
+        }
+        return;
+      }
+    }
     return;
   }
-  int next = cur + dy * cols + dx;
-  if (next < 0) {
-    next = 0;
+  // Step along the primary axis, skipping empty sparse seats (Explorer).
+  const int step = dy * cols + dx;
+  if (step == 0) {
+    return;
   }
-  if (next >= static_cast<int>(cells_.size())) {
-    next = static_cast<int>(cells_.size()) - 1;
+  int next = cur + step;
+  while (next >= 0 && next < n && !occupied(next)) {
+    next += step;
+  }
+  if (next < 0 || next >= n) {
+    return;
+  }
+  if (focus_only) {
+    // Explorer: Ctrl+Arrow moves focus without changing the selection set.
+    selection_focus_ = next;
+    EnsureCellVisible(next);
+    PresentLayered();
+    return;
   }
   if (extend) {
+    if (selection_anchor_ < 0 || !occupied(selection_anchor_)) {
+      selection_anchor_ = cur;
+    }
     SelectRange(next);
   } else {
     SelectOnly(next);
@@ -2353,28 +2539,62 @@ void FenceWindow::TypeAheadFind(wchar_t ch) {
     typeahead_.clear();
   }
   typeahead_tick_ = now;
-  typeahead_.push_back(static_cast<wchar_t>(towlower(ch)));
+  typeahead_.push_back(ch);
+  CharLowerBuffW(typeahead_.data() + (typeahead_.size() - 1), 1);
+  const int before = selection_anchor_;
+  TypeAheadFindNext();
+  // No match for extended prefix — restart with just this character (Explorer).
+  if (typeahead_.size() > 1 && selection_anchor_ == before) {
+    auto lower_name = [](std::wstring s) {
+      if (!s.empty()) {
+        CharLowerBuffW(s.data(), static_cast<DWORD>(s.size()));
+      }
+      return s;
+    };
+    bool matched =
+        selection_anchor_ >= 0 &&
+        selection_anchor_ < static_cast<int>(cells_.size()) &&
+        !cells_[static_cast<size_t>(selection_anchor_)].item.path.empty() &&
+        [&]() {
+          const std::wstring n =
+              lower_name(cells_[static_cast<size_t>(selection_anchor_)].item.name);
+          return n.size() >= typeahead_.size() &&
+                 n.compare(0, typeahead_.size(), typeahead_) == 0;
+        }();
+    if (!matched) {
+      typeahead_.assign(1, ch);
+      CharLowerBuffW(typeahead_.data(), 1);
+      TypeAheadFindNext();
+    }
+  }
+}
 
+void FenceWindow::TypeAheadFindNext() {
+  if (typeahead_.empty() || cells_.empty()) {
+    return;
+  }
+  typeahead_tick_ = GetTickCount();
   auto lower_name = [](std::wstring s) {
-    for (auto& c : s) {
-      c = static_cast<wchar_t>(towlower(c));
+    if (!s.empty()) {
+      CharLowerBuffW(s.data(), static_cast<DWORD>(s.size()));
     }
     return s;
   };
   auto matches = [&](size_t i) {
+    if (cells_[i].item.path.empty()) {
+      return false;
+    }
     const std::wstring n = lower_name(cells_[i].item.name);
     return n.size() >= typeahead_.size() &&
            n.compare(0, typeahead_.size(), typeahead_) == 0;
   };
-
   int start = selection_anchor_ + 1;
   if (start < 0 || start > static_cast<int>(cells_.size())) {
     start = 0;
   }
   for (int pass = 0; pass < 2; ++pass) {
     const int from = (pass == 0) ? start : 0;
-    const int to =
-        (pass == 0) ? static_cast<int>(cells_.size()) : start;
+    const int to = (pass == 0) ? static_cast<int>(cells_.size()) : start;
     for (int i = from; i < to; ++i) {
       if (matches(static_cast<size_t>(i))) {
         SelectOnly(i);
@@ -2384,18 +2604,130 @@ void FenceWindow::TypeAheadFind(wchar_t ch) {
       }
     }
   }
-  // No match for extended prefix — restart with just this character (Explorer).
-  if (typeahead_.size() > 1) {
-    typeahead_.assign(1, static_cast<wchar_t>(towlower(ch)));
+}
+
+bool FenceWindow::TypeAheadBackspace() {
+  if (typeahead_.empty()) {
+    return false;
+  }
+  typeahead_.pop_back();
+  typeahead_tick_ = GetTickCount();
+  if (typeahead_.empty()) {
+    return true;
+  }
+  // Re-select first match of the shortened prefix (Explorer).
+  auto lower_name = [](std::wstring s) {
+    if (!s.empty()) {
+      CharLowerBuffW(s.data(), static_cast<DWORD>(s.size()));
+    }
+    return s;
+  };
+  for (size_t i = 0; i < cells_.size(); ++i) {
+    if (cells_[i].item.path.empty()) {
+      continue;
+    }
+    std::wstring n = lower_name(cells_[i].item.name);
+    if (n.size() >= typeahead_.size() &&
+        n.compare(0, typeahead_.size(), typeahead_) == 0) {
+      SelectOnly(static_cast<int>(i));
+      EnsureCellVisible(static_cast<int>(i));
+      PresentLayered();
+      break;
+    }
+  }
+  return true;
+}
+
+namespace {
+
+std::wstring UniqueNewFolderPath(const std::wstring& parent) {
+  if (parent.empty()) {
+    return L"";
+  }
+  const LANGID lang = PRIMARYLANGID(GetUserDefaultUILanguage());
+  const wchar_t* base =
+      (lang == LANG_CHINESE) ? L"新建文件夹" : L"New folder";
+  std::wstring path = parent + L"\\" + base;
+  if (GetFileAttributesW(path.c_str()) == INVALID_FILE_ATTRIBUTES) {
+    return path;
+  }
+  for (int i = 2; i < 10000; ++i) {
+    path = parent + L"\\" + base + L" (" + std::to_wstring(i) + L")";
+    if (GetFileAttributesW(path.c_str()) == INVALID_FILE_ATTRIBUTES) {
+      return path;
+    }
+  }
+  return L"";
+}
+
+}  // namespace
+
+void FenceWindow::CreateNewFolder() {
+  if (rename_edit_) {
+    return;
+  }
+  const std::wstring parent =
+      portal_path_.empty() ? DesktopDirectory() : PortalBrowsePath();
+  const std::wstring path = UniqueNewFolderPath(parent);
+  if (path.empty()) {
+    return;
+  }
+  if (!CreateDirectoryW(path.c_str(), nullptr)) {
+    return;
+  }
+  typeahead_.clear();
+  if (portal_path_.empty()) {
+    // Virtual fence: Desktop land → pin (Fences New / Ctrl+Shift+N).
+    if (on_created_) {
+      on_created_(this, {path});
+    } else if (on_pasted_) {
+      on_pasted_(this, {path}, /*cut=*/false, /*as_link=*/false);
+    } else if (on_refresh_) {
+      on_refresh_(this);
+    }
+  } else if (on_refresh_) {
+    on_refresh_(this);
+  }
+  for (size_t i = 0; i < cells_.size(); ++i) {
+    if (_wcsicmp(cells_[i].item.path.c_str(), path.c_str()) == 0) {
+      SelectOnly(static_cast<int>(i));
+      EnsureCellVisible(static_cast<int>(i));
+      BeginInlineRename();
+      return;
+    }
+  }
+}
+
+void FenceWindow::ShowSelectionContextMenu() {
+  if (rename_edit_) {
+    return;
+  }
+  int index = -1;
+  if (selection_anchor_ >= 0 &&
+      selection_anchor_ < static_cast<int>(cells_.size()) &&
+      IsSelected(selection_anchor_)) {
+    index = selection_anchor_;
+  } else {
     for (size_t i = 0; i < cells_.size(); ++i) {
-      if (matches(i)) {
-        SelectOnly(static_cast<int>(i));
-        EnsureCellVisible(static_cast<int>(i));
-        PresentLayered();
-        return;
+      if (IsSelected(static_cast<int>(i)) && !cells_[i].item.path.empty()) {
+        index = static_cast<int>(i);
+        break;
       }
     }
   }
+  // Explorer: Apps / Shift+F10 with no selection → folder background menu.
+  if (index < 0) {
+    POINT pt{};
+    GetCursorPos(&pt);
+    ShowFenceMenu(pt);
+    return;
+  }
+  POINT pt{};
+  const RECT& b = cells_[static_cast<size_t>(index)].bounds;
+  pt.x = (b.left + b.right) / 2;
+  pt.y = (b.top + b.bottom) / 2;
+  ClientToScreen(hwnd_, &pt);
+  ShowIconMenu(index, pt);
 }
 
 void FenceWindow::HandleFenceHotkey(int vk, bool ctrl, bool shift) {
@@ -2403,16 +2735,39 @@ void FenceWindow::HandleFenceHotkey(int vk, bool ctrl, bool shift) {
     return;
   }
   if (vk == VK_ESCAPE) {
+    // Explorer: Esc first clears typeahead; then cancels drag/rubber; then selection.
+    if (!typeahead_.empty()) {
+      typeahead_.clear();
+      return;
+    }
     if (rubber_) {
       rubber_ = false;
       ReleaseCapture();
+      PresentLayered();
+      return;
+    }
+    if (icon_dragging_) {
+      icon_dragging_ = false;
+      drag_paths_.clear();
+      drag_indices_.clear();
+      drag_insert_ = -1;
+      drag_left_ = false;
+      last_manual_drag_present_ms_ = 0;
+      if (GetCapture() == hwnd_) {
+        ReleaseCapture();
+      }
+      PresentLayered();
+      return;
     }
     ClearSelection();
-    typeahead_.clear();
     return;
   }
-  if (vk == VK_BACK) {
-    // Fences portal: Backspace goes up one folder level.
+  if (vk == VK_BACK || vk == VK_BROWSER_BACK) {
+    // Explorer: Backspace first edits typeahead; else portal goes up.
+    if (vk == VK_BACK && TypeAheadBackspace()) {
+      return;
+    }
+    // Fences portal: Backspace / mouse-back → up one folder level.
     if (PortalGoUp()) {
       typeahead_.clear();
       if (on_refresh_) {
@@ -2421,17 +2776,83 @@ void FenceWindow::HandleFenceHotkey(int vk, bool ctrl, bool shift) {
     }
     return;
   }
+  if (vk == VK_F3) {
+    // Explorer: F3 → next typeahead match (same prefix).
+    typeahead_tick_ = GetTickCount();
+    TypeAheadFindNext();
+    return;
+  }
+  // Explorer: Alt+↑ / Alt+← → up one folder (portal; do not steal plain arrows).
+  if ((vk == VK_UP || vk == VK_LEFT) &&
+      (GetAsyncKeyState(VK_MENU) & 0x8000) != 0 && !ctrl && !shift) {
+    if (PortalGoUp()) {
+      typeahead_.clear();
+      if (on_refresh_) {
+        on_refresh_(this);
+      }
+    }
+    return;
+  }
+  // Explorer / browser: Alt+→ / BrowserForward → portal forward history.
+  if ((vk == VK_RIGHT || vk == VK_BROWSER_FORWARD) &&
+      ((vk == VK_BROWSER_FORWARD) ||
+       ((GetAsyncKeyState(VK_MENU) & 0x8000) != 0 && !ctrl && !shift))) {
+    if (PortalGoForward()) {
+      typeahead_.clear();
+      if (on_refresh_) {
+        on_refresh_(this);
+      }
+    }
+    return;
+  }
+  // Explorer / Fences: Ctrl+/- → icon zoom (same 15pp steps as wheel).
+  if (ctrl && !shift &&
+      (vk == VK_OEM_PLUS || vk == VK_ADD || vk == VK_OEM_MINUS ||
+       vk == VK_SUBTRACT)) {
+    typeahead_.clear();
+    const int delta =
+        (vk == VK_OEM_MINUS || vk == VK_SUBTRACT) ? -15 : 15;
+    SetIconZoom(icon_zoom_percent_ + delta);
+    return;
+  }
+  // Explorer: Ctrl+0 / Ctrl+NumPad0 → reset icon zoom to 100%.
+  if (ctrl && !shift && (vk == '0' || vk == VK_NUMPAD0)) {
+    typeahead_.clear();
+    SetIconZoom(100);
+    return;
+  }
   if (vk == VK_RETURN) {
+    // Explorer / Fences: Alt+Enter → Properties; Ctrl+Enter → new window;
+    // Shift+Enter → open externally (portal skips drill-in); Enter → open.
+    if ((GetAsyncKeyState(VK_MENU) & 0x8000) != 0) {
+      typeahead_.clear();
+      const auto paths = SelectedPaths();
+      if (!paths.empty()) {
+        ShowShellPathsProperties(hwnd_, paths);
+      }
+      return;
+    }
+    typeahead_.clear();
     OpenSelectedItems();
     return;
   }
   if (vk == VK_DELETE) {
     // Explorer: Del → recycle; Shift+Del → permanent.
+    typeahead_.clear();
     DeleteSelection(shift);
     return;
   }
   if (vk == VK_F2) {
+    typeahead_.clear();
     BeginInlineRename();
+    return;
+  }
+  if (vk == VK_F5) {
+    // Explorer / Fences: F5 refreshes the fence contents.
+    typeahead_.clear();
+    if (on_refresh_) {
+      on_refresh_(this);
+    }
     return;
   }
   if (vk == VK_SPACE) {
@@ -2440,7 +2861,13 @@ void FenceWindow::HandleFenceHotkey(int vk, bool ctrl, bool shift) {
     if (ctrl) {
       return;
     }
-    int idx = tip_index_;
+    typeahead_.clear();
+    // Prefer keyboard focus (Ctrl+Arrow), then hover, then anchor.
+    int idx = selection_focus_;
+    if (idx < 0 || idx >= static_cast<int>(cells_.size()) ||
+        cells_[static_cast<size_t>(idx)].item.path.empty()) {
+      idx = tip_index_;
+    }
     if (idx < 0 || idx >= static_cast<int>(cells_.size())) {
       idx = selection_anchor_;
     }
@@ -2458,20 +2885,66 @@ void FenceWindow::HandleFenceHotkey(int vk, bool ctrl, bool shift) {
     SelectOnly(idx);
     return;
   }
-  if (ctrl && vk == 'C') {
+  if (ctrl && shift && vk == 'C') {
+    // Explorer: Ctrl+Shift+C → copy path(s) as text.
+    typeahead_.clear();
+    CopySelectionPathsAsText();
+    return;
+  }
+  if ((ctrl && vk == 'C') || (ctrl && !shift && vk == VK_INSERT)) {
+    // Explorer: Ctrl+C / Ctrl+Insert → copy.
+    typeahead_.clear();
     CopySelection();
     return;
   }
   if (ctrl && vk == 'X') {
+    typeahead_.clear();
     CutSelection();
     return;
   }
-  if (ctrl && vk == 'V') {
-    PasteClipboardFiles();
+  if ((ctrl && vk == 'V') || (shift && vk == VK_INSERT)) {
+    // Explorer: Ctrl+V / Shift+Insert → paste; +Ctrl → 粘贴快捷方式.
+    typeahead_.clear();
+    PasteClipboardFiles(/*as_link=*/ctrl && shift);
     return;
   }
   if (ctrl && vk == 'A') {
     SelectAll();
+    return;
+  }
+  if (ctrl && shift && vk == 'N') {
+    // Explorer / Fences: Ctrl+Shift+N → new folder (virtual pin or portal cwd).
+    CreateNewFolder();
+    return;
+  }
+  if (ctrl && !shift && vk == 'Z') {
+    // Explorer: Ctrl+Z undoes in the active folder (portal cwd vs Desktop).
+    const std::wstring folder =
+        portal_path_.empty() ? DesktopDirectory() : PortalBrowsePath();
+    if (!folder.empty()) {
+      InvokeShellFolderVerb(hwnd_, folder, L"undo");
+    }
+    if (portal_path_.empty() && on_undo_) {
+      on_undo_();
+    } else if (!portal_path_.empty() && on_refresh_) {
+      on_refresh_(this);
+    }
+    return;
+  }
+  if (ctrl && !shift && vk == 'Y') {
+    // Explorer: Ctrl+Y redo in the active folder.
+    const std::wstring folder =
+        portal_path_.empty() ? DesktopDirectory() : PortalBrowsePath();
+    if (!folder.empty()) {
+      InvokeShellFolderVerb(hwnd_, folder, L"redo");
+    }
+    if (on_refresh_) {
+      on_refresh_(this);
+    }
+    return;
+  }
+  if (vk == VK_APPS || (shift && !ctrl && vk == VK_F10)) {
+    ShowSelectionContextMenu();
     return;
   }
   if (vk == VK_HOME) {
@@ -2479,15 +2952,25 @@ void FenceWindow::HandleFenceHotkey(int vk, bool ctrl, bool shift) {
     if (cells_.empty()) {
       return;
     }
+    int first = -1;
+    for (int i = 0; i < static_cast<int>(cells_.size()); ++i) {
+      if (!cells_[static_cast<size_t>(i)].item.path.empty()) {
+        first = i;
+        break;
+      }
+    }
+    if (first < 0) {
+      return;
+    }
     if (shift) {
       if (selection_anchor_ < 0) {
-        selection_anchor_ = 0;
+        selection_anchor_ = first;
       }
-      SelectRange(0);
+      SelectRange(first);
     } else {
-      SelectOnly(0);
+      SelectOnly(first);
     }
-    EnsureCellVisible(0);
+    EnsureCellVisible(first);
     return;
   }
   if (vk == VK_END) {
@@ -2495,7 +2978,16 @@ void FenceWindow::HandleFenceHotkey(int vk, bool ctrl, bool shift) {
     if (cells_.empty()) {
       return;
     }
-    const int last = static_cast<int>(cells_.size()) - 1;
+    int last = -1;
+    for (int i = static_cast<int>(cells_.size()) - 1; i >= 0; --i) {
+      if (!cells_[static_cast<size_t>(i)].item.path.empty()) {
+        last = i;
+        break;
+      }
+    }
+    if (last < 0) {
+      return;
+    }
     if (shift) {
       if (selection_anchor_ < 0) {
         selection_anchor_ = last;
@@ -2507,17 +2999,38 @@ void FenceWindow::HandleFenceHotkey(int vk, bool ctrl, bool shift) {
     EnsureCellVisible(last);
     return;
   }
+  if (vk == VK_PRIOR || vk == VK_NEXT) {
+    // Explorer / Fences: Page Up/Down moves by roughly one viewport of rows.
+    typeahead_.clear();
+    if (cells_.empty() || !hwnd_) {
+      return;
+    }
+    RECT rc{};
+    GetClientRect(hwnd_, &rc);
+    const int header = S(hwnd_, kHeaderH0);
+    const int view_h = (std::max)(1, static_cast<int>(rc.bottom) - header);
+    int cell_h = 48;
+    if (!cells_.empty()) {
+      const RECT& b = cells_[0].bounds;
+      cell_h = (std::max)(1, static_cast<int>(b.bottom - b.top));
+    }
+    const int rows = (std::max)(1, view_h / cell_h);
+    NavigateSelection(0, vk == VK_PRIOR ? -rows : rows, shift);
+    return;
+  }
   if (vk == VK_LEFT || vk == VK_RIGHT || vk == VK_UP || vk == VK_DOWN) {
     typeahead_.clear();
-  }
-  if (vk == VK_LEFT) {
-    NavigateSelection(-1, 0, shift);
-  } else if (vk == VK_RIGHT) {
-    NavigateSelection(1, 0, shift);
-  } else if (vk == VK_UP) {
-    NavigateSelection(0, -1, shift);
-  } else if (vk == VK_DOWN) {
-    NavigateSelection(0, 1, shift);
+    // Explorer: Ctrl+Arrow moves focus only; Shift extends; plain selects.
+    const bool focus_only = ctrl && !shift;
+    if (vk == VK_LEFT) {
+      NavigateSelection(-1, 0, shift, focus_only);
+    } else if (vk == VK_RIGHT) {
+      NavigateSelection(1, 0, shift, focus_only);
+    } else if (vk == VK_UP) {
+      NavigateSelection(0, -1, shift, focus_only);
+    } else if (vk == VK_DOWN) {
+      NavigateSelection(0, 1, shift, focus_only);
+    }
   }
 }
 
@@ -2643,13 +3156,37 @@ void FenceWindow::ActivateHeaderBtn(HeaderBtn btn) {
   }
 }
 
-void FenceWindow::OpenItem(int index) {
+void FenceWindow::ResetPortalBrowseChrome() {
+  // Explorer: entering a folder clears selection / typeahead and scrolls top.
+  typeahead_.clear();
+  scroll_y_ = 0;
+  if (selected_.size() != cells_.size()) {
+    selected_.assign(cells_.size(), 0);
+  } else {
+    std::fill(selected_.begin(), selected_.end(), static_cast<char>(0));
+  }
+  selection_anchor_ = -1;
+  selection_focus_ = -1;
+}
+
+void FenceWindow::OpenItem(int index, bool external) {
   if (index < 0 || index >= static_cast<int>(cells_.size())) {
     return;
   }
   const std::wstring& path = cells_[static_cast<size_t>(index)].item.path;
-  // Fences Folder Portal: double-click folder drills in (not Explorer).
-  if (!portal_path_.empty()) {
+  if (path.empty()) {
+    return;
+  }
+  // Explorer: Ctrl+dblclick folder → new Explorer window (even in portal).
+  const bool ctrl_new =
+      (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
+  if (ctrl_new && !external) {
+    ExploreShellPath(path);
+    return;
+  }
+  // Fences Folder Portal: double-click / Enter drills in; Shift+Enter opens
+  // Explorer (external) like Explorer's open-in-new-window habit.
+  if (!external && !portal_path_.empty()) {
     const DWORD attr = GetFileAttributesW(path.c_str());
     if (attr != INVALID_FILE_ATTRIBUTES &&
         (attr & FILE_ATTRIBUTE_DIRECTORY) &&
@@ -2669,14 +3206,20 @@ void FenceWindow::RevealItem(int index) {
   if (index < 0 || index >= static_cast<int>(cells_.size())) {
     return;
   }
-  const std::wstring arg =
-      L"/select,\"" + cells_[static_cast<size_t>(index)].item.path + L"\"";
+  const std::wstring& path = cells_[static_cast<size_t>(index)].item.path;
+  if (path.empty()) {
+    return;
+  }
+  const std::wstring arg = L"/select,\"" + path + L"\"";
   ShellExecuteW(nullptr, L"open", L"explorer.exe", arg.c_str(), nullptr,
                 SW_SHOWNORMAL);
 }
 
 void FenceWindow::BeginIconDrag(int index) {
   if (index < 0 || index >= static_cast<int>(cells_.size())) {
+    return;
+  }
+  if (cells_[static_cast<size_t>(index)].item.path.empty()) {
     return;
   }
   // Portal fences mirror a real folder: keep the OLE file drag (physical move/
@@ -2812,7 +3355,92 @@ void FenceWindow::FinishManualIconDrag(int x, int y) {
       RecycleDroppedPaths(std::move(paths));
       return;
     }
+    // Drop onto a folder icon → import into that folder (Explorer).
+    // Self-only (drag folder onto itself) → fall through to reorder.
+    const std::wstring folder = DirectoryIconAt(x, y);
+    if (!folder.empty()) {
+      std::vector<std::wstring> to_import;
+      to_import.reserve(drag_paths_.size());
+      for (const auto& p : drag_paths_) {
+        if (p.empty() || _wcsicmp(p.c_str(), folder.c_str()) == 0) {
+          continue;
+        }
+        if (IsStrictPathPrefix(p, folder)) {
+          continue;  // folder→own child
+        }
+        to_import.push_back(p);
+      }
+      if (!to_import.empty()) {
+        DWORD effect = DROPEFFECT_MOVE;
+        if (WantDropLinkEffect()) {
+          effect = DROPEFFECT_LINK;
+        } else if ((GetKeyState(VK_CONTROL) & 0x8000) != 0 &&
+                   (GetKeyState(VK_SHIFT) & 0x8000) == 0) {
+          effect = DROPEFFECT_COPY;
+        }
+        drag_paths_.clear();
+        drag_indices_.clear();
+        drag_insert_ = -1;
+        drag_left_ = false;
+        PresentLayered();
+        ImportPathsIntoDirectory(to_import, folder, effect);
+        return;
+      }
+    }
     const int at = InsertIndexAt(x, y);
+    // Explorer: Ctrl+drag within view → copy; Alt / Ctrl+Shift → .lnk.
+    // Portal lands in browse cwd; virtual lands on Desktop then pins at seat.
+    const bool want_link = WantDropLinkEffect();
+    const bool want_copy =
+        !want_link && (GetKeyState(VK_CONTROL) & 0x8000) != 0 &&
+        (GetKeyState(VK_SHIFT) & 0x8000) == 0;
+    if ((want_link || want_copy) && !drag_paths_.empty()) {
+      std::vector<std::wstring> paths = std::move(drag_paths_);
+      drag_paths_.clear();
+      drag_indices_.clear();
+      drag_insert_ = -1;
+      drag_left_ = false;
+      PresentLayered();
+      const std::wstring dest_dir =
+          portal_path_.empty() ? DesktopDirectory() : PortalBrowsePath();
+      if (dest_dir.empty()) {
+        return;
+      }
+      std::vector<std::wstring> landed;
+      landed.reserve(paths.size());
+      for (const auto& src : paths) {
+        if (src.empty()) {
+          continue;
+        }
+        std::wstring dest;
+        const bool ok =
+            want_link
+                ? CreateShortcutIntoDir(hwnd_, src, dest_dir, &dest)
+                : MoveOrCopyFileIntoDir(hwnd_, src, dest_dir, /*move=*/false,
+                                        &dest);
+        if (ok && !dest.empty()) {
+          landed.push_back(dest);
+        }
+      }
+      if (landed.empty()) {
+        ShowToast(want_link ? L"无法创建快捷方式" : L"无法复制");
+        return;
+      }
+      if (portal_path_.empty()) {
+        SetSortBy("manual");
+        InsertPinOrder(landed, at);
+        if (on_created_) {
+          on_created_(this, landed);
+        } else if (on_refresh_) {
+          on_refresh_(this);
+        }
+      } else if (on_refresh_) {
+        on_refresh_(this);
+      }
+      ShowToast((want_link ? L"已创建快捷方式 " : L"已复制 ") +
+                std::to_wstring(landed.size()) + L" 项");
+      return;
+    }
     CommitReorder(at);
   }
   drag_paths_.clear();
@@ -2830,6 +3458,105 @@ bool FenceWindow::IsRecycleBinIconAt(int x, int y) const {
   const std::wstring clsid =
       GetLnkNamespaceClsid(cells_[static_cast<size_t>(over)].item.path);
   return clsid == L"{645FF040-5081-101B-9F08-00AA002F954E}";
+}
+
+std::wstring FenceWindow::DirectoryIconAt(int x, int y) const {
+  if (IsRecycleBinIconAt(x, y)) {
+    return L"";
+  }
+  const int over = HitTestIcon(x, y);
+  if (over < 0 || over >= static_cast<int>(cells_.size())) {
+    return L"";
+  }
+  const std::wstring& path = cells_[static_cast<size_t>(over)].item.path;
+  if (path.empty()) {
+    return L"";
+  }
+  const DWORD attr = GetFileAttributesW(path.c_str());
+  if (attr == INVALID_FILE_ATTRIBUTES || !(attr & FILE_ATTRIBUTE_DIRECTORY)) {
+    return L"";
+  }
+  return path;
+}
+
+DWORD FenceWindow::ImportPathsIntoDirectory(
+    const std::vector<std::wstring>& paths, const std::wstring& dest_dir,
+    DWORD proposed) {
+  if (paths.empty() || dest_dir.empty()) {
+    return DROPEFFECT_NONE;
+  }
+  const bool want_link =
+      (proposed & DROPEFFECT_LINK) != 0 || WantDropLinkEffect();
+  const bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+  const bool shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+  int ok = 0;
+  int moved = 0;
+  std::vector<std::wstring> moved_paths;
+  moved_paths.reserve(paths.size());
+  for (const auto& src : paths) {
+    if (src.empty()) {
+      continue;
+    }
+    // Don't import a folder into itself or into its own descendant.
+    if (_wcsicmp(src.c_str(), dest_dir.c_str()) == 0 ||
+        IsStrictPathPrefix(src, dest_dir)) {
+      continue;
+    }
+    std::wstring dest;
+    if (want_link) {
+      if (CreateShortcutIntoDir(hwnd_, src, dest_dir, &dest) && !dest.empty()) {
+        ++ok;
+      }
+      continue;
+    }
+    // Explorer: Ctrl=COPY, Shift=MOVE, else same-volume MOVE / cross COPY.
+    bool move = SameVolume(src, dest_dir);
+    if (ctrl && !shift) {
+      move = false;
+    } else if (shift && !ctrl) {
+      move = true;
+    } else if ((proposed & DROPEFFECT_MOVE) != 0 &&
+               (proposed & DROPEFFECT_COPY) == 0) {
+      move = true;
+    } else if ((proposed & DROPEFFECT_COPY) != 0 &&
+               (proposed & DROPEFFECT_MOVE) == 0) {
+      move = false;
+    }
+    if (MoveOrCopyFileIntoDir(hwnd_, src, dest_dir, move, &dest) &&
+        !dest.empty()) {
+      ++ok;
+      if (move) {
+        ++moved;
+        moved_paths.push_back(src);
+      }
+    }
+  }
+  if (ok <= 0) {
+    return DROPEFFECT_NONE;
+  }
+  // File left the Desktop/fence seat — drop pin immediately (no sticky ghost).
+  if (!moved_paths.empty()) {
+    if (on_unpin_many_) {
+      on_unpin_many_(this, moved_paths, nullptr);
+    } else {
+      for (const auto& p : moved_paths) {
+        if (on_unpin_) {
+          on_unpin_(this, p, nullptr);
+        }
+      }
+    }
+  }
+  if (on_refresh_) {
+    on_refresh_(this);
+  } else if (on_drag_done_) {
+    on_drag_done_(this);
+  }
+  if (want_link) {
+    ShowToast(L"已创建快捷方式 " + std::to_wstring(ok) + L" 项");
+    return DROPEFFECT_LINK;
+  }
+  ShowToast(L"已放入文件夹 " + std::to_wstring(ok) + L" 项");
+  return (moved == ok) ? DROPEFFECT_MOVE : DROPEFFECT_COPY;
 }
 
 bool FenceWindow::RecycleDroppedPaths(std::vector<std::wstring> paths) {
@@ -2932,6 +3659,7 @@ void FenceWindow::CommitReorder(int insert_index) {
                 std::make_move_iterator(dragged.end()));
   selected_.assign(cells_.size(), 0);
   selection_anchor_ = -1;
+  selection_focus_ = -1;
   sort_by_ = "manual";  // manual order now reflects the new arrangement
   LayoutCells();
   if (on_moved_) {
@@ -3033,6 +3761,7 @@ void FenceWindow::ClearSelection() {
     std::fill(selected_.begin(), selected_.end(), static_cast<char>(0));
   }
   selection_anchor_ = -1;
+  selection_focus_ = -1;
   if (any && hwnd_ && IsWindowVisible(hwnd_) && !IsIconic(hwnd_)) {
     PresentLayered();
   }
@@ -3044,9 +3773,14 @@ void FenceWindow::SelectOnly(int index) {
     selected_.assign(cells_.size(), 0);
   }
   std::fill(selected_.begin(), selected_.end(), static_cast<char>(0));
-  if (index >= 0 && index < static_cast<int>(selected_.size())) {
+  selection_anchor_ = -1;
+  selection_focus_ = -1;
+  if (index >= 0 && index < static_cast<int>(selected_.size()) &&
+      index < static_cast<int>(cells_.size()) &&
+      !cells_[static_cast<size_t>(index)].item.path.empty()) {
     selected_[static_cast<size_t>(index)] = 1;
     selection_anchor_ = index;
+    selection_focus_ = index;
   }
   if (hwnd_) {
     PresentLayered();
@@ -3057,12 +3791,18 @@ void FenceWindow::ToggleSelected(int index) {
   if (selected_.size() != cells_.size()) {
     selected_.assign(cells_.size(), 0);
   }
-  if (index < 0 || index >= static_cast<int>(selected_.size())) {
+  if (index < 0 || index >= static_cast<int>(selected_.size()) ||
+      index >= static_cast<int>(cells_.size()) ||
+      cells_[static_cast<size_t>(index)].item.path.empty()) {
     return;
   }
   selected_[static_cast<size_t>(index)] =
       selected_[static_cast<size_t>(index)] ? 0 : 1;
-  selection_anchor_ = index;
+  // Ctrl+click: move focus only; keep selection mark for later Shift-extend.
+  selection_focus_ = index;
+  if (selection_anchor_ < 0) {
+    selection_anchor_ = index;
+  }
   if (hwnd_) {
     PresentLayered();
   }
@@ -3078,16 +3818,68 @@ void FenceWindow::SelectRange(int index) {
   int a = selection_anchor_;
   if (a < 0 || a >= static_cast<int>(selected_.size())) {
     a = index;
+    selection_anchor_ = index;
   }
   const int lo = (std::min)(a, index);
   const int hi = (std::max)(a, index);
   std::fill(selected_.begin(), selected_.end(), static_cast<char>(0));
   for (int i = lo; i <= hi; ++i) {
-    selected_[static_cast<size_t>(i)] = 1;
+    if (i < static_cast<int>(cells_.size()) &&
+        !cells_[static_cast<size_t>(i)].item.path.empty()) {
+      selected_[static_cast<size_t>(i)] = 1;
+    }
+  }
+  selection_focus_ = index;
+  if (hwnd_) {
+    PresentLayered();
+  }
+}
+
+void FenceWindow::SelectPaths(const std::vector<std::wstring>& paths) {
+  if (selected_.size() != cells_.size()) {
+    selected_.assign(cells_.size(), 0);
+  } else {
+    std::fill(selected_.begin(), selected_.end(), static_cast<char>(0));
+  }
+  selection_anchor_ = -1;
+  selection_focus_ = -1;
+  for (const auto& want : paths) {
+    if (want.empty()) {
+      continue;
+    }
+    for (size_t i = 0; i < cells_.size(); ++i) {
+      if (!cells_[i].item.path.empty() &&
+          _wcsicmp(cells_[i].item.path.c_str(), want.c_str()) == 0) {
+        selected_[i] = 1;
+        if (selection_anchor_ < 0) {
+          selection_anchor_ = static_cast<int>(i);
+        }
+        selection_focus_ = static_cast<int>(i);
+        break;
+      }
+    }
+  }
+  if (selection_focus_ >= 0) {
+    EnsureCellVisible(selection_focus_);
   }
   if (hwnd_) {
     PresentLayered();
   }
+}
+
+void FenceWindow::CopySelectionPathsAsText() {
+  const auto paths = SelectedPaths();
+  if (paths.empty()) {
+    return;
+  }
+  std::wstring text;
+  for (size_t i = 0; i < paths.size(); ++i) {
+    if (i) {
+      text += L"\r\n";
+    }
+    text += paths[i];
+  }
+  CopyShellPathText(hwnd_, text);
 }
 
 bool FenceWindow::IsSelected(int index) const {
@@ -3099,7 +3891,7 @@ std::vector<std::wstring> FenceWindow::SelectedPaths() const {
   std::vector<std::wstring> paths;
   const size_t n = (std::min)(selected_.size(), cells_.size());
   for (size_t i = 0; i < n; ++i) {
-    if (selected_[i]) {
+    if (selected_[i] && !cells_[i].item.path.empty()) {
       paths.push_back(cells_[i].item.path);
     }
   }
@@ -3182,11 +3974,36 @@ void FenceWindow::ShowIconMenu(int index, POINT screen) {
   bool needs_rescan = false;
   std::wstring last_verb;
   std::vector<std::wstring> ns_clsids;
+  std::vector<std::wstring> desk_before;
+  auto list_desk = []() {
+    std::vector<std::wstring> out;
+    const std::wstring desk = DesktopDirectory();
+    if (desk.empty()) {
+      return out;
+    }
+    WIN32_FIND_DATAW fd{};
+    HANDLE find = FindFirstFileW((desk + L"\\*").c_str(), &fd);
+    if (find == INVALID_HANDLE_VALUE) {
+      return out;
+    }
+    do {
+      if (wcscmp(fd.cFileName, L".") == 0 || wcscmp(fd.cFileName, L"..") == 0) {
+        continue;
+      }
+      out.push_back(desk + L"\\" + fd.cFileName);
+    } while (FindNextFileW(find, &fd));
+    FindClose(find);
+    return out;
+  };
   ShellBeforeInvokeFn on_before = [&]() {
     ns_clsids.clear();
     ns_clsids.reserve(paths.size());
     for (const auto& p : paths) {
       ns_clsids.push_back(GetLnkNamespaceClsid(p));
+    }
+    // Virtual fence: snapshot Desktop so Create shortcut can pin the new .lnk.
+    if (portal_path_.empty()) {
+      desk_before = list_desk();
     }
   };
   ShellVerbFn on_verb = [&](const std::wstring& verb) {
@@ -3243,6 +4060,34 @@ void FenceWindow::ShowIconMenu(int index, POINT screen) {
         on_unpin_(this, p, nullptr);
       }
     }
+    // Explorer 「创建快捷方式」on Desktop: pin the new .lnk into this fence
+    // (same New→pin path as blank-menu newfolder).
+    if (portal_path_.empty() &&
+        (last_verb == L"link" || last_verb == L"createlink") &&
+        (on_created_ || on_pasted_)) {
+      const auto after = list_desk();
+      std::vector<std::wstring> neu;
+      for (const auto& p : after) {
+        bool was = false;
+        for (const auto& b : desk_before) {
+          if (_wcsicmp(b.c_str(), p.c_str()) == 0) {
+            was = true;
+            break;
+          }
+        }
+        if (!was) {
+          neu.push_back(p);
+        }
+      }
+      if (!neu.empty()) {
+        if (on_created_) {
+          on_created_(this, neu);
+        } else {
+          on_pasted_(this, neu, /*cut=*/false, /*as_link=*/false);
+        }
+        return;
+      }
+    }
     if ((needs_rescan || any_gone) && on_drag_done_) {
       on_drag_done_(this);
     } else if (last_verb == L"cut" || last_verb == L"copy") {
@@ -3291,6 +4136,7 @@ void FenceWindow::ShowMoveToPageFenceMenu(POINT screen) {
 void FenceWindow::SetPortalPath(const std::wstring& path) {
   portal_path_ = path;
   portal_cwd_.clear();
+  portal_forward_.clear();
 }
 
 const std::wstring& FenceWindow::PortalBrowsePath() const {
@@ -3310,6 +4156,10 @@ bool FenceWindow::PortalCanGoUp() const {
   }
   return _wcsnicmp(portal_cwd_.c_str(), portal_path_.c_str(),
                    portal_path_.size()) == 0;
+}
+
+bool FenceWindow::PortalCanGoForward() const {
+  return !portal_path_.empty() && !portal_forward_.empty();
 }
 
 bool FenceWindow::NavigatePortalInto(const std::wstring& folder) {
@@ -3336,11 +4186,14 @@ bool FenceWindow::NavigatePortalInto(const std::wstring& folder) {
        (next[root.size()] != L'\\' && next[root.size()] != L'/'))) {
     return false;
   }
+  // New drill-in clears forward history (browser / Explorer).
+  portal_forward_.clear();
   if (_wcsicmp(next.c_str(), root.c_str()) == 0) {
     portal_cwd_.clear();
   } else {
     portal_cwd_ = next;
   }
+  ResetPortalBrowseChrome();
   if (hwnd_) {
     SetWindowTextW(hwnd_, DisplayTitle().c_str());
     // Caption + portal-up chrome change before items rescan lands.
@@ -3357,9 +4210,18 @@ bool FenceWindow::PortalGoUp() {
   while (!cur.empty() && (cur.back() == L'\\' || cur.back() == L'/')) {
     cur.pop_back();
   }
+  // Remember the folder we leave so Alt+→ / XBUTTON2 can restore it.
+  if (!cur.empty()) {
+    portal_forward_.push_back(cur);
+  }
   const size_t slash = cur.find_last_of(L"\\/");
   if (slash == std::wstring::npos) {
     portal_cwd_.clear();
+    ResetPortalBrowseChrome();
+    if (hwnd_) {
+      SetWindowTextW(hwnd_, DisplayTitle().c_str());
+      PresentLayered();
+    }
     return true;
   }
   std::wstring parent = cur.substr(0, slash);
@@ -3372,6 +4234,45 @@ bool FenceWindow::PortalGoUp() {
   } else {
     portal_cwd_ = parent;
   }
+  ResetPortalBrowseChrome();
+  if (hwnd_) {
+    SetWindowTextW(hwnd_, DisplayTitle().c_str());
+    PresentLayered();
+  }
+  return true;
+}
+
+bool FenceWindow::PortalGoForward() {
+  if (!PortalCanGoForward()) {
+    return false;
+  }
+  std::wstring next = portal_forward_.back();
+  portal_forward_.pop_back();
+  while (!next.empty() && (next.back() == L'\\' || next.back() == L'/')) {
+    next.pop_back();
+  }
+  if (next.empty()) {
+    return false;
+  }
+  const DWORD attr = GetFileAttributesW(next.c_str());
+  if (attr == INVALID_FILE_ATTRIBUTES ||
+      !(attr & FILE_ATTRIBUTE_DIRECTORY)) {
+    return false;
+  }
+  std::wstring root = portal_path_;
+  while (!root.empty() && (root.back() == L'\\' || root.back() == L'/')) {
+    root.pop_back();
+  }
+  if (_wcsicmp(next.c_str(), root.c_str()) == 0) {
+    portal_cwd_.clear();
+  } else if (next.size() > root.size() &&
+             _wcsnicmp(next.c_str(), root.c_str(), root.size()) == 0 &&
+             (next[root.size()] == L'\\' || next[root.size()] == L'/')) {
+    portal_cwd_ = next;
+  } else {
+    return false;
+  }
+  ResetPortalBrowseChrome();
   if (hwnd_) {
     SetWindowTextW(hwnd_, DisplayTitle().c_str());
     PresentLayered();
@@ -3381,8 +4282,7 @@ bool FenceWindow::PortalGoUp() {
 
 void FenceWindow::CopySelection() {
   const auto paths = SelectedPaths();
-  if (!paths.empty()) {
-    ClipboardSetFiles(hwnd_, paths, false);
+  if (!paths.empty() && ClipboardSetFiles(hwnd_, paths, false)) {
     ShowToast(L"已复制到剪贴板");
     // Clear cut-ghost dimming after Preferred DropEffect flips to copy.
     PresentLayered();
@@ -3402,6 +4302,38 @@ void FenceWindow::DeleteSelection(bool permanent) {
   if (paths.empty()) {
     return;
   }
+  // Explorer: after delete, keep keyboard focus on the next surviving icon.
+  int first_sel = -1;
+  for (size_t i = 0; i < selected_.size() && i < cells_.size(); ++i) {
+    if (selected_[i] && !cells_[i].item.path.empty()) {
+      first_sel = static_cast<int>(i);
+      break;
+    }
+  }
+  std::wstring next_path;
+  if (first_sel >= 0) {
+    for (int i = first_sel + 1; i < static_cast<int>(cells_.size()); ++i) {
+      if (i < static_cast<int>(selected_.size()) && selected_[static_cast<size_t>(i)]) {
+        continue;
+      }
+      if (!cells_[static_cast<size_t>(i)].item.path.empty()) {
+        next_path = cells_[static_cast<size_t>(i)].item.path;
+        break;
+      }
+    }
+    if (next_path.empty()) {
+      for (int i = first_sel - 1; i >= 0; --i) {
+        if (i < static_cast<int>(selected_.size()) &&
+            selected_[static_cast<size_t>(i)]) {
+          continue;
+        }
+        if (!cells_[static_cast<size_t>(i)].item.path.empty()) {
+          next_path = cells_[static_cast<size_t>(i)].item.path;
+          break;
+        }
+      }
+    }
+  }
   if (RecycleShellPaths(hwnd_, paths, permanent) != IconFsResult::Ok) {
     return;
   }
@@ -3410,17 +4342,59 @@ void FenceWindow::DeleteSelection(bool permanent) {
       on_unpin_(this, p, nullptr);
     }
   }
+  if (!next_path.empty()) {
+    for (size_t i = 0; i < cells_.size(); ++i) {
+      if (_wcsicmp(cells_[i].item.path.c_str(), next_path.c_str()) == 0) {
+        SelectOnly(static_cast<int>(i));
+        EnsureCellVisible(static_cast<int>(i));
+        PresentLayered();
+        break;
+      }
+    }
+  }
 }
 
 void FenceWindow::SelectAll() {
+  typeahead_.clear();
   if (selected_.size() != cells_.size()) {
     selected_.assign(cells_.size(), 0);
   }
-  std::fill(selected_.begin(), selected_.end(), static_cast<char>(1));
-  if (!cells_.empty()) {
-    selection_anchor_ = 0;
+  selection_anchor_ = -1;
+  selection_focus_ = -1;
+  for (size_t i = 0; i < cells_.size(); ++i) {
+    if (cells_[i].item.path.empty()) {
+      selected_[i] = 0;
+      continue;
+    }
+    selected_[i] = 1;
+    if (selection_anchor_ < 0) {
+      selection_anchor_ = static_cast<int>(i);
+    }
+    selection_focus_ = static_cast<int>(i);
   }
   PresentLayered();
+}
+
+std::wstring FenceWindow::SelectedSingleDirectory() const {
+  std::wstring dir;
+  int n = 0;
+  const size_t lim = (std::min)(selected_.size(), cells_.size());
+  for (size_t i = 0; i < lim; ++i) {
+    if (!selected_[i] || cells_[i].item.path.empty()) {
+      continue;
+    }
+    const DWORD attr = GetFileAttributesW(cells_[i].item.path.c_str());
+    if (attr == INVALID_FILE_ATTRIBUTES ||
+        !(attr & FILE_ATTRIBUTE_DIRECTORY)) {
+      return L"";
+    }
+    dir = cells_[i].item.path;
+    ++n;
+    if (n > 1) {
+      return L"";
+    }
+  }
+  return n == 1 ? dir : L"";
 }
 
 namespace {
@@ -3440,6 +4414,35 @@ bool RenameEditImeComposing(HWND hwnd) {
 LRESULT CALLBACK RenameEditProc(HWND hwnd, UINT msg, WPARAM wparam,
                                 LPARAM lparam) {
   auto* self = reinterpret_cast<FenceWindow*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+  if (msg == WM_KEYDOWN && wparam == VK_TAB) {
+    // Explorer: Tab / Shift+Tab commits and renames next / previous.
+    if (self && !RenameEditImeComposing(hwnd)) {
+      const bool back = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+      self->CommitRenameAndAdvance(back ? -1 : 1);
+    }
+    return 0;
+  }
+  if (msg == WM_KEYDOWN && wparam == VK_F2) {
+    // Explorer: second F2 toggles stem selection ↔ full name.
+    wchar_t buf[520] = {};
+    GetWindowTextW(hwnd, buf, 520);
+    const int len = static_cast<int>(wcslen(buf));
+    int stem_end = len;
+    const wchar_t* dot = wcsrchr(buf, L'.');
+    if (dot && dot > buf) {
+      stem_end = static_cast<int>(dot - buf);
+    }
+    DWORD start = 0;
+    DWORD end = 0;
+    SendMessageW(hwnd, EM_GETSEL, reinterpret_cast<WPARAM>(&start),
+                 reinterpret_cast<LPARAM>(&end));
+    if (start == 0 && static_cast<int>(end) == len) {
+      SendMessageW(hwnd, EM_SETSEL, 0, stem_end);
+    } else {
+      SendMessageW(hwnd, EM_SETSEL, 0, -1);
+    }
+    return 0;
+  }
   if (msg == WM_KEYDOWN && (wparam == VK_RETURN || wparam == VK_ESCAPE)) {
     // Explorer/IME: Enter while composing only commits the candidate —
     // do not finish rename yet (stealing Enter left caret dead / number-only).
@@ -3470,18 +4473,49 @@ LRESULT CALLBACK RenameEditProc(HWND hwnd, UINT msg, WPARAM wparam,
 }
 }  // namespace
 
-void FenceWindow::BeginInlineRename() {
-  int index = -1;
-  int count = 0;
-  for (size_t i = 0; i < selected_.size() && i < cells_.size(); ++i) {
-    if (selected_[i]) {
-      index = static_cast<int>(i);
-      ++count;
-    }
-  }
-  if (count != 1 || index < 0) {
+void FenceWindow::CommitRenameAndAdvance(int delta) {
+  const int from = rename_index_;
+  FinishInlineRename(true);
+  if (from < 0 || cells_.empty() || delta == 0) {
     return;
   }
+  const int n = static_cast<int>(cells_.size());
+  for (int step = 1; step <= n; ++step) {
+    int i = (from + delta * step) % n;
+    if (i < 0) {
+      i += n;
+    }
+    if (cells_[static_cast<size_t>(i)].item.path.empty()) {
+      continue;
+    }
+    SelectOnly(i);
+    EnsureCellVisible(i);
+    BeginInlineRename();
+    return;
+  }
+}
+
+void FenceWindow::BeginInlineRename() {
+  // Explorer / Fences: F2 renames the anchor (or first selected) even when
+  // multiple icons are selected — never a silent no-op.
+  int index = -1;
+  if (selection_anchor_ >= 0 &&
+      selection_anchor_ < static_cast<int>(selected_.size()) &&
+      selection_anchor_ < static_cast<int>(cells_.size()) &&
+      selected_[static_cast<size_t>(selection_anchor_)]) {
+    index = selection_anchor_;
+  } else {
+    for (size_t i = 0; i < selected_.size() && i < cells_.size(); ++i) {
+      if (selected_[i]) {
+        index = static_cast<int>(i);
+        break;
+      }
+    }
+  }
+  if (index < 0 || cells_[static_cast<size_t>(index)].item.path.empty()) {
+    return;
+  }
+  SelectOnly(index);
   if (rename_edit_) {
     DestroyWindow(rename_edit_);
     rename_edit_ = nullptr;
@@ -3569,19 +4603,23 @@ void FenceWindow::BeginTitleInlineRename() {
 }
 
 void FenceWindow::FinishInlineRename(bool commit) {
-  if (!rename_edit_) {
+  if (!rename_edit_ || rename_finishing_) {
     return;
   }
-  // DestroyWindow → WM_KILLFOCUS → FinishInlineRename; clear hwnd first.
+  rename_finishing_ = true;
   HWND edit = rename_edit_;
-  rename_edit_ = nullptr;
   wchar_t buf[260] = {};
   GetWindowTextW(edit, buf, 260);
   const int index = rename_index_;
-  rename_index_ = -1;
-  DestroyWindow(edit);
+  auto close_edit = [&]() {
+    rename_edit_ = nullptr;
+    rename_index_ = -1;
+    DestroyWindow(edit);
+  };
   if (index == -2) {
     if (!commit) {
+      close_edit();
+      rename_finishing_ = false;
       return;
     }
     std::wstring neu = buf;
@@ -3593,6 +4631,8 @@ void FenceWindow::FinishInlineRename(bool commit) {
       ++start;
     }
     neu = neu.substr(start);
+    close_edit();
+    rename_finishing_ = false;
     if (neu.empty() || neu == title_) {
       return;
     }
@@ -3604,21 +4644,30 @@ void FenceWindow::FinishInlineRename(bool commit) {
     return;
   }
   if (!commit || index < 0 || index >= static_cast<int>(cells_.size())) {
+    close_edit();
+    rename_finishing_ = false;
     return;
   }
   const std::wstring old_path = cells_[static_cast<size_t>(index)].item.path;
   const std::wstring neu = buf;
   const RenamePlan plan = PlanRename(old_path, neu);
+  // Explorer: invalid/duplicate name keeps the edit box open.
   if (!plan.valid) {
     if (!neu.empty()) {
       ShowToast(plan.error);
     }
+    rename_finishing_ = false;
+    SetFocus(edit);
     return;
   }
   if (GetFileAttributesW(plan.dest.c_str()) != INVALID_FILE_ATTRIBUTES) {
     ShowToast(L"该名称已存在");
+    rename_finishing_ = false;
+    SetFocus(edit);
     return;
   }
+  close_edit();
+  rename_finishing_ = false;
   if (!MoveFileW(old_path.c_str(), plan.dest.c_str())) {
     const DWORD err = GetLastError();
     if (err == ERROR_SHARING_VIOLATION || err == ERROR_LOCK_VIOLATION) {
@@ -3635,7 +4684,7 @@ void FenceWindow::FinishInlineRename(bool commit) {
   }
 }
 
-void FenceWindow::PasteClipboardFiles() {
+void FenceWindow::PasteClipboardFiles(bool as_link) {
   std::vector<std::wstring> paths;
   bool cut = false;
   if (!ClipboardGetFilesWithEffect(&paths, &cut) || paths.empty()) {
@@ -3643,13 +4692,17 @@ void FenceWindow::PasteClipboardFiles() {
     return;
   }
   if (on_pasted_) {
-    on_pasted_(this, paths, cut);
+    // pastelink ignores Preferred DropEffect MOVE (source stays put).
+    on_pasted_(this, paths, as_link ? false : cut, as_link);
   }
 }
 
 void FenceWindow::ShowFenceMenu(POINT screen) {
   // Host Explorer's folder-background menu with DeskTidy cascading extras
   // (Sort / View / Opacity / Pages / Style / Portal) — Fences blank-menu parity.
+  if (hwnd_) {
+    KillTimer(hwnd_, kTimerAutoHide);
+  }
   if (page_names_.empty()) {
     page_names_ = {L"工作", L"文档"};
   }
@@ -3710,6 +4763,7 @@ void FenceWindow::ShowFenceMenu(POINT screen) {
       leaf(Tr("fence_rename"), kExtFenceRename),
       leaf(collapsed_ ? Tr("fence_expand") : Tr("fence_collapse"),
            kExtFenceCollapse),
+      leaf(L"离开自动折叠", kExtFenceAutoHide, auto_hide_),
       leaf(Tr("fence_refresh"), kExtFenceRefresh),
       leaf(Tr("fence_hide"), kExtFenceHide),
       leaf(position_locked_ ? Tr("fence_unlock") : Tr("fence_lock"),
@@ -3761,9 +4815,16 @@ void FenceWindow::ShowFenceMenu(POINT screen) {
     }
   };
   ShellInterceptFn on_intercept = [this](const std::wstring& verb) {
-    if (portal_path_.empty() &&
-        (verb == L"paste" || verb == L"pastelink" || verb == L"pasteto")) {
-      PasteClipboardFiles();
+    // Portal: let Explorer paste/pastelink into the mirrored folder.
+    if (!portal_path_.empty()) {
+      return false;
+    }
+    if (verb == L"paste" || verb == L"pasteto") {
+      PasteClipboardFiles(/*as_link=*/false);
+      return true;
+    }
+    if (verb == L"pastelink") {
+      PasteClipboardFiles(/*as_link=*/true);
       return true;
     }
     return false;
@@ -3771,8 +4832,12 @@ void FenceWindow::ShowFenceMenu(POINT screen) {
   ShellVerbFn on_verb = [this, &desk_before, &list_desk](const std::wstring& verb) {
     if (portal_path_.empty() &&
         (verb == L"paste" || verb == L"pastelink" || verb == L"pasteto")) {
-      // Already handled by intercept (pin paste).
+      // Already handled by intercept (pin paste / paste-shortcut).
       return;
+    }
+    if (verb == L"undo" && on_undo_) {
+      // Shell already undid; App re-pins remembered fence seats.
+      on_undo_();
     }
     if (!ShellVerbNeedsDesktopRescan(verb)) {
       return;
@@ -3799,7 +4864,7 @@ void FenceWindow::ShowFenceMenu(POINT screen) {
         if (on_created_) {
           on_created_(this, neu);
         } else {
-          on_pasted_(this, neu, /*cut=*/false);
+          on_pasted_(this, neu, /*cut=*/false, /*as_link=*/false);
         }
         return;
       }
@@ -3833,6 +4898,8 @@ void FenceWindow::ShowFenceMenu(POINT screen) {
       BeginTitleInlineRename();
     } else if (rc == kExtFenceCollapse) {
       SetCollapsed(!collapsed_);
+    } else if (rc == kExtFenceAutoHide) {
+      SetAutoHide(!auto_hide_);
     } else if (rc == kExtFencePortalUp) {
       if (PortalGoUp() && on_refresh_) {
         on_refresh_(this);
@@ -3905,6 +4972,8 @@ void FenceWindow::ShowFenceMenu(POINT screen) {
   AppendMenuW(menu, MF_STRING, 11,
               collapsed_ ? Tr("fence_expand").c_str()
                          : Tr("fence_collapse").c_str());
+  AppendMenuW(menu,
+              MF_STRING | (auto_hide_ ? MF_CHECKED : 0), 16, L"离开自动折叠");
   AppendMenuW(menu, MF_STRING, 12,
               position_locked_ ? Tr("fence_unlock").c_str()
                                : Tr("fence_lock").c_str());
@@ -3989,6 +5058,8 @@ void FenceWindow::ShowFenceMenu(POINT screen) {
     BeginTitleInlineRename();
   } else if (cmd == 11) {
     ToggleCollapsed();
+  } else if (cmd == 16) {
+    SetAutoHide(!auto_hide_);
   } else if (cmd == 12) {
     SetPositionLocked(!position_locked_);
   } else if (cmd == 13) {
@@ -4099,16 +5170,9 @@ LRESULT FenceWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
     const bool shift = (lparam & 2) != 0;
     const bool typeahead = (lparam & 4) != 0;
     if (typeahead) {
-      wchar_t ch = 0;
-      if (vk >= 'A' && vk <= 'Z') {
-        ch = static_cast<wchar_t>(vk);
-      } else if (vk >= '0' && vk <= '9') {
-        ch = static_cast<wchar_t>(vk);
-      } else if (vk >= VK_NUMPAD0 && vk <= VK_NUMPAD9) {
-        ch = static_cast<wchar_t>(L'0' + (vk - VK_NUMPAD0));
-      }
-      if (ch) {
-        TypeAheadFind(ch);
+      // fence_keys posts Unicode char in wParam (ToUnicodeEx).
+      if (wparam) {
+        TypeAheadFind(static_cast<wchar_t>(wparam));
       }
       return 0;
     }
@@ -4152,7 +5216,8 @@ LRESULT FenceWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
       return 0;
     case WM_KEYDOWN:
       if (wparam == 'V' && (GetKeyState(VK_CONTROL) & 0x8000)) {
-        PasteClipboardFiles();
+        const bool shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+        PasteClipboardFiles(/*as_link=*/shift);
         return 0;
       }
       break;
@@ -4223,6 +5288,11 @@ LRESULT FenceWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
       break;
     }
     case WM_LBUTTONDOWN: {
+      // Fences: click activates this fence for keyboard chords (Ctrl+C…).
+      SetFenceKeyTarget(hwnd_);
+      if (on_activated_) {
+        on_activated_(this);
+      }
       press_client_ = {GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
       header_press_ = HeaderBtn::None;
       // Title-bar chrome (collapse / lock / delete) before resize / drag.
@@ -4282,6 +5352,7 @@ LRESULT FenceWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
       // Explorer / Fences: click empty panel (or header/edge) clears selection.
       // Ctrl keeps selection for additive rubber-band.
       if (icon < 0 && !ctrl) {
+        typeahead_.clear();
         ClearSelection();
       }
       // Prefer icon over resize edge (bottom/side strips used to steal last-row
@@ -4293,6 +5364,16 @@ LRESULT FenceWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
         rubber_additive_ = false;
         icon_press_ = true;
         icon_press_index_ = icon;
+        // Explorer/Fences: Ctrl/Shift select on press so a following drag
+        // includes the new target (public host already does this).
+        const bool shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+        if (shift && selection_anchor_ >= 0) {
+          SelectRange(icon);
+          PresentLayered();
+        } else if (ctrl) {
+          ToggleSelected(icon);
+          PresentLayered();
+        }
         SetCapture(hwnd_);
         return 0;
       }
@@ -4338,6 +5419,14 @@ LRESULT FenceWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
       tme.dwFlags = TME_LEAVE;
       tme.hwndTrack = hwnd_;
       TrackMouseEvent(&tme);
+      // Fences Auto-hide: cancel pending collapse and expand on hover.
+      if (auto_hide_) {
+        KillTimer(hwnd_, kTimerAutoHide);
+        if (collapsed_ && collapsible_ && !dragging_ && !resizing_ &&
+            !icon_dragging_ && !rubber_ && !rename_edit_) {
+          SetCollapsed(false, /*persist=*/false);
+        }
+      }
       if (resizing_ && (wparam & MK_LBUTTON)) {
         UpdateHoverTip(-1);
         POINT pt{};
@@ -4392,15 +5481,61 @@ LRESULT FenceWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
       if (rubber_ && (wparam & MK_LBUTTON)) {
         UpdateHoverTip(-1);
         rubber_b_ = {GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
+        // Explorer: auto-scroll when the marquee nears the viewport edge.
+        {
+          RECT rc{};
+          GetClientRect(hwnd_, &rc);
+          const int header = S(hwnd_, kHeaderH0);
+          const int margin = S(hwnd_, 28);
+          const int step = S(hwnd_, 24);
+          const int old_scroll = scroll_y_;
+          if (rubber_b_.y < header + margin) {
+            scroll_y_ -= step;
+          } else if (rubber_b_.y > rc.bottom - margin) {
+            scroll_y_ += step;
+          }
+          if (scroll_y_ != old_scroll) {
+            ClampScroll();
+            // Keep content-relative origin stable while cells reflow.
+            rubber_a_.y += (old_scroll - scroll_y_);
+            LayoutCells();
+          }
+        }
         // Live marquee like Explorer / Fences. Require a real rectangle so
         // click-jitter on blank does not re-select the nearest icon.
         const int bw = abs(rubber_b_.x - rubber_a_.x);
         const int bh = abs(rubber_b_.y - rubber_a_.y);
-        if (bw >= kDragThreshold && bh >= kDragThreshold) {
+        // Explorer/public: either axis past threshold counts (thin marquees).
+        if (bw >= kDragThreshold || bh >= kDragThreshold) {
           ApplyRubberBandSelection();
         }
         PresentLayered();
         return 0;
+      }
+      if (rbutton_press_ && (wparam & MK_RBUTTON) && rbutton_icon_ >= 0 &&
+          !rbutton_dragged_) {
+        const int x = GET_X_LPARAM(lparam);
+        const int y = GET_Y_LPARAM(lparam);
+        if (abs(x - rbutton_press_pt_.x) >= kDragThreshold ||
+            abs(y - rbutton_press_pt_.y) >= kDragThreshold) {
+          // Explorer right-drag → OLE; sinks show Copy/Move/Create shortcut.
+          rbutton_dragged_ = true;
+          rbutton_press_ = false;
+          std::vector<std::wstring> paths = SelectedPaths();
+          if (paths.empty() &&
+              rbutton_icon_ < static_cast<int>(cells_.size())) {
+            paths.push_back(
+                cells_[static_cast<size_t>(rbutton_icon_)].item.path);
+          }
+          rbutton_icon_ = -1;
+          if (GetCapture() == hwnd_) {
+            ReleaseCapture();
+          }
+          if (!paths.empty()) {
+            CommitDragOutPins(std::move(paths));
+          }
+          return 0;
+        }
       }
       if (icon_press_ && (wparam & MK_LBUTTON)) {
         UpdateHoverTip(-1);
@@ -4469,7 +5604,30 @@ LRESULT FenceWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
     }
     case WM_MOUSELEAVE:
       UpdateHoverTip(-1);
+      // Fences Auto-hide: short delay so title-button / menu hops don't flicker.
+      if (auto_hide_ && !collapsed_ && collapsible_ && !dragging_ &&
+          !resizing_ && !icon_dragging_ && !rubber_ && !rename_edit_ &&
+          header_press_ == HeaderBtn::None) {
+        SetTimer(hwnd_, kTimerAutoHide, 350, nullptr);
+      }
       return 0;
+    case WM_TIMER:
+      if (wparam == kTimerAutoHide) {
+        KillTimer(hwnd_, kTimerAutoHide);
+        if (auto_hide_ && !collapsed_ && collapsible_ && !dragging_ &&
+            !resizing_ && !icon_dragging_ && !rubber_ && !rename_edit_ &&
+            !style_menu_open_ && !drop_preview_) {
+          POINT pt{};
+          GetCursorPos(&pt);
+          RECT rc{};
+          GetWindowRect(hwnd_, &rc);
+          if (!PtInRect(&rc, pt)) {
+            SetCollapsed(true, /*persist=*/false);
+          }
+        }
+        return 0;
+      }
+      break;
     case WM_LBUTTONUP: {
       const int x = GET_X_LPARAM(lparam);
       const int y = GET_Y_LPARAM(lparam);
@@ -4496,7 +5654,7 @@ LRESULT FenceWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
         const int bw = abs(rubber_b_.x - rubber_a_.x);
         const int bh = abs(rubber_b_.y - rubber_a_.y);
         // Click / tiny jitter on blank = deselect only (cleared on press).
-        if ((bw < kDragThreshold || bh < kDragThreshold) && !rubber_additive_) {
+        if (bw < kDragThreshold && bh < kDragThreshold && !rubber_additive_) {
           rubber_additive_ = false;
           ClearSelection();
           return 0;
@@ -4578,18 +5736,26 @@ LRESULT FenceWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
               now - last_icon_click_tick_ <= dbl) {
             last_icon_click_ = -1;
             last_icon_click_tick_ = 0;
-            OpenItem(idx);
+            // Alt+dblclick → Properties; Shift+dblclick → open externally.
+            if ((GetAsyncKeyState(VK_MENU) & 0x8000) != 0) {
+              SelectOnly(idx);
+              ShowShellPathsProperties(hwnd_, SelectedPaths());
+              return 0;
+            }
+            const bool external =
+                (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
+            OpenItem(idx, external);
             return 0;
           }
           last_icon_click_ = idx;
           last_icon_click_tick_ = now;
           const bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
           const bool shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
-          if (ctrl) {
-            ToggleSelected(idx);
-          } else if (shift) {
-            SelectRange(idx);
-          } else if (was_selected) {
+          // Ctrl/Shift already applied on LBUTTONDOWN (drag sees new selection).
+          if (ctrl || shift) {
+            return 0;
+          }
+          if (was_selected) {
             // Explorer: second click on the *name* (after dbl-click window)
             // starts rename; glyph re-click keeps selection.
             RECT label{};
@@ -4626,6 +5792,10 @@ LRESULT FenceWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
       return 0;
     }
     case WM_RBUTTONDOWN: {
+      SetFenceKeyTarget(hwnd_);
+      if (on_activated_) {
+        on_activated_(this);
+      }
       // Match Explorer: right-press on empty cancels rubber / keeps chrome clean.
       if (rubber_) {
         rubber_ = false;
@@ -4633,9 +5803,30 @@ LRESULT FenceWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
         ReleaseCapture();
         PresentLayered();
       }
+      rbutton_press_ = true;
+      rbutton_dragged_ = false;
+      rbutton_press_pt_ = {GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
+      rbutton_icon_ = HitTestIcon(rbutton_press_pt_.x, rbutton_press_pt_.y);
+      if (rbutton_icon_ >= 0) {
+        if (!IsSelected(rbutton_icon_)) {
+          SelectOnly(rbutton_icon_);
+          PresentLayered();
+        }
+        SetCapture(hwnd_);
+      }
       return 0;
     }
     case WM_RBUTTONUP: {
+      const bool was_drag = rbutton_dragged_;
+      rbutton_press_ = false;
+      rbutton_dragged_ = false;
+      rbutton_icon_ = -1;
+      if (GetCapture() == hwnd_) {
+        ReleaseCapture();
+      }
+      if (was_drag) {
+        return 0;  // OLE right-drag already handled drop / cancel
+      }
       POINT pt{GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
       const int icon = HitTestIcon(pt.x, pt.y);
       ClientToScreen(hwnd_, &pt);
@@ -4654,7 +5845,15 @@ LRESULT FenceWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
       if (icon >= 0) {
         last_icon_click_ = -1;
         last_icon_click_tick_ = 0;
-        OpenItem(icon);
+        // Alt+dblclick → Properties; Shift+dblclick → open externally;
+        // Ctrl+dblclick → new window (handled inside OpenItem).
+        if ((GetAsyncKeyState(VK_MENU) & 0x8000) != 0) {
+          SelectOnly(icon);
+          ShowShellPathsProperties(hwnd_, SelectedPaths());
+          return 0;
+        }
+        const bool external = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
+        OpenItem(icon, external);
         return 0;
       }
       if (y < S(hwnd_, kHeaderH0) && HitTestEdge(x, y) == Edge::None) {
@@ -4662,6 +5861,41 @@ LRESULT FenceWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
         ToggleCollapsed();
       }
       return 0;
+    }
+    case WM_MBUTTONUP: {
+      // Explorer: middle-click folder → new window; files open normally.
+      const int icon =
+          HitTestIcon(GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam));
+      if (icon >= 0 && icon < static_cast<int>(cells_.size()) &&
+          !cells_[static_cast<size_t>(icon)].item.path.empty()) {
+        if (!IsSelected(icon)) {
+          SelectOnly(icon);
+        }
+        ExploreShellPath(cells_[static_cast<size_t>(icon)].item.path);
+      }
+      return 0;
+    }
+    case WM_XBUTTONUP: {
+      // Explorer / browser: XBUTTON1 Back → up; XBUTTON2 Forward → restore.
+      if (GET_XBUTTON_WPARAM(wparam) == XBUTTON1) {
+        if (PortalGoUp()) {
+          typeahead_.clear();
+          if (on_refresh_) {
+            on_refresh_(this);
+          }
+        }
+        return TRUE;
+      }
+      if (GET_XBUTTON_WPARAM(wparam) == XBUTTON2) {
+        if (PortalGoForward()) {
+          typeahead_.clear();
+          if (on_refresh_) {
+            on_refresh_(this);
+          }
+        }
+        return TRUE;
+      }
+      break;
     }
     case WM_DESTROY:
       tip_ = nullptr;
@@ -4909,12 +6143,15 @@ void FenceWindow::Paint(HDC hdc) {
     if (i >= cells_.size()) {
       return;
     }
+    const auto& cell = cells_[i];
+    if (cell.item.path.empty()) {
+      return;  // sparse seat — blank chrome only
+    }
     const bool is_sel =
         i < selected_.size() && selected_[i] != 0;
     if (selected_pass != is_sel) {
       return;
     }
-    const auto& cell = cells_[i];
     const RECT& b = cell.bounds;
     if (b.bottom < header || b.top > rc.bottom) {
       return;
@@ -4935,6 +6172,8 @@ void FenceWindow::Paint(HDC hdc) {
     const bool is_hover =
         !is_sel && tip_index_ >= 0 &&
         static_cast<size_t>(tip_index_) == i;
+    const bool is_focus =
+        !is_sel && selection_focus_ == static_cast<int>(i);
     // Source cells stay as faint placeholders while the cursor ghost moves
     // (Explorer / Fences-style; same opacity as cut ghost).
     const BYTE icon_op =
@@ -4945,6 +6184,10 @@ void FenceWindow::Paint(HDC hdc) {
       if (is_sel) {
         PaintSelectionChrome(g, b.left + 2, b.top + 1, b.right - 2,
                              b.bottom - 1, accent_, S(hwnd_, 4));
+      } else if (is_focus) {
+        // Ctrl+Arrow focus (not selected) — lighter ring than full selection.
+        PaintSelectionChrome(g, b.left + 2, b.top + 1, b.right - 2,
+                             b.bottom - 1, accent_, S(hwnd_, 4), 36, 110);
       } else if (is_hover) {
         PaintSelectionChrome(g, b.left + 2, b.top + 1, b.right - 2,
                              b.bottom - 1, accent_, S(hwnd_, 4), 48, 90);
@@ -4994,6 +6237,10 @@ void FenceWindow::Paint(HDC hdc) {
       const int chrome_b = label_top + ink_h + S(hwnd_, 3);
       PaintSelectionChrome(g, b.left + 3, b.top + 2, b.right - 3, chrome_b,
                            accent_, S(hwnd_, 6));
+    } else if (is_focus) {
+      const int chrome_b = label_top + idle_label_h + S(hwnd_, 2);
+      PaintSelectionChrome(g, b.left + 3, b.top + 2, b.right - 3, chrome_b,
+                           accent_, S(hwnd_, 6), 36, 110);
     } else if (is_hover) {
       const int chrome_b = label_top + idle_label_h + S(hwnd_, 2);
       PaintSelectionChrome(g, b.left + 3, b.top + 2, b.right - 3, chrome_b,
@@ -5058,8 +6305,8 @@ void FenceWindow::Paint(HDC hdc) {
     }
   }
 
-  // Recycle Bin hover (OLE inbound): accent the bin cell only — not the fence.
-  if (drop_preview_ && drop_over_recycle_) {
+  // Recycle Bin / folder hover (OLE inbound): accent that cell only.
+  if (drop_preview_ && (drop_over_recycle_ || drop_over_folder_)) {
     const int over = HitTestIcon(drop_pt_.x, drop_pt_.y);
     if (over >= 0 && over < static_cast<int>(cells_.size())) {
       const RECT& b = cells_[static_cast<size_t>(over)].bounds;
@@ -5083,7 +6330,8 @@ void FenceWindow::Paint(HDC hdc) {
   // F2 / OLE: insert bar ≈ icon length (manual reorder or external drop).
   const bool show_insert =
       (icon_dragging_ && !drag_left_ && drag_insert_ >= 0) ||
-      (drop_preview_ && !drop_over_recycle_ && drop_insert_ >= 0);
+      (drop_preview_ && !drop_over_recycle_ && !drop_over_folder_ &&
+       drop_insert_ >= 0);
   if (show_insert) {
     const int raw_insert =
         (icon_dragging_ && !drag_left_) ? drag_insert_ : drop_insert_;
@@ -5178,7 +6426,13 @@ void FenceWindow::Paint(HDC hdc) {
     if (GetTickCount() < footer_zoom_hint_until_) {
       footer = L"图标大小 " + std::to_wstring(icon_zoom_percent_) + L"%";
     } else {
-      const int count = (std::min)(static_cast<int>(cells_.size()), 60);
+      int filled = 0;
+      for (const auto& c : cells_) {
+        if (!c.item.path.empty()) {
+          ++filled;
+        }
+      }
+      const int count = (std::min)(filled, 60);
       if (count > 0) {
         footer = L"共 " + std::to_wstring(count) + L" 项";
       }

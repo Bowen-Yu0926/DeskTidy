@@ -63,6 +63,8 @@ struct FenceLayout {
   std::wstring portal_path;
   // When true, window height is collapsed chrome; h still stores expanded height.
   bool collapsed = false;
+  // Fences Auto-hide: collapse when pointer leaves; expand on hover.
+  bool auto_hide = false;
   // User lock: drag/resize off (not system locked fences).
   bool position_locked = false;
   // name | date | size | type | manual

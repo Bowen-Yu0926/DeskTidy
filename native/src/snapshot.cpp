@@ -2,6 +2,7 @@
 
 #include "desktop_items.h"
 #include "display_geom.h"
+#include "float_placements.h"
 #include "paths_util.h"
 #include "pin_store.h"
 #include "shell_icons.h"
@@ -285,16 +286,25 @@ std::wstring PinsSidecarPath(const std::wstring& snapshot_json) {
   return StripJsonExt(snapshot_json) + L".pins.json";
 }
 
+std::wstring FloatsSidecarPath(const std::wstring& snapshot_json) {
+  return StripJsonExt(snapshot_json) + L".floats.json";
+}
+
 bool IsSidecarName(const std::wstring& file) {
-  // *.icons.json and *.pins.json must not appear as snapshot cards.
+  // *.icons.json / *.pins.json / *.floats.json must not appear as cards.
   const std::wstring i = L".icons.json";
   const std::wstring p = L".pins.json";
+  const std::wstring f = L".floats.json";
   if (file.size() >= i.size() &&
       _wcsicmp(file.c_str() + (file.size() - i.size()), i.c_str()) == 0) {
     return true;
   }
   if (file.size() >= p.size() &&
       _wcsicmp(file.c_str() + (file.size() - p.size()), p.c_str()) == 0) {
+    return true;
+  }
+  if (file.size() >= f.size() &&
+      _wcsicmp(file.c_str() + (file.size() - f.size()), f.c_str()) == 0) {
     return true;
   }
   return false;
@@ -432,6 +442,10 @@ bool SaveSnapshot(const AppState& state, const std::wstring& name) {
   // Capture each fence's pinned paths (virtual_items) so applying the snapshot
   // restores the exact content distribution.
   SavePinsToPath(PinsSidecarPath(path), LoadPins());
+  // Loose float seats (page + rx/ry) — without this, restore reshuffles
+  // public icons after Explorer-hidden tidy mode.
+  CopyFileW(FloatPlacementsPath().c_str(), FloatsSidecarPath(path).c_str(),
+            FALSE);
   return true;
 }
 
@@ -790,6 +804,11 @@ bool LoadSnapshot(const std::wstring& path, AppState* out) {
   if (LoadPinsFromPath(PinsSidecarPath(path), &pins)) {
     SavePins(pins);
   }
+  // Restore float seats when the sidecar exists (older snapshots may lack it).
+  const std::wstring floats_src = FloatsSidecarPath(path);
+  if (GetFileAttributesW(floats_src.c_str()) != INVALID_FILE_ATTRIBUTES) {
+    CopyFileW(floats_src.c_str(), FloatPlacementsPath().c_str(), FALSE);
+  }
   return true;
 }
 
@@ -805,6 +824,8 @@ bool SaveSnapshotWithIcons(const AppState& state, const std::wstring& name) {
     return false;
   }
   SavePinsToPath(PinsSidecarPath(path), LoadPins());
+  CopyFileW(FloatPlacementsPath().c_str(), FloatsSidecarPath(path).c_str(),
+            FALSE);
   const auto icons = CaptureShellIconPositions();
   SaveShellIconsSidecar(path, icons);
   return true;
@@ -848,6 +869,7 @@ bool RenameSnapshot(const std::wstring& path, const std::wstring& new_name) {
   }
   MoveFileW(IconsSidecarPath(path).c_str(), IconsSidecarPath(target).c_str());
   MoveFileW(PinsSidecarPath(path).c_str(), PinsSidecarPath(target).c_str());
+  MoveFileW(FloatsSidecarPath(path).c_str(), FloatsSidecarPath(target).c_str());
   return true;
 }
 
@@ -857,5 +879,6 @@ bool DeleteSnapshot(const std::wstring& path) {
   }
   DeleteFileW(IconsSidecarPath(path).c_str());
   DeleteFileW(PinsSidecarPath(path).c_str());
+  DeleteFileW(FloatsSidecarPath(path).c_str());
   return true;
 }

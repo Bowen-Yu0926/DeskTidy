@@ -14,6 +14,11 @@ struct FloatPlacement {
   double rx = 0.05;
   double ry = 0.05;
   bool has_pos = false;
+  // Work-area origin when ratios were saved (multi-monitor). Without this,
+  // restore probed primary first and secondary floats jumped screens.
+  int ox = 0;
+  int oy = 0;
+  bool has_origin = false;
   // true = only show on `page` even when enable_public_desktop shares floats.
   // Set by「移动到分页」; new loose icons default false (shared when public on).
   bool page_local = false;

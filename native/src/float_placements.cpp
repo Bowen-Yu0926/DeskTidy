@@ -125,6 +125,15 @@ FloatPlacementMap LoadFloatPlacements() {
     fp.rx = Clamp01(rx);
     fp.ry = Clamp01(ry);
     fp.has_pos = has_rx && has_ry;
+    int ox = 0;
+    int oy = 0;
+    const bool has_ox = FindIntNear(json, pkey, "ox", &ox);
+    const bool has_oy = FindIntNear(json, pkey, "oy", &oy);
+    if (has_ox && has_oy) {
+      fp.ox = ox;
+      fp.oy = oy;
+      fp.has_origin = true;
+    }
     FindBoolNear(json, pkey, "page_local", &fp.page_local);
     if (!fp.path.empty()) {
       map[NormalizePinKey(fp.path)] = fp;
@@ -144,6 +153,9 @@ bool SaveFloatPlacements(const FloatPlacementMap& map) {
         << "\",\"page\":" << fp.page;
     if (fp.has_pos) {
       out << ",\"rx\":" << fp.rx << ",\"ry\":" << fp.ry;
+    }
+    if (fp.has_origin) {
+      out << ",\"ox\":" << fp.ox << ",\"oy\":" << fp.oy;
     }
     if (fp.page_local) {
       out << ",\"page_local\":true";
@@ -170,10 +182,19 @@ void FloatRatiosFromScreen(POINT screen, double* rx, double* ry) {
 }
 
 POINT FloatScreenPoint(const FloatPlacement& fp) {
+  // Prefer the work area where the float was saved (Fences: stay on that
+  // monitor). Legacy rows without ox/oy still probe primary.
   POINT probe{0, 0};
-  const RECT primary = PrimaryWorkArea();
-  probe.x = primary.left + static_cast<LONG>(fp.rx * (primary.right - primary.left));
-  probe.y = primary.top + static_cast<LONG>(fp.ry * (primary.bottom - primary.top));
+  if (fp.has_origin) {
+    probe.x = fp.ox + 8;
+    probe.y = fp.oy + 8;
+  } else {
+    const RECT primary = PrimaryWorkArea();
+    probe.x = primary.left + static_cast<LONG>(
+                  Clamp01(fp.rx) * (primary.right - primary.left));
+    probe.y = primary.top + static_cast<LONG>(
+                  Clamp01(fp.ry) * (primary.bottom - primary.top));
+  }
   const RECT work = WorkAreaAtPoint(probe);
   POINT out{};
   out.x = work.left + static_cast<LONG>(
@@ -196,6 +217,10 @@ void UpsertFloatPlacement(FloatPlacementMap* map, const std::wstring& path,
   }
   fp.path = path;
   fp.page = (std::max)(0, page);
+  const RECT work = WorkAreaAtPoint(screen);
+  fp.ox = work.left;
+  fp.oy = work.top;
+  fp.has_origin = true;
   FloatRatiosFromScreen(screen, &fp.rx, &fp.ry);
   fp.has_pos = true;
   (*map)[key] = std::move(fp);

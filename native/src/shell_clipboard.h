@@ -5,8 +5,8 @@
 #include <string>
 #include <vector>
 
-// Explorer-compatible CF_HDROP + FileNameW + Shell IDList Array +
-// Preferred DropEffect (COPY/MOVE).
+// Explorer / Fences Ctrl+C·X: OleSetClipboard(shell IDataObject) with
+// Preferred DropEffect (COPY/MOVE). Falls back to Win32 CF_HDROP only.
 bool ClipboardSetFiles(HWND owner, const std::vector<std::wstring>& paths,
                        bool cut);
 bool ClipboardGetFiles(std::vector<std::wstring>* paths);

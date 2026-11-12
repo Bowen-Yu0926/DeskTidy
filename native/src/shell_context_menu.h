@@ -65,3 +65,7 @@ int TrackShellFolderBackgroundMenu(HWND owner, POINT screen,
                                    ShellVerbFn on_verb = nullptr,
                                    ShellBeforeInvokeFn on_before_invoke = nullptr,
                                    ShellInterceptFn on_intercept = nullptr);
+
+// Silent folder-background verb (e.g. "undo") — Explorer Ctrl+Z / blank Undo.
+bool InvokeShellFolderVerb(HWND owner, const std::wstring& folder,
+                           const wchar_t* verb);

@@ -14,7 +14,7 @@ void NotesWarmWebViewEnv();
 //   kViewer  — the offline markdown preview (read-only render + PDF export).
 class NotesWebView {
  public:
-  enum class Kind { kWysiwyg, kViewer, kVaultAccounts };
+  enum class Kind { kWysiwyg, kViewer, kVaultAccounts, kLibrary };
 
   bool Create(HWND parent);
   void Destroy();
@@ -30,6 +30,9 @@ class NotesWebView {
   void SetKind(Kind kind) { kind_ = kind; }
   // Navigate to vault_accounts.html and push masked entry JSON.
   void ShowVaultAccounts(const std::wstring& entries_json);
+  // Left-rail unified library (online + local), notes_library.html.
+  void ShowLibrary(const std::wstring& state_json);
+  void PushLibraryState(const std::wstring& state_json);
   // Return to Toast WYSIWYG shell (after leaving the vault HTML view).
   void ShowWysiwygEditor();
   // Preview/editor chrome theme: "light" or "dark" (P2-30).
@@ -93,6 +96,8 @@ class NotesWebView {
                      const std::wstring& user, const std::wstring& pass,
                      const std::wstring& url, const std::wstring& note)>
       on_vault_save;
+  // Unified library rail actions (JSON from notes_library.html).
+  std::function<void(const std::wstring& json)> on_library_action;
   // Edit dialog needs current fields (password omitted; empty = keep).
   std::function<void(int index)> on_vault_edit_request;
   void PushVaultPassReveal(int index, const std::wstring& pass);
@@ -128,7 +133,9 @@ class NotesWebView {
   std::wstring pending_set_;
   std::wstring pending_base_;
   std::wstring pending_vault_json_;
+  std::wstring pending_library_json_;
   void PushVaultAccountsData();
+  void PushLibraryData();
   bool got_scroll_ = false;
   double scroll_ratio_ = 0.0;
   bool print_done_ = false;

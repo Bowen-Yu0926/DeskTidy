@@ -40,6 +40,12 @@ class PublicHost {
   HWND Hwnd() const { return hwnd_; }
   bool HasItems() const { return !slots_.empty(); }
   bool HasSelection() const;
+  // Fences / Explorer: drop float selection (blank wallpaper / other chrome).
+  void ClearSelection();
+  // Select by path after paste/New (Explorer keeps focus on landed items).
+  void SelectPaths(const std::vector<std::wstring>& paths);
+  // Explorer Ctrl+Shift+C → CF_UNICODETEXT of selected paths.
+  void CopySelectionPathsAsText();
   void SetItems(std::vector<DesktopItem> items);
   bool FillMissingIcons();
   void SetPlacements(FloatPlacementMap placements);
@@ -58,8 +64,13 @@ class PublicHost {
     on_removed_ = std::move(fn);
   }
   void SetOnRefresh(std::function<void()> fn) { on_refresh_ = std::move(fn); }
+  // Fences / Explorer: clicking floats clears fence icon selection.
+  void SetOnActivated(std::function<void()> fn) {
+    on_activated_ = std::move(fn);
+  }
   // Fences: Ctrl+V / blank-area Paste lands files on the real Desktop folder.
-  void SetOnPaste(std::function<void()> fn) { on_paste_ = std::move(fn); }
+  // Arg true = Explorer 「粘贴快捷方式」(pastelink).
+  void SetOnPaste(std::function<void(bool)> fn) { on_paste_ = std::move(fn); }
   // Explorer drop onto float chrome → Desktop folder. Returns OLE effect.
   void SetOnPathsDropped(
       std::function<DWORD(const std::vector<std::wstring>&)> fn) {
@@ -92,6 +103,16 @@ class PublicHost {
   // Fences / Explorer: inline label EDIT (F2 / context Rename / slow name click).
   void BeginInlineRename();
   void FinishInlineRename(bool commit);
+  // Explorer: Tab / Shift+Tab after rename → next / previous icon.
+  void CommitRenameAndAdvance(int delta);
+  // Explorer / Fences: Ctrl+Shift+N → new folder on Desktop (float).
+  void CreateNewFolder();
+  // Explorer: Apps / Shift+F10 → item context menu for the selection.
+  void ShowSelectionContextMenu();
+  // Exactly one selected filesystem directory (Explorer paste-into-folder).
+  std::wstring SelectedSingleDirectory() const;
+  // Explorer Ctrl+Z → shell undo + re-pin (App owns stack).
+  void SetOnUndo(std::function<void()> fn) { on_undo_ = std::move(fn); }
 
  private:
   struct Slot {
@@ -113,7 +134,7 @@ class PublicHost {
   void ShowSlotMenu(int index, POINT screen);
   void ShowMoveToPageFenceMenu(POINT screen);
   void ShowBackgroundMenu(POINT screen);
-  void PasteClipboardFiles();
+  void PasteClipboardFiles(bool as_link = false);
   void EnsureDropTarget();
   // Fences-class: icon host geometry stays fixed; marquee is a separate band.
   void PresentMarqueeBand();
@@ -125,7 +146,6 @@ class PublicHost {
   bool SelectionFingerprint(std::vector<char>* out) const;
 
   void EnsureSelSize();
-  void ClearSelection();
   void SelectOnly(int index);
   void ToggleSelected(int index);
   void SelectRange(int from, int to);
@@ -138,9 +158,11 @@ class PublicHost {
   void RenameSelection();
   void OpenSelection();
   bool IconLabelRect(size_t index, RECT* out) const;
-  void NavigateSelection(int dx, int dy, bool extend);
+  void NavigateSelection(int dx, int dy, bool extend, bool focus_only = false);
   void HandlePublicHotkey(int vk, bool ctrl, bool shift);
   void TypeAheadFind(wchar_t ch);
+  bool TypeAheadBackspace();
+  void TypeAheadFindNext();
   void SelectBetween(int from, int to);
   int FocusedSlotIndex() const;
 
@@ -157,6 +179,12 @@ class PublicHost {
   int drag_from_ = -1;
   bool drag_moved_ = false;
   POINT drag_press_{};
+  // Explorer right-drag → OLE Copy/Move/Create-shortcut menu.
+  bool rbutton_press_ = false;
+  bool rbutton_dragged_ = false;
+  int rbutton_icon_ = -1;
+  POINT rbutton_press_pt_{};
+  bool rename_finishing_ = false;
   bool rubber_ = false;
   bool rubber_additive_ = false;
   POINT rubber_origin_{};
@@ -201,7 +229,9 @@ class PublicHost {
   Gdiplus::Font* caption_font_ = nullptr;
   Gdiplus::StringFormat* caption_fmt_ = nullptr;
   std::vector<char> selected_;
+  // Explorer: anchor (mark) + focus (active end) for Shift+arrow extend.
   int selection_anchor_ = -1;
+  int selection_focus_ = -1;
   HWND rename_edit_ = nullptr;
   int rename_index_ = -1;
   WNDPROC rename_proc_ = nullptr;
@@ -223,7 +253,9 @@ class PublicHost {
   std::function<void(const std::wstring&, const std::wstring&)> on_path_replaced_;
   std::function<void(const std::wstring&)> on_removed_;
   std::function<void()> on_refresh_;
-  std::function<void()> on_paste_;
+  std::function<void()> on_undo_;
+  std::function<void()> on_activated_;
+  std::function<void(bool)> on_paste_;
   std::function<DWORD(const std::vector<std::wstring>&)> on_paths_dropped_;
   std::function<void(const FloatPlacementMap&)> on_placements_changed_;
   std::function<void(const std::vector<std::wstring>&, const std::string&)>

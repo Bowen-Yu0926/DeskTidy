@@ -95,7 +95,8 @@ bool IsDeskNoteShellHtmlUri(const std::wstring& uri) {
   }
   return lower.find(L"wysiwyg_native.html") != std::wstring::npos ||
          lower.find(L"viewer_native.html") != std::wstring::npos ||
-         lower.find(L"vault_accounts.html") != std::wstring::npos;
+         lower.find(L"vault_accounts.html") != std::wstring::npos ||
+         lower.find(L"notes_library.html") != std::wstring::npos;
 }
 
 std::wstring ParentDir(const std::wstring& path) {
@@ -238,6 +239,9 @@ std::wstring FindWysiwygHtml() { return FindAsset(L"md_preview\\wysiwyg_native.h
 std::wstring FindViewerHtml() { return FindAsset(L"md_preview\\viewer_native.html"); }
 std::wstring FindVaultAccountsHtml() {
   return FindAsset(L"md_preview\\vault_accounts.html");
+}
+std::wstring FindLibraryHtml() {
+  return FindAsset(L"online_notes\\notes_library.html");
 }
 
 std::wstring FileUrlFromPath(const std::wstring& path) {
@@ -441,6 +445,17 @@ bool NotesWebView::Create(HWND parent) {
                       }
                       webview_ = web;
                       available_ = true;
+                      // Library rail: no Chromium "Reload / Inspect" menu —
+                      // notes_library.html owns right-click (Typora / VS Code).
+                      if (kind_ == Kind::kLibrary) {
+                        ICoreWebView2Settings* settings = nullptr;
+                        if (SUCCEEDED(web->get_Settings(&settings)) &&
+                            settings) {
+                          settings->put_AreDefaultContextMenusEnabled(FALSE);
+                          settings->put_AreDevToolsEnabled(FALSE);
+                          settings->Release();
+                        }
+                      }
                       // https://app.desknote/* → md_preview folder (faster than
                       // file:// for the Toast bundle; keeps disk cache coherent).
                       {
@@ -594,6 +609,9 @@ void NotesWebView::NavigateHome() {
   if (kind_ == Kind::kVaultAccounts) {
     html = FindVaultAccountsHtml();
     leaf = L"vault_accounts.html";
+  } else if (kind_ == Kind::kLibrary) {
+    html = FindLibraryHtml();
+    leaf = L"notes_library.html";
   } else if (kind_ == Kind::kViewer) {
     html = FindViewerHtml();
     leaf = L"viewer_native.html";
@@ -751,6 +769,51 @@ void NotesWebView::ShowVaultAccounts(const std::wstring& entries_json) {
   }
 }
 
+void NotesWebView::PushLibraryData() {
+  auto* web = static_cast<ICoreWebView2*>(webview_);
+  if (!web || kind_ != Kind::kLibrary) {
+    return;
+  }
+  const std::wstring& payload =
+      pending_library_json_.empty()
+          ? L"{\"logged_in\":false,\"online\":[],\"local\":[]}"
+          : pending_library_json_;
+  std::wstring script =
+      L"(function(){try{var m=" + payload +
+      L";if(typeof window.applyState==='function'){window.applyState(m);}"
+      L"}catch(e){}})();";
+  web->ExecuteScript(script.c_str(), nullptr);
+  content_ready_ = true;
+}
+
+void NotesWebView::PushLibraryState(const std::wstring& state_json) {
+  pending_library_json_ = state_json.empty()
+                              ? L"{\"logged_in\":false,\"online\":[],\"local\":[]}"
+                              : state_json;
+  if (kind_ == Kind::kLibrary && ready_ && webview_) {
+    PushLibraryData();
+  }
+}
+
+void NotesWebView::ShowLibrary(const std::wstring& state_json) {
+  pending_library_json_ = state_json.empty()
+                              ? L"{\"logged_in\":false,\"online\":[],\"local\":[]}"
+                              : state_json;
+  if (kind_ != Kind::kLibrary || !webview_) {
+    kind_ = Kind::kLibrary;
+    NavigateHome();
+    return;
+  }
+  if (ready_) {
+    PushLibraryData();
+    if (on_content_ready) {
+      on_content_ready();
+    }
+  } else {
+    NavigateHome();
+  }
+}
+
 void NotesWebView::ShowWysiwygEditor() {
   if (kind_ == Kind::kWysiwyg && webview_ && ready_) {
     return;
@@ -763,6 +826,13 @@ void NotesWebView::OnReady() {
   ready_ = true;
   if (kind_ == Kind::kVaultAccounts) {
     PushVaultAccountsData();
+    if (on_content_ready) {
+      on_content_ready();
+    }
+    return;
+  }
+  if (kind_ == Kind::kLibrary) {
+    PushLibraryData();
     if (on_content_ready) {
       on_content_ready();
     }
@@ -822,10 +892,16 @@ void NotesWebView::OnWebMessage(const std::wstring& json) {
   } else if (type == L"needContent") {
     if (kind_ == Kind::kVaultAccounts) {
       PushVaultAccountsData();
+    } else if (kind_ == Kind::kLibrary) {
+      PushLibraryData();
     } else if (on_need_content) {
       on_need_content();
     } else if (!pending_md_.empty()) {
       SetMarkdown(pending_md_);
+    }
+  } else if (type == L"action" && kind_ == Kind::kLibrary) {
+    if (on_library_action) {
+      on_library_action(json);
     }
   } else if (type == L"fontPrefs") {
     if (on_font_prefs) {

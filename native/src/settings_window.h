@@ -135,12 +135,16 @@ class SettingsWindow {
       int index = 0;
       std::wstring title;
       int page = 0;
+      // Multi-page membership (Fences); empty → treat as {page}.
+      std::vector<int> pages;
       std::string style_id = "navy";
       int opacity_pct = 70;  // 35–100
       // Organize rule kinds: "icon" (软件) / "file" (文档). Empty = no rule.
       std::vector<std::string> organize_kinds;
       bool system_fence = false;
       bool position_locked = false;
+      // User-hide (fence menu 「隐藏」); settings can Show again (Fences recover).
+      bool visible = true;
     };
     std::vector<FenceCard> fence_cards;
     // Per-page lock flags (index aligned with page_names_).

@@ -557,6 +557,8 @@ AppState LoadAppStateFromPath(const std::wstring& path, bool inject_defaults) {
     FindBool(obj, "show_title", &show_title);
     bool collapsible = true;
     FindBool(obj, "collapsible", &collapsible);
+    bool auto_hide = false;
+    FindBool(obj, "auto_hide", &auto_hide);
     bool has_custom = false;
     FindBool(obj, "has_custom_colors", &has_custom);
     int custom_bg = 0;
@@ -597,6 +599,7 @@ AppState LoadAppStateFromPath(const std::wstring& path, bool inject_defaults) {
     fl.style_id = style_id.empty() ? "navy" : style_id;
     fl.portal_path = Widen(portal);
     fl.collapsed = collapsed;
+    fl.auto_hide = auto_hide;
     fl.position_locked = position_locked;
     fl.sort_by = sort_by.empty() ? "name" : sort_by;
     fl.view_mode = (view_mode == "list") ? "list" : "grid";
@@ -1001,6 +1004,7 @@ bool SaveAppState(const AppState& state) {
         << EscapeJson(f.style_id.empty() ? "navy" : f.style_id) << "\","
         << "\"portal\":\"" << EscapeJson(Narrow(f.portal_path)) << "\","
         << "\"collapsed\":" << (f.collapsed ? "true" : "false") << ","
+        << "\"auto_hide\":" << (f.auto_hide ? "true" : "false") << ","
         << "\"position_locked\":"
         << (f.position_locked ? "true" : "false") << ","
         << "\"sort_by\":\""

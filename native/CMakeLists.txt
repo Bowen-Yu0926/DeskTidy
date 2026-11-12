@@ -120,6 +120,8 @@ add_executable(deskNote WIN32
   src/vault_local.cpp
   src/vault_http.cpp
   src/vault_crypto.cpp
+  src/online_notes_window.cpp
+  src/notes_cloud_sync.cpp
   ${ARGON2_SOURCES}
   src/log.cpp
   src/version.rc
@@ -168,6 +170,14 @@ add_custom_command(TARGET deskNote POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E copy_if_different
           ${CMAKE_CURRENT_SOURCE_DIR}/assets/md_preview/vendor/toastui-editor.min.css
           $<TARGET_FILE_DIR:desktidy_native>/assets/md_preview/vendor/toastui-editor.min.css
+  COMMAND ${CMAKE_COMMAND} -E make_directory
+          $<TARGET_FILE_DIR:desktidy_native>/assets/online_notes
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          ${CMAKE_CURRENT_SOURCE_DIR}/assets/online_notes/online_notes.html
+          $<TARGET_FILE_DIR:desktidy_native>/assets/online_notes/online_notes.html
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          ${CMAKE_CURRENT_SOURCE_DIR}/assets/online_notes/notes_library.html
+          $<TARGET_FILE_DIR:desktidy_native>/assets/online_notes/notes_library.html
   COMMAND ${CMAKE_COMMAND} -E make_directory
           $<TARGET_FILE_DIR:desktidy_native>/assets/dialogs
   COMMAND ${CMAKE_COMMAND} -E copy_if_different

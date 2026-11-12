@@ -11,11 +11,13 @@
 #include "markdown_preview.h"
 #include "mist_msg.h"
 #include "mist_webview.h"
+#include "notes_cloud_sync.h"
 #include "notes_library.h"
 #include "paths_util.h"
 #include "prompt_text.h"
 #include "tool_paths.h"
 #include "ui_theme.h"
+#include "vault_http.h"
 #include "vault_local.h"
 
 #include <CommCtrl.h>
@@ -43,6 +45,7 @@
 #include <regex>
 #include <sstream>
 #include <string>
+#include <thread>
 
 #pragma comment(lib, "comdlg32.lib")
 
@@ -125,6 +128,123 @@ constexpr int kMenuToggleBookmark = 2167;
 constexpr int kMenuNextBookmark = 2168;
 constexpr int kMenuPrevBookmark = 2169;
 constexpr int kMenuOpenHosts = 2170;
+constexpr int kMenuOnlineNotes = 2171;
+constexpr int kMenuToOnline = 2172;
+constexpr int kMenuNewOnlineNote = 2173;
+
+bool PathLooksCloudNotes(const std::wstring& path) {
+  // Local files landed by「转本地」live under …\云笔记\…
+  std::wstring lower = path;
+  for (auto& c : lower) {
+    if (c >= L'A' && c <= L'Z') {
+      c = static_cast<wchar_t>(c - L'A' + L'a');
+    }
+    if (c == L'/') {
+      c = L'\\';
+    }
+  }
+  return lower.find(L"\\云笔记\\") != std::wstring::npos;
+}
+
+bool IsOnlineNotePath(const std::wstring& path) {
+  return path.rfind(L"online://", 0) == 0;
+}
+
+int OnlineNoteIdFromPath(const std::wstring& path) {
+  if (!IsOnlineNotePath(path)) {
+    return 0;
+  }
+  return _wtoi(path.c_str() + 9);
+}
+
+std::wstring OnlineNotePathFromId(int id) {
+  return L"online://" + std::to_wstring(id);
+}
+
+std::wstring JsonEscLib(const std::wstring& s) {
+  std::wstring o;
+  o.reserve(s.size() + 8);
+  for (wchar_t c : s) {
+    if (c == L'\\' || c == L'"') {
+      o.push_back(L'\\');
+      o.push_back(c);
+    } else if (c == L'\n') {
+      o += L"\\n";
+    } else if (c == L'\r') {
+      o += L"\\r";
+    } else if (c == L'\t') {
+      o += L"\\t";
+    } else if (c < 0x20) {
+      wchar_t buf[8];
+      swprintf_s(buf, L"\\u%04x", static_cast<unsigned>(c));
+      o += buf;
+    } else {
+      o.push_back(c);
+    }
+  }
+  return o;
+}
+
+// Minimal JSON string field extract (library rail actions).
+std::wstring LibJsonString(const std::wstring& json, const wchar_t* key) {
+  const std::wstring needle = std::wstring(L"\"") + key + L"\"";
+  size_t p = json.find(needle);
+  if (p == std::wstring::npos) {
+    return {};
+  }
+  p = json.find(L':', p + needle.size());
+  if (p == std::wstring::npos) {
+    return {};
+  }
+  ++p;
+  while (p < json.size() &&
+         (json[p] == L' ' || json[p] == L'\t' || json[p] == L'\r' ||
+          json[p] == L'\n')) {
+    ++p;
+  }
+  if (p >= json.size() || json[p] != L'"') {
+    return {};
+  }
+  ++p;
+  std::wstring v;
+  while (p < json.size() && json[p] != L'"') {
+    if (json[p] == L'\\' && p + 1 < json.size()) {
+      ++p;
+      const wchar_t e = json[p++];
+      if (e == L'n') {
+        v.push_back(L'\n');
+      } else if (e == L'r') {
+        v.push_back(L'\r');
+      } else if (e == L't') {
+        v.push_back(L'\t');
+      } else {
+        v.push_back(e);
+      }
+      continue;
+    }
+    v.push_back(json[p++]);
+  }
+  return v;
+}
+
+int LibJsonInt(const std::wstring& json, const wchar_t* key) {
+  const std::wstring needle = std::wstring(L"\"") + key + L"\"";
+  size_t p = json.find(needle);
+  if (p == std::wstring::npos) {
+    return 0;
+  }
+  p = json.find(L':', p + needle.size());
+  if (p == std::wstring::npos) {
+    return 0;
+  }
+  ++p;
+  while (p < json.size() &&
+         (json[p] == L' ' || json[p] == L'\t' || json[p] == L'\r' ||
+          json[p] == L'\n')) {
+    ++p;
+  }
+  return _wtoi(json.c_str() + p);
+}
 constexpr int kEditCtxUndo = 3201;
 constexpr int kEditCtxCut = 3202;
 constexpr int kEditCtxCopy = 3203;
@@ -140,7 +260,7 @@ constexpr int kModeBtnW = 64;
 constexpr int kModeBtnH = 28;
 constexpr int kModeBtnPad = 10;
 constexpr int kOutlineStripId = 2011;
-constexpr int kGutterId = 2012;
+constexpr int kGutterId = 2014;
 constexpr int kOutlineStripW = 28;
 constexpr int kOutlineExpandedW = 150;
 constexpr wchar_t kGutterClass[] = L"DeskNoteGutter";
@@ -148,10 +268,14 @@ constexpr int kTabsId = 2003;
 constexpr int kSidebarId = 2004;
 constexpr int kSidebarSearchId = 2005;
 constexpr int kSidebarNewId = 2006;
+// Must not collide with kTitleEditId (2012) / kGutterId — shared IDs made
+ // BN_CLICKED / DRAWITEM hit the wrong control and could tear down the app.
+constexpr int kSidebarOnlineId = 2013;
 constexpr int kSidebarResultsId = 2007;
 constexpr int kStatusId = 2008;
 constexpr int kTabRename = 3101;
 constexpr int kTabPin = 3102;
+constexpr int kTabLock = 3108;
 constexpr int kTabReveal = 3103;
 constexpr int kTabDelete = 3104;
 constexpr int kTabClose = 3105;
@@ -300,6 +424,9 @@ bool IsHostsPath(const std::wstring& path) {
 
 // Typora-class chrome (title strip / WW / title→filename) — .md only.
 bool PathIsMarkdownFile(const std::wstring& path) {
+  if (IsOnlineNotePath(path)) {
+    return true;
+  }
   if (path.size() >= 3 &&
       _wcsicmp(path.c_str() + path.size() - 3, L".md") == 0) {
     return true;
@@ -664,6 +791,9 @@ bool NotesWindow::Create(HINSTANCE instance) {
   AppendMenuW(file, MF_POPUP, reinterpret_cast<UINT_PTR>(enc),
               L"编码转换（保存）");
   AppendMenuW(file, MF_STRING, kMenuLibrary, Tr("notes_library").c_str());
+  AppendMenuW(file, MF_STRING, kMenuOnlineNotes, L"刷新笔记库");
+  AppendMenuW(file, MF_STRING, kMenuNewOnlineNote, L"新建在线笔记");
+  AppendMenuW(file, MF_STRING, kMenuToOnline, L"转在线");
   AppendMenuW(file, MF_STRING, kMenuOpenFolder, Tr("notes_open_folder").c_str());
   AppendMenuW(file, MF_STRING, kMenuSearchLib, L"搜索笔记库\tCtrl+Shift+F");
   AppendMenuW(file, MF_STRING, kMenuPreview, L"Markdown 预览窗口…");
@@ -787,8 +917,12 @@ bool NotesWindow::Create(HINSTANCE instance) {
       0, L"BUTTON", L"", WS_CHILD | BS_OWNERDRAW, 130, 6, 28, 28, hwnd_,
       reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSidebarNewId)), instance,
       nullptr);
-  sidebar_refresh_ = CreateWindowExW(
+  sidebar_online_ = CreateWindowExW(
       0, L"BUTTON", L"", WS_CHILD | BS_OWNERDRAW, 158, 6, 28, 28, hwnd_,
+      reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSidebarOnlineId)), instance,
+      nullptr);
+  sidebar_refresh_ = CreateWindowExW(
+      0, L"BUTTON", L"", WS_CHILD | BS_OWNERDRAW, 186, 6, 28, 28, hwnd_,
       reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSidebarRefreshId)), instance,
       nullptr);
   sidebar_ = CreateWindowExW(
@@ -808,6 +942,9 @@ bool NotesWindow::Create(HINSTANCE instance) {
   }
   if (sidebar_new_) {
     SetWindowTheme(sidebar_new_, L"", L"");
+  }
+  if (sidebar_online_) {
+    SetWindowTheme(sidebar_online_, L"", L"");
   }
   if (sidebar_refresh_) {
     SetWindowTheme(sidebar_refresh_, L"", L"");
@@ -835,6 +972,7 @@ bool NotesWindow::Create(HINSTANCE instance) {
         1, 0);
   };
   hook_btn(sidebar_new_);
+  hook_btn(sidebar_online_);
   hook_btn(sidebar_refresh_);
   sidebar_results_ = CreateWindowExW(
       0, L"LISTBOX", L"",
@@ -857,6 +995,9 @@ bool NotesWindow::Create(HINSTANCE instance) {
   }
   if (sidebar_new_) {
     ShowWindow(sidebar_new_, SW_HIDE);
+  }
+  if (sidebar_online_) {
+    ShowWindow(sidebar_online_, SW_HIDE);
   }
   if (sidebar_refresh_) {
     ShowWindow(sidebar_refresh_, SW_HIDE);
@@ -1060,6 +1201,7 @@ bool NotesWindow::Create(HINSTANCE instance) {
   }
   LoadTabSession();
   EnsureVaultAccountsNote();
+  LoadAndSweepCloudSync();
   LoadViewSettings();
   EnsureFontControls();
   ApplyEditorFont();
@@ -1077,7 +1219,6 @@ bool NotesWindow::Create(HINSTANCE instance) {
   Load();
   ApplyWordWrap();
   ApplyViewMenuChecks();
-  // Always rebuild after vault sync so「账号库」appears under 全部笔记.
   if (sidebar_visible_) {
     RebuildSidebar();
   }
@@ -1528,6 +1669,7 @@ void NotesWindow::Destroy() {
   }
   web_.Destroy();
   preview_web_.Destroy();
+  library_web_.Destroy();
   if (font_) {
     DeleteObject(font_);
     font_ = nullptr;
@@ -1628,6 +1770,9 @@ bool NotesWindow::PathLooksMarkdown() const {
 bool NotesWindow::PathLooksTextish() const {
   if (path_.empty()) {
     return false;
+  }
+  if (IsOnlineNotePath(path_)) {
+    return true;
   }
   if (IsHostsPath(path_)) {
     return true;
@@ -1988,115 +2133,50 @@ void NotesWindow::CopyPathToClipboard(const std::wstring& path) {
 }
 
 void NotesWindow::EnsureVaultAccountsNote() {
-  const AppPrefs prefs = LoadAppPrefs();
-  const std::wstring vault_path = SyncVaultAccountsNote(prefs.vault_enabled);
-  auto same_path = [&](const std::wstring& a, const std::wstring& b) {
-    return !a.empty() && !b.empty() &&
-           _wcsicmp(NormalizePathKey(a).c_str(),
-                    NormalizePathKey(b).c_str()) == 0;
-  };
-  auto find_tab = [&](const std::wstring& p) -> int {
-    for (size_t i = 0; i < tab_paths_.size(); ++i) {
-      if (same_path(tab_paths_[i], p)) {
-        return static_cast<int>(i);
+  // DeskNote no longer hosts 账号库 (DeskTidy vault UI owns that).
+  // Strip any leftover managed tab from sessions; leave 账号库.md on disk alone.
+  bool removed = false;
+  for (size_t i = 0; i < tab_paths_.size();) {
+    if (IsVaultAccountsNotePath(tab_paths_[i])) {
+      removed = true;
+      tab_paths_.erase(tab_paths_.begin() + static_cast<std::ptrdiff_t>(i));
+      if (i < tab_states_.size()) {
+        tab_states_.erase(tab_states_.begin() +
+                          static_cast<std::ptrdiff_t>(i));
       }
-    }
-    return -1;
-  };
-  auto set_vault_title = [&](size_t idx) {
-    EnsureTabStates();
-    if (idx < tab_states_.size()) {
-      tab_states_[idx].title_hint = L"账号库";
-    }
-  };
-  if (vault_path.empty()) {
-    // Feature off: drop the managed tab if present (keep file on disk).
-    for (size_t i = 0; i < tab_paths_.size();) {
-      if (IsVaultAccountsNotePath(tab_paths_[i])) {
-        tab_paths_.erase(tab_paths_.begin() +
-                         static_cast<std::ptrdiff_t>(i));
-        if (i < tab_states_.size()) {
-          tab_states_.erase(tab_states_.begin() +
-                            static_cast<std::ptrdiff_t>(i));
-        }
-        if (static_cast<int>(i) < tab_index_) {
-          --tab_index_;
-        } else if (tab_index_ >= static_cast<int>(tab_paths_.size())) {
-          tab_index_ = tab_paths_.empty()
-                           ? 0
-                           : static_cast<int>(tab_paths_.size()) - 1;
-        }
-        continue;
+      if (static_cast<int>(i) < tab_index_) {
+        --tab_index_;
+      } else if (tab_index_ >= static_cast<int>(tab_paths_.size())) {
+        tab_index_ = tab_paths_.empty()
+                         ? 0
+                         : static_cast<int>(tab_paths_.size()) - 1;
       }
-      ++i;
+      continue;
     }
+    ++i;
+  }
+  for (size_t i = 0; i < pinned_paths_.size();) {
+    if (IsVaultAccountsNotePath(pinned_paths_[i])) {
+      pinned_paths_.erase(pinned_paths_.begin() +
+                          static_cast<std::ptrdiff_t>(i));
+      removed = true;
+      continue;
+    }
+    ++i;
+  }
+  if (IsVaultAccountsNotePath(path_)) {
+    path_ = tab_paths_.empty()
+                ? L""
+                : tab_paths_[static_cast<size_t>((std::max)(0, tab_index_))];
+    removed = true;
+  }
+  if (vault_html_view_) {
+    LeaveVaultAccountsHtmlViewIfNeeded();
+  }
+  if (removed) {
     EnsureTabStates();
     SchedulePersistTabs();
-    return;
   }
-  EnsureTabStates();
-  const int existing = find_tab(vault_path);
-  if (existing < 0) {
-    const bool had_tabs = !tab_paths_.empty();
-    if (tab_paths_.size() >= 12) {
-      // Prefer showing the vault mirror: replace the last non-pinned tab.
-      int victim = static_cast<int>(tab_paths_.size()) - 1;
-      for (int i = victim; i >= 0; --i) {
-        bool pinned = false;
-        for (const auto& pin : pinned_paths_) {
-          if (same_path(pin, tab_paths_[static_cast<size_t>(i)])) {
-            pinned = true;
-            break;
-          }
-        }
-        if (!pinned) {
-          victim = i;
-          break;
-        }
-      }
-      tab_paths_[static_cast<size_t>(victim)] = vault_path;
-      set_vault_title(static_cast<size_t>(victim));
-      if (tab_index_ == victim) {
-        path_ = vault_path;
-      }
-    } else {
-      // Keep tab_states_ aligned — insert path+state together (otherwise the
-      // vault tab inherits the previous first tab's title_hint and the left
-      // rail shows a duplicate wrong name instead of「账号库」).
-      TabState st;
-      st.wrap = word_wrap_;
-      st.title_hint = L"账号库";
-      tab_paths_.insert(tab_paths_.begin(), vault_path);
-      tab_states_.insert(tab_states_.begin(), st);
-      if (had_tabs) {
-        ++tab_index_;
-      } else {
-        tab_index_ = 0;
-        path_ = vault_path;
-      }
-    }
-  } else {
-    tab_paths_[static_cast<size_t>(existing)] = vault_path;
-    set_vault_title(static_cast<size_t>(existing));
-    if (tab_index_ == existing) {
-      path_ = vault_path;
-    }
-  }
-  // Pin so it stays near the top of「全部笔记」(market: default/system notes).
-  {
-    bool pinned = false;
-    for (const auto& pin : pinned_paths_) {
-      if (same_path(pin, vault_path)) {
-        pinned = true;
-        break;
-      }
-    }
-    if (!pinned) {
-      pinned_paths_.insert(pinned_paths_.begin(), vault_path);
-    }
-  }
-  EnsureTabStates();
-  SchedulePersistTabs();
 }
 
 void NotesWindow::ClearVaultClipboardIfOurs() {
@@ -2534,6 +2614,10 @@ void NotesWindow::OpenOrActivatePath(const std::wstring& path) {
   if (path.empty()) {
     return;
   }
+  // 账号库 is DeskTidy-only; refuse opening the mirror note in DeskNote.
+  if (IsVaultAccountsNotePath(path)) {
+    return;
+  }
   const std::wstring norm = NormalizePathKey(path);
   for (size_t i = 0; i < tab_paths_.size(); ++i) {
     if (_wcsicmp(NormalizePathKey(tab_paths_[i]).c_str(), norm.c_str()) == 0) {
@@ -2806,6 +2890,20 @@ std::wstring NotesWindow::NoteDisplayName(const std::wstring& path,
                                           bool peek_disk) const {
   std::wstring name;
   std::wstring ext;
+  if (IsOnlineNotePath(path)) {
+    // Prefer live title_hint; else short cloud label.
+    const std::wstring key = NormalizePathKey(path);
+    for (size_t i = 0; i < tab_paths_.size(); ++i) {
+      if (_wcsicmp(NormalizePathKey(tab_paths_[i]).c_str(), key.c_str()) != 0) {
+        continue;
+      }
+      if (i < tab_states_.size() && !tab_states_[i].title_hint.empty()) {
+        return L"☁ " + tab_states_[i].title_hint;
+      }
+      break;
+    }
+    return L"☁ 在线笔记";
+  }
   {
     const size_t slash = path.find_last_of(L"\\/");
     const std::wstring leaf =
@@ -2921,6 +3019,10 @@ void NotesWindow::SyncCurrentTabTitleHint() {
   RefreshCurrentTabLabel();
   RefreshTitle();
   RefreshSidebarLabelForPath(path_);
+  // WebView library rail (TreeView is hidden) — keep titles in sync with H1.
+  if (library_web_.Host() && IsWindowVisible(library_web_.Host())) {
+    PushLibraryRailState(false);
+  }
   SchedulePersistTabs();
   // Debounced — syncing on every keystroke blocked the UI and made the
   // title field feel late (MoveFile + SHChangeNotify on the UI thread).
@@ -3026,6 +3128,25 @@ void DrawTabPushPin(Gdiplus::Graphics& g, float cx, float cy, bool pinned,
     Gdiplus::PointF tip[3] = {xf(-1.8f, 4.2f), xf(1.8f, 4.2f), xf(0.f, 6.4f)};
     g.FillPolygon(&br, tip, 3);
   }
+}
+
+// System sticky tab (账号库): padlock where × would be.
+void DrawTabLockGlyph(Gdiplus::Graphics& g, float cx, float cy) {
+  Gdiplus::Pen pen(Gdiplus::Color(255, 100, 116, 139), 1.5f);
+  pen.SetLineCap(Gdiplus::LineCapRound, Gdiplus::LineCapRound,
+                 Gdiplus::DashCapRound);
+  pen.SetLineJoin(Gdiplus::LineJoinRound);
+  // Shackle
+  g.DrawArc(&pen, cx - 3.4f, cy - 6.2f, 6.8f, 6.8f, 200.f, 140.f);
+  // Body
+  Gdiplus::SolidBrush body(Gdiplus::Color(255, 100, 116, 139));
+  Gdiplus::GraphicsPath box;
+  GpAddRoundRect(&box, cx - 4.2f, cy - 1.2f, 8.4f, 6.6f, 1.6f);
+  g.FillPath(&body, &box);
+  // Keyhole
+  Gdiplus::SolidBrush hole(Gdiplus::Color(255, 248, 250, 252));
+  g.FillEllipse(&hole, cx - 1.1f, cy + 0.2f, 2.2f, 2.2f);
+  g.FillRectangle(&hole, cx - 0.55f, cy + 1.6f, 1.1f, 2.2f);
 }
 
 // VS Code / Chrome-class tab dirty: filled disc = unsaved; check = saved.
@@ -3148,8 +3269,18 @@ void NotesWindow::PaintTabBar(HDC hdc) {
     {
       Gdiplus::GraphicsPath path;
       GpAddRoundRect(&path, x + 1.f, y + 1.f, w - 2.f, h - 2.f, 9.f);
-      // Always paint a chip shell — idle used to be bare text and looked fused.
-      if (on) {
+      // Cloud-import tabs (…\云笔记\…) use a blue shell to contrast local tabs.
+      const bool cloud = PathLooksCloudNotes(path_s);
+      if (cloud) {
+        Gdiplus::SolidBrush fill(on ? Gdiplus::Color(255, 219, 234, 254)
+                                    : hover ? Gdiplus::Color(255, 239, 246, 255)
+                                            : Gdiplus::Color(255, 248, 250, 252));
+        g.FillPath(&fill, &path);
+        Gdiplus::Pen ring(Gdiplus::Color(255, 96, 165, 250), on ? 1.6f : 1.2f);
+        g.DrawPath(&ring, &path);
+        Gdiplus::SolidBrush bar(Gdiplus::Color(255, 47, 111, 237));
+        g.FillRectangle(&bar, x + 2.f, y + 4.f, 3.f, h - 8.f);
+      } else if (on) {
         Gdiplus::SolidBrush fill(Gdiplus::Color(255, 255, 255, 255));
         g.FillPath(&fill, &path);
         Gdiplus::Pen ring(Gdiplus::Color(255, 180, 188, 200), 1.25f);
@@ -3192,15 +3323,19 @@ void NotesWindow::PaintTabBar(HDC hdc) {
                    pinned, pin_hot);
     SetTextColor(hdc, on ? text_color_ : RGB(72, 80, 92));
     const int text_left = chip.left + 26;
-    // 账号库 is a fixed system tab — no × (VS Code / sticky-tab class).
-    const bool locked = IsVaultAccountsNotePath(path_s);
-    // Save glyph sits left of × (market: dirty disc / saved check).
-    const int save_cx = locked ? (chip.right - 14) : (chip.right - 38);
+    // Locked tabs (账号库 always; user lock): padlock instead of ×.
+    const bool locked = PathIsLocked(path_s);
+    const bool vault_locked = IsVaultAccountsNotePath(path_s);
+    // Save glyph sits left of × / lock (market: dirty disc / saved check).
+    const int save_cx = chip.right - 38;
     // Active tab only — path compare broke after title→filename rename
     // (status said 已修改 while glyph stayed on the saved check).
     const bool tab_dirty = on && dirty_;
 
     std::wstring label = TabLabel(path_s);
+    if (PathLooksCloudNotes(path_s) && label.rfind(L"☁ ", 0) != 0) {
+      label = L"☁ " + label;
+    }
     RECT text_rc{text_left, chip.top, save_cx - 6, chip.bottom};
     DrawTextW(hdc, label.c_str(), -1, &text_rc,
               DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
@@ -3209,7 +3344,24 @@ void NotesWindow::PaintTabBar(HDC hdc) {
         g, static_cast<float>(save_cx),
         (static_cast<float>(chip.top + chip.bottom)) * 0.5f, tab_dirty);
 
-    if (!locked) {
+    if (locked) {
+      // Padlock: vault cannot unlock; user-locked → click unlocks.
+      const bool lock_hot = hover && tab_hover_zone_ == 2 && !vault_locked;
+      RECT lock_rc{chip.right - 26, chip.top + 6, chip.right - 6,
+                   chip.bottom - 6};
+      if (lock_hot) {
+        Gdiplus::GraphicsPath lp;
+        GpAddRoundRect(&lp, static_cast<float>(lock_rc.left),
+                       static_cast<float>(lock_rc.top),
+                       static_cast<float>(lock_rc.right - lock_rc.left),
+                       static_cast<float>(lock_rc.bottom - lock_rc.top), 6.f);
+        Gdiplus::SolidBrush lbg(Gdiplus::Color(255, 220, 225, 232));
+        g.FillPath(&lbg, &lp);
+      }
+      DrawTabLockGlyph(
+          g, static_cast<float>(chip.right - 14),
+          (static_cast<float>(chip.top + chip.bottom)) * 0.5f);
+    } else {
       // Close always visible (faint); hot plate on hover.
       const bool close_hot = hover && tab_hover_zone_ == 2;
       RECT close_rc{chip.right - 26, chip.top + 6, chip.right - 6,
@@ -3296,7 +3448,7 @@ int NotesWindow::HitTestTabBar(POINT client, int* out_zone) const {
       } else if (client.x >= chip.right - kCloseIn) {
         zone = 2;
       }
-      // Locked 账号库: no close hit target (pin stays for visual sticky affordance).
+      // Vault lock: no click target. User-locked: zone 2 = unlock (not close).
       if (zone == 2 && i < tab_paths_.size() &&
           IsVaultAccountsNotePath(tab_paths_[i])) {
         zone = 0;
@@ -3364,12 +3516,21 @@ void NotesWindow::PersistTabs() {
     }
     out << "\n";
   }
+  out << "  ],\n  \"locked\": [\n";
+  for (size_t i = 0; i < locked_paths_.size(); ++i) {
+    out << "    \"" << EscapeJson(NarrowUtf8(locked_paths_[i])) << "\"";
+    if (i + 1 < locked_paths_.size()) {
+      out << ",";
+    }
+    out << "\n";
+  }
   out << "  ]\n}\n";
 }
 
 void NotesWindow::LoadTabSession() {
   tab_paths_.clear();
   pinned_paths_.clear();
+  locked_paths_.clear();
   tab_states_.clear();
   tab_index_ = 0;
   const std::wstring file = JoinPath(NativeDataDir(), L"notes_tabs.json");
@@ -3498,6 +3659,7 @@ void NotesWindow::LoadTabSession() {
     }
   }
   collect_paths("pinned", &pinned_paths_);
+  collect_paths("locked", &locked_paths_);
   const size_t cur_key = json.find("\"current\"");
   if (cur_key != std::string::npos) {
     const size_t colon = json.find(':', cur_key);
@@ -3599,6 +3761,11 @@ void NotesWindow::LoadTabSession() {
       healed = true;
     }
   }
+  for (auto& p : locked_paths_) {
+    if (HealEnglishUntitledPath(&p)) {
+      healed = true;
+    }
+  }
   EnsureTabStates();
   for (size_t i = 0; i < tab_states_.size(); ++i) {
     if (i < session_titles.size() && !session_titles[i].empty()) {
@@ -3626,8 +3793,11 @@ void NotesWindow::SwitchToTab(int index, bool save_current) {
       _wcsicmp(NormalizePathKey(path_).c_str(),
                NormalizePathKey(incoming).c_str()) == 0;
   if (save_current) {
-    // Dirty WYSIWYG: authoritative pull flushes JS debounce into cache.
-    Save(wysiwyg_ && dirty_);
+    // Only flush when dirty — Save() on a clean tab still rewrote the file
+    // (and could push cloud), which made tab switches feel stuck.
+    if (dirty_) {
+      Save(wysiwyg_, /*push_cloud=*/false);
+    }
     SyncCurrentTabTitleHint();
   } else if (!same_path) {
     // delete→seed / open another file: do NOT SyncFromWysiwyg — that copies
@@ -3712,14 +3882,21 @@ void NotesWindow::SwitchToTab(int index, bool save_current) {
     SetTimer(hwnd_, kOutlineTimer, 120, nullptr);
   }
   if (sidebar_visible_) {
-    HighlightSidebarPath(path_);
+    // Unified WebView rail owns selection highlight — skip TreeView walk.
+    if (library_web_.Host() && IsWindowVisible(library_web_.Host())) {
+      UpdateLibraryRailActiveOnly();
+    } else {
+      HighlightSidebarPath(path_);
+    }
   }
   SchedulePersistTabs();
   UpdateStatusBar();
   UpdateModeStrip();
-  SyncMdMenuState();
-  ApplyViewMenuChecks();
-  LayoutClient();
+  // EnsureMarkdownEditor already LayoutClient'd for markdown; still needed
+  // when leaving vault HTML / non-md so chrome sizes catch up.
+  if (!PathLooksMarkdown() || vault_html_view_) {
+    LayoutClient();
+  }
 }
 
 std::wstring NotesWindow::MakeNewNotePath() {
@@ -3824,6 +4001,9 @@ bool NotesWindow::HealRetargetPath(std::wstring* path_inout) {
   if (!path_inout || path_inout->empty()) {
     return false;
   }
+  if (IsOnlineNotePath(*path_inout)) {
+    return false;
+  }
   const std::wstring old = *path_inout;
   if (!HealEnglishUntitledPath(path_inout)) {
     return false;
@@ -3886,6 +4066,10 @@ bool NotesWindow::SyncFilenameToTitle() {
     KillTimer(hwnd_, kSyncFilenameTimer);
   }
   if (loading_ || path_.empty()) {
+    return false;
+  }
+  // Cloud notes have no local filename to rename.
+  if (IsOnlineNotePath(path_)) {
     return false;
   }
   // Title ↔ filename is Markdown / Typora behavior only — never for hosts,
@@ -4183,6 +4367,11 @@ void NotesWindow::RetargetNotePath(const std::wstring& old_path,
       p = new_path;
     }
   }
+  for (auto& p : locked_paths_) {
+    if (_wcsicmp(NormalizePathKey(p).c_str(), old_key.c_str()) == 0) {
+      p = new_path;
+    }
+  }
   for (auto& s : sidebar_paths_) {
     if (!s.empty() &&
         _wcsicmp(NormalizePathKey(s).c_str(), old_key.c_str()) == 0) {
@@ -4272,7 +4461,13 @@ bool NotesWindow::IsLockedAccountsTab(int index) const {
 
 void NotesWindow::NotifyAccountsTabLocked() {
   if (status_) {
-    SetWindowTextW(status_, L"账号库为固定页签，不可关闭或删除");
+    SetWindowTextW(status_, L"账号库为固定页签，不可关闭、删除或解锁");
+  }
+}
+
+void NotesWindow::NotifyTabDeleteLocked() {
+  if (status_) {
+    SetWindowTextW(status_, L"页签已锁定，请先解锁再删除");
   }
 }
 
@@ -4328,6 +4523,10 @@ void NotesWindow::DeleteAndCloseTabAt(int index, bool ask_confirm) {
   EnsureTabStates();
   const bool deleting_current = (index == tab_index_);
   const std::wstring path = tab_paths_[static_cast<size_t>(index)];
+  if (PathIsLocked(path)) {
+    NotifyTabDeleteLocked();
+    return;
+  }
   const size_t slash = path.find_last_of(L"\\/");
   const std::wstring name =
       slash == std::wstring::npos ? path : path.substr(slash + 1);
@@ -4349,6 +4548,14 @@ void NotesWindow::DeleteAndCloseTabAt(int index, bool ask_confirm) {
     if (_wcsicmp(NormalizePathKey(pinned_paths_[i]).c_str(),
                  NormalizePathKey(path).c_str()) == 0) {
       pinned_paths_.erase(pinned_paths_.begin() +
+                          static_cast<ptrdiff_t>(i));
+      break;
+    }
+  }
+  for (size_t i = 0; i < locked_paths_.size(); ++i) {
+    if (_wcsicmp(NormalizePathKey(locked_paths_[i]).c_str(),
+                 NormalizePathKey(path).c_str()) == 0) {
+      locked_paths_.erase(locked_paths_.begin() +
                           static_cast<ptrdiff_t>(i));
       break;
     }
@@ -4489,6 +4696,44 @@ void NotesWindow::Load() {
   bookmarks_.clear();
   loading_ = true;
   dirty_ = false;
+  if (IsOnlineNotePath(path_)) {
+    const int id = OnlineNoteIdFromPath(path_);
+    std::wstring wide = L"# \n\n";
+    std::wstring title;
+    auto it = online_body_cache_.find(id);
+    if (id > 0 && it != online_body_cache_.end()) {
+      // Tab switch: use memory cache — do not re-fetch over the network.
+      title = it->second.title;
+      wide = it->second.body.empty()
+                 ? (L"# " + (title.empty() ? std::wstring(L"") : title) + L"\n\n")
+                 : it->second.body;
+    } else if (id > 0 && VaultHttpLoggedIn()) {
+      VaultHttpNote n;
+      if (VaultHttpGetNote(id, &n)) {
+        title = n.title;
+        wide = n.body.empty()
+                   ? (L"# " + (n.title.empty() ? std::wstring(L"") : n.title) +
+                      L"\n\n")
+                   : n.body;
+        if (!n.title.empty() && wide.rfind(L"# ", 0) != 0) {
+          wide = L"# " + n.title + L"\n\n" + wide;
+        }
+        online_body_cache_[id] = OnlineBodyCache{n.title, wide};
+      }
+    }
+    if (!title.empty() && wide.rfind(L"# ", 0) != 0) {
+      wide = L"# " + title + L"\n\n" + wide;
+    }
+    text_enc_ = TextFileEncoding::Utf8;
+    SetWindowTextW(edit_, wide.c_str());
+    ApplyNativeTitleFromMarkdown(wide);
+    loading_ = false;
+    dirty_ = false;
+    SyncCurrentTabTitleHint();
+    UpdateStatusBar();
+    RefreshGutter();
+    return;
+  }
   std::ifstream in(path_, std::ios::binary);
   if (!in) {
     std::ifstream legacy(JoinPath(NativeDataDir(), L"notes.txt"), std::ios::binary);
@@ -4638,20 +4883,7 @@ void NotesWindow::ShowEditMode() {
   LayoutClient();
 }
 
-void NotesWindow::Save(bool authoritative_pull) {
-  // Managed vault mirror: rewrite masked .md + refresh HTML view (no Toast edit).
-  if (IsVaultAccountsNotePath(path_)) {
-    const AppPrefs prefs = LoadAppPrefs();
-    if (prefs.vault_enabled) {
-      ignore_dirty_until_ = GetTickCount64() + 600;
-      SyncVaultAccountsNote(true);
-      dirty_ = false;
-      ShowVaultAccountsHtmlView();
-      RefreshTitle();
-      UpdateStatusBar();
-      return;
-    }
-  }
+void NotesWindow::Save(bool authoritative_pull, bool push_cloud) {
   // Arm before Pull/SetWindowText — EN_CHANGE + Toast posts during Save must
   // not keep the tab disc after a successful write (Typora / VS Code).
   ignore_dirty_until_ = GetTickCount64() + 600;
@@ -4688,6 +4920,54 @@ void NotesWindow::Save(bool authoritative_pull) {
   }
   HealRetargetPath(&path_);
   const std::wstring plain = CurrentPlainText();
+  if (IsOnlineNotePath(path_)) {
+    const int id = OnlineNoteIdFromPath(path_);
+    if (id <= 0) {
+      MistAlert(hwnd_, L"保存", L"无效的在线笔记。", MistMsgTone::Warn);
+      return;
+    }
+    std::wstring title = NativeTitleText();
+    if (title.empty()) {
+      title = TabLabel(path_);
+      if (title.rfind(L"☁ ", 0) == 0) {
+        title = title.substr(2);
+      }
+    }
+    if (title.empty()) {
+      title = L"未命名";
+    }
+    online_body_cache_[id] = OnlineBodyCache{title, plain};
+    // Explicit Save: enqueue cloud push — never block the UI thread on WinHTTP.
+    if (push_cloud) {
+      if (!VaultHttpLoggedIn()) {
+        EnsureLibraryCloudLogin();
+        if (!VaultHttpLoggedIn()) {
+          return;
+        }
+      }
+      for (auto& row : library_online_cache_) {
+        if (row.id == id) {
+          row.title = title;
+          break;
+        }
+      }
+      QueueCloudNotePush(id, title, plain);
+    }
+    dirty_ = false;
+    ignore_dirty_until_ = GetTickCount64() + 600;
+    if (wysiwyg_) {
+      web_.AckClean();
+    }
+    EnsureTabStates();
+    if (tab_index_ >= 0 &&
+        tab_index_ < static_cast<int>(tab_states_.size())) {
+      tab_states_[static_cast<size_t>(tab_index_)].title_hint = title;
+    }
+    RefreshTitle();
+    RefreshCurrentTabLabel();
+    UpdateStatusBar();
+    return;
+  }
   // Plain text for md/txt/code/hosts；.rtf 仍走 RTF（对标 Notepad++ 文本保存）。
   if (PathLooksTextish()) {
     // Never clobber a real note with the empty WW boot seed ("# \n\n") or "".
@@ -4721,6 +5001,21 @@ void NotesWindow::Save(bool authoritative_pull) {
       }
       MistAlert(hwnd_, L"笔记", L"保存失败。", MistMsgTone::Warn);
       return;
+    }
+    // Synced attribute: local write done; cloud push is async (skip on tab switch).
+    if (push_cloud && PathIsCloudSynced(path_) && !IsOnlineNotePath(path_) &&
+        VaultHttpLoggedIn()) {
+      if (const auto* L = FindNoteCloudLink(cloud_sync_, path_)) {
+        std::wstring title = NativeTitleText();
+        if (title.empty()) {
+          title = NoteDisplayName(path_, false);
+          if (title.size() > 3 &&
+              _wcsicmp(title.c_str() + title.size() - 3, L".md") == 0) {
+            title.resize(title.size() - 3);
+          }
+        }
+        QueueCloudNotePush(L->note_id, title, plain);
+      }
     }
     dirty_ = false;
     ignore_dirty_until_ = GetTickCount64() + 600;
@@ -4938,14 +5233,13 @@ void NotesWindow::CloseOtherTabs(int keep_index) {
   Save();
   EnsureTabStates();
   const std::wstring keep = tab_paths_[static_cast<size_t>(keep_index)];
-  // Keep the requested tab + locked 账号库 (system sticky tab).
+  // Keep the requested tab + locked tabs (账号库 / user lock).
   std::vector<std::wstring> next_paths;
   std::vector<TabState> next_states;
   next_paths.reserve(tab_paths_.size());
   next_states.reserve(tab_paths_.size());
   for (size_t i = 0; i < tab_paths_.size(); ++i) {
-    if (static_cast<int>(i) != keep_index &&
-        !IsVaultAccountsNotePath(tab_paths_[i])) {
+    if (static_cast<int>(i) != keep_index && !PathIsLocked(tab_paths_[i])) {
       continue;
     }
     next_paths.push_back(tab_paths_[i]);
@@ -4986,8 +5280,7 @@ void NotesWindow::CloseTabsToTheRight(int index) {
   next_paths.reserve(tab_paths_.size());
   next_states.reserve(tab_paths_.size());
   for (size_t i = 0; i < tab_paths_.size(); ++i) {
-    if (static_cast<int>(i) > index &&
-        !IsVaultAccountsNotePath(tab_paths_[i])) {
+    if (static_cast<int>(i) > index && !PathIsLocked(tab_paths_[i])) {
       continue;
     }
     next_paths.push_back(tab_paths_[i]);
@@ -5352,19 +5645,28 @@ void NotesWindow::HandleTabContextMenu(int index, POINT screen_pt) {
     return;
   }
   const std::wstring path = tab_paths_[static_cast<size_t>(index)];
-  const bool locked = IsVaultAccountsNotePath(path);
+  const bool vault = IsVaultAccountsNotePath(path);
+  const bool locked = PathIsLocked(path);
   HMENU m = CreatePopupMenu();
-  AppendMenuW(m, MF_STRING | (locked ? MF_GRAYED : 0), kTabClose, L"关闭");
+  if (!vault) {
+    AppendMenuW(m, MF_STRING, kTabClose, L"关闭");
+  }
   AppendMenuW(m, MF_STRING, kTabCloseOthers, L"关闭其他页签");
   AppendMenuW(m, MF_STRING, kTabCloseRight, L"关闭右侧页签");
   AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
-  AppendMenuW(m, MF_STRING | (locked ? MF_GRAYED : 0), kTabRename, L"重命名");
-  AppendMenuW(m, MF_STRING | (locked ? MF_GRAYED : 0), kTabPin,
-              PathIsPinned(path) ? L"取消置顶" : L"置顶");
+  if (!vault) {
+    AppendMenuW(m, MF_STRING, kTabRename, L"重命名");
+    AppendMenuW(m, MF_STRING, kTabPin,
+                PathIsPinned(path) ? L"取消置顶" : L"置顶");
+    AppendMenuW(m, MF_STRING, kTabLock, locked ? L"解锁" : L"锁定");
+  }
   AppendMenuW(m, MF_STRING, kTabReveal, L"打开文件所在目录");
   AppendMenuW(m, MF_STRING, kTabCopyPath, L"复制路径");
-  AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
-  AppendMenuW(m, MF_STRING | (locked ? MF_GRAYED : 0), kTabDelete, L"删除");
+  // Locked (含账号库): 不显示「删除」.
+  if (!locked) {
+    AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(m, MF_STRING, kTabDelete, L"删除");
+  }
   const int cmd =
       TrackPopupMenu(m, TPM_RETURNCMD | TPM_NONOTIFY, screen_pt.x, screen_pt.y,
                      0, hwnd_, nullptr);
@@ -5377,6 +5679,8 @@ void NotesWindow::HandleTabContextMenu(int index, POINT screen_pt) {
     CloseTabsToTheRight(index);
   } else if (cmd == kTabPin) {
     TogglePinPath(path);  // RebuildTabControl inside TogglePinPath
+  } else if (cmd == kTabLock) {
+    ToggleLockPath(path);
   } else if (cmd == kTabReveal) {
     RevealPathInExplorer(path);
   } else if (cmd == kTabCopyPath) {
@@ -5794,10 +6098,7 @@ void NotesWindow::EnsureMarkdownEditor(bool force_reload) {
   if (toast_) {
     return;
   }
-  if (IsVaultAccountsNotePath(path_)) {
-    ShowVaultAccountsHtmlView();
-    return;
-  }
+  // DeskNote no longer hosts 账号库 HTML; always leave that view if stale.
   LeaveVaultAccountsHtmlViewIfNeeded();
   if (!PathLooksMarkdown()) {
     if (wysiwyg_) {
@@ -5874,7 +6175,17 @@ void NotesWindow::EnsureMarkdownEditor(bool force_reload) {
     }
   }
   if (entering || force_reload) {
-    web_.SetMarkdown(md);
+    // Cache immediately; PostMessage defers JsonEscape + WebView IPC so the
+    // tab strip / title can paint first (Typora-class feel).
+    web_.SetCachedMarkdown(md);
+    pending_tab_markdown_ = md;
+    has_pending_tab_markdown_ = true;
+    if (hwnd_) {
+      PostMessageW(hwnd_, WM_APP + 83, 0, 0);
+    } else {
+      has_pending_tab_markdown_ = false;
+      web_.SetMarkdown(md);
+    }
   }
   EnsureTabStates();
   if (tab_index_ >= 0 && tab_index_ < static_cast<int>(tab_states_.size())) {
@@ -6474,13 +6785,18 @@ void NotesWindow::LayoutClient() {
     const int btn_w = 30;
     if (sidebar_search_) {
       MoveWindow(sidebar_search_, pad + 4, top + 10,
-                 side - (btn_w * 2 + pad * 2 + 12), chrome_h - 18, TRUE);
+                 side - (btn_w * 3 + pad * 2 + 12), chrome_h - 18, TRUE);
       ShowWindow(sidebar_search_, SW_SHOW);
     }
     if (sidebar_new_) {
-      MoveWindow(sidebar_new_, side - (btn_w * 2 + pad + 2), top + 8, btn_w,
+      MoveWindow(sidebar_new_, side - (btn_w * 3 + pad + 2), top + 8, btn_w,
                  btn_w, TRUE);
       ShowWindow(sidebar_new_, SW_SHOW);
+    }
+    if (sidebar_online_) {
+      MoveWindow(sidebar_online_, side - (btn_w * 2 + pad + 2), top + 8, btn_w,
+                 btn_w, TRUE);
+      ShowWindow(sidebar_online_, SW_SHOW);
     }
     if (sidebar_refresh_) {
       MoveWindow(sidebar_refresh_, side - (btn_w + pad), top + 8, btn_w, btn_w,
@@ -6489,27 +6805,37 @@ void NotesWindow::LayoutClient() {
     }
     const int body_top = top + chrome_h + 4;
     const int body_h = (std::max)(40, bottom - body_top);
-    if (searching && sidebar_results_) {
-      MoveWindow(sidebar_results_, 0, body_top, side, body_h, TRUE);
-      ShowWindow(sidebar_results_, SW_SHOW);
+    EnsureLibraryRail();
+    if (sidebar_results_) {
+      ShowWindow(sidebar_results_, SW_HIDE);
+    }
+    // Unified online+local WebView rail (search box filters titles in HTML).
+    if (library_web_.Host()) {
+      MoveWindow(library_web_.Host(), 0, body_top, side, body_h, TRUE);
+      library_web_.Show();
+      library_web_.Resize();
       ShowWindow(sidebar_, SW_HIDE);
     } else {
       MoveWindow(sidebar_, 0, body_top, side, body_h, TRUE);
       ShowWindow(sidebar_, SW_SHOW);
-      if (sidebar_results_) {
-        ShowWindow(sidebar_results_, SW_HIDE);
-      }
     }
+    (void)searching;
     left = side + 1;  // +1 for divider line painted in WM_PAINT
   } else {
     if (sidebar_) {
       ShowWindow(sidebar_, SW_HIDE);
+    }
+    if (library_web_.Host()) {
+      library_web_.Hide();
     }
     if (sidebar_search_) {
       ShowWindow(sidebar_search_, SW_HIDE);
     }
     if (sidebar_new_) {
       ShowWindow(sidebar_new_, SW_HIDE);
+    }
+    if (sidebar_online_) {
+      ShowWindow(sidebar_online_, SW_HIDE);
     }
     if (sidebar_refresh_) {
       ShowWindow(sidebar_refresh_, SW_HIDE);
@@ -7787,6 +8113,671 @@ void NotesWindow::ToggleSidebar() {
   PersistViewSettings();
 }
 
+void NotesWindow::EnsureOnlineNotesPanel() {
+  if (online_notes_.Hwnd()) {
+    return;
+  }
+  online_notes_.Create(GetModuleHandleW(nullptr));
+  online_notes_.SetOnOpenLocal([this](const std::wstring& p) {
+    if (!p.empty()) {
+      OpenPaths({p});
+      Present();
+    }
+  });
+}
+
+void NotesWindow::EnsureLibraryCloudLogin() {
+  if (VaultHttpLoggedIn()) {
+    return;
+  }
+  const std::wstring login =
+      PromptTextWin32(hwnd_, L"在线笔记", L"云账号登录名：", L"");
+  if (login.empty()) {
+    return;
+  }
+  const std::wstring pass =
+      PromptTextWin32(hwnd_, L"在线笔记", L"登录密码：", L"");
+  if (pass.empty()) {
+    return;
+  }
+  if (!VaultHttpLogin(login, pass)) {
+    MistAlert(hwnd_, L"在线笔记",
+              L"登录失败（用户名或密码错误，或服务端不可达）。",
+              MistMsgTone::Danger);
+  }
+}
+
+void NotesWindow::LoadAndSweepCloudSync() {
+  cloud_sync_ = LoadNoteCloudSync();
+  const int n = NoteCloudSweepPendingDeletes(&cloud_sync_);
+  SaveNoteCloudSync(cloud_sync_);
+  if (n > 0 && status_) {
+    SetWindowTextW(status_,
+                   (L"已清理 " + std::to_wstring(n) + L" 条到期云笔记").c_str());
+  }
+}
+
+bool NotesWindow::PathIsCloudSynced(const std::wstring& path) const {
+  if (path.empty() || IsVaultAccountsNotePath(path)) {
+    return false;
+  }
+  if (IsOnlineNotePath(path)) {
+    return true;
+  }
+  const auto* L = FindNoteCloudLink(cloud_sync_, path);
+  return L && L->sync && L->note_id > 0;
+}
+
+void NotesWindow::QueueCloudNotePush(int note_id, std::wstring title,
+                                     std::wstring body) {
+  if (note_id <= 0) {
+    return;
+  }
+  if (title.empty()) {
+    title = L"未命名";
+  }
+  online_body_cache_[note_id] = OnlineBodyCache{title, body};
+  // Local is already durable; network must not block typing / tab switches.
+  std::thread([note_id, title = std::move(title),
+               body = std::move(body)]() mutable {
+    if (!VaultHttpLoggedIn()) {
+      return;
+    }
+    VaultHttpNote updated;
+    VaultHttpUpdateNote(note_id, title, body, &updated);
+  }).detach();
+}
+
+void NotesWindow::EnsureLibraryRail() {
+  if (library_web_.Host()) {
+    return;
+  }
+  library_web_.SetKind(NotesWebView::Kind::kLibrary);
+  if (!library_web_.Create(hwnd_)) {
+    return;
+  }
+  library_web_.on_library_action = [this](const std::wstring& json) {
+    // Nested MistConfirm / PromptText inside WebMessageReceived freezes the
+    // host (same pattern as settings / notes_library / snapshot_ui).
+    pending_library_action_json_ = json;
+    if (hwnd_) {
+      PostMessageW(hwnd_, WM_APP + 84, 0, 0);
+    }
+  };
+  library_web_.ShowLibrary(L"{\"logged_in\":false,\"online\":[],\"local\":[]}");
+}
+
+void NotesWindow::UpdateLibraryRailActiveOnly() {
+  if (!library_web_.Host() || !library_web_.Ready()) {
+    return;
+  }
+  // Selection highlight only — no disk peek, no cloud list round-trip.
+  std::wstring script =
+      L"(function(){try{if(typeof window.applyState!=='function'||!window.__lib){"
+      L"return;}window.__lib.active=\"";
+  script += JsonEscLib(path_);
+  script +=
+      L"\";window.applyState(window.__lib);}catch(e){}})();";
+  library_web_.EvalScript(script);
+}
+
+void NotesWindow::PushLibraryRailState(bool refresh_online) {
+  if (!library_web_.Host()) {
+    return;
+  }
+  if (!VaultHttpLoggedIn()) {
+    library_online_cache_.clear();
+    library_online_stale_ = true;
+  } else if (refresh_online || library_online_stale_ ||
+             library_online_cache_.empty()) {
+    std::vector<VaultHttpNote> remote;
+    if (VaultHttpListNotes(&remote)) {
+      library_online_cache_.clear();
+      library_online_cache_.reserve(remote.size());
+      for (const auto& n : remote) {
+        LibraryOnlineItem it;
+        it.id = n.id;
+        it.title = n.title.empty() ? L"未命名" : n.title;
+        it.updated_at = n.updated_at;
+        library_online_cache_.push_back(std::move(it));
+      }
+      library_online_stale_ = false;
+    }
+  }
+  wchar_t qbuf[256]{};
+  if (sidebar_search_) {
+    GetWindowTextW(sidebar_search_, qbuf, 256);
+  }
+  std::wstring json = L"{\"query\":\"";
+  json += JsonEscLib(qbuf);
+  json += L"\",\"active\":\"";
+  json += JsonEscLib(path_);
+  json += L"\",\"logged_in\":";
+  json += VaultHttpLoggedIn() ? L"true" : L"false";
+  json += L",\"online\":[";
+  bool first_online = true;
+  // Synced local files (same path, sync attribute).
+  std::set<std::wstring> synced_keys;
+  for (const auto& L : cloud_sync_.links) {
+    if (!L.sync || L.note_id <= 0 || L.path.empty()) {
+      continue;
+    }
+    if (GetFileAttributesW(L.path.c_str()) == INVALID_FILE_ATTRIBUTES) {
+      continue;
+    }
+    synced_keys.insert(L.path);
+    if (!first_online) {
+      json += L',';
+    }
+    first_online = false;
+    json += L"{\"kind\":\"synced\",\"id\":";
+    json += std::to_wstring(L.note_id);
+    json += L",\"path\":\"";
+    json += JsonEscLib(L.path);
+    json += L"\",\"title\":\"";
+    json += JsonEscLib(NoteDisplayName(L.path, false));
+    json += L"\",\"updated_at\":\"已同步\",\"pinned\":";
+    json += PathIsPinned(L.path) ? L"true" : L"false";
+    json += L",\"locked\":";
+    json += PathIsLocked(L.path) ? L"true" : L"false";
+    json += L"}";
+  }
+  // Pure remote rows only when never bound locally. After「转本地」sync=false
+  // + pending_deletes must NOT reappear here (was leaking as online:// ghosts).
+  for (size_t i = 0; i < library_online_cache_.size(); ++i) {
+    const auto& n = library_online_cache_[i];
+    bool hide = false;
+    for (const auto& L : cloud_sync_.links) {
+      if (L.note_id == n.id) {
+        hide = true;
+        break;
+      }
+    }
+    if (!hide) {
+      for (const auto& d : cloud_sync_.pending_deletes) {
+        if (d.note_id == n.id) {
+          hide = true;
+          break;
+        }
+      }
+    }
+    if (hide) {
+      continue;
+    }
+    if (!first_online) {
+      json += L',';
+    }
+    first_online = false;
+    json += L"{\"kind\":\"online\",\"id\":";
+    json += std::to_wstring(n.id);
+    json += L",\"title\":\"";
+    json += JsonEscLib(n.title);
+    json += L"\",\"updated_at\":\"";
+    json += JsonEscLib(n.updated_at);
+    json += L"\"}";
+  }
+  json += L"],\"local\":[";
+  bool first_local = true;
+  const std::wstring root = NotesLibraryDir(false);
+  for (const auto& full : sidebar_paths_) {
+    // SidebarRemovePaths clears slots to "" (keeps TreeView lParam); never
+    // paint those ghosts — and drop paths already recycled off disk.
+    if (full.empty() || IsOnlineNotePath(full) ||
+        IsVaultAccountsNotePath(full)) {
+      continue;
+    }
+    if (GetFileAttributesW(full.c_str()) == INVALID_FILE_ATTRIBUTES) {
+      continue;
+    }
+    std::wstring key = full;
+    for (auto& c : key) {
+      if (c == L'/') {
+        c = L'\\';
+      }
+      if (c >= L'A' && c <= L'Z') {
+        c = static_cast<wchar_t>(c - L'A' + L'a');
+      }
+    }
+    if (synced_keys.count(key)) {
+      continue;
+    }
+    if (PathIsCloudSynced(full)) {
+      continue;
+    }
+    if (!first_local) {
+      json += L',';
+    }
+    first_local = false;
+    std::wstring folder = L"本地库";
+    if (!root.empty() && full.size() > root.size() + 1 &&
+        _wcsnicmp(full.c_str(), root.c_str(), root.size()) == 0) {
+      std::wstring rel = full.substr(root.size() + 1);
+      const size_t slash = rel.find_last_of(L"\\/");
+      if (slash != std::wstring::npos) {
+        folder = rel.substr(0, slash);
+      }
+    }
+    json += L"{\"kind\":\"local\",\"path\":\"";
+    json += JsonEscLib(full);
+    json += L"\",\"title\":\"";
+    json += JsonEscLib(NoteDisplayName(full, false));
+    json += L"\",\"folder\":\"";
+    json += JsonEscLib(folder);
+    json += L"\",\"pinned\":";
+    json += PathIsPinned(full) ? L"true" : L"false";
+    json += L",\"locked\":";
+    json += PathIsLocked(full) ? L"true" : L"false";
+    json += L"}";
+  }
+  json += L"]}";
+  library_web_.PushLibraryState(json);
+}
+
+void NotesWindow::HandleLibraryRailAction(const std::wstring& json) {
+  const std::wstring id = LibJsonString(json, L"id");
+  if (id == L"login") {
+    EnsureLibraryCloudLogin();
+    if (VaultHttpLoggedIn()) {
+      library_online_stale_ = true;
+      PushLibraryRailState(true);
+    } else {
+      PushLibraryRailState(false);
+    }
+    return;
+  }
+  if (id == L"open_online") {
+    OpenOnlineNoteInEditor(LibJsonInt(json, L"note_id"));
+    return;
+  }
+  if (id == L"open_local") {
+    const std::wstring path = LibJsonString(json, L"path");
+    if (!path.empty()) {
+      OpenPaths({path});
+    }
+    return;
+  }
+  if (id == L"to_cloud") {
+    ConvertPathToCloud(LibJsonString(json, L"path"));
+    return;
+  }
+  if (id == L"to_local") {
+    ConvertPathToLocal(LibJsonString(json, L"path"),
+                       LibJsonInt(json, L"note_id"));
+    return;
+  }
+  if (id == L"pin") {
+    const std::wstring path = LibJsonString(json, L"path");
+    if (!path.empty()) {
+      TogglePinPath(path);
+      PushLibraryRailState(false);
+    }
+    return;
+  }
+  if (id == L"lock") {
+    const std::wstring path = LibJsonString(json, L"path");
+    if (!path.empty()) {
+      ToggleLockPath(path);
+      PushLibraryRailState(false);
+    }
+    return;
+  }
+  if (id == L"rename") {
+    const std::wstring path = LibJsonString(json, L"path");
+    if (path.empty() || IsVaultAccountsNotePath(path)) {
+      return;
+    }
+    std::wstring name = path;
+    const size_t slash = path.find_last_of(L"\\/");
+    if (slash != std::wstring::npos) {
+      name = path.substr(slash + 1);
+    }
+    const size_t dot = name.find_last_of(L'.');
+    const std::wstring stem =
+        dot == std::wstring::npos ? name : name.substr(0, dot);
+    const std::wstring new_stem =
+        PromptText(hwnd_, L"重命名", L"新名称：", stem);
+    if (!new_stem.empty()) {
+      ApplySidebarRename(path, new_stem);
+      PushLibraryRailState(false);
+    }
+    return;
+  }
+  if (id == L"delete") {
+    const std::wstring path = LibJsonString(json, L"path");
+    if (path.empty()) {
+      return;
+    }
+    sidebar_multi_.clear();
+    sidebar_multi_.push_back(path);
+    sidebar_anchor_path_ = path;
+    // DeleteSidebarSelected → RebuildSidebar refreshes the WebView list.
+    DeleteSidebarSelected();
+    return;
+  }
+  if (id == L"reveal") {
+    const std::wstring path = LibJsonString(json, L"path");
+    if (!path.empty()) {
+      RevealPathInExplorer(path);
+    }
+    return;
+  }
+}
+
+void NotesWindow::ConvertPathToCloud(const std::wstring& path) {
+  if (path.empty() || IsVaultAccountsNotePath(path) || IsOnlineNotePath(path)) {
+    return;
+  }
+  if (!VaultHttpLoggedIn()) {
+    EnsureLibraryCloudLogin();
+    if (!VaultHttpLoggedIn()) {
+      return;
+    }
+  }
+  std::wstring body;
+  {
+    std::ifstream in(path, std::ios::binary);
+    if (!in) {
+      MistAlert(hwnd_, L"转云", L"无法读取本地文件。", MistMsgTone::Warn);
+      return;
+    }
+    std::ostringstream ss;
+    ss << in.rdbuf();
+    body = WidenUtf8(ss.str());
+  }
+  std::wstring title = NoteDisplayName(path, true);
+  if (title.empty()) {
+    title = L"未命名";
+  }
+  // Strip .md suffix from display name for cloud title.
+  if (title.size() > 3 && _wcsicmp(title.c_str() + title.size() - 3, L".md") == 0) {
+    title.resize(title.size() - 3);
+  }
+  int note_id = 0;
+  if (const auto* existing = FindNoteCloudLink(cloud_sync_, path)) {
+    note_id = existing->note_id;
+  }
+  VaultHttpNote remote;
+  if (note_id > 0) {
+    if (!VaultHttpUpdateNote(note_id, title, body, &remote)) {
+      MistAlert(hwnd_, L"转云", L"上传失败。", MistMsgTone::Danger);
+      return;
+    }
+  } else {
+    if (!VaultHttpCreateNote(title, body, &remote) || remote.id <= 0) {
+      MistAlert(hwnd_, L"转云", L"上传失败。", MistMsgTone::Danger);
+      return;
+    }
+    note_id = remote.id;
+  }
+  NoteCloudUpsertLink(&cloud_sync_, path, note_id, true);
+  // Cancel pending delete if re-clouded.
+  cloud_sync_.pending_deletes.erase(
+      std::remove_if(cloud_sync_.pending_deletes.begin(),
+                     cloud_sync_.pending_deletes.end(),
+                     [note_id](const NoteCloudPendingDelete& d) {
+                       return d.note_id == note_id;
+                     }),
+      cloud_sync_.pending_deletes.end());
+  SaveNoteCloudSync(cloud_sync_);
+  online_body_cache_[note_id] = OnlineBodyCache{title, body};
+  if (status_) {
+    SetWindowTextW(status_, L"已转云（同一文件，已开启同步）");
+  }
+  PushLibraryRailState(false);
+}
+
+void NotesWindow::ConvertPathToLocal(const std::wstring& path, int note_id) {
+  if (IsVaultAccountsNotePath(path)) {
+    return;
+  }
+  int id = note_id;
+  std::wstring local_path = path;
+  if (IsOnlineNotePath(path)) {
+    id = OnlineNoteIdFromPath(path);
+    // Materialize online:// into a library file, then mark unsynced.
+    VaultHttpNote n;
+    std::wstring body = L"# 未命名\n\n";
+    std::wstring title = L"未命名";
+    auto cit = online_body_cache_.find(id);
+    if (cit != online_body_cache_.end()) {
+      body = cit->second.body.empty() ? body : cit->second.body;
+      title = cit->second.title.empty() ? title : cit->second.title;
+    } else if (id > 0 && VaultHttpLoggedIn() && VaultHttpGetNote(id, &n)) {
+      title = n.title.empty() ? title : n.title;
+      body = n.body.empty() ? (L"# " + title + L"\n\n") : n.body;
+    }
+    const std::wstring dir = JoinPath(NotesLibraryDir(true), L"云笔记");
+    CreateDirectoryW(dir.c_str(), nullptr);
+    std::wstring stem = title;
+    for (wchar_t& c : stem) {
+      if (c == L'\\' || c == L'/' || c == L':' || c == L'*' || c == L'?' ||
+          c == L'"' || c == L'<' || c == L'>' || c == L'|') {
+        c = L'_';
+      }
+    }
+    if (stem.empty()) {
+      stem = L"未命名";
+    }
+    local_path = JoinPath(dir, stem + L".md");
+    if (GetFileAttributesW(local_path.c_str()) != INVALID_FILE_ATTRIBUTES) {
+      for (int i = 1; i < 1000; ++i) {
+        wchar_t suf[32];
+        swprintf_s(suf, L"_%02d.md", i);
+        local_path = JoinPath(dir, stem + suf);
+        if (GetFileAttributesW(local_path.c_str()) == INVALID_FILE_ATTRIBUTES) {
+          break;
+        }
+      }
+    }
+    AtomicWriteUtf8File(local_path, NarrowUtf8(body), false);
+    // Retarget open tab from online:// to local file.
+    for (auto& tp : tab_paths_) {
+      if (_wcsicmp(tp.c_str(), path.c_str()) == 0) {
+        tp = local_path;
+      }
+    }
+    if (_wcsicmp(path_.c_str(), path.c_str()) == 0) {
+      path_ = local_path;
+    }
+    NoteCloudUpsertLink(&cloud_sync_, local_path, id, false);
+  } else {
+    if (id <= 0) {
+      if (const auto* L = FindNoteCloudLink(cloud_sync_, path)) {
+        id = L->note_id;
+      }
+    }
+    if (id <= 0) {
+      MistAlert(hwnd_, L"转本地", L"该文件尚未关联云笔记。", MistMsgTone::Info);
+      return;
+    }
+    NoteCloudUpsertLink(&cloud_sync_, path, id, false);
+  }
+  if (id > 0) {
+    NoteCloudScheduleDelete(&cloud_sync_, id, NoteCloudUnixAfterHours(24));
+    // Drop from online list cache immediately (cloud file still lives 24h).
+    library_online_cache_.erase(
+        std::remove_if(library_online_cache_.begin(),
+                       library_online_cache_.end(),
+                       [id](const LibraryOnlineItem& it) {
+                         return it.id == id;
+                       }),
+        library_online_cache_.end());
+  }
+  SaveNoteCloudSync(cloud_sync_);
+  RebuildSidebar();
+  RebuildTabControl();
+  if (status_) {
+    SetWindowTextW(status_, L"已转本地；云端副本将在 24 小时后删除");
+  }
+}
+
+void NotesWindow::SyncRefreshFromCloud() {
+  if (!VaultHttpLoggedIn()) {
+    EnsureLibraryCloudLogin();
+    if (!VaultHttpLoggedIn()) {
+      return;
+    }
+  }
+  library_online_stale_ = true;
+  std::vector<VaultHttpNote> remote;
+  if (!VaultHttpListNotes(&remote)) {
+    MistAlert(hwnd_, L"同步", L"拉取云端列表失败。", MistMsgTone::Warn);
+    return;
+  }
+  library_online_cache_.clear();
+  for (const auto& n : remote) {
+    LibraryOnlineItem it;
+    it.id = n.id;
+    it.title = n.title.empty() ? L"未命名" : n.title;
+    it.updated_at = n.updated_at;
+    library_online_cache_.push_back(std::move(it));
+  }
+  library_online_stale_ = false;
+  int updated = 0;
+  for (auto& L : cloud_sync_.links) {
+    if (!L.sync || L.note_id <= 0 || L.path.empty()) {
+      continue;
+    }
+    VaultHttpNote n;
+    if (!VaultHttpGetNote(L.note_id, &n)) {
+      continue;
+    }
+    const std::wstring body =
+        n.body.empty()
+            ? (L"# " + (n.title.empty() ? std::wstring(L"未命名") : n.title) +
+               L"\n\n")
+            : n.body;
+    if (AtomicWriteUtf8File(L.path, NarrowUtf8(body), false)) {
+      online_body_cache_[L.note_id] = OnlineBodyCache{n.title, body};
+      ++updated;
+      if (_wcsicmp(path_.c_str(), L.path.c_str()) == 0) {
+        loading_ = true;
+        SetWindowTextW(edit_, body.c_str());
+        ApplyNativeTitleFromMarkdown(body);
+        loading_ = false;
+        dirty_ = false;
+        if (wysiwyg_) {
+          web_.SetMarkdown(body);
+        }
+      }
+    }
+  }
+  SaveNoteCloudSync(cloud_sync_);
+  RebuildSidebar();
+  if (status_) {
+    SetWindowTextW(
+        status_,
+        (L"已从云端同步 " + std::to_wstring(updated) + L" 个文件").c_str());
+  }
+}
+
+void NotesWindow::OpenOnlineNoteInEditor(int note_id) {
+  if (note_id <= 0) {
+    return;
+  }
+  if (!VaultHttpLoggedIn()) {
+    EnsureLibraryCloudLogin();
+    if (!VaultHttpLoggedIn()) {
+      return;
+    }
+  }
+  // Fetch body only on cache miss (first open). Tab switches reuse cache.
+  if (online_body_cache_.find(note_id) == online_body_cache_.end()) {
+    VaultHttpNote n;
+    if (VaultHttpGetNote(note_id, &n)) {
+      std::wstring wide = n.body.empty()
+                              ? (L"# " + (n.title.empty() ? std::wstring(L"未命名")
+                                                         : n.title) +
+                                 L"\n\n")
+                              : n.body;
+      if (!n.title.empty() && wide.rfind(L"# ", 0) != 0) {
+        wide = L"# " + n.title + L"\n\n" + wide;
+      }
+      online_body_cache_[note_id] = OnlineBodyCache{n.title, wide};
+    }
+  }
+  const std::wstring opath = OnlineNotePathFromId(note_id);
+  for (size_t i = 0; i < tab_paths_.size(); ++i) {
+    if (_wcsicmp(tab_paths_[i].c_str(), opath.c_str()) == 0) {
+      SwitchToTab(static_cast<int>(i), true);
+      return;
+    }
+  }
+  if (tab_paths_.size() >= 12) {
+    MistAlert(hwnd_, L"DeskNote", L"最多 12 个标签。", MistMsgTone::Info);
+    return;
+  }
+  Save(true);
+  tab_paths_.push_back(opath);
+  EnsureTabStates();
+  tab_states_.back() = TabState{};
+  tab_states_.back().wrap = word_wrap_;
+  tab_states_.back().wysiwyg = true;
+  auto cit = online_body_cache_.find(note_id);
+  if (cit != online_body_cache_.end() && !cit->second.title.empty()) {
+    tab_states_.back().title_hint = cit->second.title;
+  }
+  RebuildTabControl();
+  SwitchToTab(static_cast<int>(tab_paths_.size()) - 1, false);
+}
+
+void NotesWindow::NewOnlineNoteInEditor() {
+  if (!VaultHttpLoggedIn()) {
+    EnsureLibraryCloudLogin();
+    if (!VaultHttpLoggedIn()) {
+      return;
+    }
+  }
+  const std::wstring seed = L"# 未命名\n\n";
+  VaultHttpNote created;
+  if (!VaultHttpCreateNote(L"未命名", seed, &created) || created.id <= 0) {
+    MistAlert(hwnd_, L"在线笔记", L"新建失败，请稍后重试。",
+              MistMsgTone::Danger);
+    return;
+  }
+  // Same-file model: local .md + sync attribute.
+  const std::wstring dir = JoinPath(NotesLibraryDir(true), L"云笔记");
+  CreateDirectoryW(dir.c_str(), nullptr);
+  std::wstring path = JoinPath(dir, L"未命名.md");
+  if (GetFileAttributesW(path.c_str()) != INVALID_FILE_ATTRIBUTES) {
+    for (int i = 1; i < 1000; ++i) {
+      wchar_t suf[32];
+      swprintf_s(suf, L"未命名_%02d.md", i);
+      path = JoinPath(dir, suf);
+      if (GetFileAttributesW(path.c_str()) == INVALID_FILE_ATTRIBUTES) {
+        break;
+      }
+    }
+  }
+  AtomicWriteUtf8File(path, NarrowUtf8(seed), false);
+  NoteCloudUpsertLink(&cloud_sync_, path, created.id, true);
+  SaveNoteCloudSync(cloud_sync_);
+  online_body_cache_[created.id] = OnlineBodyCache{L"未命名", seed};
+  LibraryOnlineItem row;
+  row.id = created.id;
+  row.title = L"未命名";
+  row.updated_at = created.updated_at;
+  library_online_cache_.insert(library_online_cache_.begin(), std::move(row));
+  library_online_stale_ = false;
+  OpenPaths({path});
+  PushLibraryRailState(false);
+}
+
+void NotesWindow::OpenOnlineNotes(bool create_new) {
+  // Unified rail: no separate list popup. Create or just show the sidebar.
+  if (!sidebar_visible_) {
+    ToggleSidebar();
+  }
+  EnsureLibraryRail();
+  if (create_new) {
+    NewOnlineNoteInEditor();
+  } else {
+    // Menu「刷新笔记库」— explicit pull.
+    library_online_stale_ = true;
+    RebuildSidebar();
+  }
+}
+
 std::wstring NotesWindow::SidebarPathFromItem(HTREEITEM item) const {
   if (!sidebar_ || !item) {
     return {};
@@ -7953,6 +8944,53 @@ bool NotesWindow::PathIsPinned(const std::wstring& path) const {
     }
   }
   return false;
+}
+
+bool NotesWindow::PathIsLocked(const std::wstring& path) const {
+  if (path.empty()) {
+    return false;
+  }
+  // 账号库 is permanently locked (cannot unlock).
+  if (IsVaultAccountsNotePath(path)) {
+    return true;
+  }
+  const std::wstring key = NormalizePathKey(path);
+  for (const auto& p : locked_paths_) {
+    if (_wcsicmp(NormalizePathKey(p).c_str(), key.c_str()) == 0) {
+      return true;
+    }
+  }
+  return false;
+}
+
+void NotesWindow::ToggleLockPath(const std::wstring& path) {
+  if (path.empty()) {
+    return;
+  }
+  // 账号库不准解锁（也不需要再锁一次）。
+  if (IsVaultAccountsNotePath(path)) {
+    NotifyAccountsTabLocked();
+    return;
+  }
+  const std::wstring norm = NormalizePathKey(path);
+  for (size_t i = 0; i < locked_paths_.size(); ++i) {
+    if (_wcsicmp(NormalizePathKey(locked_paths_[i]).c_str(), norm.c_str()) ==
+        0) {
+      locked_paths_.erase(locked_paths_.begin() + static_cast<ptrdiff_t>(i));
+      PersistTabs();
+      RebuildTabControl();
+      if (status_) {
+        SetWindowTextW(status_, L"页签已解锁，可以删除");
+      }
+      return;
+    }
+  }
+  locked_paths_.push_back(norm);
+  PersistTabs();
+  RebuildTabControl();
+  if (status_) {
+    SetWindowTextW(status_, L"页签已锁定，不可删除");
+  }
 }
 
 void NotesWindow::ApplyPinnedTabOrder() {
@@ -8172,6 +9210,10 @@ void NotesWindow::RebuildSidebar() {
             entries.push_back(std::move(e));
           } else if (IsOpenablePath(fd.cFileName)) {
             std::wstring full = dir + L"\\" + fd.cFileName;
+            // DeskNote does not list 账号库.md (DeskTidy vault UI owns it).
+            if (IsVaultAccountsNotePath(full)) {
+              continue;
+            }
             const std::wstring old_full = full;
             if (HealEnglishUntitledPath(&full)) {
               retarget_after_heal(old_full, full);
@@ -8241,6 +9283,9 @@ void NotesWindow::RebuildSidebar() {
   if (!path_.empty()) {
     HighlightSidebarPath(path_);
   }
+  EnsureLibraryRail();
+  // Local tree changed; keep online cache unless marked stale (refresh/login).
+  PushLibraryRailState(false);
 }
 
 void NotesWindow::SidebarUpsertFile(const std::wstring& path) {
@@ -8303,7 +9348,7 @@ void NotesWindow::SidebarUpsertFile(const std::wstring& path) {
 }
 
 void NotesWindow::SidebarRemovePaths(const std::vector<std::wstring>& paths) {
-  if (!sidebar_ || paths.empty()) {
+  if (paths.empty()) {
     return;
   }
   std::vector<std::wstring> keys;
@@ -8317,6 +9362,9 @@ void NotesWindow::SidebarRemovePaths(const std::vector<std::wstring>& paths) {
     return;
   }
   auto matches = [&](const std::wstring& full) {
+    if (full.empty()) {
+      return false;
+    }
     const std::wstring key = NormalizePathKey(full);
     for (const auto& k : keys) {
       if (_wcsicmp(key.c_str(), k.c_str()) == 0) {
@@ -8325,34 +9373,8 @@ void NotesWindow::SidebarRemovePaths(const std::vector<std::wstring>& paths) {
     }
     return false;
   };
-  std::vector<HTREEITEM> doomed;
-  std::function<void(HTREEITEM)> walk = [&](HTREEITEM item) {
-    while (item) {
-      const HTREEITEM next = TreeView_GetNextSibling(sidebar_, item);
-      if (HTREEITEM child = TreeView_GetChild(sidebar_, item)) {
-        walk(child);
-      }
-      TVITEMW ti{};
-      ti.mask = TVIF_HANDLE | TVIF_PARAM;
-      ti.hItem = item;
-      if (TreeView_GetItem(sidebar_, &ti) && ti.lParam > 0) {
-        const size_t idx = static_cast<size_t>(ti.lParam) - 1;
-        if (idx < sidebar_paths_.size() && matches(sidebar_paths_[idx])) {
-          doomed.push_back(item);
-        }
-      }
-      item = next;
-    }
-  };
-  walk(TreeView_GetRoot(sidebar_));
-  if (doomed.empty()) {
-    return;
-  }
-  SendMessageW(sidebar_, WM_SETREDRAW, FALSE, 0);
-  for (HTREEITEM it : doomed) {
-    TreeView_DeleteItem(sidebar_, it);
-  }
-  // Keep path slots but clear deleted entries (lParam indices stay valid).
+  // Always clear path slots first — WebView rail may leave the TreeView stale
+  // or hidden; early-return on empty doomed used to keep deleted rows visible.
   for (auto& slot : sidebar_paths_) {
     if (!slot.empty() && matches(slot)) {
       slot.clear();
@@ -8367,6 +9389,37 @@ void NotesWindow::SidebarRemovePaths(const std::vector<std::wstring>& paths) {
   }
   if (!sidebar_anchor_path_.empty() && matches(sidebar_anchor_path_)) {
     sidebar_anchor_path_.clear();
+  }
+  if (!sidebar_) {
+    return;
+  }
+  std::vector<HTREEITEM> doomed;
+  std::function<void(HTREEITEM)> walk = [&](HTREEITEM item) {
+    while (item) {
+      const HTREEITEM next = TreeView_GetNextSibling(sidebar_, item);
+      if (HTREEITEM child = TreeView_GetChild(sidebar_, item)) {
+        walk(child);
+      }
+      TVITEMW ti{};
+      ti.mask = TVIF_HANDLE | TVIF_PARAM;
+      ti.hItem = item;
+      if (TreeView_GetItem(sidebar_, &ti) && ti.lParam > 0) {
+        const size_t idx = static_cast<size_t>(ti.lParam) - 1;
+        if (idx < sidebar_paths_.size() &&
+            (sidebar_paths_[idx].empty() || matches(sidebar_paths_[idx]))) {
+          doomed.push_back(item);
+        }
+      }
+      item = next;
+    }
+  };
+  walk(TreeView_GetRoot(sidebar_));
+  if (doomed.empty()) {
+    return;
+  }
+  SendMessageW(sidebar_, WM_SETREDRAW, FALSE, 0);
+  for (HTREEITEM it : doomed) {
+    TreeView_DeleteItem(sidebar_, it);
   }
   SendMessageW(sidebar_, WM_SETREDRAW, TRUE, 0);
   RedrawWindow(sidebar_, nullptr, nullptr,
@@ -8504,6 +9557,10 @@ bool NotesWindow::ApplySidebarRename(const std::wstring& path,
     if (tabs_) {
       InvalidateRect(tabs_, nullptr, FALSE);
     }
+    // Filename changed — refresh left rail titles/paths (TreeView is hidden).
+    if (library_web_.Host() && IsWindowVisible(library_web_.Host())) {
+      PushLibraryRailState(false);
+    }
     return true;
   }
   RebuildSidebar();
@@ -8537,14 +9594,19 @@ void NotesWindow::DeleteSidebarSelected() {
     }
     paths = std::move(uniq);
   }
-  // Managed 账号库.md cannot be recycled from the library rail.
+  // 账号库 / user-locked notes cannot be recycled from the library rail.
   {
     std::vector<std::wstring> allowed;
     allowed.reserve(paths.size());
     bool blocked_vault = false;
+    bool blocked_lock = false;
     for (const auto& p : paths) {
       if (IsVaultAccountsNotePath(p)) {
         blocked_vault = true;
+        continue;
+      }
+      if (PathIsLocked(p)) {
+        blocked_lock = true;
         continue;
       }
       allowed.push_back(p);
@@ -8553,8 +9615,14 @@ void NotesWindow::DeleteSidebarSelected() {
       NotifyAccountsTabLocked();
       return;
     }
+    if (blocked_lock && allowed.empty()) {
+      NotifyTabDeleteLocked();
+      return;
+    }
     if (blocked_vault) {
       NotifyAccountsTabLocked();
+    } else if (blocked_lock) {
+      NotifyTabDeleteLocked();
     }
     paths = std::move(allowed);
   }
@@ -8591,6 +9659,7 @@ void NotesWindow::DeleteSidebarSelected() {
       dirty_ = false;
     }
     erase_path(&pinned_paths_, path);
+    erase_path(&locked_paths_, path);
     for (size_t i = 0; i < tab_paths_.size(); ++i) {
       if (_wcsicmp(NormalizePathKey(tab_paths_[i]).c_str(), key.c_str()) == 0) {
         if (i < tab_states_.size()) {
@@ -8621,14 +9690,21 @@ void NotesWindow::DeleteSidebarSelected() {
       SidebarRemovePaths(paths);
       SidebarUpsertFile(path_);
     }
+    // Rescan disk so WebView rail does not keep cleared "" ghost rows.
+    if (sidebar_visible_) {
+      RebuildSidebar();
+    }
   } else if (need_switch) {
     SidebarRemovePaths(paths);
-    SyncTabsAndSidebar(true, false);
+    // rebuild_tree: library WebView reads sidebar_paths_ — must rescan disk.
+    SyncTabsAndSidebar(true, sidebar_visible_);
   } else {
     SidebarRemovePaths(paths);
     tab_chips_dirty_ = true;
     RebuildTabControl();
-    if (!path_.empty()) {
+    if (sidebar_visible_) {
+      RebuildSidebar();
+    } else if (!path_.empty()) {
       HighlightSidebarPath(path_);
     }
     SchedulePersistTabs();
@@ -8661,19 +9737,33 @@ void NotesWindow::HandleSidebarContextMenu(const POINT& pt) {
 
   // Keep pin / rename / delete / reveal only — open / new / copy path / refresh
   // duplicate the sidebar + toolbar (Typora / VS Code file-tree menus).
+  const bool vault_locked =
+      is_file && !multi && IsVaultAccountsNotePath(path);
+  bool any_deletable = false;
+  for (const auto& p : paths) {
+    if (!PathIsLocked(p)) {
+      any_deletable = true;
+      break;
+    }
+  }
   HMENU m = CreatePopupMenu();
-  if (is_file && !multi) {
+  if (is_file && !multi && !vault_locked) {
     AppendMenuW(m, MF_STRING, kSidePin,
                 PathIsPinned(path) ? L"取消置顶" : L"置顶");
+    AppendMenuW(m, MF_STRING, kTabLock,
+                PathIsLocked(path) ? L"解锁" : L"锁定");
   }
-  AppendMenuW(m, MF_STRING | (is_file && !multi ? MF_ENABLED : MF_GRAYED),
+  AppendMenuW(m, MF_STRING | (is_file && !multi && !vault_locked ? MF_ENABLED
+                                                                : MF_GRAYED),
               kSideRename, L"重命名\tF2");
-  std::wstring del_label = L"删除\tDelete";
-  if (multi) {
-    del_label = L"删除 " + std::to_wstring(paths.size()) + L" 项\tDelete";
+  // 锁定/账号库不出现「删除」；多选里若还有可删项则保留入口。
+  if (is_file && any_deletable) {
+    std::wstring del_label = L"删除\tDelete";
+    if (multi) {
+      del_label = L"删除 " + std::to_wstring(paths.size()) + L" 项\tDelete";
+    }
+    AppendMenuW(m, MF_STRING, kSideDelete, del_label.c_str());
   }
-  AppendMenuW(m, MF_STRING | (is_file ? MF_ENABLED : MF_GRAYED), kSideDelete,
-              del_label.c_str());
   AppendMenuW(m, MF_STRING | (is_file && !multi ? MF_ENABLED : MF_GRAYED),
               kSideReveal, L"在资源管理器中显示");
   const int cmd = TrackPopupMenu(m, TPM_RETURNCMD | TPM_NONOTIFY, pt.x, pt.y, 0,
@@ -8682,6 +9772,8 @@ void NotesWindow::HandleSidebarContextMenu(const POINT& pt) {
 
   if (cmd == kSidePin) {
     TogglePinPath(path);
+  } else if (cmd == kTabLock) {
+    ToggleLockPath(path);
   } else if (cmd == kSideRename) {
     RenameSidebarSelected();
   } else if (cmd == kSideDelete) {
@@ -8866,7 +9958,14 @@ LRESULT CALLBACK NotesWindow::TabsProc(HWND hwnd, UINT msg, WPARAM wparam,
       }
       if (hit >= 0) {
         if (zone == 2) {
-          self->CloseTabAt(hit);
+          const std::wstring& tp =
+              self->tab_paths_[static_cast<size_t>(hit)];
+          if (self->PathIsLocked(tp)) {
+            // Lock glyph: unlock (账号库 refuses inside ToggleLockPath).
+            self->ToggleLockPath(tp);
+          } else {
+            self->CloseTabAt(hit);
+          }
           self->tab_drag_from_ = -1;
           self->tab_dragging_ = false;
           return 0;
@@ -9256,10 +10355,11 @@ LRESULT NotesWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
       }
       const UINT id = dis->CtlID;
       const bool is_new = id == static_cast<UINT>(kSidebarNewId);
+      const bool is_online = id == static_cast<UINT>(kSidebarOnlineId);
       const bool is_ref = id == static_cast<UINT>(kSidebarRefreshId);
       const bool is_mode = id == static_cast<UINT>(kModeStripId);
       const bool is_outline = id == static_cast<UINT>(kOutlineStripId);
-      if (!is_new && !is_ref && !is_mode && !is_outline) {
+      if (!is_new && !is_online && !is_ref && !is_mode && !is_outline) {
         break;
       }
       HDC hdc = dis->hDC;
@@ -9271,7 +10371,7 @@ LRESULT NotesWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
       GetWindowRect(dis->hwndItem, &wr);
       const bool hot = !press && PtInRect(&wr, cur);
       const bool strip = is_outline;
-      const bool chip = is_mode || is_new || is_ref;
+      const bool chip = is_mode || is_new || is_online || is_ref;
       // Outline rail on white stage; mode chip on tab chrome; sidebar on rail.
       const COLORREF plate =
           strip ? content_bg_ : (is_mode ? content_bg_ : rail_bg_);
@@ -9314,10 +10414,15 @@ LRESULT NotesWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
       wchar_t label[32] = {};
       if (is_new) {
         wcscpy_s(label, L"+");
+      } else if (is_online) {
+        wcscpy_s(label, L"☁");
       } else if (is_ref) {
         wcscpy_s(label, L"↻");
       } else {
         GetWindowTextW(dis->hwndItem, label, 32);
+      }
+      if (is_online) {
+        SetTextColor(hdc, RGB(47, 111, 237));
       }
       const UINT dt = chip ? (DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX)
                            : (DT_CENTER | DT_VCENTER | DT_WORDBREAK | DT_NOPREFIX);
@@ -9495,6 +10600,60 @@ LRESULT NotesWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
         case kMenuPrevBookmark:
           GotoBookmark(false);
           return 0;
+        case kMenuOnlineNotes:
+          OpenOnlineNotes(false);
+          return 0;
+        case kMenuNewOnlineNote:
+          OpenOnlineNotes(true);
+          return 0;
+        case kMenuToOnline: {
+          // Push current local note to cloud online notes.
+          Save(true);
+          std::wstring title = TabLabel(path_);
+          if (title.rfind(L"☁ ", 0) == 0) {
+            title = title.substr(2);
+          }
+          if (title.empty()) {
+            title = L"未命名";
+          }
+          std::wstring body = web_.PullMarkdown(300);
+          if (body.empty() && edit_) {
+            const int len = GetWindowTextLengthW(edit_);
+            if (len > 0) {
+              body.assign(static_cast<size_t>(len) + 1, L'\0');
+              GetWindowTextW(edit_, body.data(), len + 1);
+              body.resize(wcslen(body.c_str()));
+            }
+          }
+          if (!VaultHttpLoggedIn()) {
+            EnsureLibraryCloudLogin();
+            if (!VaultHttpLoggedIn()) {
+              MistAlert(hwnd_, L"转在线", L"请先登录云账号，再点一次「转在线」。",
+                        MistMsgTone::Warn);
+              break;
+            }
+          }
+          VaultHttpNote created;
+          if (!VaultHttpCreateNote(title, body, &created) || created.id <= 0) {
+            MistAlert(hwnd_, L"转在线", L"上传失败，请稍后重试。",
+                      MistMsgTone::Danger);
+            break;
+          }
+          // Local list patch after create — no ListNotes.
+          {
+            LibraryOnlineItem row;
+            row.id = created.id;
+            row.title = title;
+            row.updated_at = created.updated_at;
+            library_online_cache_.insert(library_online_cache_.begin(),
+                                        std::move(row));
+            online_body_cache_[created.id] = OnlineBodyCache{title, body};
+            library_online_stale_ = false;
+          }
+          OpenOnlineNoteInEditor(created.id);
+          PushLibraryRailState(false);
+          break;
+        }
         case kMenuCloseWindow:
           PostMessageW(hwnd_, WM_CLOSE, 0, 0);
           return 0;
@@ -9715,9 +10874,13 @@ LRESULT NotesWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
         RebuildSidebar();
         return 0;
       }
+      if (LOWORD(wparam) == kSidebarOnlineId && HIWORD(wparam) == BN_CLICKED) {
+        OpenOnlineNotes(true);
+        return 0;
+      }
       if (LOWORD(wparam) == kSidebarRefreshId &&
           HIWORD(wparam) == BN_CLICKED) {
-        RebuildSidebar();
+        SyncRefreshFromCloud();
         return 0;
       }
       if (LOWORD(wparam) == kSidebarSearchId && HIWORD(wparam) == EN_CHANGE) {
@@ -9890,6 +11053,20 @@ LRESULT NotesWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
     case WM_SIZE:
       LayoutClient();
       return 0;
+    case WM_APP + 83:
+      if (has_pending_tab_markdown_) {
+        has_pending_tab_markdown_ = false;
+        web_.SetMarkdown(pending_tab_markdown_);
+      }
+      return 0;
+    case WM_APP + 84: {
+      std::wstring json = std::move(pending_library_action_json_);
+      pending_library_action_json_.clear();
+      if (!json.empty()) {
+        HandleLibraryRailAction(json);
+      }
+      return 0;
+    }
     case WM_APP + 60:
       if (pending_goto_line_ >= 0) {
         const int line = pending_goto_line_;
@@ -9923,7 +11100,8 @@ LRESULT NotesWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
       }
       if (wparam == kSidebarSearchTimer) {
         KillTimer(hwnd_, kSidebarSearchTimer);
-        RunSidebarSearch();
+        // Title filter only — reuse online cache, no network.
+        PushLibraryRailState(false);
         return 0;
       }
       if (wparam == kOutlineTimer) {
@@ -9968,6 +11146,11 @@ LRESULT NotesWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
         KillTimer(hwnd_, kTitleSyncTimer);
         SyncCurrentTabTitleHint();
         PushNativeTitleToWeb();  // WYSIWYG host title (no-op in markdown mode)
+        // Title EN_CHANGE already wrote title_hint — SyncCurrentTabTitleHint
+        // may no-op; still refresh the WebView library list labels.
+        if (library_web_.Host() && IsWindowVisible(library_web_.Host())) {
+          PushLibraryRailState(false);
+        }
         return 0;
       }
       return 0;

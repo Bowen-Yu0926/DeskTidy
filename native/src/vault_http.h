@@ -77,3 +77,21 @@ bool VaultHttpEnsureMaster(const std::wstring& salt_b64, int iterations,
                            const std::wstring& algo);
 // Re-encrypt legacy enc_ver=0 rows to enc_ver=1 under *key. Returns count.
 int VaultHttpMigrateLegacyToE2e(const std::vector<BYTE>& key);
+
+// Online notes (same Bearer session as credentials). List omits body.
+struct VaultHttpNote {
+  int id = 0;
+  std::wstring title;
+  std::wstring body;
+  std::wstring updated_at;
+  std::wstring created_at;
+  int enc_ver = 0;
+};
+
+bool VaultHttpListNotes(std::vector<VaultHttpNote>* out);
+bool VaultHttpGetNote(int id, VaultHttpNote* out);
+bool VaultHttpCreateNote(const std::wstring& title, const std::wstring& body,
+                         VaultHttpNote* created);
+bool VaultHttpUpdateNote(int id, const std::wstring& title,
+                         const std::wstring& body, VaultHttpNote* updated);
+bool VaultHttpDeleteNote(int id);

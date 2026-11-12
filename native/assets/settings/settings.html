@@ -486,6 +486,7 @@
     box-sizing: border-box;
   }
   .fence-tile.sel { box-shadow: 0 0 0 2px var(--accent) inset; background: var(--card-sub); }
+  .fence-tile.hidden-fence { opacity: 0.55; }
   .fence-tile .ft-preview {
     position: relative; height: 88px; border-radius: 10px; border: 1px solid var(--border);
     overflow: hidden;
@@ -1059,7 +1060,7 @@
 
       <div class="card">
         <h3>区域截图</h3>
-        <p class="hint">框选屏幕区域进行截图。可在下方配置全局快捷键；「显示贴图」从最近往旧多贴一张（亦可使用 F2）。</p>
+        <p class="hint">框选屏幕区域进行截图。可在下方配置全局快捷键；「显示贴图」/ F2 会按「同时贴图最多」从最近截图一次贴满多张。</p>
         <div class="toggles" style="margin-top:0">
           <label class="toggle"><input type="checkbox" id="ext_shot_pin" /> 截图复制后自动贴图到桌面</label>
         </div>
@@ -1497,8 +1498,15 @@
     }));
   }
 
+  function fenceOnPage(c, pageIdx) {
+    const pages = Array.isArray(c.pages) && c.pages.length
+      ? c.pages
+      : [c.page || 0];
+    return pages.some((p) => (Number(p) || 0) === pageIdx);
+  }
+
   function fenceCountOnPage(pageIdx) {
-    return allFenceCards().filter((c) => (c.page || 0) === pageIdx).length;
+    return allFenceCards().filter((c) => fenceOnPage(c, pageIdx)).length;
   }
 
   function selectPage(pageIdx, pushHost) {
@@ -1603,6 +1611,8 @@
   const ICO = {
     lock: '<svg viewBox="0 0 16 16"><rect x="3.5" y="7" width="9" height="7" rx="1.2"/><path d="M5.5 7V5a2.5 2.5 0 0 1 5 0v2"/><circle cx="8" cy="10.5" r="0.9" fill="currentColor" stroke="none"/></svg>',
     unlock: '<svg viewBox="0 0 16 16"><rect x="3.5" y="7" width="9" height="7" rx="1.2"/><path d="M5.5 7V5a2.5 2.5 0 0 1 5 0"/><circle cx="8" cy="10.5" r="0.9" fill="currentColor" stroke="none"/></svg>',
+    eye: '<svg viewBox="0 0 16 16"><path d="M1.5 8s2.5-4.5 6.5-4.5S14.5 8 14.5 8 12 12.5 8 12.5 1.5 8 1.5 8z"/><circle cx="8" cy="8" r="2"/></svg>',
+    eyeOff: '<svg viewBox="0 0 16 16"><path d="M1.5 8s2.5-4.5 6.5-4.5S14.5 8 14.5 8 12 12.5 8 12.5 1.5 8 1.5 8z"/><circle cx="8" cy="8" r="2"/><path d="M3 3l10 10"/></svg>',
     edit: '<svg viewBox="0 0 16 16"><path d="M10.5 2.5l3 3L5 14H2v-3L10.5 2.5z"/><path d="M9 4l3 3"/></svg>',
     del: '<svg viewBox="0 0 16 16"><path d="M4 4l8 8M12 4L4 12"/></svg>'
   };
@@ -1666,7 +1676,7 @@
     const box = document.getElementById('fence-cards');
     if (!box) return;
     const pageIdx = state.selected_page || 0;
-    const cards = allFenceCards().filter((c) => (c.page || 0) === pageIdx);
+    const cards = allFenceCards().filter((c) => fenceOnPage(c, pageIdx));
     const styles = Array.isArray(state.themes) && state.themes.length
       ? state.themes
       : Object.keys(STYLE_COLORS).map((id) => ({ id, name: id }));
@@ -1674,7 +1684,6 @@
     cards.forEach((c) => {
       const i = typeof c.index === 'number' ? c.index : 0;
       const el = document.createElement('div');
-      el.className = 'fence-tile' + (i === state.selected ? ' sel' : '');
       const title = c.title || ('分区 ' + (i + 1));
       const pct = Math.max(35, Math.min(100, Number(c.opacity_pct) || 70));
       const sid = c.style_id || state.theme_id || 'navy';
@@ -1688,6 +1697,9 @@
           '" style="background:' + (col.chip || col.bg) + '"></button>';
       }).join('');
       const isSystem = !!c.system;
+      const isVisible = c.visible !== false;
+      el.className = 'fence-tile' + (i === state.selected ? ' sel' : '') +
+        (isVisible ? '' : ' hidden-fence');
       el.innerHTML =
         '<div class="ft-preview" style="background:' + colors.bg +
         '; opacity:' + alpha + '">' +
@@ -1701,6 +1713,9 @@
         pct + '" data-fc-op /><span data-fc-pct>' + pct + '%</span></div>' +
         '<div class="ft-kinds"></div>' +
         '<div class="ft-foot"><div class="ft-title"></div>' +
+        '<button type="button" class="icon-btn' + (isVisible ? '' : ' on') +
+        '" data-fc-vis title="' + (isVisible ? '隐藏分区' : '显示分区') + '">' +
+        (isVisible ? ICO.eye : ICO.eyeOff) + '</button>' +
         '<button type="button" class="icon-btn' + (c.position_locked ? ' on' : '') +
         '" data-fc-lock title="' + (c.position_locked ? '解锁位置' : '锁定位置') + '">' +
         (c.position_locked ? ICO.lock : ICO.unlock) + '</button>' +
@@ -1712,7 +1727,8 @@
       const kindsEl = el.querySelector('.ft-kinds');
       if (kindsEl) {
         kindsEl.textContent = kindsLabel(c.organize_kinds) +
-          (c.position_locked ? ' · 位置已锁' : '');
+          (c.position_locked ? ' · 位置已锁' : '') +
+          (isVisible ? '' : ' · 已隐藏');
       }
       el.addEventListener('click', (ev) => {
         if (ev.target.closest('button,input')) return;
@@ -1743,6 +1759,13 @@
         range.addEventListener('change', () => {
           post({ type: 'action', id: 'fence_set_opacity', index: i,
                  value: Number(range.value) });
+        });
+      }
+      const visBtn = el.querySelector('[data-fc-vis]');
+      if (visBtn) {
+        visBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          post({ type: 'action', id: 'fence_toggle_visible', index: i });
         });
       }
       const lockBtn = el.querySelector('[data-fc-lock]');

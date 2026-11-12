@@ -10,10 +10,14 @@ HWND g_notify = nullptr;
 UINT g_msg = 0;
 UINT g_down_msg = 0;
 UINT g_paste_msg = 0;
+UINT g_blank_rclick_msg = 0;
+bool g_organized_blank_menu = false;
 DWORD g_last_fire_ms = 0;
 DWORD g_last_down_ms = 0;
 DWORD g_last_paste_ms = 0;
+DWORD g_last_blank_rclick_ms = 0;
 POINT g_last_rclick{-1, -1};
+ULONGLONG g_last_rclick_tick = 0;
 
 bool IsOwnOverlay(HWND hwnd) {
   wchar_t cls[128]{};
@@ -37,6 +41,56 @@ bool ClassIsDesktop(const wchar_t* cls) {
          wcscmp(cls, L"Windows.UI.Composition.DesktopWindowContentBridge") ==
              0;
 }
+
+LRESULT CALLBACK LowLevelMouseProc(int code, WPARAM wparam, LPARAM lparam) {
+  if (code == HC_ACTION) {
+    const auto* info = reinterpret_cast<MSLLHOOKSTRUCT*>(lparam);
+    if (info) {
+      // Record desktop-background right-clicks (for shell-verb new-fence).
+      if (wparam == WM_RBUTTONUP && IsDesktopBlankPoint(info->pt.x, info->pt.y)) {
+        g_last_rclick = info->pt;
+        g_last_rclick_tick = GetTickCount64();
+        // Organized: DefView listview is hidden — its Paste is a no-op / wrong
+        // seat. Host Desktop background menu (Fences / Ctrl+V path).
+        if (g_organized_blank_menu && g_blank_rclick_msg && g_notify &&
+            IsWindow(g_notify)) {
+          const DWORD now = GetTickCount();
+          if (now - g_last_blank_rclick_ms >= 200) {
+            g_last_blank_rclick_ms = now;
+            PostMessageW(g_notify, g_blank_rclick_msg, 0,
+                         MAKELPARAM(static_cast<WORD>(info->pt.x),
+                                    static_cast<WORD>(info->pt.y)));
+          }
+          return 1;
+        }
+      }
+      // Blank desktop (DefView / Progman). Also used when the transparent
+      // listview sits above a fence: click never reaches the fence HWND, so
+      // deselection must be driven from this hook (Explorer / Fences parity).
+      if (wparam == WM_LBUTTONDOWN && g_down_msg && g_notify &&
+          IsWindow(g_notify) && IsDesktopBlankPoint(info->pt.x, info->pt.y)) {
+        const DWORD now = GetTickCount();
+        if (now - g_last_down_ms >= 80) {
+          g_last_down_ms = now;
+          PostMessageW(g_notify, g_down_msg, 0,
+                       MAKELPARAM(static_cast<WORD>(info->pt.x),
+                                  static_cast<WORD>(info->pt.y)));
+        }
+      }
+      if (wparam == WM_LBUTTONDBLCLK && g_msg && g_notify &&
+          IsWindow(g_notify) && IsDesktopBlankPoint(info->pt.x, info->pt.y)) {
+        const DWORD now = GetTickCount();
+        if (now - g_last_fire_ms >= 400) {
+          g_last_fire_ms = now;
+          PostMessageW(g_notify, g_msg, 0, 0);
+        }
+      }
+    }
+  }
+  return CallNextHookEx(g_mouse_hook, code, wparam, lparam);
+}
+
+}  // namespace
 
 bool ForegroundIsDesktopShell() {
   HWND fg = GetForegroundWindow();
@@ -69,42 +123,6 @@ bool ForegroundIsDesktopShell() {
   return false;
 }
 
-LRESULT CALLBACK LowLevelMouseProc(int code, WPARAM wparam, LPARAM lparam) {
-  if (code == HC_ACTION) {
-    const auto* info = reinterpret_cast<MSLLHOOKSTRUCT*>(lparam);
-    if (info) {
-      // Record desktop-background right-clicks (for shell-verb new-fence).
-      if (wparam == WM_RBUTTONUP && IsDesktopBlankPoint(info->pt.x, info->pt.y)) {
-        g_last_rclick = info->pt;
-      }
-      // Blank desktop (DefView / Progman). Also used when the transparent
-      // listview sits above a fence: click never reaches the fence HWND, so
-      // deselection must be driven from this hook (Explorer / Fences parity).
-      if (wparam == WM_LBUTTONDOWN && g_down_msg && g_notify &&
-          IsWindow(g_notify) && IsDesktopBlankPoint(info->pt.x, info->pt.y)) {
-        const DWORD now = GetTickCount();
-        if (now - g_last_down_ms >= 80) {
-          g_last_down_ms = now;
-          PostMessageW(g_notify, g_down_msg, 0,
-                       MAKELPARAM(static_cast<WORD>(info->pt.x),
-                                  static_cast<WORD>(info->pt.y)));
-        }
-      }
-      if (wparam == WM_LBUTTONDBLCLK && g_msg && g_notify &&
-          IsWindow(g_notify) && IsDesktopBlankPoint(info->pt.x, info->pt.y)) {
-        const DWORD now = GetTickCount();
-        if (now - g_last_fire_ms >= 400) {
-          g_last_fire_ms = now;
-          PostMessageW(g_notify, g_msg, 0, 0);
-        }
-      }
-    }
-  }
-  return CallNextHookEx(g_mouse_hook, code, wparam, lparam);
-}
-
-}  // namespace
-
 bool TryHandleDesktopPasteLlKey(WPARAM wparam, LPARAM lparam) {
   if (!g_paste_msg || !g_notify || !IsWindow(g_notify)) {
     return false;
@@ -121,12 +139,14 @@ bool TryHandleDesktopPasteLlKey(WPARAM wparam, LPARAM lparam) {
       !ForegroundIsDesktopShell()) {
     return false;
   }
+  // Explorer / Fences: Ctrl+Shift+V → 粘贴快捷方式 (wParam=1).
+  const bool as_link = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
   const DWORD now = GetTickCount();
   if (now - g_last_paste_ms < 200) {
     return false;
   }
   g_last_paste_ms = now;
-  PostMessageW(g_notify, g_paste_msg, 0, 0);
+  PostMessageW(g_notify, g_paste_msg, as_link ? 1 : 0, 0);
   // Swallow so a half-hidden DefView does not also try (and fail) paste.
   return true;
 }
@@ -162,11 +182,13 @@ bool IsDesktopBlankPoint(int screen_x, int screen_y) {
 }
 
 void StartDesktopDblClickMonitor(HWND notify_hwnd, UINT notify_msg,
-                                 UINT notify_down_msg, UINT notify_paste_msg) {
+                                 UINT notify_down_msg, UINT notify_paste_msg,
+                                 UINT notify_blank_rclick_msg) {
   g_notify = notify_hwnd;
   g_msg = notify_msg;
   g_down_msg = notify_down_msg;
   g_paste_msg = notify_paste_msg;
+  g_blank_rclick_msg = notify_blank_rclick_msg;
   if (!g_mouse_hook) {
     g_mouse_hook = SetWindowsHookExW(WH_MOUSE_LL, LowLevelMouseProc,
                                      GetModuleHandleW(nullptr), 0);
@@ -187,15 +209,23 @@ void StopDesktopDblClickMonitor() {
   g_msg = 0;
   g_down_msg = 0;
   g_paste_msg = 0;
+  g_blank_rclick_msg = 0;
+  g_organized_blank_menu = false;
 }
 
-bool GetLastDesktopRightClick(POINT* out) {
-  if (!out) {
-    return false;
-  }
+void SetDesktopOrganizedBlankMenu(bool organized) {
+  g_organized_blank_menu = organized;
+}
+
+bool GetLastDesktopRightClick(POINT* out, ULONGLONG* tick_ms) {
   if (g_last_rclick.x < 0 || g_last_rclick.y < 0) {
     return false;
   }
-  *out = g_last_rclick;
+  if (out) {
+    *out = g_last_rclick;
+  }
+  if (tick_ms) {
+    *tick_ms = g_last_rclick_tick;
+  }
   return true;
 }

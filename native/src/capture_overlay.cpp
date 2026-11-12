@@ -1784,6 +1784,8 @@ bool CaptureOverlay::FinishSelection(FinishAction action) {
   }
   CopyBitmapToClipboardDib(bmp);
 
+  // Always persist a unique file so recent-shot / multi-pin history works
+  // (Copy-only used to leave path empty → F2 could only re-pin clipboard once).
   auto default_shot_path = []() -> std::wstring {
     PWSTR pics = nullptr;
     std::wstring dir = NativeDataDir();
@@ -1795,25 +1797,17 @@ bool CaptureOverlay::FinishSelection(FinishAction action) {
     }
     SYSTEMTIME st{};
     GetLocalTime(&st);
-    wchar_t name[64];
-    swprintf_s(name, L"shot_%04d%02d%02d_%02d%02d%02d.png", st.wYear, st.wMonth,
-               st.wDay, st.wHour, st.wMinute, st.wSecond);
+    wchar_t name[80];
+    // Include ms + tick so rapid captures never overwrite the same PNG.
+    swprintf_s(name, L"shot_%04d%02d%02d_%02d%02d%02d_%03d_%llu.png", st.wYear,
+               st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond,
+               st.wMilliseconds, static_cast<unsigned long long>(GetTickCount64()));
     return JoinPath(dir, name);
   };
 
   std::wstring path;
   bool pin = false;
-  if (action == FinishAction::Copy) {
-    // Clipboard already filled; only persist when auto-pin is on.
-    if (auto_pin_) {
-      path = default_shot_path();
-      if (SaveBitmapToFile(bmp, path)) {
-        pin = true;
-      } else {
-        path.clear();
-      }
-    }
-  } else if (action == FinishAction::Save) {
+  if (action == FinishAction::Save) {
     path = ShowSaveAsDialog();
     if (path.empty()) {
       path = default_shot_path();
@@ -1825,6 +1819,7 @@ bool CaptureOverlay::FinishSelection(FinishAction action) {
       return false;
     }
   } else {
+    // Copy / Pin / toolbar complete: always land a file for the pin stack.
     path = default_shot_path();
     if (!SaveBitmapToFile(bmp, path)) {
       DeleteObject(bmp);
@@ -1832,7 +1827,7 @@ bool CaptureOverlay::FinishSelection(FinishAction action) {
                 MistMsgTone::Danger);
       return false;
     }
-    pin = true;
+    pin = (action == FinishAction::Pin) || auto_pin_;
   }
   DeleteObject(bmp);
   if (on_done_) {

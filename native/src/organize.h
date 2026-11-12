@@ -11,12 +11,13 @@
 
 // Virtual organize: prefer fence organize_kinds (P1-4), then legacy
 // ResolveFenceId. Returns how many pins were written.
-int OrganizeApplyDefaultPins(PinMap* pins, const std::vector<DesktopItem>& items,
-                             const RuleMap& rules,
-                             const std::string& software_id,
-                             const std::string& common_id,
-                             const std::vector<FenceLayout>* fences = nullptr,
-                             int current_page = -1, bool reassign = false);
+int OrganizeApplyDefaultPins(
+    PinMap* pins, const std::vector<DesktopItem>& items, const RuleMap& rules,
+    const std::string& software_id, const std::string& common_id,
+    const std::vector<FenceLayout>* fences = nullptr, int current_page = -1,
+    bool reassign = false, bool honor_suppress = true,
+    std::vector<std::pair<std::wstring, std::string>>* ordered_changes =
+        nullptr);
 
 // Lines "name → fence title" for items that would get a default pin.
 std::vector<std::wstring> OrganizePreviewVirtualPins(

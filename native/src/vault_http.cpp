@@ -23,7 +23,7 @@
 namespace {
 
 constexpr wchar_t kDefaultBase[] =
-    L"https://bowen-yu0926.byethost10.com/desktidy-vault/";
+    L"https://chromhome.kdns.fr/api/";
 constexpr wchar_t kUserAgent[] = L"Mozilla/5.0 DeskTidy-Vault/1";
 
 std::wstring SessionPath() {
@@ -1326,4 +1326,176 @@ int VaultHttpMigrateLegacyToE2e(const std::vector<BYTE>& key) {
     }
   }
   return migrated;
+}
+
+namespace {
+
+VaultHttpNote ParseNoteObj(const std::string& obj) {
+  VaultHttpNote n;
+  FindIntField(obj, "id", &n.id);
+  FindIntField(obj, "enc_ver", &n.enc_ver);
+  std::string title, body, updated, created;
+  if (FindStringField(obj, "title", &title)) {
+    n.title = WidenUtf8(title);
+  }
+  if (FindStringField(obj, "body", &body)) {
+    n.body = WidenUtf8(body);
+  }
+  if (FindStringField(obj, "updated_at", &updated)) {
+    n.updated_at = WidenUtf8(updated);
+  }
+  if (FindStringField(obj, "created_at", &created)) {
+    n.created_at = WidenUtf8(created);
+  }
+  return n;
+}
+
+std::vector<VaultHttpNote> ParseNoteItems(const std::string& json) {
+  std::vector<VaultHttpNote> out;
+  const size_t items = json.find("\"items\"");
+  if (items == std::string::npos) {
+    return out;
+  }
+  size_t pos = json.find('[', items);
+  if (pos == std::string::npos) {
+    return out;
+  }
+  ++pos;
+  while (pos < json.size()) {
+    while (pos < json.size() && json[pos] != '{' && json[pos] != ']') {
+      ++pos;
+    }
+    if (pos >= json.size() || json[pos] == ']') {
+      break;
+    }
+    // Brace-balanced object (list rows have no body, so nested braces are rare).
+    int depth = 0;
+    size_t start = pos;
+    for (; pos < json.size(); ++pos) {
+      if (json[pos] == '{') {
+        ++depth;
+      } else if (json[pos] == '}') {
+        --depth;
+        if (depth == 0) {
+          out.push_back(ParseNoteObj(json.substr(start, pos - start + 1)));
+          ++pos;
+          break;
+        }
+      }
+    }
+  }
+  return out;
+}
+
+std::string MakeNoteBody(const std::wstring& title, const std::wstring& body) {
+  std::ostringstream ss;
+  ss << "{\"title\":\"" << EscapeJson(NarrowUtf8(title)) << "\","
+     << "\"body\":\"" << EscapeJson(NarrowUtf8(body)) << "\","
+     << "\"enc_ver\":0}";
+  return ss.str();
+}
+
+}  // namespace
+
+bool VaultHttpListNotes(std::vector<VaultHttpNote>* out) {
+  if (!out) {
+    return false;
+  }
+  out->clear();
+  Session s = LoadSession();
+  if (s.token.empty()) {
+    return false;
+  }
+  VaultClient client(s.api_base);
+  client.SetToken(s.token);
+  HttpResponse resp;
+  if (!RequestRetry(&client, L"GET", L"notes", nullptr, true, &resp) ||
+      !JsonOkTrue(resp.body)) {
+    return false;
+  }
+  *out = ParseNoteItems(resp.body);
+  return true;
+}
+
+bool VaultHttpGetNote(int id, VaultHttpNote* out) {
+  if (id <= 0 || !out) {
+    return false;
+  }
+  Session s = LoadSession();
+  if (s.token.empty()) {
+    return false;
+  }
+  VaultClient client(s.api_base);
+  client.SetToken(s.token);
+  HttpResponse resp;
+  const std::wstring path = L"notes/" + std::to_wstring(id);
+  if (!RequestRetry(&client, L"GET", path, nullptr, true, &resp) ||
+      !JsonOkTrue(resp.body)) {
+    return false;
+  }
+  *out = ParseNoteObj(resp.body);
+  return out->id > 0;
+}
+
+bool VaultHttpCreateNote(const std::wstring& title, const std::wstring& body,
+                         VaultHttpNote* created) {
+  Session s = LoadSession();
+  if (s.token.empty()) {
+    return false;
+  }
+  VaultClient client(s.api_base);
+  client.SetToken(s.token);
+  const std::string payload = MakeNoteBody(title, body);
+  HttpResponse resp;
+  if (!RequestRetry(&client, L"POST", L"notes", &payload, true, &resp) ||
+      !JsonOkTrue(resp.body)) {
+    return false;
+  }
+  if (created) {
+    *created = ParseNoteObj(resp.body);
+  }
+  return true;
+}
+
+bool VaultHttpUpdateNote(int id, const std::wstring& title,
+                         const std::wstring& body, VaultHttpNote* updated) {
+  if (id <= 0) {
+    return false;
+  }
+  Session s = LoadSession();
+  if (s.token.empty()) {
+    return false;
+  }
+  VaultClient client(s.api_base);
+  client.SetToken(s.token);
+  const std::string payload = MakeNoteBody(title, body);
+  HttpResponse resp;
+  const std::wstring path = L"notes/" + std::to_wstring(id);
+  if (!RequestRetry(&client, L"PUT", path, &payload, true, &resp) ||
+      !JsonOkTrue(resp.body)) {
+    return false;
+  }
+  if (updated) {
+    *updated = ParseNoteObj(resp.body);
+  }
+  return true;
+}
+
+bool VaultHttpDeleteNote(int id) {
+  if (id <= 0) {
+    return false;
+  }
+  Session s = LoadSession();
+  if (s.token.empty()) {
+    return false;
+  }
+  VaultClient client(s.api_base);
+  client.SetToken(s.token);
+  HttpResponse resp;
+  const std::wstring path = L"notes/" + std::to_wstring(id);
+  if (!RequestRetry(&client, L"DELETE", path, nullptr, true, &resp) ||
+      !JsonOkTrue(resp.body)) {
+    return false;
+  }
+  return true;
 }

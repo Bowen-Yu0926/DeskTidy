@@ -2,9 +2,11 @@
 
 #include "desktop_shell.h"
 #include "display_geom.h"
+#include "fence_keys.h"
 #include "i18n.h"
 #include "icon_actions.h"
 #include "log.h"
+#include "namespace_icons.h"
 #include "ole_drag.h"
 #include "organize_suppress.h"
 #include "pin_store.h"
@@ -376,10 +378,99 @@ void PublicHost::EnsureDropTarget() {
   }
   drop_target_ = new PathDropTarget(
       [this](const std::vector<std::wstring>& paths, DWORD proposed) -> DWORD {
+        // Explorer: drop onto a float folder icon → import into that folder.
+        POINT pt{};
+        GetCursorPos(&pt);
+        ScreenToClient(hwnd_, &pt);
+        const int hit = HitTest(pt.x, pt.y);
+        std::wstring into;
+        if (hit >= 0 && hit < static_cast<int>(slots_.size())) {
+          const std::wstring& p = slots_[static_cast<size_t>(hit)].item.path;
+          // Explorer: drop on Recycle Bin float → delete, never import.
+          const std::wstring clsid = GetLnkNamespaceClsid(p);
+          if (clsid == L"{645FF040-5081-101B-9F08-00AA002F954E}") {
+            if (RecycleShellPaths(hwnd_, paths) != IconFsResult::Ok) {
+              return DROPEFFECT_NONE;
+            }
+            for (const auto& src : paths) {
+              if (on_removed_) {
+                on_removed_(src);
+              }
+            }
+            if (on_refresh_) {
+              on_refresh_();
+            }
+            return DROPEFFECT_MOVE;
+          }
+          const DWORD attr = GetFileAttributesW(p.c_str());
+          if (attr != INVALID_FILE_ATTRIBUTES &&
+              (attr & FILE_ATTRIBUTE_DIRECTORY)) {
+            into = p;
+          }
+        }
+        auto land_into = [&](const std::wstring& dest_dir) -> DWORD {
+          if (dest_dir.empty()) {
+            return DROPEFFECT_NONE;
+          }
+          const bool want_link =
+              proposed == DROPEFFECT_LINK || WantDropLinkEffect();
+          const bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+          const bool shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+          int ok = 0;
+          int moved = 0;
+          std::vector<std::wstring> moved_paths;
+          moved_paths.reserve(paths.size());
+          for (const auto& src : paths) {
+            // Explorer: refuse folder→self and folder→own child.
+            if (src.empty() || _wcsicmp(src.c_str(), dest_dir.c_str()) == 0 ||
+                IsStrictPathPrefix(src, dest_dir)) {
+              continue;
+            }
+            std::wstring dest;
+            if (want_link) {
+              if (CreateShortcutIntoDir(hwnd_, src, dest_dir, &dest)) {
+                ++ok;
+              }
+              continue;
+            }
+            bool move = SameVolume(src, dest_dir);
+            if (ctrl && !shift) {
+              move = false;
+            } else if (shift && !ctrl) {
+              move = true;
+            }
+            if (MoveOrCopyFileIntoDir(hwnd_, src, dest_dir, move, &dest)) {
+              ++ok;
+              if (move) {
+                ++moved;
+                moved_paths.push_back(src);
+              }
+            }
+          }
+          // Moved off the float seat — drop placement/pin immediately.
+          for (const auto& p : moved_paths) {
+            if (on_removed_) {
+              on_removed_(p);
+            }
+          }
+          if (on_refresh_) {
+            on_refresh_();
+          }
+          if (ok <= 0) {
+            return DROPEFFECT_NONE;
+          }
+          if (want_link) {
+            return DROPEFFECT_LINK;
+          }
+          return (moved == ok) ? DROPEFFECT_MOVE : DROPEFFECT_COPY;
+        };
+        if (!into.empty()) {
+          return land_into(into);
+        }
         if (on_paths_dropped_) {
           return on_paths_dropped_(paths);
         }
-        // Fallback: Explorer same-volume MOVE / cross-volume COPY into Desktop.
+        // Fallback: Explorer same-volume MOVE / cross-volume COPY / Alt→LINK.
         PWSTR desk_raw = nullptr;
         if (FAILED(SHGetKnownFolderPath(FOLDERID_Desktop, 0, nullptr, &desk_raw)) ||
             !desk_raw) {
@@ -387,41 +478,27 @@ void PublicHost::EnsureDropTarget() {
         }
         const std::wstring desk = desk_raw;
         CoTaskMemFree(desk_raw);
-        const bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
-        const bool shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
-        int ok = 0;
-        int moved = 0;
-        for (const auto& src : paths) {
-          bool move = SameVolume(src, desk);
-          if (ctrl) {
-            move = false;
-          }
-          if (shift) {
-            move = true;
-          }
-          std::wstring dest;
-          if (MoveOrCopyFileIntoDir(hwnd_, src, desk, move, &dest)) {
-            ++ok;
-            if (move) {
-              ++moved;
-            }
-          }
-        }
-        if (on_refresh_) {
-          on_refresh_();
-        }
-        if (ok <= 0) {
-          return DROPEFFECT_NONE;
-        }
-        if (moved == ok) {
-          return DROPEFFECT_MOVE;
-        }
-        (void)proposed;
-        return DROPEFFECT_COPY;
+        return land_into(desk);
       });
   // AIGC START
   drop_target_->SetFileDropSemantics(FileDropSemantics::Physical);
-  drop_target_->SetDestDirProvider([]() -> std::wstring {
+  drop_target_->SetDestDirProvider([this]() -> std::wstring {
+    POINT pt{};
+    GetCursorPos(&pt);
+    ScreenToClient(hwnd_, &pt);
+    const int hit = HitTest(pt.x, pt.y);
+    if (hit >= 0 && hit < static_cast<int>(slots_.size())) {
+      const std::wstring& p = slots_[static_cast<size_t>(hit)].item.path;
+      if (GetLnkNamespaceClsid(p) ==
+          L"{645FF040-5081-101B-9F08-00AA002F954E}") {
+        return {};  // Recycle → PreferMove delete via Drop, not FO into dir
+      }
+      const DWORD attr = GetFileAttributesW(p.c_str());
+      if (attr != INVALID_FILE_ATTRIBUTES &&
+          (attr & FILE_ATTRIBUTE_DIRECTORY)) {
+        return p;
+      }
+    }
     PWSTR desk_raw = nullptr;
     if (FAILED(SHGetKnownFolderPath(FOLDERID_Desktop, 0, nullptr, &desk_raw)) ||
         !desk_raw) {
@@ -470,6 +547,9 @@ void PublicHost::ReleaseCaptionFonts() {
 }
 
 void PublicHost::Destroy() {
+  if (GetFenceKeyTarget() == hwnd_) {
+    ClearFenceKeyTarget();
+  }
   if (rename_edit_) {
     FinishInlineRename(false);
   }
@@ -671,7 +751,9 @@ void PublicHost::SetItems(std::vector<DesktopItem> items) {
       s.icon = LoadItemIcon(s.item.path, metrics_.icon_size);
       loaded_any = true;
     } else {
-      s.icon = nullptr;
+      // Cold path: don't wait solely on async preload — a lone float with no
+      // cached HICON used to paint only an invisible α=1 plate (looks missing).
+      s.icon = LoadItemIcon(s.item.path, metrics_.icon_size);
       loaded_any = true;
     }
     slots_.push_back(std::move(s));
@@ -716,6 +798,7 @@ void PublicHost::SetItems(std::vector<DesktopItem> items) {
   }
   selected_.clear();
   selection_anchor_ = -1;
+  selection_focus_ = -1;
   rubber_ = false;
   rubber_additive_ = false;
   HideMarqueeBand();
@@ -955,17 +1038,71 @@ void PublicHost::Layout() {
   }
 }
 
-void PublicHost::PasteClipboardFiles() {
-  if (on_paste_) {
-    on_paste_();
+void PublicHost::PasteClipboardFiles(bool as_link) {
+  // Explorer: single selected folder → paste into it (not Desktop root).
+  const std::wstring into = SelectedSingleDirectory();
+  if (!into.empty()) {
+    std::vector<std::wstring> paths;
+    bool cut = false;
+    if (!ClipboardGetFilesWithEffect(&paths, &cut) || paths.empty()) {
+      ShowToast(L"剪贴板里没有文件");
+      return;
+    }
+    int n = 0;
+    if (as_link) {
+      n = PasteClipboardLinksIntoDir(hwnd_, into, nullptr);
+    } else {
+      for (const auto& src : paths) {
+        std::wstring dest;
+        if (MoveOrCopyFileIntoDir(hwnd_, src, into, cut, &dest)) {
+          ++n;
+          SuppressOrganizePath(dest, 24.0 * 3600.0);
+        }
+      }
+      if (cut && n > 0) {
+        ClipboardConsumeCut();
+      }
+    }
+    if (n <= 0) {
+      ShowToast(L"无法粘贴到所选文件夹");
+      return;
+    }
+    ShowToast(L"已粘贴 " + std::to_wstring(n) + L" 项");
+    if (on_refresh_) {
+      on_refresh_();
+    }
     return;
   }
-  if (PasteClipboardToDesktopFolder(hwnd_, nullptr) <= 0) {
+  if (on_paste_) {
+    on_paste_(as_link);
+    return;
+  }
+  int n = 0;
+  std::vector<std::wstring> landed;
+  if (as_link) {
+    PWSTR desk_raw = nullptr;
+    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Desktop, 0, nullptr, &desk_raw)) &&
+        desk_raw) {
+      const std::wstring desk = desk_raw;
+      CoTaskMemFree(desk_raw);
+      n = PasteClipboardLinksIntoDir(hwnd_, desk, &landed);
+    }
+  } else {
+    n = PasteClipboardToDesktopFolder(hwnd_, &landed);
+  }
+  if (n <= 0) {
     ShowToast(L"剪贴板里没有文件");
     return;
   }
+  for (const auto& p : landed) {
+    SuppressOrganizePath(p, 24.0 * 3600.0);
+  }
   if (on_refresh_) {
     on_refresh_();
+  }
+  // Explorer: keep selection on the items just pasted.
+  if (!landed.empty()) {
+    SelectPaths(landed);
   }
 }
 
@@ -1010,8 +1147,12 @@ void PublicHost::ShowBackgroundMenu(POINT screen) {
   // Fences / Ctrl+V path: Cut→blank desktop must release virtual pins.
   // Shell Paste alone is a Desktop self-MOVE no-op and leaves the pin.
   ShellInterceptFn on_intercept = [this](const std::wstring& verb) {
-    if (verb == L"paste" || verb == L"pastelink" || verb == L"pasteto") {
-      PasteClipboardFiles();
+    if (verb == L"paste" || verb == L"pasteto") {
+      PasteClipboardFiles(/*as_link=*/false);
+      return true;
+    }
+    if (verb == L"pastelink") {
+      PasteClipboardFiles(/*as_link=*/true);
       return true;
     }
     return false;
@@ -1019,6 +1160,10 @@ void PublicHost::ShowBackgroundMenu(POINT screen) {
   ShellVerbFn on_verb = [this, &desk_before, &list_desk](const std::wstring& verb) {
     if (verb == L"paste" || verb == L"pastelink" || verb == L"pasteto") {
       return;  // handled by intercept
+    }
+    if (verb == L"undo" && on_undo_) {
+      // Shell already undid; re-pin any remembered seats.
+      on_undo_();
     }
     if (!ShellVerbNeedsDesktopRescan(verb)) {
       return;
@@ -1091,6 +1236,31 @@ void PublicHost::ShowSlotMenu(int index, POINT screen) {
   bool verb_ran = false;
   bool needs_rescan = false;
   std::wstring last_verb;
+  std::vector<std::wstring> desk_before;
+  auto list_desk = []() {
+    std::vector<std::wstring> out;
+    PWSTR desk_raw = nullptr;
+    if (FAILED(SHGetKnownFolderPath(FOLDERID_Desktop, 0, nullptr, &desk_raw)) ||
+        !desk_raw) {
+      return out;
+    }
+    const std::wstring desk = desk_raw;
+    CoTaskMemFree(desk_raw);
+    WIN32_FIND_DATAW fd{};
+    HANDLE find = FindFirstFileW((desk + L"\\*").c_str(), &fd);
+    if (find == INVALID_HANDLE_VALUE) {
+      return out;
+    }
+    do {
+      if (wcscmp(fd.cFileName, L".") == 0 || wcscmp(fd.cFileName, L"..") == 0) {
+        continue;
+      }
+      out.push_back(desk + L"\\" + fd.cFileName);
+    } while (FindNextFileW(find, &fd));
+    FindClose(find);
+    return out;
+  };
+  ShellBeforeInvokeFn on_before = [&]() { desk_before = list_desk(); };
   ShellVerbFn on_verb = [&](const std::wstring& verb) {
     if (verb == L"rename") {
       rename_picked = true;
@@ -1101,7 +1271,7 @@ void PublicHost::ShowSlotMenu(int index, POINT screen) {
     needs_rescan = ShellVerbNeedsDesktopRescan(verb);
   };
   const int shell_cmd =
-      TrackShellContextMenu(hwnd_, screen, paths, extras, on_verb, nullptr);
+      TrackShellContextMenu(hwnd_, screen, paths, extras, on_verb, on_before);
   if (shell_cmd == kExtPublicMovePage) {
     ShowMoveToPageFenceMenu(screen);
     return;
@@ -1126,6 +1296,23 @@ void PublicHost::ShowSlotMenu(int index, POINT screen) {
         any_gone = true;
         if (on_removed_) {
           on_removed_(p);
+        }
+      }
+    }
+    // Create shortcut / New → keep new Desktop items as floats (not auto-pin).
+    if (last_verb == L"link" || last_verb == L"createlink" ||
+        last_verb == L"newfolder" || last_verb.rfind(L"new", 0) == 0) {
+      const auto after = list_desk();
+      for (const auto& p : after) {
+        bool was = false;
+        for (const auto& b : desk_before) {
+          if (_wcsicmp(b.c_str(), p.c_str()) == 0) {
+            was = true;
+            break;
+          }
+        }
+        if (!was) {
+          SuppressOrganizePath(p, 24.0 * 3600.0);
         }
       }
     }
@@ -1283,16 +1470,33 @@ void PublicHost::EnsureSelSize() {
 
 void PublicHost::ClearSelection() {
   EnsureSelSize();
+  // Match FenceWindow: blank / cross-chrome clear must repaint or the old
+  // selection halo sticks until the next Present (Fences / Explorer).
+  bool any = false;
+  for (char c : selected_) {
+    if (c) {
+      any = true;
+      break;
+    }
+  }
   std::fill(selected_.begin(), selected_.end(), static_cast<char>(0));
   selection_anchor_ = -1;
+  selection_focus_ = -1;
+  typeahead_.clear();
+  if (any && hwnd_ && IsWindowVisible(hwnd_)) {
+    Present();
+  }
 }
 
 void PublicHost::SelectOnly(int index) {
   EnsureSelSize();
-  ClearSelection();
+  std::fill(selected_.begin(), selected_.end(), static_cast<char>(0));
+  selection_anchor_ = -1;
+  selection_focus_ = -1;
   if (index >= 0 && index < static_cast<int>(selected_.size())) {
     selected_[static_cast<size_t>(index)] = 1;
     selection_anchor_ = index;
+    selection_focus_ = index;
   }
 }
 
@@ -1303,7 +1507,11 @@ void PublicHost::ToggleSelected(int index) {
   }
   selected_[static_cast<size_t>(index)] =
       selected_[static_cast<size_t>(index)] ? 0 : 1;
-  selection_anchor_ = index;
+  // Ctrl+click: move focus only; keep mark for Shift-extend.
+  selection_focus_ = index;
+  if (selection_anchor_ < 0) {
+    selection_anchor_ = index;
+  }
 }
 
 void PublicHost::SelectRange(int from, int to) {
@@ -1317,6 +1525,51 @@ void PublicHost::SelectRange(int from, int to) {
   for (int i = from; i <= to; ++i) {
     selected_[static_cast<size_t>(i)] = 1;
   }
+  selection_focus_ = to;
+  if (selection_anchor_ < 0) {
+    selection_anchor_ = from;
+  }
+}
+
+void PublicHost::SelectPaths(const std::vector<std::wstring>& paths) {
+  EnsureSelSize();
+  std::fill(selected_.begin(), selected_.end(), static_cast<char>(0));
+  selection_anchor_ = -1;
+  selection_focus_ = -1;
+  for (const auto& want : paths) {
+    if (want.empty()) {
+      continue;
+    }
+    for (size_t i = 0; i < slots_.size(); ++i) {
+      if (!slots_[i].item.path.empty() &&
+          _wcsicmp(slots_[i].item.path.c_str(), want.c_str()) == 0) {
+        selected_[i] = 1;
+        if (selection_anchor_ < 0) {
+          selection_anchor_ = static_cast<int>(i);
+        }
+        selection_focus_ = static_cast<int>(i);
+        break;
+      }
+    }
+  }
+  if (hwnd_) {
+    Present();
+  }
+}
+
+void PublicHost::CopySelectionPathsAsText() {
+  const auto paths = SelectedPaths();
+  if (paths.empty()) {
+    return;
+  }
+  std::wstring text;
+  for (size_t i = 0; i < paths.size(); ++i) {
+    if (i) {
+      text += L"\r\n";
+    }
+    text += paths[i];
+  }
+  CopyShellPathText(hwnd_, text);
 }
 
 void PublicHost::SelectIntersecting(RECT client_rc) {
@@ -1331,6 +1584,7 @@ void PublicHost::SelectIntersecting(RECT client_rc) {
   if (!rubber_additive_) {
     std::fill(selected_.begin(), selected_.end(), static_cast<char>(0));
     selection_anchor_ = -1;
+    selection_focus_ = -1;
   }
   for (size_t i = 0; i < slots_.size(); ++i) {
     const RECT& b = slots_[i].bounds;
@@ -1340,6 +1594,7 @@ void PublicHost::SelectIntersecting(RECT client_rc) {
       if (selection_anchor_ < 0) {
         selection_anchor_ = static_cast<int>(i);
       }
+      selection_focus_ = static_cast<int>(i);
     }
   }
 }
@@ -1568,6 +1823,10 @@ void PublicHost::BeginRubberFromScreen(POINT screen, bool additive) {
   if (HitTest(client.x, client.y) >= 0) {
     return;
   }
+  SetFenceKeyTarget(hwnd_);
+  if (on_activated_) {
+    on_activated_();
+  }
   SetFocus(hwnd_);
   drag_from_ = -1;
   drag_moved_ = false;
@@ -1623,6 +1882,10 @@ void PublicHost::CopySelection() {
 }
 
 int PublicHost::FocusedSlotIndex() const {
+  if (selection_focus_ >= 0 &&
+      selection_focus_ < static_cast<int>(slots_.size())) {
+    return selection_focus_;
+  }
   if (selection_anchor_ >= 0 &&
       selection_anchor_ < static_cast<int>(slots_.size())) {
     return selection_anchor_;
@@ -1654,15 +1917,24 @@ void PublicHost::SelectBetween(int from, int to) {
     }
   }
   selection_anchor_ = from;
+  selection_focus_ = to;
 }
 
-void PublicHost::NavigateSelection(int dx, int dy, bool extend) {
+void PublicHost::NavigateSelection(int dx, int dy, bool extend,
+                                   bool focus_only) {
   if (slots_.empty()) {
     return;
   }
   int cur = FocusedSlotIndex();
   if (cur < 0) {
-    SelectOnly(0);
+    if (focus_only) {
+      selection_focus_ = 0;
+      if (selection_anchor_ < 0) {
+        selection_anchor_ = 0;
+      }
+    } else {
+      SelectOnly(0);
+    }
     Present();
     return;
   }
@@ -1705,6 +1977,11 @@ void PublicHost::NavigateSelection(int dx, int dy, bool extend) {
   if (best < 0) {
     return;
   }
+  if (focus_only) {
+    selection_focus_ = best;
+    Present();
+    return;
+  }
   if (extend) {
     const int anchor = selection_anchor_ >= 0 ? selection_anchor_ : cur;
     SelectBetween(anchor, best);
@@ -1723,11 +2000,41 @@ void PublicHost::TypeAheadFind(wchar_t ch) {
     typeahead_.clear();
   }
   typeahead_tick_ = now;
-  typeahead_.push_back(static_cast<wchar_t>(towlower(ch)));
+  typeahead_.push_back(ch);
+  CharLowerBuffW(typeahead_.data() + (typeahead_.size() - 1), 1);
+  const int before = selection_anchor_;
+  TypeAheadFindNext();
+  if (typeahead_.size() > 1 && selection_anchor_ == before) {
+    auto lower_name = [](std::wstring s) {
+      if (!s.empty()) {
+        CharLowerBuffW(s.data(), static_cast<DWORD>(s.size()));
+      }
+      return s;
+    };
+    bool matched =
+        selection_anchor_ >= 0 &&
+        selection_anchor_ < static_cast<int>(slots_.size()) && [&]() {
+          const std::wstring n =
+              lower_name(slots_[static_cast<size_t>(selection_anchor_)].item.name);
+          return n.size() >= typeahead_.size() &&
+                 n.compare(0, typeahead_.size(), typeahead_) == 0;
+        }();
+    if (!matched) {
+      typeahead_.assign(1, ch);
+      CharLowerBuffW(typeahead_.data(), 1);
+      TypeAheadFindNext();
+    }
+  }
+}
 
+void PublicHost::TypeAheadFindNext() {
+  if (typeahead_.empty() || slots_.empty()) {
+    return;
+  }
+  typeahead_tick_ = GetTickCount();
   auto lower_name = [](std::wstring s) {
-    for (auto& c : s) {
-      c = static_cast<wchar_t>(towlower(c));
+    if (!s.empty()) {
+      CharLowerBuffW(s.data(), static_cast<DWORD>(s.size()));
     }
     return s;
   };
@@ -1736,15 +2043,13 @@ void PublicHost::TypeAheadFind(wchar_t ch) {
     return n.size() >= typeahead_.size() &&
            n.compare(0, typeahead_.size(), typeahead_) == 0;
   };
-
   int start = selection_anchor_ + 1;
   if (start < 0 || start > static_cast<int>(slots_.size())) {
     start = 0;
   }
   for (int pass = 0; pass < 2; ++pass) {
     const int from = (pass == 0) ? start : 0;
-    const int to =
-        (pass == 0) ? static_cast<int>(slots_.size()) : start;
+    const int to = (pass == 0) ? static_cast<int>(slots_.size()) : start;
     for (int i = from; i < to; ++i) {
       if (matches(static_cast<size_t>(i))) {
         SelectOnly(i);
@@ -1753,16 +2058,140 @@ void PublicHost::TypeAheadFind(wchar_t ch) {
       }
     }
   }
-  if (typeahead_.size() > 1) {
-    typeahead_.assign(1, static_cast<wchar_t>(towlower(ch)));
+}
+
+bool PublicHost::TypeAheadBackspace() {
+  if (typeahead_.empty()) {
+    return false;
+  }
+  typeahead_.pop_back();
+  typeahead_tick_ = GetTickCount();
+  if (typeahead_.empty()) {
+    return true;
+  }
+  auto lower_name = [](std::wstring s) {
+    if (!s.empty()) {
+      CharLowerBuffW(s.data(), static_cast<DWORD>(s.size()));
+    }
+    return s;
+  };
+  for (size_t i = 0; i < slots_.size(); ++i) {
+    std::wstring n = lower_name(slots_[i].item.name);
+    if (n.size() >= typeahead_.size() &&
+        n.compare(0, typeahead_.size(), typeahead_) == 0) {
+      SelectOnly(static_cast<int>(i));
+      Present();
+      break;
+    }
+  }
+  return true;
+}
+
+namespace {
+
+std::wstring PublicUniqueNewFolderPath(const std::wstring& parent) {
+  if (parent.empty()) {
+    return L"";
+  }
+  const LANGID lang = PRIMARYLANGID(GetUserDefaultUILanguage());
+  const wchar_t* base =
+      (lang == LANG_CHINESE) ? L"新建文件夹" : L"New folder";
+  std::wstring path = parent + L"\\" + base;
+  if (GetFileAttributesW(path.c_str()) == INVALID_FILE_ATTRIBUTES) {
+    return path;
+  }
+  for (int i = 2; i < 10000; ++i) {
+    path = parent + L"\\" + base + L" (" + std::to_wstring(i) + L")";
+    if (GetFileAttributesW(path.c_str()) == INVALID_FILE_ATTRIBUTES) {
+      return path;
+    }
+  }
+  return L"";
+}
+
+std::wstring PublicDesktopDirectory() {
+  PWSTR p = nullptr;
+  if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Desktop, 0, nullptr, &p)) && p) {
+    std::wstring dir(p);
+    CoTaskMemFree(p);
+    return dir;
+  }
+  return L"";
+}
+
+}  // namespace
+
+void PublicHost::CreateNewFolder() {
+  if (rename_edit_) {
+    return;
+  }
+  const std::wstring parent = PublicDesktopDirectory();
+  const std::wstring path = PublicUniqueNewFolderPath(parent);
+  if (path.empty()) {
+    return;
+  }
+  if (!CreateDirectoryW(path.c_str(), nullptr)) {
+    return;
+  }
+  // Match blank-menu New: keep as float under auto-organize watch.
+  SuppressOrganizePath(path, 24.0 * 3600.0);
+  typeahead_.clear();
+  // Seed a seat near the focused float so refresh keeps it visible for rename.
+  POINT seat{};
+  GetCursorPos(&seat);
+  const int focus = FocusedSlotIndex();
+  if (focus >= 0 && focus < static_cast<int>(slots_.size())) {
+    const RECT& b = slots_[static_cast<size_t>(focus)].bounds;
+    POINT mid{(b.left + b.right) / 2, (b.top + b.bottom) / 2};
+    ClientToScreen(hwnd_, &mid);
+    seat = mid;
+  }
+  UpsertFloatPlacement(&placements_, path, current_page_, seat);
+  if (on_placements_changed_) {
+    on_placements_changed_(placements_);
+  }
+  if (on_refresh_) {
+    on_refresh_();
+  } else {
+    Present();
+  }
+  for (size_t i = 0; i < slots_.size(); ++i) {
+    if (_wcsicmp(slots_[i].item.path.c_str(), path.c_str()) == 0) {
+      SelectOnly(static_cast<int>(i));
+      BeginInlineRename();
+      return;
+    }
+  }
+}
+
+void PublicHost::ShowSelectionContextMenu() {
+  if (rename_edit_) {
+    return;
+  }
+  int index = FocusedSlotIndex();
+  if (index < 0 || index >= static_cast<int>(slots_.size()) ||
+      !IsSelected(index)) {
+    index = -1;
     for (size_t i = 0; i < slots_.size(); ++i) {
-      if (matches(i)) {
-        SelectOnly(static_cast<int>(i));
-        Present();
-        return;
+      if (IsSelected(static_cast<int>(i))) {
+        index = static_cast<int>(i);
+        break;
       }
     }
   }
+  // Explorer: Apps / Shift+F10 with no selection → Desktop background menu.
+  if (index < 0) {
+    POINT pt{};
+    GetCursorPos(&pt);
+    ShowBackgroundMenu(pt);
+    return;
+  }
+  POINT pt{};
+  const RECT& b = slots_[static_cast<size_t>(index)].bounds;
+  pt.x = (b.left + b.right) / 2;
+  pt.y = (b.top + b.bottom) / 2;
+  ClientToScreen(hwnd_, &pt);
+  ShowSlotMenu(index, pt);
 }
 
 void PublicHost::HandlePublicHotkey(int vk, bool ctrl, bool shift) {
@@ -1770,6 +2199,11 @@ void PublicHost::HandlePublicHotkey(int vk, bool ctrl, bool shift) {
     return;
   }
   if (vk == VK_ESCAPE) {
+    // Explorer: Esc first clears typeahead; then cancels drag/rubber; then selection.
+    if (!typeahead_.empty()) {
+      typeahead_.clear();
+      return;
+    }
     if (rubber_) {
       rubber_ = false;
       rubber_additive_ = false;
@@ -1777,23 +2211,67 @@ void PublicHost::HandlePublicHotkey(int vk, bool ctrl, bool shift) {
       if (GetCapture() == hwnd_) {
         ReleaseCapture();
       }
+      Present();
+      return;
+    }
+    if (drag_from_ >= 0) {
+      drag_from_ = -1;
+      drag_moved_ = false;
+      if (GetCapture() == hwnd_) {
+        ReleaseCapture();
+      }
+      Present();
+      return;
     }
     ClearSelection();
-    typeahead_.clear();
     Present();
     return;
   }
+  if (vk == VK_BACK) {
+    // Explorer: Backspace edits typeahead when active.
+    if (TypeAheadBackspace()) {
+      return;
+    }
+    return;
+  }
+  if (vk == VK_F3) {
+    TypeAheadFindNext();
+    return;
+  }
   if (vk == VK_RETURN) {
+    // Explorer / Fences: Alt+Enter → Properties; Ctrl+Enter → new window;
+    // Enter → open.
+    if ((GetAsyncKeyState(VK_MENU) & 0x8000) != 0) {
+      typeahead_.clear();
+      const auto paths = SelectedPaths();
+      if (!paths.empty()) {
+        ShowShellPathsProperties(hwnd_, paths);
+      }
+      return;
+    }
+    typeahead_.clear();
     OpenSelection();
     return;
   }
   if (vk == VK_DELETE) {
     // Explorer: Del → recycle; Shift+Del → permanent.
+    typeahead_.clear();
     DeleteSelection(shift);
     return;
   }
   if (vk == VK_F2) {
+    typeahead_.clear();
     BeginInlineRename();
+    return;
+  }
+  if (vk == VK_F5) {
+    // Explorer: F5 rescans floats (icons may have changed on disk).
+    typeahead_.clear();
+    if (on_refresh_) {
+      on_refresh_();
+    } else {
+      Present();
+    }
     return;
   }
   if (vk == VK_SPACE) {
@@ -1801,6 +2279,7 @@ void PublicHost::HandlePublicHotkey(int vk, bool ctrl, bool shift) {
     if (ctrl) {
       return;
     }
+    typeahead_.clear();
     int idx = FocusedSlotIndex();
     if (idx < 0 || idx >= static_cast<int>(slots_.size())) {
       return;
@@ -1809,25 +2288,75 @@ void PublicHost::HandlePublicHotkey(int vk, bool ctrl, bool shift) {
     Present();
     return;
   }
-  if (ctrl && vk == L'C') {
+  if (ctrl && shift && vk == L'C') {
+    // Explorer: Ctrl+Shift+C → copy path(s) as text.
+    typeahead_.clear();
+    CopySelectionPathsAsText();
+    return;
+  }
+  if ((ctrl && vk == L'C') || (ctrl && !shift && vk == VK_INSERT)) {
+    // Explorer: Ctrl+C / Ctrl+Insert → copy.
+    typeahead_.clear();
     CopySelection();
     return;
   }
   if (ctrl && vk == L'X') {
+    typeahead_.clear();
     CutSelection();
     return;
   }
-  if (ctrl && vk == L'V') {
-    PasteClipboardFiles();
+  if ((ctrl && vk == L'V') || (shift && vk == VK_INSERT)) {
+    // Explorer: Ctrl+V / Shift+Insert → paste; +Ctrl → 粘贴快捷方式.
+    typeahead_.clear();
+    PasteClipboardFiles(/*as_link=*/ctrl && shift);
     return;
   }
   if (ctrl && vk == L'A') {
+    typeahead_.clear();
     EnsureSelSize();
     std::fill(selected_.begin(), selected_.end(), static_cast<char>(1));
     if (!slots_.empty()) {
       selection_anchor_ = 0;
+      selection_focus_ = static_cast<int>(slots_.size()) - 1;
+    } else {
+      selection_anchor_ = -1;
+      selection_focus_ = -1;
     }
     Present();
+    return;
+  }
+  if (ctrl && shift && vk == L'N') {
+    // Explorer / Fences: Ctrl+Shift+N → new folder float (DeskNote keeps the
+    // chord when no public/fence key target).
+    CreateNewFolder();
+    return;
+  }
+  if (ctrl && !shift && vk == L'Z') {
+    // Explorer: Ctrl+Z → Desktop shell Undo; App re-pins remembered fence seats.
+    const std::wstring desk = PublicDesktopDirectory();
+    if (!desk.empty()) {
+      InvokeShellFolderVerb(hwnd_, desk, L"undo");
+    }
+    if (on_undo_) {
+      on_undo_();
+    }
+    return;
+  }
+  if (ctrl && !shift && vk == L'Y') {
+    // Explorer: Ctrl+Y → Desktop shell Redo.
+    const std::wstring desk = PublicDesktopDirectory();
+    if (!desk.empty()) {
+      InvokeShellFolderVerb(hwnd_, desk, L"redo");
+    }
+    if (on_refresh_) {
+      on_refresh_();
+    } else {
+      Present();
+    }
+    return;
+  }
+  if (vk == VK_APPS || (shift && !ctrl && vk == VK_F10)) {
+    ShowSelectionContextMenu();
     return;
   }
   if (vk == VK_HOME || vk == VK_END) {
@@ -1861,17 +2390,58 @@ void PublicHost::HandlePublicHotkey(int vk, bool ctrl, bool shift) {
     Present();
     return;
   }
+  if (vk == VK_PRIOR || vk == VK_NEXT) {
+    // Explorer: Page Up/Down jumps ~one screen of icons on the float layer.
+    typeahead_.clear();
+    if (slots_.empty()) {
+      return;
+    }
+    int cur = FocusedSlotIndex();
+    if (cur < 0) {
+      SelectOnly(0);
+      Present();
+      return;
+    }
+    const RECT& cb = slots_[static_cast<size_t>(cur)].bounds;
+    const int cx = (cb.left + cb.right) / 2;
+    const int cy = (cb.top + cb.bottom) / 2;
+    const int step = (std::max)(80, GetSystemMetrics(SM_CYSCREEN) / 3);
+    const int ty = cy + (vk == VK_PRIOR ? -step : step);
+    int best = cur;
+    long long best_score = LLONG_MAX;
+    for (size_t i = 0; i < slots_.size(); ++i) {
+      const RECT& b = slots_[i].bounds;
+      const int ox = (b.left + b.right) / 2 - cx;
+      const int oy = (b.top + b.bottom) / 2 - ty;
+      const long long score =
+          static_cast<long long>(ox) * ox + static_cast<long long>(oy) * oy;
+      if (score < best_score) {
+        best_score = score;
+        best = static_cast<int>(i);
+      }
+    }
+    if (shift) {
+      const int anchor =
+          selection_anchor_ >= 0 ? selection_anchor_ : FocusedSlotIndex();
+      SelectBetween(anchor < 0 ? best : anchor, best);
+    } else {
+      SelectOnly(best);
+    }
+    Present();
+    return;
+  }
   if (vk == VK_LEFT || vk == VK_RIGHT || vk == VK_UP || vk == VK_DOWN) {
     typeahead_.clear();
-  }
-  if (vk == VK_LEFT) {
-    NavigateSelection(-1, 0, shift);
-  } else if (vk == VK_RIGHT) {
-    NavigateSelection(1, 0, shift);
-  } else if (vk == VK_UP) {
-    NavigateSelection(0, -1, shift);
-  } else if (vk == VK_DOWN) {
-    NavigateSelection(0, 1, shift);
+    const bool focus_only = ctrl && !shift;
+    if (vk == VK_LEFT) {
+      NavigateSelection(-1, 0, shift, focus_only);
+    } else if (vk == VK_RIGHT) {
+      NavigateSelection(1, 0, shift, focus_only);
+    } else if (vk == VK_UP) {
+      NavigateSelection(0, -1, shift, focus_only);
+    } else if (vk == VK_DOWN) {
+      NavigateSelection(0, 1, shift, focus_only);
+    }
   }
 }
 
@@ -1888,6 +2458,34 @@ void PublicHost::DeleteSelection(bool permanent) {
   if (paths.empty()) {
     return;
   }
+  // Explorer: after delete, keep keyboard focus on the next surviving icon.
+  int first_sel = -1;
+  for (size_t i = 0; i < selected_.size() && i < slots_.size(); ++i) {
+    if (selected_[i]) {
+      first_sel = static_cast<int>(i);
+      break;
+    }
+  }
+  std::wstring next_path;
+  if (first_sel >= 0) {
+    for (int i = first_sel + 1; i < static_cast<int>(slots_.size()); ++i) {
+      if (i < static_cast<int>(selected_.size()) && selected_[static_cast<size_t>(i)]) {
+        continue;
+      }
+      next_path = slots_[static_cast<size_t>(i)].item.path;
+      break;
+    }
+    if (next_path.empty()) {
+      for (int i = first_sel - 1; i >= 0; --i) {
+        if (i < static_cast<int>(selected_.size()) &&
+            selected_[static_cast<size_t>(i)]) {
+          continue;
+        }
+        next_path = slots_[static_cast<size_t>(i)].item.path;
+        break;
+      }
+    }
+  }
   if (RecycleShellPaths(hwnd_, paths, permanent) != IconFsResult::Ok) {
     return;
   }
@@ -1898,6 +2496,15 @@ void PublicHost::DeleteSelection(bool permanent) {
   }
   if (on_refresh_) {
     on_refresh_();
+  }
+  if (!next_path.empty()) {
+    for (size_t i = 0; i < slots_.size(); ++i) {
+      if (_wcsicmp(slots_[i].item.path.c_str(), next_path.c_str()) == 0) {
+        SelectOnly(static_cast<int>(i));
+        Present();
+        break;
+      }
+    }
   }
 }
 
@@ -2011,6 +2618,34 @@ LRESULT CALLBACK PublicRenameEditProc(HWND hwnd, UINT msg, WPARAM wparam,
                                       LPARAM lparam) {
   auto* self =
       reinterpret_cast<PublicHost*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+  if (msg == WM_KEYDOWN && wparam == VK_TAB) {
+    if (self && !PublicRenameEditImeComposing(hwnd)) {
+      const bool back = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+      self->CommitRenameAndAdvance(back ? -1 : 1);
+    }
+    return 0;
+  }
+  if (msg == WM_KEYDOWN && wparam == VK_F2) {
+    // Explorer: second F2 toggles stem selection ↔ full name.
+    wchar_t buf[520] = {};
+    GetWindowTextW(hwnd, buf, 520);
+    const int len = static_cast<int>(wcslen(buf));
+    int stem_end = len;
+    const wchar_t* dot = wcsrchr(buf, L'.');
+    if (dot && dot > buf) {
+      stem_end = static_cast<int>(dot - buf);
+    }
+    DWORD start = 0;
+    DWORD end = 0;
+    SendMessageW(hwnd, EM_GETSEL, reinterpret_cast<WPARAM>(&start),
+                 reinterpret_cast<LPARAM>(&end));
+    if (start == 0 && static_cast<int>(end) == len) {
+      SendMessageW(hwnd, EM_SETSEL, 0, stem_end);
+    } else {
+      SendMessageW(hwnd, EM_SETSEL, 0, -1);
+    }
+    return 0;
+  }
   if (msg == WM_KEYDOWN && (wparam == VK_RETURN || wparam == VK_ESCAPE)) {
     if (wparam == VK_RETURN && PublicRenameEditImeComposing(hwnd)) {
       WNDPROC old = reinterpret_cast<WNDPROC>(GetPropW(hwnd, L"oldproc"));
@@ -2038,6 +2673,49 @@ LRESULT CALLBACK PublicRenameEditProc(HWND hwnd, UINT msg, WPARAM wparam,
 }
 }  // namespace
 
+void PublicHost::CommitRenameAndAdvance(int delta) {
+  const int from = rename_index_;
+  FinishInlineRename(true);
+  if (from < 0 || slots_.empty() || delta == 0) {
+    return;
+  }
+  const int n = static_cast<int>(slots_.size());
+  for (int step = 1; step <= n; ++step) {
+    int i = (from + delta * step) % n;
+    if (i < 0) {
+      i += n;
+    }
+    if (slots_[static_cast<size_t>(i)].item.path.empty()) {
+      continue;
+    }
+    SelectOnly(i);
+    BeginInlineRename();
+    return;
+  }
+}
+
+std::wstring PublicHost::SelectedSingleDirectory() const {
+  std::wstring dir;
+  int n = 0;
+  const size_t lim = (std::min)(selected_.size(), slots_.size());
+  for (size_t i = 0; i < lim; ++i) {
+    if (!selected_[i] || slots_[i].item.path.empty()) {
+      continue;
+    }
+    const DWORD attr = GetFileAttributesW(slots_[i].item.path.c_str());
+    if (attr == INVALID_FILE_ATTRIBUTES ||
+        !(attr & FILE_ATTRIBUTE_DIRECTORY)) {
+      return L"";
+    }
+    dir = slots_[i].item.path;
+    ++n;
+    if (n > 1) {
+      return L"";
+    }
+  }
+  return n == 1 ? dir : L"";
+}
+
 bool PublicHost::IconLabelRect(size_t index, RECT* out) const {
   if (!out || index >= slots_.size()) {
     return false;
@@ -2056,17 +2734,21 @@ bool PublicHost::IconLabelRect(size_t index, RECT* out) const {
 
 void PublicHost::BeginInlineRename() {
   EnsureSelSize();
+  // Explorer / Fences: F2 renames the focused/anchor item under multi-select.
   int index = -1;
-  int count = 0;
-  for (size_t i = 0; i < selected_.size() && i < slots_.size(); ++i) {
-    if (selected_[i]) {
-      index = static_cast<int>(i);
-      ++count;
-    }
+  if (selection_anchor_ >= 0 &&
+      selection_anchor_ < static_cast<int>(selected_.size()) &&
+      selection_anchor_ < static_cast<int>(slots_.size()) &&
+      selected_[static_cast<size_t>(selection_anchor_)]) {
+    index = selection_anchor_;
+  } else {
+    index = FocusedSlotIndex();
   }
-  if (count != 1 || index < 0 || !hwnd_) {
+  if (index < 0 || index >= static_cast<int>(slots_.size()) || !hwnd_ ||
+      slots_[static_cast<size_t>(index)].item.path.empty()) {
     return;
   }
+  SelectOnly(index);
   if (rename_edit_) {
     DestroyWindow(rename_edit_);
     rename_edit_ = nullptr;
@@ -2113,32 +2795,44 @@ void PublicHost::BeginInlineRename() {
 }
 
 void PublicHost::FinishInlineRename(bool commit) {
-  if (!rename_edit_) {
+  if (!rename_edit_ || rename_finishing_) {
     return;
   }
+  rename_finishing_ = true;
   HWND edit = rename_edit_;
-  rename_edit_ = nullptr;
   wchar_t buf[260] = {};
   GetWindowTextW(edit, buf, 260);
   const int index = rename_index_;
-  rename_index_ = -1;
-  DestroyWindow(edit);
+  auto close_edit = [&]() {
+    rename_edit_ = nullptr;
+    rename_index_ = -1;
+    DestroyWindow(edit);
+  };
   if (!commit || index < 0 || index >= static_cast<int>(slots_.size())) {
+    close_edit();
+    rename_finishing_ = false;
     return;
   }
   const std::wstring old_path = slots_[static_cast<size_t>(index)].item.path;
   const std::wstring neu = buf;
   const RenamePlan plan = PlanRename(old_path, neu);
+  // Explorer: invalid/duplicate name keeps the edit box open.
   if (!plan.valid) {
     if (!neu.empty()) {
       ShowToast(plan.error);
     }
+    rename_finishing_ = false;
+    SetFocus(edit);
     return;
   }
   if (GetFileAttributesW(plan.dest.c_str()) != INVALID_FILE_ATTRIBUTES) {
     ShowToast(L"该名称已存在");
+    rename_finishing_ = false;
+    SetFocus(edit);
     return;
   }
+  close_edit();
+  rename_finishing_ = false;
   if (!MoveFileW(old_path.c_str(), plan.dest.c_str())) {
     const DWORD err = GetLastError();
     if (err == ERROR_SHARING_VIOLATION || err == ERROR_LOCK_VIOLATION) {
@@ -2159,8 +2853,14 @@ void PublicHost::FinishInlineRename(bool commit) {
 }
 
 void PublicHost::OpenSelection() {
+  // Explorer: Ctrl+Enter / Ctrl+dblclick → new window for folders.
+  const bool ctrl_new = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
   for (const auto& p : SelectedPaths()) {
-    OpenShellPath(p);
+    if (ctrl_new) {
+      ExploreShellPath(p);
+    } else {
+      OpenShellPath(p);
+    }
   }
 }
 
@@ -2196,6 +2896,80 @@ void PublicHost::BeginOleDrag() {
       break;
     }
   }
+  // Organized blank: OLE self-drop is cancelled (same-folder CF_HDROP). With
+  // Ctrl / Ctrl+Shift / Alt, Explorer would COPY or create .lnk — do that here.
+  auto over_desktop_blank = [](POINT screen) {
+    HWND hwnd = WindowFromPoint(screen);
+    for (HWND cur = hwnd; cur; cur = GetParent(cur)) {
+      wchar_t cls[128] = {};
+      GetClassNameW(cur, cls, 128);
+      if (wcscmp(cls, L"DeskTidyNativePublic") == 0 ||
+          wcscmp(cls, L"DeskTidyNativeMarquee") == 0) {
+        return true;
+      }
+      if (wcscmp(cls, L"Progman") == 0 || wcscmp(cls, L"WorkerW") == 0 ||
+          wcscmp(cls, L"SHELLDLL_DefView") == 0) {
+        return true;
+      }
+      if (wcscmp(cls, L"DeskTidyNativeFence") == 0) {
+        return false;
+      }
+    }
+    return false;
+  };
+  bool modifier_landed = false;
+  if (!dropped && over_desktop_blank(pt)) {
+    const bool ctrl = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
+    const bool shift = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
+    const bool alt = (GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
+    const bool want_link = (ctrl && shift) || alt;
+    const bool want_copy = ctrl && !shift && !alt;
+    if (want_link || want_copy) {
+      PWSTR desk_raw = nullptr;
+      std::wstring desk;
+      if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Desktop, 0, nullptr,
+                                         &desk_raw)) &&
+          desk_raw) {
+        desk = desk_raw;
+        CoTaskMemFree(desk_raw);
+      }
+      if (!desk.empty()) {
+        const IconGridMetrics grid = QueryIconGridMetrics();
+        const int step = (std::max)(48, grid.cell_w);
+        int cascade = 0;
+        int ok = 0;
+        for (const auto& src : paths) {
+          std::wstring dest;
+          bool landed_ok = false;
+          if (want_link) {
+            landed_ok = CreateShortcutIntoDir(hwnd_, src, desk, &dest) &&
+                        !dest.empty();
+          } else {
+            landed_ok =
+                MoveOrCopyFileIntoDir(hwnd_, src, desk, /*move=*/false, &dest) &&
+                !dest.empty();
+          }
+          if (!landed_ok) {
+            continue;
+          }
+          SuppressOrganizePath(dest, 24.0 * 3600.0);
+          POINT seat{pt.x + cascade * step / 4, pt.y + cascade * step / 4};
+          UpsertFloatPlacement(&placements_, dest, current_page_, seat);
+          ++cascade;
+          ++ok;
+        }
+        if (ok > 0) {
+          modifier_landed = true;
+          if (on_placements_changed_) {
+            on_placements_changed_(placements_);
+          }
+          ShowToast(want_link
+                        ? (L"已创建快捷方式 " + std::to_wstring(ok) + L" 项")
+                        : (L"已复制 " + std::to_wstring(ok) + L" 项"));
+        }
+      }
+    }
+  }
   bool placements_dirty = false;
   for (const auto& p : paths) {
     if (GetFileAttributesW(p.c_str()) == INVALID_FILE_ATTRIBUTES) {
@@ -2206,7 +2980,7 @@ void PublicHost::BeginOleDrag() {
       }
       continue;
     }
-    if (!dropped && paths.size() == 1) {
+    if (!dropped && !modifier_landed && paths.size() == 1) {
       // Single-icon cancel/desktop release: park under cursor (Explorer).
       UpsertFloatPlacement(&placements_, p, current_page_, pt);
       placements_dirty = true;
@@ -2281,16 +3055,9 @@ LRESULT PublicHost::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
     const bool shift = (lparam & 2) != 0;
     const bool typeahead = (lparam & 4) != 0;
     if (typeahead) {
-      wchar_t ch = 0;
-      if (vk >= 'A' && vk <= 'Z') {
-        ch = static_cast<wchar_t>(vk);
-      } else if (vk >= '0' && vk <= '9') {
-        ch = static_cast<wchar_t>(vk);
-      } else if (vk >= VK_NUMPAD0 && vk <= VK_NUMPAD9) {
-        ch = static_cast<wchar_t>(L'0' + (vk - VK_NUMPAD0));
-      }
-      if (ch) {
-        TypeAheadFind(ch);
+      // fence_keys posts Unicode char in wParam (ToUnicodeEx).
+      if (wparam) {
+        TypeAheadFind(static_cast<wchar_t>(wparam));
       }
       return 0;
     }
@@ -2308,6 +3075,10 @@ LRESULT PublicHost::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
       return 0;
     }
     case WM_LBUTTONDOWN: {
+      SetFenceKeyTarget(hwnd_);
+      if (on_activated_) {
+        on_activated_();
+      }
       const int x = GET_X_LPARAM(lparam);
       const int y = GET_Y_LPARAM(lparam);
       SetFocus(hwnd_);
@@ -2349,6 +3120,23 @@ LRESULT PublicHost::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
       return 0;
     }
     case WM_MOUSEMOVE: {
+      if (rbutton_press_ && (wparam & MK_RBUTTON) && rbutton_icon_ >= 0 &&
+          !rbutton_dragged_) {
+        const int x = GET_X_LPARAM(lparam);
+        const int y = GET_Y_LPARAM(lparam);
+        if (std::abs(x - rbutton_press_pt_.x) >= kDragThreshold ||
+            std::abs(y - rbutton_press_pt_.y) >= kDragThreshold) {
+          rbutton_dragged_ = true;
+          rbutton_press_ = false;
+          drag_from_ = rbutton_icon_;
+          rbutton_icon_ = -1;
+          if (GetCapture() == hwnd_) {
+            ReleaseCapture();
+          }
+          BeginOleDrag();
+          return 0;
+        }
+      }
       if ((wparam & MK_LBUTTON) == 0) {
         const int hit =
             HitTest(GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam));
@@ -2394,6 +3182,13 @@ LRESULT PublicHost::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
       // Fences/Explorer: multi-select → shell drag as soon as threshold is met
       // (do not wait for "outside host"; glyph padding used to fire OLE early
       // then wipe placements).
+      // Ctrl / Alt drag → COPY /.lnk via OLE (never plain seat reorder).
+      const bool drag_ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+      const bool drag_shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+      if (WantDropLinkEffect() || (drag_ctrl && !drag_shift)) {
+        BeginOleDrag();
+        return 0;
+      }
       int sel_count = 0;
       for (char c : selected_) {
         if (c) {
@@ -2417,6 +3212,36 @@ LRESULT PublicHost::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
         return 0;
       }
       if (hit != drag_from_) {
+        // Explorer: seat-drag onto Recycle Bin float → delete.
+        if (hit >= 0 && hit < static_cast<int>(slots_.size())) {
+          const std::wstring& p = slots_[static_cast<size_t>(hit)].item.path;
+          if (GetLnkNamespaceClsid(p) ==
+              L"{645FF040-5081-101B-9F08-00AA002F954E}") {
+            auto paths = SelectedPaths();
+            if (paths.empty() && drag_from_ >= 0 &&
+                drag_from_ < static_cast<int>(slots_.size())) {
+              paths.push_back(
+                  slots_[static_cast<size_t>(drag_from_)].item.path);
+            }
+            drag_from_ = -1;
+            drag_moved_ = false;
+            if (GetCapture() == hwnd_) {
+              ReleaseCapture();
+            }
+            if (!paths.empty() &&
+                RecycleShellPaths(hwnd_, paths) == IconFsResult::Ok) {
+              for (const auto& src : paths) {
+                if (on_removed_) {
+                  on_removed_(src);
+                }
+              }
+              if (on_refresh_) {
+                on_refresh_();
+              }
+            }
+            return 0;
+          }
+        }
         ReorderTo(drag_from_, hit);
         drag_from_ = hit;
         SelectOnly(hit);
@@ -2502,12 +3327,62 @@ LRESULT PublicHost::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
           HitTest(GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam));
       if (hit >= 0 && hit < static_cast<int>(slots_.size())) {
         SelectOnly(hit);
-        OpenShellPath(slots_[static_cast<size_t>(hit)].item.path);
+        // Explorer: Alt+dblclick → Properties; Ctrl+dblclick folder → new window.
+        if ((GetAsyncKeyState(VK_MENU) & 0x8000) != 0) {
+          ShowShellPathsProperties(hwnd_, SelectedPaths());
+        } else if ((GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0) {
+          ExploreShellPath(slots_[static_cast<size_t>(hit)].item.path);
+        } else {
+          OpenShellPath(slots_[static_cast<size_t>(hit)].item.path);
+        }
         Present();
       }
       return 0;
     }
+    case WM_MBUTTONUP: {
+      // Explorer: middle-click folder → new window; files open normally.
+      const int hit =
+          HitTest(GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam));
+      if (hit >= 0 && hit < static_cast<int>(slots_.size()) &&
+          !slots_[static_cast<size_t>(hit)].item.path.empty()) {
+        if (!IsSelected(hit)) {
+          SelectOnly(hit);
+        }
+        ExploreShellPath(slots_[static_cast<size_t>(hit)].item.path);
+        Present();
+      }
+      return 0;
+    }
+    case WM_RBUTTONDOWN: {
+      SetFenceKeyTarget(hwnd_);
+      if (on_activated_) {
+        on_activated_();
+      }
+      rbutton_press_ = true;
+      rbutton_dragged_ = false;
+      rbutton_press_pt_ = {GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
+      rbutton_icon_ = HitTest(rbutton_press_pt_.x, rbutton_press_pt_.y);
+      if (rbutton_icon_ >= 0) {
+        EnsureSelSize();
+        if (!IsSelected(rbutton_icon_)) {
+          SelectOnly(rbutton_icon_);
+          Present();
+        }
+        SetCapture(hwnd_);
+      }
+      return 0;
+    }
     case WM_RBUTTONUP: {
+      const bool was_drag = rbutton_dragged_;
+      rbutton_press_ = false;
+      rbutton_dragged_ = false;
+      rbutton_icon_ = -1;
+      if (GetCapture() == hwnd_ && !drag_moved_) {
+        ReleaseCapture();
+      }
+      if (was_drag) {
+        return 0;
+      }
       const int hit = HitTest(GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam));
       POINT pt{};
       GetCursorPos(&pt);
@@ -2555,11 +3430,13 @@ void PublicHost::Paint(HDC hdc, bool draw_selection, bool draw_rubber) {
   // rubber-band / selection storms (many apps open → ULW tax).
   static Gdiplus::SolidBrush* s_hit = nullptr;
   static Gdiplus::SolidBrush* s_sel = nullptr;
+  static Gdiplus::SolidBrush* s_focus = nullptr;
   static Gdiplus::SolidBrush* s_rubber_fill = nullptr;
   static Gdiplus::Pen* s_rubber_pen = nullptr;
   if (!s_hit) {
     s_hit = new Gdiplus::SolidBrush(Gdiplus::Color(1, 0, 0, 0));
     s_sel = new Gdiplus::SolidBrush(Gdiplus::Color(90, 0, 120, 215));
+    s_focus = new Gdiplus::SolidBrush(Gdiplus::Color(40, 0, 120, 215));
     s_rubber_fill = new Gdiplus::SolidBrush(Gdiplus::Color(40, 0, 120, 215));
     s_rubber_pen = new Gdiplus::Pen(Gdiplus::Color(200, 0, 120, 215), 1.f);
   }
@@ -2585,6 +3462,14 @@ void PublicHost::Paint(HDC hdc, bool draw_selection, bool draw_rubber) {
       const auto& s = slots_[i];
       if (draw_selection && i < selected_.size() && selected_[i]) {
         gi.FillRectangle(s_sel,
+                         static_cast<INT>(s.bounds.left),
+                         static_cast<INT>(s.bounds.top),
+                         static_cast<INT>(s.bounds.right - s.bounds.left),
+                         static_cast<INT>(s.bounds.bottom - s.bounds.top));
+      } else if (draw_selection && selection_focus_ == static_cast<int>(i) &&
+                 s_focus) {
+        // Ctrl+Arrow focus ring (not selected).
+        gi.FillRectangle(s_focus,
                          static_cast<INT>(s.bounds.left),
                          static_cast<INT>(s.bounds.top),
                          static_cast<INT>(s.bounds.right - s.bounds.left),

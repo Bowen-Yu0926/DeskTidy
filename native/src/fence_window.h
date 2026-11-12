@@ -45,8 +45,10 @@ class FenceWindow {
   using PortalFn =
       std::function<void(FenceWindow*, const std::wstring& path)>;
   // Paste with clipboard effect: move = true for cut (Preferred DropEffect MOVE).
+  // link = true for Explorer 「粘贴快捷方式」(pastelink) → land .lnk then pin.
   using PasteFn = std::function<void(FenceWindow*,
-                                     const std::vector<std::wstring>&, bool)>;
+                                     const std::vector<std::wstring>&, bool,
+                                     bool)>;
   // Shell New landed on Desktop — pin as-is (do not FO_COPY).
   using CreatedFn =
       std::function<void(FenceWindow*, const std::vector<std::wstring>&)>;
@@ -133,6 +135,8 @@ class FenceWindow {
   void SetOnOpenNotes(OpenNotesFn fn) { on_open_notes_ = std::move(fn); }
   void SetOnDissolve(DissolveFn fn) { on_dissolve_ = std::move(fn); }
   void SetOnRefresh(RefreshFn fn) { on_refresh_ = std::move(fn); }
+  // Fences / Explorer: clicking this fence clears selection elsewhere.
+  void SetOnActivated(MovedFn fn) { on_activated_ = std::move(fn); }
   void SetOnReorder(ReorderFn fn) { on_reorder_ = std::move(fn); }
   void SetOnPathsDroppedAt(DropAtFn fn) { on_paths_dropped_at_ = std::move(fn); }
   void SetOnZoomChanged(ZoomFn fn) { on_zoom_changed_ = std::move(fn); }
@@ -198,17 +202,22 @@ class FenceWindow {
   // -1 = inherit style preset; otherwise 0–255 panel alpha.
   void SetOpacity(int opacity);
   int Opacity() const { return opacity_override_; }
-  void PasteClipboardFiles();
+  // as_link: shell verb pastelink → create Desktop/portal .lnk (not copy/move).
+  void PasteClipboardFiles(bool as_link = false);
   void SetPortalPath(const std::wstring& path);
   const std::wstring& PortalPath() const { return portal_path_; }
   // Fences Folder Portal: current browse dir (root or drilled-in child).
   const std::wstring& PortalBrowsePath() const;
   bool PortalCanGoUp() const;
+  bool PortalCanGoForward() const;
   bool NavigatePortalInto(const std::wstring& folder);
   bool PortalGoUp();
+  bool PortalGoForward();
   bool IsCollapsed() const { return collapsed_; }
-  void SetCollapsed(bool collapsed);
+  void SetCollapsed(bool collapsed, bool persist = true);
   void ToggleCollapsed();
+  bool AutoHide() const { return auto_hide_; }
+  void SetAutoHide(bool on);
   bool IsPositionLocked() const { return position_locked_; }
   void SetPositionLocked(bool locked);
   void SetPageNames(std::vector<std::wstring> names) {
@@ -219,12 +228,30 @@ class FenceWindow {
   void DeleteSelection(bool permanent = false);
   void SelectAll();
   void ClearSelection();
+  // Select by path after paste/New (Explorer keeps focus on landed items).
+  void SelectPaths(const std::vector<std::wstring>& paths);
+  // Explorer Ctrl+Shift+C → CF_UNICODETEXT of selected paths.
+  void CopySelectionPathsAsText();
   void BeginInlineRename();
   void FinishInlineRename(bool commit);
+  // Explorer: Tab / Shift+Tab after rename → next / previous icon.
+  void CommitRenameAndAdvance(int delta);
   // Fences: blank-menu「重命名」→ title-bar inline EDIT (not Mist dialog).
   void BeginTitleInlineRename();
   // Explorer/Fences: type letter prefix to jump to matching icon.
   void TypeAheadFind(wchar_t ch);
+  // Backspace pops typeahead; F3 jumps to next prefix match.
+  bool TypeAheadBackspace();
+  void TypeAheadFindNext();
+  // Explorer / Fences: Ctrl+Shift+N → new folder (Desktop pin or portal cwd).
+  void CreateNewFolder();
+  // Explorer: Apps / Shift+F10 → item context menu for the selection.
+  void ShowSelectionContextMenu();
+  // Exactly one selected filesystem directory (Explorer paste-into-folder).
+  std::wstring SelectedSingleDirectory() const;
+  // Explorer Ctrl+Z / blank Undo → shell undo + re-pin (App owns stack).
+  using UndoFn = std::function<void()>;
+  void SetOnUndo(UndoFn fn) { on_undo_ = std::move(fn); }
 
  private:
   struct Cell {
@@ -272,7 +299,8 @@ class FenceWindow {
                       RECT* portal_up = nullptr) const;
   HeaderBtn HitTestHeaderBtn(int x, int y) const;
   void ActivateHeaderBtn(HeaderBtn btn);
-  void OpenItem(int index);
+  // external=true: open in Explorer (portal Shift+Enter) — skip drill-in.
+  void OpenItem(int index, bool external = false);
   void RevealItem(int index);
   void BeginIconDrag(int index);
   void EnsureDropTarget();
@@ -281,8 +309,15 @@ class FenceWindow {
   void RecycleItem(int index);
   // Drop onto hosted Recycle Bin pin → FO_DELETE (not pin-into-fence).
   bool IsRecycleBinIconAt(int x, int y) const;
+  // Explorer: drop onto a folder icon → import into that directory.
+  // Empty when not over a filesystem directory (or over Recycle Bin).
+  std::wstring DirectoryIconAt(int x, int y) const;
   // Returns true when paths were sent to the Recycle Bin.
   bool RecycleDroppedPaths(std::vector<std::wstring> paths);
+  // Land CF_HDROP into `dest_dir` (MOVE/COPY/LINK from proposed OLE effect).
+  DWORD ImportPathsIntoDirectory(const std::vector<std::wstring>& paths,
+                                 const std::wstring& dest_dir,
+                                 DWORD proposed);
   void ShowItemProperties(int index);
   void ShowFenceMenu(POINT screen);
   // Cascading「移动到分页」→ page → fence.
@@ -294,7 +329,9 @@ class FenceWindow {
   std::vector<std::wstring> SelectedPaths() const;
   void ApplySelectionCommand(int cmd, int clicked);
   void ApplyRubberBandSelection();
-  void NavigateSelection(int dx, int dy, bool extend);
+  // focus_only: Ctrl+Arrow — move keyboard focus without changing selection.
+  void NavigateSelection(int dx, int dy, bool extend, bool focus_only = false);
+  void ResetPortalBrowseChrome();
   void EnsureCellVisible(int index);
   void OpenSelectedItems();
   int GridColumnCount() const;
@@ -337,9 +374,15 @@ class FenceWindow {
   Edge resize_edge_ = Edge::None;
   bool icon_press_ = false;
   int icon_press_index_ = -1;
+  // Explorer right-drag → OLE Copy/Move/Create-shortcut menu.
+  bool rbutton_press_ = false;
+  bool rbutton_dragged_ = false;
+  int rbutton_icon_ = -1;
+  POINT rbutton_press_pt_{};
   // Manual double-click fallback (in case class lacks CS_DBLCLKS).
   int last_icon_click_ = -1;
   DWORD last_icon_click_tick_ = 0;
+  bool rename_finishing_ = false;
   std::wstring typeahead_;
   DWORD typeahead_tick_ = 0;
   POINT drag_offset_{};
@@ -383,6 +426,8 @@ class FenceWindow {
   OpenNotesFn on_open_notes_;
   DissolveFn on_dissolve_;
   RefreshFn on_refresh_;
+  UndoFn on_undo_;
+  MovedFn on_activated_;
   ReorderFn on_reorder_;
   DropAtFn on_paths_dropped_at_;
   ZoomFn on_zoom_changed_;
@@ -392,7 +437,10 @@ class FenceWindow {
   std::wstring portal_path_;
   // Empty → browsing portal_path_ root. Non-empty → in-portal cwd.
   std::wstring portal_cwd_;
+  // Forward stack after PortalGoUp (Explorer/browser: Alt+→ / XBUTTON2).
+  std::vector<std::wstring> portal_forward_;
   bool collapsed_ = false;
+  bool auto_hide_ = false;
   bool position_locked_ = false;
   HeaderBtn header_press_ = HeaderBtn::None;
   int expanded_h_ = 360;
@@ -417,7 +465,9 @@ class FenceWindow {
   WNDPROC rename_proc_ = nullptr;
   std::vector<Cell> cells_;
   std::vector<char> selected_;
+  // Explorer ListView: mark (anchor) stays during Shift-extend; focus moves.
   int selection_anchor_ = -1;
+  int selection_focus_ = -1;
   PathDropTarget* drop_target_ = nullptr;
   // F2/F3 manual icon drag state.
   bool icon_dragging_ = false;
@@ -430,6 +480,7 @@ class FenceWindow {
   // OLE inbound drop preview (Explorer / desktop / other fence).
   bool drop_preview_ = false;
   bool drop_over_recycle_ = false;
+  bool drop_over_folder_ = false;
   int drop_insert_ = -1;
   POINT drop_pt_{};
   DWORD last_ole_preview_present_ms_ = 0;

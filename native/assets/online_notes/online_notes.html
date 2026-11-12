@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>在线笔记</title>
+<link rel="stylesheet" href="../md_preview/vendor/toastui-editor.min.css" />
+<style>
+  :root {
+    --card: #FFFFFF;
+    --border: rgba(15, 23, 42, 0.10);
+    --text: #172033;
+    --muted: #66788C;
+    --accent: #2F6FED;
+    --accent-soft: #EAF1FE;
+    --row-hover: rgba(234, 241, 254, 0.5);
+    --primary: #16A34A;
+    --danger: #E5484D;
+    --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.04), 0 1px 3px rgba(15, 23, 42, 0.06);
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; height: 100%;
+    font-family: "Microsoft YaHei UI", "Segoe UI", sans-serif;
+    background: transparent; color: var(--text); font-size: 13px;
+    overflow: hidden; user-select: none;
+  }
+  #card {
+    height: 100%; display: flex; flex-direction: column;
+    background: rgba(255, 255, 255, 0.94);
+    border: 1px solid var(--border); border-radius: 12px; overflow: hidden;
+  }
+  #title-bar {
+    display: flex; align-items: center; gap: 8px;
+    padding: 8px 8px 8px 12px;
+    background: rgba(255, 255, 255, 0.9);
+    border-bottom: 1px solid var(--border); cursor: move;
+  }
+  #title { font-size: 14px; font-weight: 700; }
+  #user { color: var(--muted); font-size: 11px; }
+  #hide {
+    margin-left: auto; width: 28px; height: 28px; border: 0; border-radius: 6px;
+    background: transparent; color: var(--muted); font-size: 18px; cursor: pointer;
+  }
+  #hide:hover { background: rgba(224, 231, 255, 0.35); color: var(--text); }
+  .toolbar {
+    display: flex; gap: 4px; align-items: center; padding: 8px 10px 4px;
+  }
+  .toolbar input {
+    flex: 1; min-width: 0; height: 30px; padding: 4px 8px;
+    border: 1px solid var(--border); border-radius: 6px; font: inherit; outline: none;
+  }
+  .tbtn {
+    border: 0; background: transparent; color: var(--muted);
+    font: inherit; padding: 2px 8px; border-radius: 6px; cursor: pointer;
+  }
+  .tbtn:hover { background: rgba(224, 231, 255, 0.35); color: var(--text); }
+  .chip {
+    border: 1px solid var(--accent); background: rgba(224, 231, 255, 0.22);
+    color: var(--accent); font: inherit; font-weight: 600;
+    padding: 4px 10px; border-radius: 6px; cursor: pointer;
+  }
+  .chip:hover { background: rgba(47, 111, 237, 0.20); color: var(--text); }
+  .chip.danger { border-color: var(--danger); color: var(--danger); background: transparent; }
+  #body {
+    flex: 1; min-height: 0; display: flex; border-top: 1px solid var(--border);
+  }
+  #side {
+    width: 220px; flex: 0 0 220px; border-right: 1px solid var(--border);
+    overflow: auto; background: #f8fafc;
+  }
+  #list { padding: 6px; }
+  #empty { color: var(--muted); text-align: center; padding: 28px 10px; }
+  #side-label {
+    padding: 8px 10px 2px; font-size: 11px; font-weight: 700;
+    color: #1d4ed8; letter-spacing: 0.04em;
+  }
+  .row {
+    background: linear-gradient(90deg, #dbeafe 0 4px, var(--card) 4px);
+    border: 1px solid #bfdbfe; border-radius: 10px;
+    padding: 10px 10px 10px 12px; margin-bottom: 8px; cursor: pointer;
+    box-shadow: var(--shadow-sm);
+  }
+  .row:hover { background: linear-gradient(90deg, #93c5fd 0 4px, var(--row-hover) 4px); border-color: var(--accent); }
+  .row.on { border-color: var(--accent); background: linear-gradient(90deg, #2F6FED 0 4px, var(--accent-soft) 4px); }
+  .row-title {
+    font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    display: flex; align-items: center; gap: 6px;
+  }
+  .badge-cloud {
+    flex: 0 0 auto; font-size: 10px; font-weight: 700; color: #1d4ed8;
+    background: #dbeafe; border: 1px solid #93c5fd; border-radius: 999px;
+    padding: 0 6px; line-height: 16px;
+  }
+  .row-meta { color: var(--muted); font-size: 11px; margin-top: 4px; }
+  #main {
+    flex: 1; min-width: 0; display: flex; flex-direction: column; background: #fff;
+  }
+  #note-title {
+    margin: 8px 10px 0; height: 34px; padding: 0 10px;
+    border: 1px solid var(--border); border-radius: 8px; font: inherit; font-size: 15px; font-weight: 600;
+  }
+  #editor-host { flex: 1; min-height: 0; margin: 8px 10px 4px; }
+  #editor-host .toastui-editor-defaultUI { height: 100% !important; border-radius: 8px; }
+  #status {
+    padding: 4px 12px 10px; color: var(--muted); font-size: 12px;
+  }
+</style>
+</head>
+<body>
+<div id="card">
+  <div id="title-bar">
+    <div id="title">在线笔记</div>
+    <div id="user"></div>
+    <button type="button" id="hide" title="关闭">×</button>
+  </div>
+  <div class="toolbar">
+    <input id="search" type="search" placeholder="搜索标题…" />
+    <button type="button" class="tbtn" id="btn-refresh">刷新</button>
+    <button type="button" class="chip" id="btn-add" title="新建在线笔记">新建在线笔记</button>
+    <button type="button" class="chip" id="btn-save">保存</button>
+    <button type="button" class="chip" id="btn-to-local">转本地</button>
+    <button type="button" class="chip danger" id="btn-del">删除</button>
+    <button type="button" class="tbtn" id="btn-auth">登录</button>
+  </div>
+  <div id="body">
+    <div id="side">
+      <div id="side-label">☁ 在线笔记</div>
+      <div id="list"><div id="empty">（暂无在线笔记）</div></div>
+    </div>
+    <div id="main">
+      <input id="note-title" type="text" placeholder="标题" disabled />
+      <div id="editor-host"></div>
+    </div>
+  </div>
+  <div id="status"></div>
+</div>
+<script src="../md_preview/vendor/toastui-editor-all.min.js"></script>
+<script>
+  const state = {
+    items: [], logged_in: false, session: '', status: '',
+    current_id: 0, title: '', body: ''
+  };
+  let editor = null;
+
+  function post(obj) {
+    try {
+      if (window.chrome && window.chrome.webview) {
+        chrome.webview.postMessage(JSON.stringify(obj));
+      }
+    } catch (e) {}
+  }
+  function esc(s) {
+    return String(s == null ? '' : s)
+      .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+      .replace(/"/g,'&quot;');
+  }
+  function ensureEditor() {
+    if (editor || !window.toastui || !toastui.Editor) return;
+    editor = new toastui.Editor({
+      el: document.getElementById('editor-host'),
+      height: '100%',
+      initialEditType: 'wysiwyg',
+      previewStyle: 'vertical',
+      usageStatistics: false,
+      placeholder: '在此编写在线笔记…'
+    });
+  }
+  function filtered() {
+    const q = (document.getElementById('search').value || '').trim().toLowerCase();
+    let items = state.items || [];
+    if (!q) return items;
+    return items.filter((it) => String(it.title || '').toLowerCase().indexOf(q) >= 0);
+  }
+  function renderList() {
+    const box = document.getElementById('list');
+    const items = filtered();
+    if (!items.length) {
+      box.innerHTML = '<div id="empty">（暂无在线笔记）</div>';
+      return;
+    }
+    box.innerHTML = items.map((it) => {
+      const on = Number(it.id) === Number(state.current_id) ? ' on' : '';
+      return '<div class="row' + on + '" data-id="' + esc(it.id) + '">'
+        + '<div class="row-title"><span class="badge-cloud">云</span><span>'
+        + esc(it.title || '未命名') + '</span></div>'
+        + '<div class="row-meta">' + esc(it.updated_at || '') + '</div></div>';
+    }).join('');
+    box.querySelectorAll('.row').forEach((el) => {
+      el.onclick = () => post({ type: 'action', id: 'open', note_id: Number(el.dataset.id) });
+    });
+  }
+  function renderChrome() {
+    document.getElementById('user').textContent = state.logged_in
+      ? (state.session || '已登录') : '未登录';
+    document.getElementById('btn-auth').textContent = state.logged_in ? '退出' : '登录';
+    document.getElementById('status').textContent = state.status || '';
+    const titleEl = document.getElementById('note-title');
+    titleEl.disabled = !state.current_id;
+    titleEl.value = state.title || '';
+    ensureEditor();
+    if (editor) {
+      const md = state.body || '';
+      try { editor.setMarkdown(md); } catch (e) {}
+    }
+    renderList();
+  }
+  window.applyState = function(m) {
+    if (!m || typeof m !== 'object') return;
+    state.items = m.items || [];
+    state.logged_in = !!m.logged_in;
+    state.session = m.session || '';
+    state.status = m.status || '';
+    state.current_id = Number(m.current_id || 0);
+    state.title = m.title || '';
+    state.body = m.body || '';
+    renderChrome();
+  };
+  document.getElementById('hide').onclick = () => post({ type: 'action', id: 'hide' });
+  document.getElementById('btn-refresh').onclick = () => post({ type: 'action', id: 'refresh' });
+  document.getElementById('btn-add').onclick = () => post({ type: 'action', id: 'add' });
+  document.getElementById('btn-save').onclick = () => {
+    ensureEditor();
+    post({
+      type: 'action', id: 'save',
+      title: document.getElementById('note-title').value || '',
+      body: editor ? editor.getMarkdown() : ''
+    });
+  };
+  document.getElementById('btn-to-local').onclick = () => {
+    ensureEditor();
+    post({
+      type: 'action', id: 'to_local',
+      title: document.getElementById('note-title').value || '',
+      body: editor ? editor.getMarkdown() : ''
+    });
+  };
+  document.getElementById('btn-del').onclick = () => post({ type: 'action', id: 'delete' });
+  document.getElementById('btn-auth').onclick = () => post({ type: 'action', id: 'auth' });
+  document.getElementById('search').oninput = renderList;
+  document.getElementById('title-bar').onmousedown = (e) => {
+    if (e.target && e.target.id === 'hide') return;
+    post({ type: 'action', id: 'drag_begin', x: e.screenX, y: e.screenY });
+  };
+  window.addEventListener('mousemove', (e) => {
+    if ((e.buttons & 1) === 0) return;
+    post({ type: 'action', id: 'drag_move', x: e.screenX, y: e.screenY });
+  });
+  window.addEventListener('mouseup', () => post({ type: 'action', id: 'drag_end' }));
+  post({ type: 'ready' });
+</script>
+</body>
+</html>

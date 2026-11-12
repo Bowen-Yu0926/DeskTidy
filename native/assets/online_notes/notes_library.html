@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>笔记库</title>
+<style>
+  :root {
+    --card: #FFFFFF;
+    --border: rgba(15, 23, 42, 0.10);
+    --text: #172033;
+    --muted: #66788C;
+    --accent: #2F6FED;
+    --accent-soft: #EAF1FE;
+    --row-hover: rgba(234, 241, 254, 0.5);
+    --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.04), 0 1px 3px rgba(15, 23, 42, 0.06);
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; height: 100%;
+    font-family: "Microsoft YaHei UI", "Segoe UI", sans-serif;
+    background: #f5f6f8; color: var(--text); font-size: 13px;
+    overflow: hidden; user-select: none;
+  }
+  #wrap { height: 100%; display: flex; flex-direction: column; position: relative; }
+  #list {
+    flex: 1; min-height: 0; overflow: auto; padding: 6px 8px 12px;
+  }
+  .sec {
+    padding: 8px 6px 4px; font-size: 11px; font-weight: 700;
+    color: #1d4ed8; letter-spacing: 0.04em;
+  }
+  .sec.local { color: #475569; }
+  .hint {
+    color: var(--muted); font-size: 12px; padding: 8px 6px 12px; line-height: 1.45;
+  }
+  .hint a {
+    color: var(--accent); text-decoration: none; font-weight: 600; cursor: pointer;
+  }
+  #empty { color: var(--muted); text-align: center; padding: 28px 10px; }
+  .row {
+    position: relative;
+    background: linear-gradient(90deg, #dbeafe 0 4px, var(--card) 4px);
+    border: 1px solid #bfdbfe; border-radius: 10px;
+    padding: 10px 32px 10px 12px; margin-bottom: 8px; cursor: pointer;
+    box-shadow: var(--shadow-sm);
+  }
+  .row.local {
+    background: linear-gradient(90deg, #cbd5e1 0 4px, var(--card) 4px);
+    border-color: #e2e8f0;
+  }
+  .row:hover {
+    background: linear-gradient(90deg, #93c5fd 0 4px, var(--row-hover) 4px);
+    border-color: var(--accent);
+  }
+  .row.local:hover {
+    background: linear-gradient(90deg, #94a3b8 0 4px, var(--row-hover) 4px);
+    border-color: #64748b;
+  }
+  .row.on {
+    border-color: var(--accent);
+    background: linear-gradient(90deg, #2F6FED 0 4px, var(--accent-soft) 4px);
+  }
+  .row-title {
+    font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .row-meta { color: var(--muted); font-size: 11px; margin-top: 4px; }
+  .more {
+    position: absolute; top: 6px; right: 4px;
+    width: 26px; height: 26px; border: 0; border-radius: 6px;
+    background: transparent; color: var(--muted); font-size: 16px; line-height: 1;
+    cursor: pointer; letter-spacing: 1px;
+  }
+  .more:hover { background: rgba(15, 23, 42, 0.06); color: var(--text); }
+  #menu {
+    display: none; position: fixed; z-index: 20; min-width: 148px;
+    background: #fff; border: 1px solid var(--border); border-radius: 8px;
+    box-shadow: 0 8px 24px rgba(15, 23, 42, 0.12); padding: 4px;
+  }
+  #menu button {
+    display: block; width: 100%; text-align: left; border: 0; background: transparent;
+    font: inherit; padding: 8px 10px; border-radius: 6px; cursor: pointer; color: var(--text);
+  }
+  #menu button:hover { background: var(--accent-soft); }
+  #menu button.danger { color: #b91c1c; }
+  #menu button.danger:hover { background: #fef2f2; }
+  #menu .sep {
+    height: 1px; margin: 4px 6px; background: var(--border);
+  }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <div id="list"><div id="empty">（笔记库为空）</div></div>
+</div>
+<div id="menu"></div>
+<script>
+  const state = {
+    query: '',
+    active: '',
+    logged_in: false,
+    online: [],
+    local: []
+  };
+  let menuCtx = null;
+  let menuOpen = false;
+
+  function post(obj) {
+    try {
+      if (window.chrome && window.chrome.webview) {
+        chrome.webview.postMessage(JSON.stringify(obj));
+      }
+    } catch (e) {}
+  }
+  function esc(s) {
+    return String(s == null ? '' : s)
+      .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+      .replace(/"/g,'&quot;');
+  }
+  function matchTitle(it) {
+    const q = (state.query || '').trim().toLowerCase();
+    if (!q) return true;
+    return String(it.title || '').toLowerCase().indexOf(q) >= 0;
+  }
+  function rowKind(it, fallback) {
+    return (it && it.kind) ? it.kind : fallback;
+  }
+  function hideMenu() {
+    const m = document.getElementById('menu');
+    m.style.display = 'none';
+    m.innerHTML = '';
+    menuCtx = null;
+    menuOpen = false;
+  }
+  function showMenuAt(x, y, it, kind) {
+    const m = document.getElementById('menu');
+    menuCtx = { it, kind };
+    const hasPath = !!(it && it.path);
+    const pinned = !!(it && (it.pinned === true || it.pinned === 'true'));
+    const locked = !!(it && (it.locked === true || it.locked === 'true'));
+    let html = '';
+    if (kind === 'local') {
+      html += '<button type="button" data-act="to_cloud">转云</button>';
+    } else if (kind === 'synced' || kind === 'online') {
+      html += '<button type="button" data-act="to_local">转本地</button>';
+    }
+    if (hasPath) {
+      if (html) html += '<div class="sep"></div>';
+      html += '<button type="button" data-act="pin">' +
+        (pinned ? '取消置顶' : '置顶') + '</button>';
+      html += '<button type="button" data-act="lock">' +
+        (locked ? '解锁' : '锁定') + '</button>';
+      html += '<button type="button" data-act="rename">重命名</button>';
+      if (!locked) {
+        html += '<button type="button" class="danger" data-act="delete">删除</button>';
+      }
+      html += '<div class="sep"></div>';
+      html += '<button type="button" data-act="reveal">在资源管理器中显示</button>';
+    }
+    if (!html) {
+      hideMenu();
+      return;
+    }
+    m.innerHTML = html;
+    m.style.display = 'block';
+    menuOpen = true;
+    const mw = m.offsetWidth || 148;
+    const mh = m.offsetHeight || 40;
+    let left = x;
+    let top = y;
+    if (left + mw > window.innerWidth - 4) left = Math.max(4, window.innerWidth - mw - 4);
+    if (left < 4) left = 4;
+    if (top + mh > window.innerHeight - 4) top = Math.max(4, y - mh - 2);
+    if (top < 4) top = 4;
+    m.style.left = left + 'px';
+    m.style.top = top + 'px';
+    m.querySelectorAll('button').forEach((btn) => {
+      btn.onclick = (e) => {
+        e.stopPropagation();
+        const act = btn.getAttribute('data-act');
+        const payload = {
+          type: 'action',
+          id: act,
+          path: (it && it.path) || '',
+          note_id: Number((it && it.id) || 0)
+        };
+        post(payload);
+        hideMenu();
+      };
+    });
+  }
+  function showMenuNear(el, it, kind) {
+    const r = el.getBoundingClientRect();
+    showMenuAt(r.right - 8, r.bottom + 2, it, kind);
+  }
+  function rowHtml(it, fallbackKind) {
+    const kind = rowKind(it, fallbackKind);
+    const key = (kind === 'online' && !it.path)
+      ? ('online://' + it.id)
+      : String(it.path || '');
+    const on = key && key === state.active ? ' on' : '';
+    const cloud = kind === 'online' || kind === 'synced';
+    const cls = cloud ? 'row' : 'row local';
+    const meta = cloud ? (it.updated_at || '已同步') : (it.folder || '本地库');
+    let data = 'data-kind="' + esc(kind) + '"';
+    if (it.path) data += ' data-path="' + esc(it.path) + '"';
+    if (it.id) data += ' data-id="' + esc(it.id) + '"';
+    if (it.pinned) data += ' data-pinned="1"';
+    if (it.locked) data += ' data-locked="1"';
+    const more = '<button type="button" class="more" title="更多">⋯</button>';
+    return '<div class="' + cls + on + '" ' + data + '>'
+      + more
+      + '<div class="row-title">' + esc(it.title || '未命名') + '</div>'
+      + '<div class="row-meta">' + esc(meta) + '</div></div>';
+  }
+  function bindRow(el) {
+    const kind = el.dataset.kind || 'local';
+    const it = {
+      kind,
+      path: el.dataset.path || '',
+      id: el.dataset.id || 0,
+      title: '',
+      pinned: el.dataset.pinned === '1',
+      locked: el.dataset.locked === '1'
+    };
+    el.onclick = () => {
+      if (kind === 'online' && !it.path) {
+        post({ type: 'action', id: 'open_online', note_id: Number(it.id) });
+      } else if (it.path) {
+        post({ type: 'action', id: 'open_local', path: it.path });
+      }
+    };
+    el.oncontextmenu = (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      showMenuAt(e.clientX, e.clientY, it, kind);
+    };
+    const more = el.querySelector('.more');
+    if (more) {
+      more.onclick = (e) => {
+        e.stopPropagation();
+        showMenuNear(more, it, kind);
+      };
+    }
+  }
+  function render() {
+    hideMenu();
+    const box = document.getElementById('list');
+    const online = (state.online || []).filter(matchTitle);
+    const local = (state.local || []).filter(matchTitle);
+    const hasOnlineBlock = online.length > 0 || state.logged_in;
+    let html = '';
+    if (!hasOnlineBlock) {
+      html += '<div class="hint">未登录云账号 — <a id="login-link">登录后可转云与同步</a></div>';
+    } else {
+      html += '<div class="sec">在线笔记</div>';
+      if (!online.length) {
+        html += '<div class="hint">暂无在线笔记；本地文件可通过 ⋯ → 转云</div>';
+      } else {
+        html += online.map((it) => rowHtml(it, 'synced')).join('');
+      }
+      if (!state.logged_in) {
+        html += '<div class="hint"><a id="login-link">登录云账号</a> 后可同步刷新</div>';
+      }
+    }
+    html += '<div class="sec local">本地笔记</div>';
+    if (!local.length) {
+      html += '<div class="hint">暂无本地笔记，点侧栏 + 新建</div>';
+    } else {
+      html += local.map((it) => rowHtml(it, 'local')).join('');
+    }
+    box.innerHTML = html;
+    const login = document.getElementById('login-link');
+    if (login) {
+      login.onclick = (e) => {
+        e.preventDefault();
+        post({ type: 'action', id: 'login' });
+      };
+    }
+    box.querySelectorAll('.row').forEach(bindRow);
+  }
+  document.addEventListener('click', () => {
+    if (menuOpen) hideMenu();
+  });
+  document.addEventListener('contextmenu', (e) => {
+    // Blank rail / section headers: swallow Chromium menu.
+    if (!e.target.closest || !e.target.closest('.row')) {
+      e.preventDefault();
+      hideMenu();
+    }
+  });
+  window.applyState = function (m) {
+    if (!m || typeof m !== 'object') return;
+    if (m.query != null) state.query = m.query || '';
+    if (m.active != null) state.active = m.active || '';
+    if (m.logged_in != null) state.logged_in = !!m.logged_in;
+    if (Array.isArray(m.online)) state.online = m.online;
+    if (Array.isArray(m.local)) state.local = m.local;
+    window.__lib = state;
+    render();
+  };
+  window.__lib = state;
+  post({ type: 'ready' });
+</script>
+</body>
+</html>

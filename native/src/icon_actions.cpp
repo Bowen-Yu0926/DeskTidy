@@ -10,6 +10,7 @@
 
 #include <ShlObj.h>
 #include <Shellapi.h>
+#include <ShObjIdl.h>
 
 namespace {
 std::wstring FileNameOf(const std::wstring& path) {
@@ -79,6 +80,35 @@ bool SameVolume(const std::wstring& a, const std::wstring& b) {
   return _wcsicmp(va, vb) == 0;
 }
 
+bool IsStrictPathPrefix(const std::wstring& ancestor,
+                        const std::wstring& path) {
+  if (ancestor.empty() || path.empty()) {
+    return false;
+  }
+  auto norm = [](std::wstring s) {
+    for (auto& c : s) {
+      if (c == L'/') {
+        c = L'\\';
+      } else if (c >= L'A' && c <= L'Z') {
+        c = static_cast<wchar_t>(c - L'A' + L'a');
+      }
+    }
+    while (s.size() > 1 && s.back() == L'\\') {
+      s.pop_back();
+    }
+    return s;
+  };
+  const std::wstring a = norm(ancestor);
+  const std::wstring p = norm(path);
+  if (a.empty() || p.size() <= a.size()) {
+    return false;
+  }
+  if (p.compare(0, a.size(), a) != 0) {
+    return false;
+  }
+  return p[a.size()] == L'\\';
+}
+
 int PasteClipboardToDesktopFolder(HWND owner,
                                   std::vector<std::wstring>* landed_paths) {
   if (landed_paths) {
@@ -107,6 +137,91 @@ int PasteClipboardToDesktopFolder(HWND owner,
     }
   }
   return ok;
+}
+
+int PasteClipboardLinksIntoDir(HWND owner, const std::wstring& dest_dir,
+                               std::vector<std::wstring>* landed_paths) {
+  if (landed_paths) {
+    landed_paths->clear();
+  }
+  if (dest_dir.empty()) {
+    return 0;
+  }
+  std::vector<std::wstring> paths;
+  bool cut = false;
+  if (!ClipboardGetFilesWithEffect(&paths, &cut) || paths.empty()) {
+    return 0;
+  }
+  (void)cut;  // pastelink never consumes the cut clipboard
+  int ok = 0;
+  for (const auto& src : paths) {
+    std::wstring dest;
+    if (CreateShortcutIntoDir(owner, src, dest_dir, &dest)) {
+      ++ok;
+      if (landed_paths && !dest.empty()) {
+        landed_paths->push_back(dest);
+      }
+    }
+  }
+  return ok;
+}
+
+bool WantDropLinkEffect() {
+  const bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+  const bool shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+  const bool alt = (GetKeyState(VK_MENU) & 0x8000) != 0;
+  return alt || (ctrl && shift);
+}
+
+bool CreateShortcutIntoDir(HWND owner, const std::wstring& src,
+                           const std::wstring& dest_dir, std::wstring* landed) {
+  (void)owner;
+  if (src.empty() || dest_dir.empty()) {
+    return false;
+  }
+  if (GetFileAttributesW(src.c_str()) == INVALID_FILE_ATTRIBUTES) {
+    return false;
+  }
+  CreateDirectoryW(dest_dir.c_str(), nullptr);
+  std::wstring name = FileNameOf(src);
+  if (name.empty()) {
+    return false;
+  }
+  // Explorer: "foo.docx.lnk" / "folder.lnk"; already-a-link keeps basename.lnk.
+  if (name.size() < 4 || _wcsicmp(name.c_str() + name.size() - 4, L".lnk") != 0) {
+    name += L".lnk";
+  }
+  const std::wstring dest = UniqueDestPath(dest_dir, name);
+  IShellLinkW* psl = nullptr;
+  HRESULT hr =
+      CoCreateInstance(CLSID_ShellLink, nullptr, CLSCTX_INPROC_SERVER,
+                       IID_IShellLinkW, reinterpret_cast<void**>(&psl));
+  if (FAILED(hr) || !psl) {
+    return false;
+  }
+  psl->SetPath(src.c_str());
+  const size_t slash = src.find_last_of(L"\\/");
+  if (slash != std::wstring::npos && slash > 0) {
+    psl->SetWorkingDirectory(src.substr(0, slash).c_str());
+  }
+  psl->SetShowCmd(SW_SHOWNORMAL);
+  IPersistFile* ppf = nullptr;
+  hr = psl->QueryInterface(IID_IPersistFile, reinterpret_cast<void**>(&ppf));
+  bool ok = false;
+  if (SUCCEEDED(hr) && ppf) {
+    ok = SUCCEEDED(ppf->Save(dest.c_str(), TRUE));
+    ppf->Release();
+  }
+  psl->Release();
+  if (!ok) {
+    return false;
+  }
+  if (landed) {
+    *landed = dest;
+  }
+  SHChangeNotify(SHCNE_CREATE, SHCNF_PATHW, dest.c_str(), nullptr);
+  SHChangeNotify(SHCNE_UPDATEDIR, SHCNF_PATHW, dest_dir.c_str(), nullptr);
+  return true;
 }
 
 bool MoveOrCopyFileIntoDir(HWND owner, const std::wstring& src,
@@ -243,6 +358,20 @@ void RevealShellPath(const std::wstring& path) {
                 SW_SHOWNORMAL);
 }
 
+void ExploreShellPath(const std::wstring& path) {
+  if (path.empty()) {
+    return;
+  }
+  const DWORD attr = GetFileAttributesW(path.c_str());
+  if (attr == INVALID_FILE_ATTRIBUTES || !(attr & FILE_ATTRIBUTE_DIRECTORY)) {
+    OpenShellPath(path);
+    return;
+  }
+  const std::wstring arg = L"/e,\"" + path + L"\"";
+  ShellExecuteW(nullptr, L"open", L"explorer.exe", arg.c_str(), nullptr,
+                SW_SHOWNORMAL);
+}
+
 bool CopyOrCutShellPath(HWND owner, const std::wstring& path, bool cut) {
   if (!ClipboardSetFiles(owner, {path}, cut)) {
     return false;
@@ -307,6 +436,58 @@ bool ShowShellPathProperties(HWND owner, const std::wstring& path) {
     return false;
   }
   return true;
+}
+
+bool ShowShellPathsProperties(HWND owner,
+                              const std::vector<std::wstring>& paths) {
+  if (paths.empty()) {
+    return false;
+  }
+  if (paths.size() == 1) {
+    return ShowShellPathProperties(owner, paths[0]);
+  }
+  std::vector<PIDLIST_ABSOLUTE> pidls;
+  pidls.reserve(paths.size());
+  for (const auto& p : paths) {
+    if (p.empty()) {
+      continue;
+    }
+    PIDLIST_ABSOLUTE pidl = nullptr;
+    if (SUCCEEDED(SHParseDisplayName(p.c_str(), nullptr, &pidl, 0, nullptr)) &&
+        pidl) {
+      pidls.push_back(pidl);
+    }
+  }
+  if (pidls.empty()) {
+    ShowToast(L"无法打开属性");
+    return false;
+  }
+  std::vector<const ITEMIDLIST*> list;
+  list.reserve(pidls.size());
+  for (PIDLIST_ABSOLUTE pidl : pidls) {
+    list.push_back(pidl);
+  }
+  IShellItemArray* array = nullptr;
+  IDataObject* data = nullptr;
+  bool ok = false;
+  if (SUCCEEDED(SHCreateShellItemArrayFromIDLists(
+          static_cast<UINT>(list.size()), list.data(), &array)) &&
+      array) {
+    if (SUCCEEDED(array->BindToHandler(nullptr, BHID_DataObject,
+                                       IID_PPV_ARGS(&data))) &&
+        data) {
+      ok = SUCCEEDED(SHMultiFileProperties(data, 0));
+      data->Release();
+    }
+    array->Release();
+  }
+  for (PIDLIST_ABSOLUTE pidl : pidls) {
+    CoTaskMemFree(pidl);
+  }
+  if (!ok) {
+    ShowToast(L"无法打开属性");
+  }
+  return ok;
 }
 
 IconFsResult RecycleShellPaths(HWND owner,

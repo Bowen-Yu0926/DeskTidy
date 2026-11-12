@@ -1,6 +1,7 @@
 #include "desktop_items.h"
 
 #include "namespace_icons.h"
+#include "organize.h"
 
 #include <CommCtrl.h>
 #include <ShlObj.h>
@@ -51,11 +52,6 @@ bool EndsWithIgnoreCase(const std::wstring& s, const wchar_t* suffix) {
   return _wcsicmp(s.c_str() + (s.size() - n), suffix) == 0;
 }
 
-// Office lock/temp files (~$foo.docx) — matched by Python is_temp_desktop_file.
-bool IsOfficeTempName(const wchar_t* name) {
-  return name[0] == L'~' && name[1] == L'$';
-}
-
 // 2.5s scan cache (Python _SCAN_CACHE_TTL_S).
 constexpr ULONGLONG kScanCacheTtlMs = 2500;
 ULONGLONG g_scan_tick = 0;
@@ -67,6 +63,9 @@ void AppendFolder(const std::wstring& folder, std::vector<DesktopItem>* out) {
   if (folder.empty()) {
     return;
   }
+  // Share portal temp/download excludes so watch-organize never pins
+  // .crdownload / .tmp / Office locks (Fences + Explorer parity).
+  const std::vector<std::wstring> excludes = LoadExcludePatterns();
   const std::wstring pattern = folder + L"\\*";
   WIN32_FIND_DATAW fd{};
   HANDLE h = FindFirstFileW(pattern.c_str(), &fd);
@@ -79,7 +78,7 @@ void AppendFolder(const std::wstring& folder, std::vector<DesktopItem>* out) {
          (fd.cFileName[1] == L'.' && fd.cFileName[2] == L'\0'))) {
       continue;
     }
-    if (IsOfficeTempName(fd.cFileName)) {
+    if (IsPortalEntryExcluded(fd.cFileName, excludes)) {
       continue;
     }
     if (fd.dwFileAttributes & FILE_ATTRIBUTE_HIDDEN) {
