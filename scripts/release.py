@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """One-shot DeskTidy release: version → installer → GitHub Releases → site.
 
-Keeps existing helpers (bump_version / build_native_installer / upload_byethost).
+Keeps existing helpers (bump_version / build_native_installer /
+upload_cloudflare_pages / upload_byethost).
 Default does NOT bump the version; pass --bump to raise the patch.
 
 Examples:
   python scripts/release.py
   python scripts/release.py --bump --notes "fix fence icon sharpness"
   python scripts/release.py --no-github --no-site   # build installer only
+  python scripts/release.py --site cloudflare
   python scripts/release.py --dry-run --bump
 """
 from __future__ import annotations
@@ -25,7 +27,8 @@ VERSION_FILE = ROOT / "VERSION"
 DESKTIDY_HTML = ROOT / "docs" / "desktidy.html"
 INSTALLER_BAT = ROOT / "scripts" / "build_native_installer.bat"
 BUMP_PY = ROOT / "scripts" / "bump_version.py"
-UPLOAD_PY = ROOT / "scripts" / "upload_byethost.py"
+UPLOAD_BYETHOST_PY = ROOT / "scripts" / "upload_byethost.py"
+UPLOAD_CF_PY = ROOT / "scripts" / "upload_cloudflare_pages.py"
 RELEASES_REPO = "Bowen-Yu0926/DeskTidy-Releases"
 DOWNLOAD_HOST = "https://github.com/Bowen-Yu0926/DeskTidy-Releases/releases/download"
 
@@ -204,9 +207,31 @@ def github_release(
         )
 
 
-def upload_site(*, dry_run: bool) -> None:
-    args = [sys.executable, str(UPLOAD_PY)]
-    run(args, dry_run=dry_run)
+def resolve_site_target(choice: str) -> str:
+    """Return 'cloudflare' | 'byethost'."""
+    choice = (choice or "auto").strip().lower()
+    has_cf = (ROOT / ".env.cloudflare").is_file()
+    has_bye = (ROOT / ".env.byethost").is_file()
+    if choice in ("cloudflare", "cf", "pages"):
+        return "cloudflare"
+    if choice in ("byethost", "bye", "ftp"):
+        return "byethost"
+    if choice != "auto":
+        raise SystemExit(f"unknown --site={choice!r} (use auto|cloudflare|byethost)")
+    if has_cf:
+        return "cloudflare"
+    if has_bye:
+        return "byethost"
+    raise SystemExit(
+        "No site credentials: add .env.cloudflare (preferred) or .env.byethost"
+    )
+
+
+def upload_site(*, dry_run: bool, site: str) -> None:
+    target = resolve_site_target(site)
+    script = UPLOAD_CF_PY if target == "cloudflare" else UPLOAD_BYETHOST_PY
+    print(f"  site_target={target} script={script.name}")
+    run([sys.executable, str(script)], dry_run=dry_run)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -225,7 +250,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--no-site",
         action="store_true",
-        help="Skip ByetHost page upload (still updates docs/desktidy.html)",
+        help="Skip intro-page upload (still updates docs/desktidy.html)",
+    )
+    parser.add_argument(
+        "--site",
+        default="auto",
+        help="Intro host: auto (CF if .env.cloudflare else ByetHost) | cloudflare | byethost",
     )
     parser.add_argument(
         "--skip-docs",
@@ -253,7 +283,7 @@ def main(argv: list[str] | None = None) -> int:
             version, setup, sidecar, args.notes, dry_run=args.dry_run
         )
     if not args.no_site:
-        upload_site(dry_run=args.dry_run)
+        upload_site(dry_run=args.dry_run, site=args.site)
 
     print("\nDone.")
     print(f"  version={version}")

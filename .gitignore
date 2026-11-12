@@ -9,8 +9,10 @@ venv/
 .env.*
 !.env.example
 !.env.byethost.example
-# Deploy secrets (ByetHost / FTP) — never commit
+!.env.cloudflare.example
+# Deploy secrets (ByetHost FTP / Cloudflare Pages) — never commit
 .env.byethost
+.env.cloudflare
 .local/
 server/desktidy-vault/config.local.php
 

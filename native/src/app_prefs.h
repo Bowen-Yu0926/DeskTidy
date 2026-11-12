@@ -80,8 +80,7 @@ struct AppPrefs {
   bool desktop_right_click_menu = true;
   // Account vault (Python account_vault).
   bool vault_enabled = false;
-  std::wstring vault_api_base =
-      L"https://bowen-yu0926.byethost10.com/desktidy-vault/";
+  std::wstring vault_api_base = L"https://chromhome.kdns.fr/api/";
   int vault_refresh_hours = 2;
   // 0 = never clear; else seconds after password copy.
   int vault_clipboard_clear_seconds = 30;

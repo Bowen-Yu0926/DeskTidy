@@ -6783,20 +6783,20 @@ void NotesWindow::LayoutClient() {
     const int chrome_h = 44;
     const int pad = 12;
     const int btn_w = 30;
+    // Chrome: search + 新建 + 同步刷新（不再单独放「☁ 在线笔记」入口；
+    // 转云/登录走列表 ⋯ 与文案提示即可）。
+    if (sidebar_online_) {
+      ShowWindow(sidebar_online_, SW_HIDE);
+    }
     if (sidebar_search_) {
       MoveWindow(sidebar_search_, pad + 4, top + 10,
-                 side - (btn_w * 3 + pad * 2 + 12), chrome_h - 18, TRUE);
+                 side - (btn_w * 2 + pad * 2 + 12), chrome_h - 18, TRUE);
       ShowWindow(sidebar_search_, SW_SHOW);
     }
     if (sidebar_new_) {
-      MoveWindow(sidebar_new_, side - (btn_w * 3 + pad + 2), top + 8, btn_w,
+      MoveWindow(sidebar_new_, side - (btn_w * 2 + pad + 2), top + 8, btn_w,
                  btn_w, TRUE);
       ShowWindow(sidebar_new_, SW_SHOW);
-    }
-    if (sidebar_online_) {
-      MoveWindow(sidebar_online_, side - (btn_w * 2 + pad + 2), top + 8, btn_w,
-                 btn_w, TRUE);
-      ShowWindow(sidebar_online_, SW_SHOW);
     }
     if (sidebar_refresh_) {
       MoveWindow(sidebar_refresh_, side - (btn_w + pad), top + 8, btn_w, btn_w,

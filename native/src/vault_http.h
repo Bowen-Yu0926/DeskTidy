@@ -6,8 +6,8 @@
 #include <vector>
 
 // WinHTTP client for DeskTidy vault API (enc_ver:0 plaintext + enc_ver:1 ZK).
-// Default base: https://bowen-yu0926.byethost10.com/desktidy-vault/
-// Session: %LocalAppData%\DeskTidyNative\account_vault_session.json
+// Default base: https://chromhome.kdns.fr/api/ (Cloudflare-fronted).
+// Session: %LocalAppData%\DeskTidy\account_vault_session.json (NativeDataDir).
 
 struct VaultHttpCredential {
   int id = 0;

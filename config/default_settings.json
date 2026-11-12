@@ -72,7 +72,7 @@
   },
   "account_vault": {
     "enabled": false,
-    "api_base": "https://bowen-yu0926.byethost10.com/desktidy-vault/",
+    "api_base": "https://chromhome.kdns.fr/api/",
     "refresh_interval_hours": 2,
     "clipboard_clear_seconds": 30
   },

@@ -1283,7 +1283,7 @@ bool App::Init(HINSTANCE instance) {
         api = VaultHttpGetApiBase();
       }
       if (api.empty()) {
-        api = L"https://bowen-yu0926.byethost10.com/desktidy-vault/";
+        api = L"https://chromhome.kdns.fr/api/";
       }
       prefs_.vault_api_base = api;
       VaultHttpSetApiBase(prefs_.vault_api_base);
@@ -3662,8 +3662,7 @@ void App::PushExtensionSettings() {
   ext.vault_api_base = prefs_.vault_api_base.empty() ? VaultHttpGetApiBase()
                                                      : prefs_.vault_api_base;
   if (ext.vault_api_base.empty()) {
-    ext.vault_api_base =
-        L"https://bowen-yu0926.byethost10.com/desktidy-vault/";
+    ext.vault_api_base = L"https://chromhome.kdns.fr/api/";
   }
   ext.vault_refresh_hours = prefs_.vault_refresh_hours > 0
                                 ? prefs_.vault_refresh_hours

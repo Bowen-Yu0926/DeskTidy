@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Upload server/desktidy-vault to ByetHost htdocs/desktidy-vault via FTP.
+"""Upload optional PHP vault mirror to ByetHost htdocs/desktidy-vault via FTP.
+
+Production vault API for the client is https://chromhome.kdns.fr/api/
+(Cloudflare). This script only deploys the legacy PHP copy under
+server/desktidy-vault/ — not the default backend.
 
 Uses Desktidy/.env.byethost (same as upload_byethost.py).
 Never uploads config.local.php (create/upload secrets yourself).
