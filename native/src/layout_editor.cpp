@@ -52,10 +52,22 @@ std::vector<RECT> g_style_chips;
 // Page membership / geometry (G3 model from layout.h).
 // ---------------------------------------------------------------------------
 bool FenceOnPage(const FenceLayout& f, int page) {
+  // Align FenceWindow::OnPage / organize: pages[] wins when set.
+  if (page < 0) {
+    return false;
+  }
+  if (!f.pages.empty()) {
+    for (int p : f.pages) {
+      if (p == page) {
+        return true;
+      }
+    }
+    return false;
+  }
   if (f.page_geometries.count(page)) {
     return true;
   }
-  return f.page_geometries.empty() && f.page == page;
+  return f.page == page;
 }
 
 std::vector<int> PageFenceIndices() {
@@ -497,6 +509,23 @@ void MoveFenceToPage(int idx, int from, int to) {
   f.page_geometries.erase(from);
   f.page_geometries[to] = geo;
   f.page = to;
+  // Keep multi-page membership in sync (runtime TogglePageMembership model):
+  // move from → to, seeding from the singleton page when pages[] was unset.
+  if (f.pages.empty()) {
+    f.pages = {to};
+    return;
+  }
+  bool has_to = false;
+  for (int p : f.pages) {
+    if (p == to) {
+      has_to = true;
+      break;
+    }
+  }
+  f.pages.erase(std::remove(f.pages.begin(), f.pages.end(), from), f.pages.end());
+  if (!has_to) {
+    f.pages.push_back(to);
+  }
 }
 
 void EditOrganizeKindsMenu(HWND hwnd) {

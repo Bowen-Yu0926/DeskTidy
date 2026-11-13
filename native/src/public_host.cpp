@@ -750,6 +750,10 @@ void PublicHost::SetItems(std::vector<DesktopItem> items) {
   metrics_ = QueryIconGridMetrics();
   slots_.reserve(items.size());
   bool loaded_any = false;
+  std::vector<std::pair<std::wstring, int>> cold;
+  // FillMissingIcons clamps to >=16 — key cold jobs on the same size so the
+  // preloaded master entry is the one the fill actually finds.
+  const int icon_sz = (std::max)(16, metrics_.icon_size);
   for (auto& item : items) {
     // Caller (RebuildPublicItems / ScanDesktopItems) already filtered live
     // paths — skip per-item GetFileAttributesW (large desktops hitch UI).
@@ -760,16 +764,32 @@ void PublicHost::SetItems(std::vector<DesktopItem> items) {
     if (hit != reuse.end()) {
       s.icon = hit->second;
       reuse.erase(hit);
-    } else if (ItemIconCached(s.item.path, metrics_.icon_size)) {
-      s.icon = LoadItemIcon(s.item.path, metrics_.icon_size);
+    } else if (ItemIconCached(s.item.path, icon_sz)) {
+      // Warm: master-cache hit is a cheap CopyIcon, never shell extraction.
+      s.icon = LoadItemIcon(s.item.path, icon_sz);
       loaded_any = true;
-    } else {
-      // Cold path: don't wait solely on async preload — a lone float with no
-      // cached HICON used to paint only an invisible α=1 plate (looks missing).
-      s.icon = LoadItemIcon(s.item.path, metrics_.icon_size);
+    } else if (!s.item.path.empty()) {
+      // Cold: leave null and let the long-lived STA worker extract off the UI
+      // thread. The done message re-resolves these from the now-warm cache
+      // (FillMissingIcons) and repaints — same shape as FenceWindow::SetItems.
+      s.icon = nullptr;
       loaded_any = true;
+      cold.emplace_back(s.item.path, icon_sz);
     }
     slots_.push_back(std::move(s));
+  }
+  // Lone-float carve-out: one float with no cached HICON used to paint only an
+  // invisible α=1 plate (looks missing) for the whole async round-trip. A single
+  // extraction is one shell call — take it synchronously. Many cold floats stay
+  // async so a big desktop refresh never blocks the UI thread on SHGetFileInfo.
+  if (cold.size() == 1 && slots_.size() == 1) {
+    slots_.front().icon = LoadItemIcon(cold.front().first, icon_sz);
+    cold.clear();
+  }
+  if (!cold.empty() && hwnd_) {
+    // Notify our own hwnd: HandleMessage re-resolves just these slots from the
+    // now-warm cache and repaints when the STA batch lands.
+    PreloadIconsAsync(cold, hwnd_, kDeskTidyMsgIconsPreloaded);
   }
   const bool destroyed_unused = !reuse.empty();
   for (auto& kv : reuse) {
@@ -3126,6 +3146,14 @@ LRESULT PublicHost::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
     // alt-tabbed away). Only a real icon hit (checked above) may take the
     // click — blank space must pass through.
     return HTTRANSPARENT;
+  }
+  if (msg == kDeskTidyMsgIconsPreloaded) {
+    // STA icon worker finished the cold batch queued by SetItems — re-resolve
+    // just those slots from the now-warm master cache and repaint. FillMissingIcons
+    // only touches slots whose icon is null AND whose (path,size) is now cached,
+    // so a batch for a stale item list is a cheap no-op.
+    FillMissingIcons();
+    return 0;
   }
   if (msg == WM_APP + 60) {
     const int vk = static_cast<int>(wparam);

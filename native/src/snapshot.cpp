@@ -559,7 +559,8 @@ static void InferWorkSizeFromFingerprint(const std::string& fp, int* ww,
   }
 }
 
-SnapshotCardData BuildSnapshotCard(const SnapshotInfo& info) {
+SnapshotCardData BuildSnapshotCard(const SnapshotInfo& info,
+                                  const SnapshotCardOptions& opts) {
   SnapshotCardData card;
   card.name = info.name;
   card.path = info.path;
@@ -622,7 +623,7 @@ SnapshotCardData BuildSnapshotCard(const SnapshotInfo& info) {
   NormalizePageNames(&card.page_names);
 
   card.boxes.reserve(st.fences.size() * 2);
-  constexpr size_t kMaxPinThumbs = 24;
+  const size_t kMaxPinThumbs = opts.render_thumbs ? opts.max_pin_thumbs : 0;
   for (const auto& f : st.fences) {
     // Prefer saved manual order, then remaining pins for this fence.
     std::vector<std::wstring> ordered = f.pin_order;
@@ -734,12 +735,15 @@ SnapshotCardData BuildSnapshotCard(const SnapshotInfo& info) {
 
   const auto shell = LoadShellIconsSidecar(info.path);
   constexpr size_t kMaxPreviewIcons = 80;
-  constexpr size_t kMaxFreeThumbs = 40;
+  const size_t kMaxFreeThumbs =
+      opts.render_thumbs ? opts.max_free_thumbs : 0;
   card.icons.reserve((std::min)(shell.size(), kMaxPreviewIcons));
   for (size_t i = 0; i < shell.size() && card.icons.size() < kMaxPreviewIcons;
        ++i) {
-    const std::wstring path = path_for_shell_name(shell[i].name);
-    if (is_pinned_shell(shell[i].name, path)) {
+    const std::wstring path =
+        kMaxFreeThumbs > 0 ? path_for_shell_name(shell[i].name)
+                           : std::wstring();
+    if (kMaxFreeThumbs > 0 && is_pinned_shell(shell[i].name, path)) {
       continue;
     }
     SnapshotPreviewIcon ic;
@@ -784,6 +788,75 @@ SnapshotCardData BuildSnapshotCard(const SnapshotInfo& info) {
       }
       box.icon_count = n;
     }
+  }
+  return card;
+}
+
+ULONGLONG SnapshotMtimeQuad(const std::wstring& path) {
+  if (path.empty()) {
+    return 0;
+  }
+  WIN32_FILE_ATTRIBUTE_DATA fd{};
+  if (!GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &fd)) {
+    return 0;
+  }
+  return (static_cast<ULONGLONG>(fd.ftLastWriteTime.dwHighDateTime) << 32) |
+         static_cast<ULONGLONG>(fd.ftLastWriteTime.dwLowDateTime);
+}
+
+namespace {
+
+// Memoizes BuildSnapshotCard by snapshot path + mtime + thumb budget, so
+// reopening the settings window does not re-extract and re-encode every
+// thumbnail on the UI thread. Only thumb-bearing cards are stored (see
+// BuildSnapshotCardCached).
+constexpr size_t kSnapshotCardCacheMax = 24;
+
+struct SnapshotCardCacheEntry {
+  SnapshotCardData card;
+  ULONGLONG mtime = 0;
+  size_t max_pin_thumbs = 0;
+  size_t max_free_thumbs = 0;
+};
+
+std::mutex g_snapshot_card_mutex;
+std::unordered_map<std::wstring, SnapshotCardCacheEntry>
+    g_snapshot_card_cache;
+
+}  // namespace
+
+SnapshotCardData BuildSnapshotCardCached(const SnapshotInfo& info,
+                                        const SnapshotCardOptions& opts) {
+  const ULONGLONG mtime = SnapshotMtimeQuad(info.path);
+  const bool cacheable = opts.render_thumbs && mtime != 0;
+  if (cacheable) {
+    std::lock_guard<std::mutex> lock(g_snapshot_card_mutex);
+    const auto it = g_snapshot_card_cache.find(info.path);
+    if (it != g_snapshot_card_cache.end() && it->second.mtime == mtime &&
+        it->second.max_pin_thumbs >= opts.max_pin_thumbs &&
+        it->second.max_free_thumbs >= opts.max_free_thumbs) {
+      // Return a copy — the caller moves out of the card's vectors.
+      return it->second.card;
+    }
+  }
+
+  SnapshotCardData card = BuildSnapshotCard(info, opts);
+
+  if (cacheable) {
+    std::lock_guard<std::mutex> lock(g_snapshot_card_mutex);
+    SnapshotCardCacheEntry entry;
+    entry.card = card;
+    entry.mtime = mtime;
+    entry.max_pin_thumbs = opts.max_pin_thumbs;
+    entry.max_free_thumbs = opts.max_free_thumbs;
+    // LRU-ish trim: the settings list is bounded (ListSnapshots), but a
+    // long-lived session that keeps creating snapshots could otherwise grow
+    // the map without limit.
+    if (g_snapshot_card_cache.size() >= kSnapshotCardCacheMax &&
+        g_snapshot_card_cache.find(info.path) == g_snapshot_card_cache.end()) {
+      g_snapshot_card_cache.erase(g_snapshot_card_cache.begin());
+    }
+    g_snapshot_card_cache[info.path] = std::move(entry);
   }
   return card;
 }

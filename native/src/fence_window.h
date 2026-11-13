@@ -17,6 +17,8 @@ class Bitmap;
 class Font;
 class FontFamily;
 class Graphics;
+class SolidBrush;
+class StringFormat;
 }  // namespace Gdiplus
 
 // Target fence for cascading「移动到分页 → 分区」(id + title + page membership).
@@ -244,6 +246,8 @@ class FenceWindow {
   bool PortalCanGoForward() const;
   bool NavigatePortalInto(const std::wstring& folder);
   bool PortalGoUp();
+  // Fences Folder Portal: jump to portal root (Shift+上一级 / 菜单).
+  bool PortalGoRoot();
   bool PortalGoForward();
   bool IsCollapsed() const { return collapsed_; }
   void SetCollapsed(bool collapsed, bool persist = true);
@@ -528,6 +532,11 @@ class FenceWindow {
   bool drag_left_ = false;  // pointer has left the client area
   POINT drag_pt_{};         // client cursor while icon_dragging_ (ghost)
   DWORD last_manual_drag_present_ms_ = 0;
+  // Hover highlight repaint throttle: tip_index_ changes fire on every cell
+  // transition, but PresentLayered() is a full-window ULW upload. Gate it to
+  // ~60Hz and remember a present is still owed.
+  DWORD last_hover_present_ms_ = 0;
+  bool hover_present_pending_ = false;
   // OLE inbound drop preview (Explorer / desktop / other fence).
   bool drop_preview_ = false;
   bool drop_over_recycle_ = false;
@@ -535,6 +544,13 @@ class FenceWindow {
   int drop_insert_ = -1;
   POINT drop_pt_{};
   DWORD last_ole_preview_present_ms_ = 0;
+  // Throttle for the shell/COM lookups below (IsRecycleBinIconAt → CoCreate
+  // ShellLink, DirectoryIconAt → GetFileAttributes). DragOver fires on every
+  // mouse move; without this gate those run thousands of times per second.
+  DWORD last_ole_preview_probe_ms_ = 0;
+  // Cached probe results (throttled to ~30 Hz in UpdateOleDropPreview).
+  bool ole_probe_recycle_ = false;
+  std::wstring ole_probe_folder_;
   // Legacy whole-fence flash — kept off; insert bar replaces it.
   bool drop_highlight_ = false;
   // F4 icon zoom.
@@ -588,10 +604,22 @@ class FenceWindow {
   Gdiplus::Font* title_font_ = nullptr;            // owned
   Gdiplus::Font* caption_font_ = nullptr;          // owned
   Gdiplus::Font* footer_font_ = nullptr;           // owned
+  // Drag-count badge keeps Segoe UI Bold (visual output must not change), so it
+  // caches its own family + font instead of borrowing caption_family_.
+  Gdiplus::FontFamily* badge_family_ = nullptr;    // owned
+  Gdiplus::Font* badge_font_ = nullptr;            // owned
   int cached_title_px_ = 0;
   int cached_caption_px_ = 0;
   int cached_footer_px_ = 0;
+  int cached_badge_px_ = 0;
   void EnsureFonts(int title_px, int caption_px, int footer_px);
+  void EnsureBadgeFont(int badge_px);
+  // Footer count band: brush is caption-color keyed, StringFormat is constant.
+  // Both used to be rebuilt on every Present.
+  void EnsureFooterFormat();
+  Gdiplus::SolidBrush* footer_brush_ = nullptr;    // owned
+  COLORREF footer_brush_color_ = 0;
+  Gdiplus::StringFormat* footer_fmt_ = nullptr;    // owned
   void ReleaseFonts();
   // Reused ULW back-buffer — CreateDIBSection every Present was a hot-path tax.
   void ReleaseLayerBuffer();

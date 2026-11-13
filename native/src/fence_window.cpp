@@ -65,6 +65,7 @@ constexpr int kExtFenceCollapse = 6;
 constexpr int kExtFencePortalSet = 7;
 constexpr int kExtFencePortalClear = 8;
 constexpr int kExtFencePortalUp = 9;
+constexpr int kExtFencePortalRoot = 17;
 constexpr int kExtFenceSortName = 10;
 constexpr int kExtFenceAutoHide = 15;
 constexpr int kExtFenceFadeIdle = 18;
@@ -77,6 +78,11 @@ constexpr UINT kIdleFadeIntervalMs = 30;
 // Drag-to-edge auto-scroll tick (Explorer keeps scrolling while the cursor
 // rests against the edge; mouse-move alone would stop as soon as it settles).
 constexpr UINT kTimerDragScroll = 78;
+// One-shot flush for a throttled hover-chrome repaint (UpdateHoverTip). Guarantees
+// the highlight still lands when the cursor stops mid-cell or leaves the fence
+// before the next WM_MOUSEMOVE.
+constexpr UINT kTimerHoverFlush = 81;
+constexpr int kHoverRepaintThrottleMs = 16;
 constexpr int kExtFenceSortDate = 11;
 constexpr int kExtFenceSortSize = 12;
 constexpr int kExtFenceSortType = 13;
@@ -143,9 +149,13 @@ std::wstring Widen(const std::string& s) {
 
 // Explorer / Fences style: translucent accent plate. Must use GDI+ (not GDI
 // RoundRect) so per-pixel alpha stays valid for UpdateLayeredWindow.
-void PaintSelectionChrome(Gdiplus::Graphics& g, int left, int top, int right,
-                          int bottom, COLORREF accent, int radius,
-                          BYTE fill_a = 110, BYTE edge_a = 220) {
+//
+// `fill`/`edge` are owned by the caller and built once per PresentLayered —
+// they used to be allocated here for every selected/hover/focus cell (and
+// selected cells are painted twice per Present), which is pure churn.
+void PaintSelectionChrome(Gdiplus::Graphics& g, Gdiplus::SolidBrush& fill,
+                          Gdiplus::Pen* edge, int left, int top, int right,
+                          int bottom, int radius) {
   const int w = right - left;
   const int h = bottom - top;
   if (w < 4 || h < 4) {
@@ -162,16 +172,9 @@ void PaintSelectionChrome(Gdiplus::Graphics& g, int left, int top, int right,
   } else {
     path.AddRectangle(Gdiplus::Rect(left, top, w, h));
   }
-  Gdiplus::SolidBrush fill(Gdiplus::Color(
-      fill_a, GetRValue(accent), GetGValue(accent), GetBValue(accent)));
   g.FillPath(&fill, &path);
-  if (edge_a > 0) {
-    Gdiplus::Pen edge(
-        Gdiplus::Color(edge_a, GetRValue(accent), GetGValue(accent),
-                       GetBValue(accent)),
-        1.5f);
-    edge.SetLineJoin(Gdiplus::LineJoinRound);
-    g.DrawPath(&edge, &path);
+  if (edge) {
+    g.DrawPath(edge, &path);
   }
 }
 
@@ -384,21 +387,67 @@ void FenceWindow::EnsureFonts(int title_px, int caption_px, int footer_px) {
   }
 }
 
+// Drag-count badge font, cached the same way as the chrome fonts. The badge
+// keeps Segoe UI Bold so the glyphs stay identical to the old per-frame build.
+void FenceWindow::EnsureBadgeFont(int badge_px) {
+  if (!badge_family_) {
+    badge_family_ = new Gdiplus::FontFamily(L"Segoe UI");
+  }
+  if (!badge_font_ || cached_badge_px_ != badge_px) {
+    delete badge_font_;
+    badge_font_ = new Gdiplus::Font(
+        badge_family_, static_cast<Gdiplus::REAL>(badge_px),
+        Gdiplus::FontStyleBold, Gdiplus::UnitPixel);
+    cached_badge_px_ = badge_px;
+  }
+}
+
+// Footer count band: the StringFormat is constant and the brush only varies
+// with caption_color_, so both are cached across Presents.
+void FenceWindow::EnsureFooterFormat() {
+  if (!footer_fmt_) {
+    footer_fmt_ = new Gdiplus::StringFormat();
+    footer_fmt_->SetAlignment(Gdiplus::StringAlignmentNear);
+    footer_fmt_->SetLineAlignment(Gdiplus::StringAlignmentCenter);
+    footer_fmt_->SetTrimming(Gdiplus::StringTrimmingEllipsisCharacter);
+    footer_fmt_->SetFormatFlags(Gdiplus::StringFormatFlagsNoWrap);
+  }
+  if (!footer_brush_ || footer_brush_color_ != caption_color_) {
+    delete footer_brush_;
+    footer_brush_ = new Gdiplus::SolidBrush(Gdiplus::Color(
+        190, GetRValue(caption_color_), GetGValue(caption_color_),
+        GetBValue(caption_color_)));
+    footer_brush_color_ = caption_color_;
+  }
+}
+
 void FenceWindow::ReleaseFonts() {
   delete caption_font_;
   delete title_font_;
   delete footer_font_;
+  delete badge_font_;
   if (caption_family_ && !caption_family_borrowed_) {
     delete caption_family_;
   }
+  if (badge_family_) {
+    delete badge_family_;
+  }
+  delete footer_brush_;
+  delete footer_fmt_;
+  footer_brush_ = nullptr;
+  footer_brush_color_ = 0;
+  footer_fmt_ = nullptr;
   caption_font_ = nullptr;
   title_font_ = nullptr;
   footer_font_ = nullptr;
+  badge_font_ = nullptr;
+  badge_family_ = nullptr;
   caption_family_ = nullptr;
   caption_family_borrowed_ = false;
   cached_title_px_ = 0;
   cached_caption_px_ = 0;
   cached_footer_px_ = 0;
+  cached_badge_px_ = 0;
 }
 
 void FenceWindow::ApplyStyle() {
@@ -1274,20 +1323,38 @@ void FenceWindow::SetDropHighlight(bool on) {
 }
 
 void FenceWindow::UpdateOleDropPreview(int x, int y) {
-  const bool recycle = IsRecycleBinIconAt(x, y);
-  const bool folder = !recycle && !DirectoryIconAt(x, y).empty();
-  const int insert = (recycle || folder) ? -1 : InsertIndexAt(x, y);
+  // The recycle/folder probes are real shell work (CoCreate ShellLink +
+  // IPersistFile::Load for the bin, GetFileAttributes for folders) and DragOver
+  // fires on every mouse move — gate them to ~30 Hz so an OLE drag over a fence
+  // does not spin the UI thread in COM. InsertIndexAt is pure geometry and stays
+  // on every event so the seat cursor tracks exactly.
+  const DWORD now = GetTickCount();
+  bool recycle = false;
+  std::wstring folder;
+  if (last_ole_preview_probe_ms_ == 0 ||
+      now - last_ole_preview_probe_ms_ >= 33u) {
+    last_ole_preview_probe_ms_ = now;
+    recycle = IsRecycleBinIconAt(x, y);
+    folder = recycle ? std::wstring() : DirectoryIconAt(x, y);
+    ole_probe_recycle_ = recycle;
+    ole_probe_folder_ = folder;
+  } else {
+    recycle = ole_probe_recycle_;
+    folder = ole_probe_folder_;
+  }
+  const bool is_folder = !folder.empty();
+  const int insert = (recycle || is_folder) ? -1 : InsertIndexAt(x, y);
   if (drop_preview_ && drop_over_recycle_ == recycle &&
-      drop_over_folder_ == folder && drop_insert_ == insert &&
+      drop_over_folder_ == is_folder && drop_insert_ == insert &&
       drop_pt_.x == x && drop_pt_.y == y) {
     return;
   }
   const bool structural =
       !drop_preview_ || drop_over_recycle_ != recycle ||
-      drop_over_folder_ != folder || drop_insert_ != insert;
+      drop_over_folder_ != is_folder || drop_insert_ != insert;
   drop_preview_ = true;
   drop_over_recycle_ = recycle;
-  drop_over_folder_ = folder;
+  drop_over_folder_ = is_folder;
   drop_insert_ = insert;
   drop_pt_ = {x, y};
   drop_highlight_ = false;
@@ -1295,7 +1362,6 @@ void FenceWindow::UpdateOleDropPreview(int x, int y) {
     return;
   }
   // Insert/recycle/folder changes: immediate. Ghost cursor only: ~30fps.
-  const DWORD now = GetTickCount();
   if (structural || last_ole_preview_present_ms_ == 0 ||
       now - last_ole_preview_present_ms_ >= 33u) {
     PresentLayered();
@@ -1315,6 +1381,9 @@ void FenceWindow::ClearOleDropPreview() {
   drop_pt_ = {};
   drop_highlight_ = false;
   last_ole_preview_present_ms_ = 0;
+  last_ole_preview_probe_ms_ = 0;
+  ole_probe_recycle_ = false;
+  ole_probe_folder_.clear();
   if (hwnd_) {
     PresentLayered();
   }
@@ -1467,6 +1536,9 @@ bool FenceWindow::Create(HINSTANCE instance, const FenceLayout& layout) {
 }
 
 void FenceWindow::SetCollapsed(bool collapsed, bool persist) {
+  if (position_locked_ && collapsed != collapsed_) {
+    return;
+  }
   if (!hwnd_) {
     collapsed_ = collapsed;
     return;
@@ -1497,7 +1569,8 @@ void FenceWindow::SetCollapsed(bool collapsed, bool persist) {
 }
 
 void FenceWindow::ToggleCollapsed() {
-  if (!collapsible_) {
+  // Fences Lock freezes rollup too (position + size + collapse).
+  if (!collapsible_ || position_locked_) {
     return;
   }
   SetCollapsed(!collapsed_, /*persist=*/true);
@@ -1512,7 +1585,7 @@ void FenceWindow::SetAutoHide(bool on) {
     KillTimer(hwnd_, kTimerAutoHide);
   }
   // Fences: enabling Auto-hide rests in the collapsed title strip.
-  if (auto_hide_ && collapsible_ && !collapsed_) {
+  if (auto_hide_ && collapsible_ && !collapsed_ && !position_locked_) {
     SetCollapsed(true, /*persist=*/false);
   }
   if (on_moved_) {
@@ -1626,13 +1699,14 @@ void FenceWindow::EnsureDropTarget() {
   drop_target_->SetHighlightFn([this](bool on) {
     if (!on) {
       ClearOleDropPreview();
-      if (auto_hide_ && !collapsed_ && collapsible_ && !dragging_ &&
-          !resizing_ && !icon_dragging_ && !rubber_ && !rename_edit_) {
+      if (auto_hide_ && !position_locked_ && !collapsed_ && collapsible_ &&
+          !dragging_ && !resizing_ && !icon_dragging_ && !rubber_ &&
+          !rename_edit_) {
         SetTimer(hwnd_, kTimerAutoHide, 350, nullptr);
       }
       return;
     }
-    if (auto_hide_) {
+    if (auto_hide_ && !position_locked_) {
       KillTimer(hwnd_, kTimerAutoHide);
       if (collapsed_ && collapsible_) {
         SetCollapsed(false, /*persist=*/false);
@@ -1643,14 +1717,15 @@ void FenceWindow::EnsureDropTarget() {
     if (!active) {
       ClearOleDropPreview();
       // Fences Auto-hide: OLE leave → same delayed collapse as WM_MOUSELEAVE.
-      if (auto_hide_ && !collapsed_ && collapsible_ && !dragging_ &&
-          !resizing_ && !icon_dragging_ && !rubber_ && !rename_edit_) {
+      if (auto_hide_ && !position_locked_ && !collapsed_ && collapsible_ &&
+          !dragging_ && !resizing_ && !icon_dragging_ && !rubber_ &&
+          !rename_edit_) {
         SetTimer(hwnd_, kTimerAutoHide, 350, nullptr);
       }
       return;
     }
     // Fences Auto-hide: expand on drag-over so insert seats are visible.
-    if (auto_hide_) {
+    if (auto_hide_ && !position_locked_) {
       KillTimer(hwnd_, kTimerAutoHide);
       if (collapsed_ && collapsible_ && !dragging_ && !resizing_ &&
           !icon_dragging_ && !rubber_ && !rename_edit_) {
@@ -1810,7 +1885,24 @@ void FenceWindow::UpdateHoverTip(int index) {
   const int prev = tip_index_;
   tip_index_ =
       (index >= 0 && index < static_cast<int>(cells_.size())) ? index : -1;
-  if (tip_index_ != prev && hwnd_) {
+  if (tip_index_ != prev) {
+    hover_present_pending_ = true;
+    // One-shot fallback: if the pointer stops (or leaves) before the throttle
+    // window elapses, the timer flushes the pending highlight anyway.
+    if (hwnd_) {
+      SetTimer(hwnd_, kTimerHoverFlush, kHoverRepaintThrottleMs, nullptr);
+    }
+  }
+  // Flushing the hover chrome means a full-window ULW upload, so throttle it to
+  // ~60Hz (same shape as the drag/OLE-preview gates). Tooltip tracking still
+  // runs every call; only the repaint of the per-cell highlight is gated.
+  const DWORD now = GetTickCount();
+  if (hover_present_pending_ && hwnd_ &&
+      (last_hover_present_ms_ == 0 ||
+       now - last_hover_present_ms_ >=
+           static_cast<DWORD>(kHoverRepaintThrottleMs))) {
+    hover_present_pending_ = false;
+    last_hover_present_ms_ = now;
     PresentLayered();
   }
   if (!tip_) {
@@ -3439,7 +3531,10 @@ void FenceWindow::ActivateHeaderBtn(HeaderBtn btn) {
       on_dissolve_(this);
     }
   } else if (btn == HeaderBtn::PortalUp) {
-    if (PortalGoUp() && on_refresh_) {
+    // Shift+上一级 → 门户根 (Fences Folder Portal).
+    const bool to_root = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
+    const bool moved = to_root ? PortalGoRoot() : PortalGoUp();
+    if (moved && on_refresh_) {
       on_refresh_(this);
     }
   }
@@ -4596,6 +4691,26 @@ bool FenceWindow::PortalGoUp() {
   return true;
 }
 
+bool FenceWindow::PortalGoRoot() {
+  if (portal_path_.empty() || portal_cwd_.empty()) {
+    return false;
+  }
+  std::wstring cur = portal_cwd_;
+  while (!cur.empty() && (cur.back() == L'\\' || cur.back() == L'/')) {
+    cur.pop_back();
+  }
+  if (!cur.empty()) {
+    portal_forward_.push_back(cur);
+  }
+  portal_cwd_.clear();
+  ResetPortalBrowseChrome();
+  if (hwnd_) {
+    SetWindowTextW(hwnd_, DisplayTitle().c_str());
+    PresentLayered();
+  }
+  return true;
+}
+
 bool FenceWindow::PortalGoForward() {
   if (!PortalCanGoForward()) {
     return false;
@@ -5172,11 +5287,21 @@ void FenceWindow::ShowFenceMenu(POINT screen) {
                               style_id_ == all_styles[i]->id));
   }
 
+  auto leaf_en = [](const std::wstring& label, int id, bool checked,
+                    bool enabled) {
+    ShellMenuExtra ex;
+    ex.label = label;
+    ex.id = id;
+    ex.checked = checked;
+    ex.enabled = enabled;
+    return ex;
+  };
   std::vector<ShellMenuExtra> extras{
       leaf(Tr("fence_rename"), kExtFenceRename),
-      leaf(collapsed_ ? Tr("fence_expand") : Tr("fence_collapse"),
-           kExtFenceCollapse),
-      leaf(L"离开自动折叠", kExtFenceAutoHide, auto_hide_),
+leaf_en(collapsed_ ? Tr("fence_expand") : Tr("fence_collapse"),
+              kExtFenceCollapse, false, !position_locked_),
+      leaf_en(L"离开自动折叠", kExtFenceAutoHide, auto_hide_,
+              !position_locked_),
       leaf(L"离开时淡化", kExtFenceFadeIdle, fade_on_idle_),
       leaf(Tr("fence_refresh"), kExtFenceRefresh),
       leaf(L"筛选图标…", kExtFenceFilter),
@@ -5195,6 +5320,7 @@ void FenceWindow::ShowFenceMenu(POINT screen) {
   }
   if (PortalCanGoUp()) {
     extras.push_back(leaf(L"上一级", kExtFencePortalUp));
+    extras.push_back(leaf(L"回到根目录", kExtFencePortalRoot));
   }
   extras.push_back(submenu(L"所在页面", std::move(page_kids)));
   extras.push_back(submenu(Tr("fence_sort"), std::move(sort_kids)));
@@ -5319,13 +5445,19 @@ void FenceWindow::ShowFenceMenu(POINT screen) {
     } else if (rc == kExtFenceRename) {
       BeginTitleInlineRename();
     } else if (rc == kExtFenceCollapse) {
-      SetCollapsed(!collapsed_);
+      ToggleCollapsed();
     } else if (rc == kExtFenceAutoHide) {
-      SetAutoHide(!auto_hide_);
+if (!position_locked_) {
+        SetAutoHide(!auto_hide_);
+      }
     } else if (rc == kExtFenceFadeIdle) {
       SetFadeOnIdle(!fade_on_idle_);
     } else if (rc == kExtFencePortalUp) {
       if (PortalGoUp() && on_refresh_) {
+        on_refresh_(this);
+      }
+    } else if (rc == kExtFencePortalRoot) {
+      if (PortalGoRoot() && on_refresh_) {
         on_refresh_(this);
       }
     } else if (rc == kExtFenceSortName) {
@@ -6053,9 +6185,9 @@ LRESULT FenceWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
         SetTimer(hwnd_, kTimerIdleFade, kIdleFadeIntervalMs, nullptr);
       }
       // Fences Auto-hide: short delay so title-button / menu hops don't flicker.
-      if (auto_hide_ && !collapsed_ && collapsible_ && !dragging_ &&
-          !resizing_ && !icon_dragging_ && !rubber_ && !rename_edit_ &&
-          header_press_ == HeaderBtn::None) {
+      if (auto_hide_ && !position_locked_ && !collapsed_ && collapsible_ &&
+          !dragging_ && !resizing_ && !icon_dragging_ && !rubber_ &&
+          !rename_edit_ && header_press_ == HeaderBtn::None) {
         SetTimer(hwnd_, kTimerAutoHide, 350, nullptr);
       }
       return 0;
@@ -6066,9 +6198,9 @@ LRESULT FenceWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
       }
       if (wparam == kTimerAutoHide) {
         KillTimer(hwnd_, kTimerAutoHide);
-        if (auto_hide_ && !collapsed_ && collapsible_ && !dragging_ &&
-            !resizing_ && !icon_dragging_ && !rubber_ && !rename_edit_ &&
-            !style_menu_open_ && !drop_preview_) {
+        if (auto_hide_ && !position_locked_ && !collapsed_ && collapsible_ &&
+            !dragging_ && !resizing_ && !icon_dragging_ && !rubber_ &&
+            !rename_edit_ && !style_menu_open_ && !drop_preview_) {
           POINT pt{};
           GetCursorPos(&pt);
           RECT rc{};
@@ -6079,7 +6211,7 @@ LRESULT FenceWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
         }
         return 0;
       }
-      if (wparam == kTimerDragScroll) {
+if (wparam == kTimerDragScroll) {
         if (!icon_dragging_) {
           KillTimer(hwnd_, kTimerDragScroll);
           return 0;
@@ -6089,6 +6221,18 @@ LRESULT FenceWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
         if (GetCursorPos(&cur) && ScreenToClient(hwnd_, &cur) &&
             ScrollIfAtDragEdge(cur.x, cur.y)) {
           drag_insert_ = InsertIndexAt(cur.x, cur.y);
+          PresentLayered();
+        }
+        return 0;
+      }
+      if (wparam == kTimerHoverFlush) {
+        // Fallback flush for a hover repaint throttled in UpdateHoverTip: if the
+        // cursor stopped (or left the fence) before the throttle window opened,
+        // paint the pending highlight now instead of losing it.
+        KillTimer(hwnd_, kTimerHoverFlush);
+        if (hover_present_pending_ && hwnd_) {
+          hover_present_pending_ = false;
+          last_hover_present_ms_ = GetTickCount();
           PresentLayered();
         }
         return 0;
@@ -6323,6 +6467,12 @@ LRESULT FenceWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
         return 0;
       }
       if (y < S(hwnd_, kHeaderH0) && HitTestEdge(x, y) == Edge::None) {
+        // Ctrl+title dblclick on portal → Explorer open current folder (Fences).
+        if (!portal_path_.empty() &&
+            (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0) {
+          ExploreShellPath(PortalBrowsePath());
+          return 0;
+        }
         // Title double-click toggles collapse (rename stays in context menu).
         ToggleCollapsed();
       }
@@ -6411,6 +6561,7 @@ void FenceWindow::Paint(HDC hdc) {
   g.SetTextContrast(4);
 
   EnsureFonts(title_px, font_px, S(hwnd_, 11));
+  EnsureFooterFormat();
   Gdiplus::SolidBrush title_brush(
       Gdiplus::Color(255, GetRValue(title_color_), GetGValue(title_color_),
                      GetBValue(title_color_)));
@@ -6620,6 +6771,65 @@ void FenceWindow::Paint(HDC hdc) {
                      light_panel_ ? 255 : 0, light_panel_ ? 255 : 0,
                      light_panel_ ? 255 : 0));
 
+  // Selection / focus / hover chrome brushes + pens, built once per Present.
+  // PaintSelectionChrome used to allocate a SolidBrush + Pen per cell.
+  Gdiplus::SolidBrush chrome_sel_brush(Gdiplus::Color(
+      110, GetRValue(accent_), GetGValue(accent_), GetBValue(accent_)));
+  Gdiplus::Pen chrome_sel_pen(Gdiplus::Color(
+      220, GetRValue(accent_), GetGValue(accent_), GetBValue(accent_)), 1.5f);
+  Gdiplus::SolidBrush chrome_focus_brush(Gdiplus::Color(
+      36, GetRValue(accent_), GetGValue(accent_), GetBValue(accent_)));
+  Gdiplus::Pen chrome_focus_pen(Gdiplus::Color(
+      110, GetRValue(accent_), GetGValue(accent_), GetBValue(accent_)), 1.5f);
+  Gdiplus::SolidBrush chrome_hover_brush(Gdiplus::Color(
+      48, GetRValue(accent_), GetGValue(accent_), GetBValue(accent_)));
+  Gdiplus::Pen chrome_hover_pen(Gdiplus::Color(
+      90, GetRValue(accent_), GetGValue(accent_), GetBValue(accent_)), 1.5f);
+  chrome_sel_pen.SetLineJoin(Gdiplus::LineJoinRound);
+  chrome_focus_pen.SetLineJoin(Gdiplus::LineJoinRound);
+  chrome_hover_pen.SetLineJoin(Gdiplus::LineJoinRound);
+
+  // Selected-caption ink height cache. MeasureString with an 8-line box used to
+  // run for every selected cell on every Present. Keyed by (index, name, label
+  // width, font px) so a re-layout / DPI change / rename re-measures; the whole
+  // table drops when the cell count changes (cells_ was rebuilt).
+  struct SelInkKey {
+    size_t index;
+    std::wstring name;
+    int label_w;
+    int font_px;
+  };
+  static std::vector<std::pair<SelInkKey, int>> sel_ink_cache;
+  static size_t sel_ink_cells_size = 0;
+  if (sel_ink_cache.capacity() == 0) {
+    sel_ink_cache.reserve(64);
+  }
+  if (sel_ink_cells_size != cells_.size()) {
+    sel_ink_cells_size = cells_.size();
+    sel_ink_cache.clear();
+  }
+  auto cached_sel_ink = [&](size_t idx, const std::wstring& name, int lw,
+                            int fpx, Gdiplus::Graphics& gfx) -> int {
+    for (const auto& e : sel_ink_cache) {
+      if (e.first.index == idx && e.first.label_w == lw &&
+          e.first.font_px == fpx && e.first.name == name) {
+        return e.second;
+      }
+    }
+    Gdiplus::RectF measure(
+        0.f, 0.f, static_cast<Gdiplus::REAL>(lw),
+        static_cast<Gdiplus::REAL>(line_h * max_sel_lines + 8));
+    Gdiplus::RectF bound;
+    gfx.MeasureString(name.c_str(), -1, caption_font_, measure, &sel_fmt,
+                      &bound);
+    const int h = static_cast<int>(bound.Height + 0.5f) + 2;
+    if (sel_ink_cache.size() >= 128) {
+      sel_ink_cache.clear();
+    }
+    sel_ink_cache.push_back({SelInkKey{idx, name, lw, fpx}, h});
+    return h;
+  };
+
   auto paint_cell = [&](size_t i, bool selected_pass) {
     if (i >= cells_.size()) {
       return;
@@ -6663,15 +6873,18 @@ void FenceWindow::Paint(HDC hdc) {
         (is_cut || is_drag_src) ? &name_brush_cut : &name_brush_normal;
     if (list) {
       if (is_sel) {
-        PaintSelectionChrome(g, b.left + 2, b.top + 1, b.right - 2,
-                             b.bottom - 1, accent_, S(hwnd_, 4));
+        PaintSelectionChrome(g, chrome_sel_brush, &chrome_sel_pen,
+                             b.left + 2, b.top + 1, b.right - 2,
+                             b.bottom - 1, S(hwnd_, 4));
       } else if (is_focus) {
         // Ctrl+Arrow focus (not selected) — lighter ring than full selection.
-        PaintSelectionChrome(g, b.left + 2, b.top + 1, b.right - 2,
-                             b.bottom - 1, accent_, S(hwnd_, 4), 36, 110);
+        PaintSelectionChrome(g, chrome_focus_brush, &chrome_focus_pen,
+                             b.left + 2, b.top + 1, b.right - 2,
+                             b.bottom - 1, S(hwnd_, 4));
       } else if (is_hover) {
-        PaintSelectionChrome(g, b.left + 2, b.top + 1, b.right - 2,
-                             b.bottom - 1, accent_, S(hwnd_, 4), 48, 90);
+        PaintSelectionChrome(g, chrome_hover_brush, &chrome_hover_pen,
+                             b.left + 2, b.top + 1, b.right - 2,
+                             b.bottom - 1, S(hwnd_, 4));
       }
       const int iy = b.top + ((b.bottom - b.top) - icon) / 2;
       if (cell.icon) {
@@ -6693,13 +6906,7 @@ void FenceWindow::Paint(HDC hdc) {
     int label_h = idle_label_h;
     int ink_h = idle_label_h;
     if (is_sel) {
-      Gdiplus::RectF measure(
-          0.f, 0.f, static_cast<Gdiplus::REAL>(label_w),
-          static_cast<Gdiplus::REAL>(line_h * max_sel_lines + 8));
-      Gdiplus::RectF bound;
-      g.MeasureString(cell.item.name.c_str(), -1, caption_font_, measure,
-                      &sel_fmt, &bound);
-      ink_h = static_cast<int>(bound.Height + 0.5f) + 2;
+      ink_h = cached_sel_ink(i, cell.item.name, label_w, font_px, g);
       if (ink_h < line_h) {
         ink_h = line_h;
       }
@@ -6716,16 +6923,19 @@ void FenceWindow::Paint(HDC hdc) {
       }
       // Hug glyph + caption ink (not empty 2-line shelf). Translucent accent.
       const int chrome_b = label_top + ink_h + S(hwnd_, 3);
-      PaintSelectionChrome(g, b.left + 3, b.top + 2, b.right - 3, chrome_b,
-                           accent_, S(hwnd_, 6));
+      PaintSelectionChrome(g, chrome_sel_brush, &chrome_sel_pen,
+                           b.left + 3, b.top + 2, b.right - 3, chrome_b,
+                           S(hwnd_, 6));
     } else if (is_focus) {
       const int chrome_b = label_top + idle_label_h + S(hwnd_, 2);
-      PaintSelectionChrome(g, b.left + 3, b.top + 2, b.right - 3, chrome_b,
-                           accent_, S(hwnd_, 6), 36, 110);
+      PaintSelectionChrome(g, chrome_focus_brush, &chrome_focus_pen,
+                           b.left + 3, b.top + 2, b.right - 3, chrome_b,
+                           S(hwnd_, 6));
     } else if (is_hover) {
       const int chrome_b = label_top + idle_label_h + S(hwnd_, 2);
-      PaintSelectionChrome(g, b.left + 3, b.top + 2, b.right - 3, chrome_b,
-                           accent_, S(hwnd_, 6), 48, 90);
+      PaintSelectionChrome(g, chrome_hover_brush, &chrome_hover_pen,
+                           b.left + 3, b.top + 2, b.right - 3, chrome_b,
+                           S(hwnd_, 6));
     }
 
     if (cell.icon) {
@@ -6884,9 +7094,8 @@ void FenceWindow::Paint(HDC hdc) {
       Gdiplus::Pen ring(Gdiplus::Color(255, 255, 255, 255), 1.f);
       g.DrawEllipse(&ring, bx, by, badge, badge);
       const std::wstring label = std::to_wstring(total);
-      Gdiplus::FontFamily fam(L"Segoe UI");
-      Gdiplus::Font font(&fam, static_cast<Gdiplus::REAL>((std::max)(10, badge * 2 / 3)),
-                         Gdiplus::FontStyleBold, Gdiplus::UnitPixel);
+      // Badge font is cached (was a new FontFamily + Font every drag frame).
+      EnsureBadgeFont((std::max)(10, badge * 2 / 3));
       Gdiplus::SolidBrush ink(Gdiplus::Color(255, 255, 255, 255));
       Gdiplus::StringFormat fmt;
       fmt.SetAlignment(Gdiplus::StringAlignmentCenter);
@@ -6895,7 +7104,7 @@ void FenceWindow::Paint(HDC hdc) {
                          static_cast<Gdiplus::REAL>(by),
                          static_cast<Gdiplus::REAL>(badge),
                          static_cast<Gdiplus::REAL>(badge));
-      g.DrawString(label.c_str(), -1, &font, box, &fmt, &ink);
+      g.DrawString(label.c_str(), -1, badge_font_, box, &fmt, &ink);
     }
   }
 
@@ -6919,19 +7128,13 @@ void FenceWindow::Paint(HDC hdc) {
       }
     }
     if (!footer.empty()) {
-      Gdiplus::SolidBrush f_brush(Gdiplus::Color(
-          190, GetRValue(caption_color_), GetGValue(caption_color_),
-          GetBValue(caption_color_)));
-      Gdiplus::StringFormat f_fmt;
-      f_fmt.SetAlignment(Gdiplus::StringAlignmentNear);
-      f_fmt.SetLineAlignment(Gdiplus::StringAlignmentCenter);
-      f_fmt.SetTrimming(Gdiplus::StringTrimmingEllipsisCharacter);
-      f_fmt.SetFormatFlags(Gdiplus::StringFormatFlagsNoWrap);
+      // Brush + StringFormat cached per caption color (was rebuilt per frame).
       Gdiplus::RectF f_box(static_cast<Gdiplus::REAL>(pad),
                            static_cast<Gdiplus::REAL>(fy),
                            static_cast<Gdiplus::REAL>(rc.right - pad - 12),
                            static_cast<Gdiplus::REAL>(footer_h));
-      g.DrawString(footer.c_str(), -1, footer_font_, f_box, &f_fmt, &f_brush);
+      g.DrawString(footer.c_str(), -1, footer_font_, f_box, footer_fmt_,
+                   footer_brush_);
     }
   }
 }

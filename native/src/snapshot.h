@@ -2,6 +2,8 @@
 
 #include "layout.h"
 
+#include <Windows.h>
+
 #include <string>
 #include <vector>
 
@@ -53,7 +55,33 @@ bool SaveSnapshot(const AppState& state, const std::wstring& name);
 std::vector<SnapshotInfo> ListSnapshots();
 // Non-destructive summary for UI cards (does not touch live layout file).
 std::wstring SnapshotBrief(const std::wstring& path);
-SnapshotCardData BuildSnapshotCard(const SnapshotInfo& info);
+
+// Bounds the thumbnail work BuildSnapshotCard performs. Each thumb is an icon
+// extract + GDI+ PNG encode + base64, so a settings list over many snapshots
+// used to re-encode every thumb on the UI thread (seconds of stall).
+struct SnapshotCardOptions {
+  // false → geometry / meta only; pin_thumbs and icon thumbs stay empty
+  // (the settings card renders placeholders). Skips all PNG encoding.
+  bool render_thumbs = true;
+  // Per-fence pin thumbs (was a fixed 24) and free-float thumbs (was 40).
+  // Lower these when the snapshot list is long.
+  size_t max_pin_thumbs = 24;
+  size_t max_free_thumbs = 40;
+};
+
+SnapshotCardData BuildSnapshotCard(
+    const SnapshotInfo& info,
+    const SnapshotCardOptions& opts = SnapshotCardOptions{});
+
+// Same card as BuildSnapshotCard but memoized by snapshot mtime: reopening the
+// settings window no longer re-encodes every thumbnail. Only cards built WITH
+// thumbs are cached — placeholder builds are cheap enough to redo, and caching
+// them would freeze a thumb-less card forever (mtime never changes).
+SnapshotCardData BuildSnapshotCardCached(const SnapshotInfo& info,
+                                        const SnapshotCardOptions& opts);
+// Last-write time of a snapshot json as a single comparable value
+// (0 when the file is missing). Used to pick the most recent snapshots.
+ULONGLONG SnapshotMtimeQuad(const std::wstring& path);
 bool LoadSnapshot(const std::wstring& path, AppState* out);
 // Also capture Explorer icon positions alongside fence layout.
 bool SaveSnapshotWithIcons(const AppState& state, const std::wstring& name);

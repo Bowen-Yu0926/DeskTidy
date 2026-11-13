@@ -83,7 +83,23 @@ void AppendFolder(const std::wstring& folder,
          (fd.cFileName[1] == L'.' && fd.cFileName[2] == L'\0'))) {
       continue;
     }
-    if (IsPortalEntryExcluded(fd.cFileName, excludes)) {
+    // Desktop-scan visibility hides only genuinely-transient entries (dot / ~ /
+    // ~$ / office locks) plus the user's own exclude_patterns. The broader
+    // portal temp set (.part/.wbk/.asd/…) is deliberately NOT applied here — a
+    // user-visible partial download or a folder named "DeskTidy" must not
+    // vanish from every fence/float/dock. The full IsPortalEntryExcluded set is
+    // applied later, at organize/portal time.
+    if (IsDesktopEntryHidden(fd.cFileName)) {
+      continue;
+    }
+    bool excluded = false;
+    for (const auto& pat : excludes) {
+      if (NameMatchesExclude(fd.cFileName, pat)) {
+        excluded = true;
+        break;
+      }
+    }
+    if (excluded) {
       continue;
     }
     if (fd.dwFileAttributes & FILE_ATTRIBUTE_HIDDEN) {

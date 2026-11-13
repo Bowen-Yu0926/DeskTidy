@@ -431,12 +431,18 @@ std::wstring ShortcutPathFor(const std::wstring& dir, const wchar_t* name) {
   return JoinPath(dir, std::wstring(name) + L".lnk");
 }
 
+// Returns true when the shortcut exists after the call. *created is set true
+// only when a shortcut file was newly written this call — callers use it to skip
+// the shell-wide SHCNE_ASSOCCHANGED rebuild when nothing changed.
 bool CreateNamespaceShortcut(const std::wstring& dest, const wchar_t* clsid,
-                             const wchar_t* display_name) {
+                             const wchar_t* display_name, bool* created) {
+  if (created) {
+    *created = false;
+  }
   if (dest.empty() || !clsid) {
     return false;
   }
-  // Already present.
+  // Already present — nothing changed, skip the icon-cache rebuild.
   if (GetFileAttributesW(dest.c_str()) != INVALID_FILE_ATTRIBUTES) {
     return true;
   }
@@ -470,13 +476,18 @@ bool CreateNamespaceShortcut(const std::wstring& dest, const wchar_t* clsid,
 
   IPersistFile* ppf = nullptr;
   hr = psl->QueryInterface(IID_IPersistFile, reinterpret_cast<void**>(&ppf));
-  bool ok = false;
+  bool saved = false;
   if (SUCCEEDED(hr) && ppf) {
-    ok = SUCCEEDED(ppf->Save(dest.c_str(), TRUE));
+    saved = SUCCEEDED(ppf->Save(dest.c_str(), TRUE));
     ppf->Release();
   }
+  (void)saved;
   psl->Release();
-  return ok && GetFileAttributesW(dest.c_str()) != INVALID_FILE_ATTRIBUTES;
+  const bool ok = GetFileAttributesW(dest.c_str()) != INVALID_FILE_ATTRIBUTES;
+  if (ok && created) {
+    *created = true;
+  }
+  return ok;
 }
 
 }  // namespace
@@ -525,9 +536,13 @@ int EnsureHostedSystemNamespaceIcons(PinMap* pins) {
   // Crash-safe: capture + persist the original visibility before first hide.
   PersistOriginalIconStateIfNeeded();
   const std::wstring dir = PublicSystemDir();
-  // Returns the number of pin CHANGES (stale drops + new pins) so the caller
+// Returns the number of pin CHANGES (stale drops + new pins) so the caller
   // knows whether the map needs persisting.
   int changed = 0;
+  // Set only when a shortcut file was actually newly written — gates the
+  // shell-wide SHCNE_ASSOCCHANGED icon-cache rebuild (broadcasting it on every
+  // organize/watch tick, even when nothing changed, is a desktop-flicker source).
+  bool created_any = false;
   // Drop pins pointing at a PREVIOUS .public_system directory. The data root
   // moved once (Python .desktidy\storage → DeskTidyNative), leaving 回收站 /
   // 此电脑 pinned under both paths; RefreshDesktopIcons re-adds any pinned file
@@ -550,9 +565,11 @@ int EnsureHostedSystemNamespaceIcons(PinMap* pins) {
   }
   for (const auto& ns : kSystemIcons) {
     const std::wstring dest = ShortcutPathFor(dir, ns.name);
-    if (!CreateNamespaceShortcut(dest, ns.clsid, ns.name)) {
+    bool created = false;
+    if (!CreateNamespaceShortcut(dest, ns.clsid, ns.name, &created)) {
       continue;
     }
+    created_any = created_any || created;
     SetDesktopNamespaceIconVisible(ns.clsid, false);
     // Prefer「常用」like Python ensure_hosted_system_namespace_public_icons.
     if (!FindPin(*pins, dest)) {
@@ -560,7 +577,13 @@ int EnsureHostedSystemNamespaceIcons(PinMap* pins) {
       ++changed;
     }
   }
-  RefreshDesktopNamespaceIcons();
+  // Only rebuild the shell icon cache when a shortcut was actually created.
+  // SHCNE_ASSOCCHANGED is a shell-wide icon-cache flush; broadcasting it on
+  // every organize / watch tick — even when nothing changed — is a visible
+  // desktop-flicker source.
+  if (created_any) {
+    RefreshDesktopNamespaceIcons();
+  }
   StartNamespaceIconRebuildGuard();
   return changed;
 }

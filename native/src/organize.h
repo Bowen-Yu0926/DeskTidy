@@ -60,8 +60,20 @@ std::vector<std::wstring> LoadExcludePatterns();
 // dot-files, and the configured exclude patterns.
 bool IsPortalEntryExcluded(const std::wstring& name,
                            const std::vector<std::wstring>& exclude_patterns);
+// Desktop-scan visibility: only genuinely-transient entries (dot / ~ / ~$ /
+// office locks). Deliberately NARROWER than IsPortalEntryExcluded — applied at
+// scan time so a user-visible .part / ~scratch file is not hidden from every
+// view. Exclude patterns are matched separately at the scan call site.
+bool IsDesktopEntryHidden(const std::wstring& name);
+// Case-insensitive glob / stem match against one exclude pattern. Exposed so the
+// desktop scan can apply user exclude_patterns without the full portal set.
+bool NameMatchesExclude(const std::wstring& name, const std::wstring& pattern);
 // Enumerate a portal folder into DesktopItems, applying hidden/temp/exclude
 // filters. Mirrors the inline portal scan in app.cpp but honors exclude_patterns.
 std::vector<DesktopItem> ScanPortalItems(
     const std::wstring& portal_dir,
     const std::vector<std::wstring>& exclude_patterns);
+
+// Drop the cached portal scans so the next ScanPortalItems re-reads each portal
+// folder (call after file create/delete/move/rename inside a portal).
+void InvalidatePortalScanCache();

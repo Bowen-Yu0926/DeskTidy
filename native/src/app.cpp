@@ -94,8 +94,25 @@ constexpr UINT kTimerReflowPublic = 53;
 // Debounced desktop content refresh after SHChangeNotify / portal watch
 // (Fences/Explorer: wait for the FS event to settle, then one scan).
 constexpr UINT kTimerDesktopShell = 54;
+// Explorer paste is async: SHCNE_CREATE/UPDATEDIR for a multi-file paste land
+// seconds after OnDesktopPaste's immediate rescan. Instead of a fixed "ignore
+// everything for N ms" window (which swallowed late events until the next
+// PollChanged), suppress only while a burst is actually arriving: each
+// suppressed notify extends the deadline by this much, and once the burst
+// stops the very next notify — even minutes later — goes through.
+constexpr UINT kPasteRescanSuppressMs = 400;
+// Single-App process (g_app_for_hook is assigned/released per instance), so a
+// file-scope deadline is equivalent to an App member here — see app.h note on
+// last_manual_refresh_.
+ULONGLONG g_paste_rescan_deadline = 0;
 // Idle warm-paint for soft-parked (off-page) fences — one per tick.
 constexpr UINT kTimerWarmFences = 55;
+// Work-spreader cadence for kTimerWarmFences. Each tick does one full DWM
+// layered blit on the UI thread, so 32ms (31 Hz) hogged the pump and could
+// hitch an in-progress fence drag when several fences were parked. 80ms (12.5
+// warm-blits/sec) still warms a dozen fences in under a second but leaves the
+// UI thread far more headroom.
+constexpr UINT kWarmFencesTickMs = 80;
 constexpr UINT kTimerWebViewWarm = 56;
 // Hybrid-GPU (Optimus) recovery: re-upload visible overlays after boot settles.
 constexpr UINT kTimerOverlayRefresh = 57;
@@ -761,7 +778,7 @@ void App::WireFence(FenceWindow* fence) {
           // paste=true skips WantDropLinkEffect inside HandleIncomingPaths
           // (shortcuts already materialized).
           HandleIncomingPaths(f, landed, /*paste=*/true, /*move=*/false);
-          PersistLayouts();
+          SchedulePersistLayouts();
           ShowToast(L"已创建快捷方式 " + std::to_wstring(landed.size()) +
                     L" 项");
           return DROPEFFECT_LINK;
@@ -780,14 +797,14 @@ void App::WireFence(FenceWindow* fence) {
           f->InsertPinOrder(resolved, at);
           // paste=true: pin only (landing / link already done above).
           HandleIncomingPaths(f, resolved, /*paste=*/true, /*move=*/false);
-          PersistLayouts();
+          SchedulePersistLayouts();
           // Virtual pin is COPY to the OLE source; portal→Desktop FO already
           // ran inside LandPortalSourcesOnDesktop (never ask source to delete).
           (void)land;
           return DROPEFFECT_COPY;
         }
         const DWORD eff = OnPathsDropped(f, paths);
-        PersistLayouts();
+        SchedulePersistLayouts();
         return eff;
       });
   fence->SetOnPathsDropped(
@@ -1371,6 +1388,21 @@ bool App::Init(HINSTANCE instance) {
     } else if (id == L"page_bar_style") {
       SetPageBarStyle(value);
       return;
+    } else if (id == L"exclude_patterns") {
+      prefs_.exclude_patterns = SplitDockCsv(value);
+      if (prefs_.exclude_patterns.empty()) {
+        prefs_.exclude_patterns = {L"desktop.ini", L"DeskTidy"};
+      }
+      SaveAppPrefs(prefs_);
+      InvalidateDesktopScanCache();
+      RefreshDesktopIcons();
+    } else if (id == L"dock_items") {
+      prefs_.dock_items = SplitDockCsv(value);
+      if (prefs_.dock_items.size() > 8) {
+        prefs_.dock_items.resize(8);
+      }
+      SaveAppPrefs(prefs_);
+      RebuildDockItems();
     } else {
       return;
     }
@@ -3720,6 +3752,11 @@ void App::PushExtensionSettings() {
   }
   ext.dock_edge = prefs_.dock_edge;
   ext.dock_opacity = prefs_.dock_opacity;
+  ext.dock_items = prefs_.dock_items;
+  ext.exclude_patterns = prefs_.exclude_patterns.empty()
+                             ? std::vector<std::wstring>{L"desktop.ini",
+                                                         L"DeskTidy"}
+                             : prefs_.exclude_patterns;
   ext.check_update_on_startup = prefs_.check_update_on_startup;
   ext.desktop_right_click_menu = prefs_.desktop_right_click_menu;
   ext.close_to_tray = prefs_.close_to_tray && prefs_.close_behavior_prompted;
@@ -3827,8 +3864,42 @@ void App::PushExtensionSettings() {
     ext.page_locked.resize(page_names_.size(), false);
   }
   ext.snapshots.clear();
-  for (const auto& s : ListSnapshots()) {
-    const SnapshotCardData data = BuildSnapshotCard(s);
+  const auto snapshots = ListSnapshots();
+  // Each thumbnail is an icon extract + GDI+ PNG encode + base64 on this (UI)
+  // thread. Rendering full cards for every snapshot while the settings window
+  // opens used to stall for seconds. Eagerly render only the most recent
+  // snapshots at full fidelity; older ones get geometry + meta with
+  // placeholders. Rebuilds reuse the mtime-keyed card cache in snapshot.cpp,
+  // so re-opening the window does not re-encode anything unchanged.
+  constexpr size_t kFullCards = 6;   // newest N: full thumb budget
+  constexpr size_t kEagerCards = 8;  // next M: thinned thumb budget
+  std::vector<std::pair<ULONGLONG, size_t>> order;
+  order.reserve(snapshots.size());
+  for (size_t i = 0; i < snapshots.size(); ++i) {
+    order.emplace_back(SnapshotMtimeQuad(snapshots[i].path), i);
+  }
+  std::stable_sort(order.begin(), order.end(),
+                   [](const auto& a, const auto& b) {
+                     return a.first > b.first;  // newest first
+                   });
+  std::vector<size_t> render_order;
+  render_order.reserve(order.size());
+  for (const auto& kv : order) {
+    render_order.push_back(kv.second);
+  }
+  const size_t eager = (std::min)(kEagerCards, render_order.size());
+  for (size_t n = 0; n < render_order.size(); ++n) {
+    const SnapshotInfo& s = snapshots[render_order[n]];
+    SnapshotCardOptions opts;
+    if (n >= eager) {
+      // Older than the eager window: geometry/meta only (placeholders).
+      opts.render_thumbs = false;
+    } else if (n >= kFullCards) {
+      // Thinned budget for the tail so a long list stays responsive.
+      opts.max_pin_thumbs = 6;
+      opts.max_free_thumbs = 8;
+    }
+    const SnapshotCardData data = BuildSnapshotCardCached(s, opts);
     SettingsWindow::ExtState::SnapCard card;
     card.name = data.name;
     card.meta = data.meta;
@@ -4401,6 +4472,7 @@ void App::OnDesktopPaste(bool as_link) {
       seat_landed_floats();
       ClipboardConsumeCut();
       last_manual_refresh_ = GetTickCount64();
+      g_paste_rescan_deadline = last_manual_refresh_ + kPasteRescanSuppressMs;
       ShowToast(L"已粘贴 " + std::to_wstring(n) + L" 项到桌面");
       return;
     }
@@ -4424,7 +4496,8 @@ void App::OnDesktopPaste(bool as_link) {
             static_cast<unsigned>(scan.size()), found ? 1 : 0,
             public_host_.HasItems() ? 1 : 0, public_visible_ ? 1 : 0);
   }
-  last_manual_refresh_ = GetTickCount64();  // suppress trailing SHChangeNotify rescan
+  last_manual_refresh_ = GetTickCount64();  // mark the immediate manual rescan
+  g_paste_rescan_deadline = last_manual_refresh_ + kPasteRescanSuppressMs;
   public_host_.SelectPaths(landed);
   ShowToast(L"已粘贴 " + std::to_wstring(n) + L" 项到桌面");
 }
@@ -4814,7 +4887,7 @@ void App::ScheduleWarmFenceLayers() {
     return;
   }
   KillTimer(message_hwnd_, kTimerWarmFences);
-  SetTimer(message_hwnd_, kTimerWarmFences, 32, nullptr);
+  SetTimer(message_hwnd_, kTimerWarmFences, kWarmFencesTickMs, nullptr);
 }
 
 void App::ReflowPublicFloats() {
@@ -5578,6 +5651,7 @@ void App::OnPathsPasted(FenceWindow* fence,
     // Contents live inside the folder — do not pin each child into the fence.
     // Portal may be browsing the destination (or its parent) — force rescan.
     InvalidateDesktopScanCache();
+    InvalidatePortalScanCache();
     RefreshDesktopIcons();
     return;
   }
@@ -5907,6 +5981,7 @@ DWORD App::HandleIncomingPaths(FenceWindow* fence,
   }
 
   InvalidateDesktopScanCache();
+  InvalidatePortalScanCache();
   RefreshDesktopIcons();
 
   if (failed.empty()) {
@@ -7339,10 +7414,16 @@ void App::ScheduleDesktopContentRefresh() {
   if (!message_hwnd_) {
     return;
   }
-  // OnDesktopPaste already did an immediate RefreshDesktopIcons — skip the
-  // trailing SHChangeNotify rescan (2-3 redundant full grid rescans made the
-  // paste feel like the icons flickered in/out for a second).
-  if (GetTickCount64() - last_manual_refresh_ < 2500) {
+  // OnDesktopPaste already did an immediate RefreshDesktopIcons — suppress the
+  // trailing SHChangeNotify rescan while Explorer's copy burst is still landing
+  // (2-3 redundant full grid rescans made pasted icons flicker in/out). The
+  // deadline is EXTENDED per suppressed notify, so it tracks the burst instead
+  // of blindly dropping a fixed window: late CREATE/UPDATEDIR from a large
+  // multi-file paste still trigger a rescan once the burst settles (they used
+  // to be swallowed here and only showed up on the next ~10s PollChanged).
+  const ULONGLONG now = GetTickCount64();
+  if (now < g_paste_rescan_deadline) {
+    g_paste_rescan_deadline = now + kPasteRescanSuppressMs;
     return;
   }
   // Coalesce multi-file CREATE/UPDATEDIR bursts from a folder→Desktop drop
@@ -7354,6 +7435,7 @@ void App::ScheduleDesktopContentRefresh() {
 void App::OnDesktopContentRefresh() {
   rules_ = LoadRules();
   InvalidateDesktopScanCache();
+  InvalidatePortalScanCache();
   // Always refresh first (Fences / Explorer): portal & desktop icons must
   // update even when the organize worker is still busy. Watch organize is
   // best-effort on top — never block the FS refresh path.
@@ -8636,7 +8718,7 @@ LRESULT CALLBACK App::TrayWndProc(HWND hwnd, UINT msg, WPARAM wparam,
             if (fence && fence->LayerDirty() && fence->Hwnd() &&
                 (!IsWindowVisible(fence->Hwnd()) ||
                  IsIconic(fence->Hwnd()))) {
-              SetTimer(hwnd, kTimerWarmFences, 32, nullptr);
+              SetTimer(hwnd, kTimerWarmFences, kWarmFencesTickMs, nullptr);
               break;
             }
           }

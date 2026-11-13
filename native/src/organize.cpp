@@ -8,7 +8,9 @@
 #include <Windows.h>
 
 #include <cwctype>
+#include <mutex>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace {
@@ -215,6 +217,8 @@ bool GlobMatch(const std::wstring& n, const std::wstring& p, size_t ni, size_t p
   return ni == n.size();
 }
 
+}  // namespace
+
 bool NameMatchesExclude(const std::wstring& name, const std::wstring& pattern) {
   std::wstring raw = pattern;
   size_t a = 0;
@@ -244,8 +248,6 @@ bool NameMatchesExclude(const std::wstring& name, const std::wstring& pattern) {
   }
   return false;
 }
-
-}  // namespace
 
 std::string OrganizeKindOfItem(const DesktopItem& item) {
   // Python item_organize_kind: .lnk/.url/.exe → "icon"; folders/others → "file".
@@ -337,16 +339,21 @@ std::vector<std::wstring> LoadExcludePatterns() {
   return patterns;
 }
 
-bool IsPortalEntryExcluded(const std::wstring& name,
-                           const std::vector<std::wstring>& exclude_patterns) {
+// Desktop-scan visibility: only entries that are genuinely transient/hidden on
+// the real desktop. Deliberately NARROWER than IsPortalEntryExcluded — the
+// user-visible .part / .wbk / .asd / ~scratch files and the user's "DeskTidy"
+// organize preference must not make real desktop items vanish from every fence,
+// float, dock and search. Those stay in IsPortalEntryExcluded, which portals and
+// organize still apply.
+bool IsDesktopEntryHidden(const std::wstring& name) {
   if (name.empty()) {
     return false;
   }
-  // Hidden / dot files.
+  // Dot files.
   if (name[0] == L'.') {
     return true;
   }
-  // Office temp lock / scratch files (~$..., ~...).
+  // Office lock files (~$doc.docx) and scratch (~foo) — never user content.
   if (name.rfind(L"~$", 0) == 0 || name[0] == L'~') {
     return true;
   }
@@ -354,10 +361,22 @@ bool IsPortalEntryExcluded(const std::wstring& name,
   if (lower.find(L".tmp.") != std::wstring::npos) {
     return true;
   }
+  return false;
+}
+
+bool IsPortalEntryExcluded(const std::wstring& name,
+                           const std::vector<std::wstring>& exclude_patterns) {
+  if (name.empty()) {
+    return false;
+  }
+  if (IsDesktopEntryHidden(name)) {
+    return true;
+  }
   static const wchar_t* kTempSuffixes[] = {
       L".tmp",     L".download", L".crdownload", L".wbk", L".asd",
       L".xlk",     L".lck",      L".temp",       L".part", L".partial",
   };
+  const std::wstring lower = LowerW(name);
   for (const wchar_t* s : kTempSuffixes) {
     const size_t slen = wcslen(s);
     if (lower.size() >= slen &&
@@ -373,6 +392,27 @@ bool IsPortalEntryExcluded(const std::wstring& name,
   return false;
 }
 
+// 2.5s portal scan cache — mirrors the desktop scan TTL in desktop_items.cpp
+// (kScanCacheTtlMs). Portals are walked with FindFirstFileW once per portal
+// fence on every RefreshDesktopIcons and on the portal poll path; without this
+// a portal over thousands of files pays a full directory walk every refresh.
+constexpr ULONGLONG kPortalScanCacheTtlMs = 2500;
+
+struct PortalCacheEntry {
+  std::vector<DesktopItem> items;
+  ULONGLONG tick = 0;
+};
+
+// Guards g_portal_scan_cache. RefreshDesktopIcons runs on the UI thread but the
+// portal poll / organize worker paths can reach ScanPortalItems concurrently.
+std::mutex g_portal_scan_mutex;
+std::unordered_map<std::wstring, PortalCacheEntry> g_portal_scan_cache;
+
+void InvalidatePortalScanCache() {
+  std::lock_guard<std::mutex> lock(g_portal_scan_mutex);
+  g_portal_scan_cache.clear();
+}
+
 std::vector<DesktopItem> ScanPortalItems(
     const std::wstring& portal_dir,
     const std::vector<std::wstring>& exclude_patterns) {
@@ -380,10 +420,26 @@ std::vector<DesktopItem> ScanPortalItems(
   if (portal_dir.empty()) {
     return out;
   }
+  const ULONGLONG now = GetTickCount64();
+  {
+    std::lock_guard<std::mutex> lock(g_portal_scan_mutex);
+    const auto it = g_portal_scan_cache.find(portal_dir);
+    if (it != g_portal_scan_cache.end() &&
+        now - it->second.tick < kPortalScanCacheTtlMs) {
+      // Return by value so the caller owns a copy independent of the cache.
+      return it->second.items;
+    }
+  }
   WIN32_FIND_DATAW fd{};
   const std::wstring pattern = portal_dir + L"\\*";
   HANDLE find = FindFirstFileW(pattern.c_str(), &fd);
   if (find == INVALID_HANDLE_VALUE) {
+    // Remember the empty result briefly so a missing/locked portal does not
+    // trigger a fresh walk on every refresh.
+    std::lock_guard<std::mutex> lock(g_portal_scan_mutex);
+    PortalCacheEntry& entry = g_portal_scan_cache[portal_dir];
+    entry.items.clear();
+    entry.tick = now;
     return out;
   }
   do {
@@ -409,5 +465,11 @@ std::vector<DesktopItem> ScanPortalItems(
     }
   } while (FindNextFileW(find, &fd));
   FindClose(find);
+  {
+    std::lock_guard<std::mutex> lock(g_portal_scan_mutex);
+    PortalCacheEntry& entry = g_portal_scan_cache[portal_dir];
+    entry.items = out;
+    entry.tick = now;
+  }
   return out;
 }
