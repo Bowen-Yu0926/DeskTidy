@@ -15,7 +15,6 @@ ROOT = Path(__file__).resolve().parent.parent
 VERSION_FILE = ROOT / "VERSION"
 ISS_FILE = ROOT / "installer" / "DeskTidy.iss"
 ISS_NATIVE_FILE = ROOT / "installer" / "DeskTidyNative.iss"
-VERSION_PY = ROOT / "src" / "_version.py"
 VERSION_RC = ROOT / "native" / "src" / "version.rc"
 
 
@@ -41,10 +40,6 @@ def bump_version(raw: str) -> str:
 def read_current() -> str:
     if VERSION_FILE.exists():
         return VERSION_FILE.read_text(encoding="utf-8").strip() or "1.0.0"
-    if VERSION_PY.exists():
-        m = re.search(r'__version__\s*=\s*"([^"]+)"', VERSION_PY.read_text(encoding="utf-8"))
-        if m:
-            return m.group(1)
     return "1.0.0"
 
 
@@ -94,11 +89,6 @@ def sync_version_rc(version: str) -> None:
     VERSION_RC.write_text(text, encoding="utf-8")
 
 
-def write_runtime_version(version: str) -> None:
-    VERSION_PY.parent.mkdir(parents=True, exist_ok=True)
-    VERSION_PY.write_text(f'__version__ = "{version}"\n', encoding="utf-8")
-
-
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Sync or bump DeskTidy version")
     parser.add_argument(
@@ -117,7 +107,6 @@ def main(argv: list[str] | None = None) -> int:
     sync_iss(ISS_FILE, version)
     sync_iss(ISS_NATIVE_FILE, version)
     sync_version_rc(version)
-    write_runtime_version(version)
     # Keep update_check.cpp compile-time fallbacks aligned (not 0.0.0).
     uc = ROOT / "native" / "src" / "update_check.cpp"
     if uc.exists():
