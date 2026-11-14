@@ -57,6 +57,11 @@ void LogDesktopShellCompatProfile();
 // "lifts fences" without actually showing the desktop.
 HWND FindFullscreenCoverWindow();
 bool HasVisibleFullscreenCover();
+// Call right after issuing a minimize to a cover window (Win+D over a
+// borderless game): the window stays "visible" for a few frames, so it must
+// not count as a cover while the animation lands.
+void InvalidateFullscreenCoverCache();
+bool IsCoverBeingDismissed();
 bool FilterDesktopChromeSysCommand(WPARAM wparam);
 bool FilterDesktopChromeWindowPosChanging(WINDOWPOS* wp);
 

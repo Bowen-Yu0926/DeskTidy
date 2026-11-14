@@ -449,10 +449,12 @@ void PlaceOverlayInDesktopBand(HWND hwnd, bool /*force*/) {
 
 DesktopBandState QueryDesktopBandState() {
   DesktopBandState state;
-  // Cover first: HasVisibleFullscreenCover is the cheaper EnumWindows probe and
-  // a cover makes show-desktop irrelevant (we sink either way).
+  // Both facts are queried independently: a cover must not mask show-desktop,
+  // otherwise Win+D over a (dismissing) cover reports "neither" and the
+  // overlays get sunk instead of lifted. The raise branch checks the cover
+  // first, so an actual cover still wins.
   state.fullscreen_cover = HasVisibleFullscreenCover();
-  state.show_desktop = !state.fullscreen_cover && IsShowDesktopActive();
+  state.show_desktop = IsShowDesktopActive();
   return state;
 }
 
@@ -541,6 +543,11 @@ HWND g_cover_cache = nullptr;
 ULONGLONG g_cover_tick = 0;
 bool g_cover_valid = false;
 constexpr ULONGLONG kCoverCacheTtlMs = 400;
+// Window we just asked to minimize (Win+D over a cover). Ignored as a cover
+// until the animation lands, bounded by kCoverDismissGraceMs.
+HWND g_cover_dismissing = nullptr;
+ULONGLONG g_cover_dismiss_tick = 0;
+constexpr ULONGLONG kCoverDismissGraceMs = 1500;
 
 HWND WindowAboveDefView(HWND defview, HWND host, HWND self) {
   HWND anchor = host ? host : defview;
@@ -692,8 +699,39 @@ HWND FindFullscreenCoverWindow() {
 }
 
 bool HasVisibleFullscreenCover() {
+  if (IsCoverBeingDismissed()) {
+    return false;
+  }
   HWND cover = FindFullscreenCoverWindow();
   return cover != nullptr && IsWindowVisible(cover) && !IsIconic(cover);
+}
+
+void InvalidateFullscreenCoverCache() {
+  // A minimize request (Win+D over a borderless game) is asynchronous: the
+  // window keeps answering "visible, not iconic" for a few frames while the
+  // animation runs. The 400ms cache then reports a cover that is on its way
+  // out, which sinks the overlays instead of lifting them. Callers that just
+  // issued the minimize drop the cache and mark the window as dismissing so
+  // the re-enumeration does not simply find it again.
+  g_cover_valid = false;
+  g_cover_cache = nullptr;
+  g_cover_tick = 0;
+  g_cover_dismissing = FindFullscreenCoverWindow();
+  g_cover_dismiss_tick = GetTickCount64();
+}
+
+bool IsCoverBeingDismissed() {
+  if (!g_cover_dismissing) {
+    return false;
+  }
+  const ULONGLONG now = GetTickCount64();
+  // Bounded: a window that refuses to minimize must not stay ignored forever.
+  if (now - g_cover_dismiss_tick > kCoverDismissGraceMs ||
+      !IsWindowAlive(g_cover_dismissing) || IsIconic(g_cover_dismissing)) {
+    g_cover_dismissing = nullptr;
+    return false;
+  }
+  return true;
 }
 
 bool FilterDesktopChromeSysCommand(WPARAM wparam) {

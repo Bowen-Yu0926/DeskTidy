@@ -7348,7 +7348,11 @@ void App::RestoreDesktopChrome() {
   // Seat into desktop band (normal: above DefView; show-desktop: TOPMOST with
   // DefView). Chrome refuses minimize — no PresentLayered "Win+D fix".
   // Returns true when SoftSeat/show likely wiped ULW and needs RefreshLayer.
-  auto reattach = [band_changed](HWND hwnd) -> bool {
+  // Resolve the band facts ONCE for this restore pass. Re-querying per overlay
+  // let the first Raise land (show-desktop seen) while a later one read a
+  // half-minimized cover and sank — Win+D showed some fences but not others.
+  const DesktopBandState restore_band = QueryDesktopBandState();
+  auto reattach = [band_changed, &restore_band](HWND hwnd) -> bool {
     if (!hwnd || !IsWindow(hwnd)) {
       return false;
     }
@@ -7356,16 +7360,16 @@ void App::RestoreDesktopChrome() {
       if (!AttachOverlayToDesktop(hwnd, true)) {
         ForceAttachOverlayToDesktop(hwnd, true);
       }
-      RaiseOverlayInDesktopBand(hwnd);
+      RaiseOverlayInDesktopBandWith(hwnd, restore_band);
       return true;
     }
     if (!IsWindowVisible(hwnd) || IsIconic(hwnd)) {
       ShowWindow(hwnd, IsIconic(hwnd) ? SW_RESTORE : SW_SHOWNOACTIVATE);
-      RaiseOverlayInDesktopBand(hwnd);
+      RaiseOverlayInDesktopBandWith(hwnd, restore_band);
       return true;
     }
     if (!IsOverlayAboveDefView(hwnd) || band_changed) {
-      RaiseOverlayInDesktopBand(hwnd);
+      RaiseOverlayInDesktopBandWith(hwnd, restore_band);
     }
     return false;
   };

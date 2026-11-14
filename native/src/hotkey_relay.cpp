@@ -316,5 +316,8 @@ bool MinimizeFullscreenCover() {
   if (!IsIconic(target)) {
     PostMessageW(target, WM_SYSCOMMAND, SC_MINIMIZE, 0);
   }
+  // The minimize is asynchronous — mark it so the band restore that follows
+  // does not read this window as a still-live cover and sink the overlays.
+  InvalidateFullscreenCoverCache();
   return true;
 }
