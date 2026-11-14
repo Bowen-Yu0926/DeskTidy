@@ -18,12 +18,8 @@ bool DesktopItemListsIdentityEqual(const std::vector<DesktopItem>& a,
                                    const std::vector<DesktopItem>& b);
 
 // User desktop + Public desktop (.lnk / files / folders). Skips hidden system clutter.
-// Ref form: warm 2.5s cache, no vector copy. ONLY safe for immediate read in the
-// same call stack that does not InvalidateDesktopScanCache and does not call
-// ScanDesktopItems* again (a cache miss move-assigns and frees the old vector).
-// Prefer ScanDesktopItems() when the list is used across helper calls.
-const std::vector<DesktopItem>& ScanDesktopItemsRef();
-// Owning copy (safe across helpers / workers / long-lived storage).
+// Owning copy — safe across helpers / workers / long-lived storage, and safe to
+// hold while another thread invalidates the cache. Warm 2.5s cache inside.
 std::vector<DesktopItem> ScanDesktopItems();
 
 // Drop the cached scan so the next ScanDesktopItems re-reads the desktop

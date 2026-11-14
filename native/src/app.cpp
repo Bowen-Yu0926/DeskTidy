@@ -4283,7 +4283,7 @@ void App::OnDesktopPaste(bool as_link) {
   InvalidateDesktopScanCache();
   RefreshDesktopIcons();
   {
-    const auto& scan = ScanDesktopItemsRef();
+    const auto scan = ScanDesktopItems();
     bool found = false;
     for (const auto& it : scan) {
       if (!landed.empty() && it.path == landed[0]) {
@@ -4553,7 +4553,10 @@ void App::SeatAllFencesUnderApps() {
   // wipe ULW — re-Present only when we actually healed or the layer is dirty.
   const bool raised = IsRaisedDesktopShell();
   const DefViewHost host = raised ? FindDefViewHost() : DefViewHost{};
-  auto seat = [&host, raised](HWND hwnd) -> bool {
+  // Resolve the band facts ONCE for this pass: every overlay below is seated
+  // against the same snapshot instead of re-walking the window stack per HWND.
+  const DesktopBandState band = QueryDesktopBandState();
+  auto seat = [&host, raised, &band](HWND hwnd) -> bool {
     if (!hwnd || !IsWindow(hwnd)) {
       return false;
     }
@@ -4570,7 +4573,7 @@ void App::SeatAllFencesUnderApps() {
     }
     // HWND_BOTTOM alone can slip under DefView (blank fences until page
     // switch). Raise keeps the Fences-class seat: above DefView, under apps.
-    PlaceOverlayInDesktopBand(hwnd, true);
+    RaiseOverlayInDesktopBandWith(hwnd, band);
     return healed;
   };
   for (auto& fence : fences_) {
@@ -6436,7 +6439,7 @@ void App::PruneStickyMissingPins() {
   };
   // One desktop scan (uses 2.5s cache) — most pins live on Desktop/Public so
   // membership check avoids N× GetFileAttributesW. Off-desktop pins still attr.
-  const auto& desk_items = ScanDesktopItemsRef();
+  const auto desk_items = ScanDesktopItems();
   std::unordered_set<std::wstring> on_desk;
   on_desk.reserve(desk_items.size() * 2);
   for (const auto& it : desk_items) {
@@ -6629,8 +6632,8 @@ void App::PruneStickyMissingPins() {
 }
 
 void App::RefreshDesktopIcons() {
-  // Owning snapshot: RebuildDockItems may ScanDesktopItemsRef on cache miss and
-  // move-assign g_scan_cache — a Ref held across that call would dangle.
+  // Owning snapshot: RebuildDockItems may scan again, and the organize worker
+  // can invalidate the cache underneath — a reference would dangle.
   // Still one scan (2.5s cache); RebuildPublicItems reuses &items (no 2nd scan).
   const std::vector<DesktopItem> items = ScanDesktopItems();
   // Pin-only fence membership (Python get_virtual_items_for_fence). Rule
@@ -6886,7 +6889,7 @@ void App::RebuildDockItems() {
       dock_items.push_back(std::move(it));
     }
   } else {
-    const auto& items = ScanDesktopItemsRef();
+    const auto items = ScanDesktopItems();
     for (const auto& it : items) {
       if (!it.is_link) {
         continue;
@@ -7807,7 +7810,7 @@ void App::AddFenceAtRect(const RECT& screen) {
       lv = FindWindowExW(host.defview, nullptr, L"SysListView32", nullptr);
     }
     std::unordered_map<std::wstring, std::wstring> by_name;
-    for (const auto& it : ScanDesktopItemsRef()) {
+    for (const auto& it : ScanDesktopItems()) {
       if (FindPin(pins_, it.path)) {
         continue;
       }
@@ -8685,6 +8688,9 @@ LRESULT CALLBACK App::TrayWndProc(HWND hwnd, UINT msg, WPARAM wparam,
       };
       maybe_rescale(self->pet_.Hwnd());
       maybe_rescale(self->public_host_.Hwnd());
+      // Caption font + icon bitmaps are baked at the old DPI; drop them so the
+      // next paint (RebuildPublicItems below) rebuilds at the new one.
+      self->public_host_.InvalidateDpiCaches();
       self->RebuildDockItems();
       self->RebuildPublicItems();
       self->pet_.SetPages(self->page_names_, self->current_page_);

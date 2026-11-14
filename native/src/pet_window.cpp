@@ -2143,7 +2143,12 @@ bool PetWindow::Create(HINSTANCE instance) {
   LoadCharacters();
   LoadFramePack();
   // P6: initialize effective monitor DPI before sizing the window.
-  const RECT work = PrimaryWorkArea();
+  // Use the monitor under the cursor: the pet lives on whichever display the
+  // user works on, and its DPI must come from there (primary-only sized the
+  // window wrong on mixed-DPI setups).
+  POINT start_cursor{};
+  GetCursorPos(&start_cursor);
+  const RECT work = WorkAreaAtPoint(start_cursor);
   current_dpi_ = DpiAtPoint({work.left + 4, work.top + 4});
   const int ww = (sprite_ || !frames_.empty()) ? ScaledW() : kSize;
   const int hh = (sprite_ || !frames_.empty()) ? ScaledH() : kSize;
@@ -2187,6 +2192,7 @@ void PetWindow::CreateBuoy(HINSTANCE instance) {
     RegisterClassExW(&wc);
     registered = true;
   }
+  // The buoy is a fixed anchor strip on the primary display's bottom edge.
   const RECT work = PrimaryWorkArea();
   buoy_ = CreateWindowExW(
       WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_LAYERED,

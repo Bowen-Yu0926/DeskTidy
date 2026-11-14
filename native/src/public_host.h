@@ -47,6 +47,9 @@ class PublicHost {
   // Explorer Ctrl+Shift+C → CF_UNICODETEXT of selected paths.
   void CopySelectionPathsAsText();
   void SetItems(std::vector<DesktopItem> items);
+  // Drop cached caption fonts so the next paint rebuilds them for the window's
+  // current DPI. Call after WM_DPICHANGED / moving between monitors.
+  void InvalidateDpiCaches();
   bool FillMissingIcons();
   void SetPlacements(FloatPlacementMap placements);
   void SetBlockedRects(std::vector<RECT> rects);

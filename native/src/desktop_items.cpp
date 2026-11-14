@@ -53,19 +53,24 @@ bool EndsWithIgnoreCase(const std::wstring& s, const wchar_t* suffix) {
 }
 
 // 2.5s scan cache (Python _SCAN_CACHE_TTL_S).
+// Guarded by g_scan_mu: the organize worker thread scans while the UI thread
+// may invalidate/rebuild the same vector — unguarded this corrupted the heap.
 constexpr ULONGLONG kScanCacheTtlMs = 2500;
+std::mutex g_scan_mu;
 ULONGLONG g_scan_tick = 0;
 std::vector<DesktopItem> g_scan_cache;
 
 std::wstring ScanDedupKey(const std::wstring& path);
 
-void AppendFolder(const std::wstring& folder, std::vector<DesktopItem>* out) {
+void AppendFolder(const std::wstring& folder,
+                  const std::vector<std::wstring>& excludes,
+                  std::vector<DesktopItem>* out) {
   if (folder.empty()) {
     return;
   }
-  // Share portal temp/download excludes so watch-organize never pins
-  // .crdownload / .tmp / Office locks (Fences + Explorer parity).
-  const std::vector<std::wstring> excludes = LoadExcludePatterns();
+  // Excludes are resolved once per scan by the caller: this runs for the user
+  // desktop AND public desktop, so loading prefs here read+parsed the same file
+  // twice on every scan.
   const std::wstring pattern = folder + L"\\*";
   WIN32_FIND_DATAW fd{};
   HANDLE h = FindFirstFileW(pattern.c_str(), &fd);
@@ -280,15 +285,23 @@ std::wstring ResolveCachedLinkDisplayName(const std::wstring& path,
   return name;
 }
 
-const std::vector<DesktopItem>& ScanDesktopItemsRef() {
+std::vector<DesktopItem> ScanDesktopItems() {
   const ULONGLONG now = GetTickCount64();
-  if (!g_scan_cache.empty() && now - g_scan_tick < kScanCacheTtlMs) {
-    return g_scan_cache;
+  {
+    // Fast path: warm cache hit returns a copy, never the shared vector.
+    std::lock_guard<std::mutex> lk(g_scan_mu);
+    if (!g_scan_cache.empty() && now - g_scan_tick < kScanCacheTtlMs) {
+      return g_scan_cache;
+    }
   }
 
+  // Build outside the lock: the FS walk is slow and must not block a UI thread
+  // that only wants a cached read.
   std::vector<DesktopItem> items;
-  AppendFolder(KnownFolder(FOLDERID_Desktop), &items);
-  AppendFolder(KnownFolder(FOLDERID_PublicDesktop), &items);
+  // One excludes lookup for the whole scan (shared by both desktop folders).
+  const std::vector<std::wstring> excludes = LoadExcludePatterns();
+  AppendFolder(KnownFolder(FOLDERID_Desktop), excludes, &items);
+  AppendFolder(KnownFolder(FOLDERID_PublicDesktop), excludes, &items);
   // Hosted This PC / Recycle Bin shortcuts (Python .public_system).
   AppendPublicSystemItems(&items);
 
@@ -307,16 +320,16 @@ const std::vector<DesktopItem>& ScanDesktopItemsRef() {
     }
     unique.push_back(std::move(it));
   }
-  g_scan_cache = std::move(unique);
-  g_scan_tick = now;
-  return g_scan_cache;
-}
-
-std::vector<DesktopItem> ScanDesktopItems() {
-  return ScanDesktopItemsRef();
+  {
+    std::lock_guard<std::mutex> lk(g_scan_mu);
+    g_scan_cache = unique;
+    g_scan_tick = now;
+  }
+  return unique;
 }
 
 void InvalidateDesktopScanCache() {
+  std::lock_guard<std::mutex> lk(g_scan_mu);
   g_scan_cache.clear();
   g_scan_tick = 0;
   // Do NOT clear g_master_icon_cache here — icons are keyed by path@bucket and

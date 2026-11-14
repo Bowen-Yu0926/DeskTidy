@@ -447,6 +447,15 @@ void PlaceOverlayInDesktopBand(HWND hwnd, bool /*force*/) {
   RaiseOverlayInDesktopBand(hwnd);
 }
 
+DesktopBandState QueryDesktopBandState() {
+  DesktopBandState state;
+  // Cover first: HasVisibleFullscreenCover is the cheaper EnumWindows probe and
+  // a cover makes show-desktop irrelevant (we sink either way).
+  state.fullscreen_cover = HasVisibleFullscreenCover();
+  state.show_desktop = !state.fullscreen_cover && IsShowDesktopActive();
+  return state;
+}
+
 bool IsShowDesktopActive() {
   const DefViewHost host = FindDefViewHost();
   if (!host.defview || !IsWindowAlive(host.defview)) {
@@ -703,6 +712,10 @@ bool FilterDesktopChromeWindowPosChanging(WINDOWPOS* wp) {
 }
 
 void RaiseOverlayInDesktopBand(HWND hwnd) {
+  RaiseOverlayInDesktopBandWith(hwnd, QueryDesktopBandState());
+}
+
+void RaiseOverlayInDesktopBandWith(HWND hwnd, const DesktopBandState& state) {
   if (!IsWindowAlive(hwnd)) {
     return;
   }
@@ -739,10 +752,16 @@ void RaiseOverlayInDesktopBand(HWND hwnd) {
   if (self_topmost) {
     SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, flags);
   }
-  // Win+D show-desktop → TOP with the shell. Mere desktop FG (click wallpaper
-  // with apps still restored) must keep overlays under APPWINDOWs (Fences).
+  // A visible fullscreen cover (game / video / fullscreen browser) owns the
+  // whole monitor: whatever the Z-order walk concludes, the overlay must stay
+  // under it. Sinking to the desktop host is the only correct seat, and the
+  // show-desktop TOP branch below must never fire over a cover.
   HWND insert_after = HWND_BOTTOM;
-  if (IsShowDesktopActive()) {
+  if (state.fullscreen_cover) {
+    insert_after = host.host ? host.host : HWND_BOTTOM;
+  } else if (state.show_desktop) {
+    // Win+D show-desktop → TOP with the shell. Mere desktop FG (click wallpaper
+    // with apps still restored) must keep overlays under APPWINDOWs (Fences).
     insert_after = HWND_TOP;
   } else {
     HWND above = WindowAboveDefView(host.defview, host.host, hwnd);

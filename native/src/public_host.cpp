@@ -357,7 +357,10 @@ bool PublicHost::Create(HINSTANCE instance) {
     g_reg = true;
   }
   metrics_ = QueryIconGridMetrics();
-  const RECT work = PrimaryWorkArea();
+  // Initial seat: start where the user is working; Reflow() re-clamps later.
+  POINT create_cursor{};
+  GetCursorPos(&create_cursor);
+  const RECT work = WorkAreaAtPoint(create_cursor);
   const int margin = ScalePxForDpi(kMargin0, SystemDpi());
   // Drop NOACTIVATE so Del/F2 work after click (Explorer DefView activates too).
   hwnd_ = CreateWindowExW(
@@ -525,8 +528,11 @@ void PublicHost::EnsureCaptionFonts() {
         caption_family_->IsAvailable()
             ? caption_family_
             : Gdiplus::FontFamily::GenericSansSerif();
-    caption_font_ = new Gdiplus::Font(face, 12.f, Gdiplus::FontStyleRegular,
-                                      Gdiplus::UnitPixel);
+    // Same DPI as the caption metrics in HitTest/IconLabelRect: a 12px font on
+    // a 150% display painted 12 physical px while its hit band was scaled.
+    caption_font_ = new Gdiplus::Font(
+        face, static_cast<Gdiplus::REAL>(ScalePxForDpi(12, SystemDpi())),
+        Gdiplus::FontStyleRegular, Gdiplus::UnitPixel);
   }
   if (!caption_fmt_) {
     caption_fmt_ = new Gdiplus::StringFormat();
@@ -544,6 +550,13 @@ void PublicHost::ReleaseCaptionFonts() {
   caption_font_ = nullptr;
   delete caption_family_;
   caption_family_ = nullptr;
+}
+
+void PublicHost::InvalidateDpiCaches() {
+  // Caption font + the premultiplied icon bitmaps are both sized in physical
+  // pixels; both are stale once the host lands on a monitor with another DPI.
+  ReleaseCaptionFonts();
+  ClearIconCache();
 }
 
 void PublicHost::Destroy() {
@@ -922,7 +935,11 @@ void PublicHost::Layout() {
     }
   }
   if (candidates.empty()) {
-    const RECT work = PrimaryWorkArea();
+    // No placement yet: seed on the monitor under the cursor, which is where
+    // the user expects the first loose icon to appear.
+    POINT cursor{};
+    GetCursorPos(&cursor);
+    const RECT work = WorkAreaAtPoint(cursor);
     const int margin = ScalePxForDpi(kMargin0, SystemDpi());
     candidates.push_back({work.left + margin, work.top + margin,
                           work.left + margin + cell_w,
@@ -1002,7 +1019,11 @@ void PublicHost::Layout() {
     max_b = (std::max)(max_b, sc.bottom);
   }
   const int pad = (std::max)(48, cell_w / 2);
-  const RECT work = PrimaryWorkArea();
+  // Clamp to the work area of the monitor the floats actually sit on, not the
+  // primary one: floats parked on a secondary display were dragged back to the
+  // primary (or clipped) by the primary-only clamp.
+  POINT band_pt{(min_l + max_r) / 2, (min_t + max_b) / 2};
+  const RECT work = WorkAreaAtPoint(band_pt);
   // Invariant: float host bounds must NEVER bleed into the taskbar or outside work area
   LONG hl = (std::max)(work.left, static_cast<LONG>(min_l - pad));
   LONG ht = (std::max)(work.top, static_cast<LONG>(min_t - pad));
@@ -1364,9 +1385,10 @@ int PublicHost::HitTest(int x, int y) const {
   // Fences / Explorer: only glyph + caption are "the icon". Cell padding and
   // empty host chrome stay blank so rubber-band multi-select can start
   // (full-cell hit made nearly every pixel an icon — no batch select).
-  const int font_px = 12;
-  const int line_h = font_px + 5;
-  const int label_h = line_h * 2 + 4;
+  const int dpi = SystemDpi();
+  const int font_px = ScalePxForDpi(12, dpi);
+  const int line_h = font_px + ScalePxForDpi(5, dpi);
+  const int label_h = line_h * 2 + ScalePxForDpi(4, dpi);
   for (size_t i = 0; i < slots_.size(); ++i) {
     const RECT& b = slots_[i].bounds;
     const RECT& ir = slots_[i].icon_rc;
@@ -2722,9 +2744,13 @@ bool PublicHost::IconLabelRect(size_t index, RECT* out) const {
   }
   const RECT& b = slots_[index].bounds;
   const RECT& ir = slots_[index].icon_rc;
-  const int font_px = 12;
-  const int line_h = font_px + 5;
-  const int label_h = line_h * 2 + 4;
+  // Caption metrics follow the same DPI as the painted font (see
+  // EnsureCaptionFonts): hardcoded 96-dpi values drifted off the glyphs at
+  // 125%/150%, so double-click-to-rename and hover hit the wrong band.
+  const int dpi = SystemDpi();
+  const int font_px = ScalePxForDpi(12, dpi);
+  const int line_h = font_px + ScalePxForDpi(5, dpi);
+  const int label_h = line_h * 2 + ScalePxForDpi(4, dpi);
   out->left = b.left + 2;
   out->top = ir.bottom + 2;
   out->right = b.right - 2;
@@ -3034,7 +3060,9 @@ LRESULT PublicHost::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
       return HTCLIENT;
     }
     // Invariant: Never intercept clicks outside the work area (e.g. taskbar, multi-mon borders)
-    const RECT work = PrimaryWorkArea();
+    // Use the monitor under the point: on a secondary display PrimaryWorkArea
+    // made every click "outside" and passed straight through.
+    const RECT work = WorkAreaAtPoint(pt);
     if (pt.y >= work.bottom || pt.y < work.top || pt.x < work.left ||
         pt.x >= work.right) {
       return HTTRANSPARENT;

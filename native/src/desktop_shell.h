@@ -33,6 +33,16 @@ bool ForceAttachOverlayToDesktop(HWND hwnd, bool show = true);
 bool DetachOverlayFromDesktop(HWND hwnd);
 void PlaceOverlayInDesktopBand(HWND hwnd, bool force = false);
 void RaiseOverlayInDesktopBand(HWND hwnd);
+// The Z-order facts a restack needs, resolved once per pass. Raising N overlays
+// used to re-walk the window stack N times; callers that seat a whole batch
+// resolve this once and pass it down so every overlay is judged on the same
+// snapshot instead of re-querying a state that cannot change mid-pass.
+struct DesktopBandState {
+  bool show_desktop = false;   // Win+D / show-desktop active
+  bool fullscreen_cover = false;  // a visible app covers the monitor
+};
+DesktopBandState QueryDesktopBandState();
+void RaiseOverlayInDesktopBandWith(HWND hwnd, const DesktopBandState& state);
 bool IsOverlayAboveDefView(HWND hwnd, const DefViewHost* cached = nullptr);
 bool IsExplorerDesktopForeground();
 bool IsShowDesktopActive();
