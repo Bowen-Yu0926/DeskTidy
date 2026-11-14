@@ -1,5 +1,6 @@
 #include "desktop_dblclick.h"
 
+#include <cstdlib>
 #include <cstring>
 
 namespace {
@@ -11,6 +12,15 @@ UINT g_msg = 0;
 UINT g_down_msg = 0;
 UINT g_paste_msg = 0;
 UINT g_blank_rclick_msg = 0;
+UINT g_rubber_move_msg = 0;
+UINT g_rubber_up_msg = 0;
+bool g_rubber_dragging = false;
+bool g_rubber_moved = false;
+POINT g_rubber_origin{-1, -1};
+DWORD g_last_rubber_move_ms = 0;
+// Matches PublicHost::kDragThreshold so the hook and the host agree on when a
+// press has become a drag.
+constexpr int kRubberThreshold = 6;
 bool g_organized_blank_menu = false;
 DWORD g_last_fire_ms = 0;
 DWORD g_last_down_ms = 0;
@@ -72,9 +82,45 @@ LRESULT CALLBACK LowLevelMouseProc(int code, WPARAM wparam, LPARAM lparam) {
         const DWORD now = GetTickCount();
         if (now - g_last_down_ms >= 80) {
           g_last_down_ms = now;
+          g_rubber_dragging = true;
+          g_rubber_moved = false;
+          g_rubber_origin = {info->pt.x, info->pt.y};
+          g_last_rubber_move_ms = 0;
           PostMessageW(g_notify, g_down_msg, 0,
                        MAKELPARAM(static_cast<WORD>(info->pt.x),
                                   static_cast<WORD>(info->pt.y)));
+        }
+      }
+      // Feed the desktop marquee from the hook — but only after the press has
+      // actually become a drag. Forwarding every WM_MOUSEMOVE floods the UI
+      // thread's message queue (mouse moves arrive at several hundred Hz),
+      // which starves it of everything else and makes the whole desktop feel
+      // frozen. Threshold + throttle keep the hook cheap.
+      if (g_rubber_dragging && g_notify && IsWindow(g_notify)) {
+        if (wparam == WM_MOUSEMOVE && g_rubber_move_msg) {
+          if (!g_rubber_moved &&
+              (abs(info->pt.x - g_rubber_origin.x) >= kRubberThreshold ||
+               abs(info->pt.y - g_rubber_origin.y) >= kRubberThreshold)) {
+            g_rubber_moved = true;
+          }
+          const DWORD now = GetTickCount();
+          if (g_rubber_moved && now - g_last_rubber_move_ms >= 16) {
+            g_last_rubber_move_ms = now;
+            PostMessageW(g_notify, g_rubber_move_msg, 0,
+                         MAKELPARAM(static_cast<WORD>(info->pt.x),
+                                    static_cast<WORD>(info->pt.y)));
+          }
+        } else if (wparam == WM_LBUTTONUP && g_rubber_up_msg) {
+          const bool was_moved = g_rubber_moved;
+          g_rubber_dragging = false;
+          g_rubber_moved = false;
+          // Only tell the host about a real marquee; a plain click needs no
+          // update at all.
+          if (was_moved) {
+            PostMessageW(g_notify, g_rubber_up_msg, 0,
+                         MAKELPARAM(static_cast<WORD>(info->pt.x),
+                                    static_cast<WORD>(info->pt.y)));
+          }
         }
       }
       if (wparam == WM_LBUTTONDBLCLK && g_msg && g_notify &&
@@ -183,12 +229,16 @@ bool IsDesktopBlankPoint(int screen_x, int screen_y) {
 
 void StartDesktopDblClickMonitor(HWND notify_hwnd, UINT notify_msg,
                                  UINT notify_down_msg, UINT notify_paste_msg,
-                                 UINT notify_blank_rclick_msg) {
+                                 UINT notify_blank_rclick_msg,
+                                 UINT notify_rubber_move_msg,
+                                 UINT notify_rubber_up_msg) {
   g_notify = notify_hwnd;
   g_msg = notify_msg;
   g_down_msg = notify_down_msg;
   g_paste_msg = notify_paste_msg;
   g_blank_rclick_msg = notify_blank_rclick_msg;
+  g_rubber_move_msg = notify_rubber_move_msg;
+  g_rubber_up_msg = notify_rubber_up_msg;
   if (!g_mouse_hook) {
     g_mouse_hook = SetWindowsHookExW(WH_MOUSE_LL, LowLevelMouseProc,
                                      GetModuleHandleW(nullptr), 0);
@@ -210,6 +260,12 @@ void StopDesktopDblClickMonitor() {
   g_down_msg = 0;
   g_paste_msg = 0;
   g_blank_rclick_msg = 0;
+  g_rubber_move_msg = 0;
+  g_rubber_up_msg = 0;
+  g_rubber_dragging = false;
+  g_rubber_moved = false;
+  g_rubber_origin = {-1, -1};
+  g_last_rubber_move_ms = 0;
   g_organized_blank_menu = false;
 }
 

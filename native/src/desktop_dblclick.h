@@ -16,7 +16,9 @@
 void StartDesktopDblClickMonitor(HWND notify_hwnd, UINT notify_msg,
                                  UINT notify_down_msg = 0,
                                  UINT notify_paste_msg = 0,
-                                 UINT notify_blank_rclick_msg = 0);
+                                 UINT notify_blank_rclick_msg = 0,
+                                 UINT notify_rubber_move_msg = 0,
+                                 UINT notify_rubber_up_msg = 0);
 void StopDesktopDblClickMonitor();
 // Organized (icons hidden): blank RMB → our Desktop background menu (Paste).
 void SetDesktopOrganizedBlankMenu(bool organized);
