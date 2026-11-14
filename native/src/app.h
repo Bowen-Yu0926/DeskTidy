@@ -54,6 +54,8 @@ class App {
   // Soft-park: SW_HIDE every fence that must not paint on this page (leaks of
   // IsWindowVisible off-page fences ghost under apps when DefView is covered).
   void HideOffPageFences();
+  // Live fence state as a persistable snapshot (shared by autosave + export).
+  AppState BuildAppState() const;
   void PersistLayouts();
   void SchedulePersistLayouts();
   // Idle off-screen Present for soft-parked dirty fences (snappy page switch).
