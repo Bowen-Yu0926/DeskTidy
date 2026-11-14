@@ -868,23 +868,45 @@ void RaiseOverlayInDesktopBandWith(HWND hwnd, const DesktopBandState& state) {
     // then reappeared. Deriving the seat from the actual Z-order removes the
     // dependency on that timing entirely.
     //
-    // SetWindowPos(hwnd, X) places hwnd IN FRONT OF X in Z order, so X must be
-    // the window that should sit directly BELOW the overlay.
+    // SetWindowPos(hwnd, X) places hwnd IN FRONT OF X in Z order (verified by
+    // experiment: after SetWindowPos(fence, progman) the fence's GW_HWNDNEXT is
+    // progman's own NEXT, i.e. the fence went directly above progman). So X is
+    // the window that ends up directly BELOW the overlay.
     //
-    // Anchor on the TOP-LEVEL desktop host (Progman / WorkerW), never DefView.
-    // DefView is a CHILD of the host, so GetWindow(defview, GW_HWNDPREV) walks
-    // the host's child list rather than the top-level Z order. On a
-    // WorkerW-hosted desktop DefView has no siblings at all and that call
-    // returns null even with apps open far above the desktop — the old code
-    // then fell through to HWND_TOP, lifting every fence over Chrome / VS Code
-    // / Claude. That is the「分区盖到软件上面」symptom, and because the fence
-    // became the frontmost normal window it also swallowed their clicks.
+    // The seat must be "just above the desktop host". Anchor on the TOP-LEVEL
+    // host (Progman / WorkerW), never DefView: DefView is a CHILD of the host,
+    // so GetWindow(defview, GW_HWNDPREV) walks the host's child list instead of
+    // the top-level Z order.
     //
-    // Placing the overlay directly in front of the host is exactly the desktop
-    // band: above the wallpaper/icons, and still behind every app window that
-    // sits above the host. No HWND_TOP fallback — that is what broke it.
+    // The host itself is NOT a usable anchor — it is a full-screen opaque
+    // surface. Seating the overlay directly in front of it still leaves the
+    // overlay covered by any window between them, and after Win+D the host is a
+    // WorkerW that Explorer has just raised over Progman. What we need is the
+    // host's front neighbour: the window that sits directly above the desktop.
+    //
+    // When nothing is above the host (apps minimised by Win+D), that neighbour
+    // is null and the overlay belongs at the top of the normal band — above the
+    // desktop, below the WS_EX_TOPMOST taskbar. HWND_TOP is correct there.
     HWND host_top = host.host ? host.host : (host.defview ? host.defview : nullptr);
-    insert_after = host_top ? host_top : HWND_BOTTOM;
+    HWND above_host = host_top ? GetWindow(host_top, GW_HWNDPREV) : nullptr;
+    // Skip shell UI that covers the screen (Task View / Alt+Tab switcher,
+    // tooltips): anchoring behind them hides the overlay completely, and their
+    // flicker during a Win+D burst is what made fences flash.
+    for (int hops = 0; above_host && hops < 8; ++hops) {
+      if (above_host == hwnd || IsShellFullscreenClass(above_host)) {
+        above_host = GetWindow(above_host, GW_HWNDPREV);
+        continue;
+      }
+      wchar_t fc[64] = {};
+      GetClassNameW(above_host, fc, 64);
+      if (wcscmp(fc, L"tooltips_class32") == 0 ||
+          wcscmp(fc, L"MultitaskingViewFrame") == 0) {
+        above_host = GetWindow(above_host, GW_HWNDPREV);
+        continue;
+      }
+      break;
+    }
+    insert_after = above_host ? above_host : HWND_TOP;
     // Deliberately NO "foreground app wins" override here.
     //
     // The overlay lives in the desktop band; a normal app window is above that
