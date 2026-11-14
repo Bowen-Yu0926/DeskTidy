@@ -632,6 +632,9 @@ AppState LoadAppStateFromPath(const std::wstring& path, bool inject_defaults) {
     if (FindNumber(obj, "cell_scale", &cell_scale)) {
       fl.cell_scale = (std::min)(150, (std::max)(85, cell_scale));
     }
+    bool fade_on_idle = false;
+    FindBool(obj, "fade_on_idle", &fade_on_idle);
+    fl.fade_on_idle = fade_on_idle;
     std::vector<std::string> pin_order;
     FindStringArray(obj, "pin_order", &pin_order);
     for (const auto& p : pin_order) {
@@ -1052,6 +1055,7 @@ bool SaveAppState(const AppState& state, const std::wstring& out_path) {
         << "\"label_lines\":" << f.label_lines << ","
         << "\"show_labels\":" << (f.show_labels ? "true" : "false") << ","
         << "\"cell_scale\":" << f.cell_scale << ","
+        << "\"fade_on_idle\":" << (f.fade_on_idle ? "true" : "false") << ","
         << "\"pin_order\":[";
     for (size_t k = 0; k < f.pin_order.size(); ++k) {
       if (k) {

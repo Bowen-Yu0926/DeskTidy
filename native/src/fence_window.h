@@ -170,6 +170,9 @@ class FenceWindow {
   // Title bar visibility (Fences lets a fence run title-less).
   void SetShowTitle(bool show);
   bool ShowTitle() const { return show_title_; }
+  // Hover-away fade: dims the whole panel via ULW SourceConstantAlpha so the
+  // layer bitmap is reused instead of repainted every frame.
+  void SetFadeOnIdle(bool on);
   // Fences-style quick filter: narrows the visible tiles to names matching the
   // typed substring. Kept out of the layout so a filter never rewrites pins.
   void BeginFilter();
@@ -314,6 +317,10 @@ class FenceWindow {
   LRESULT HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam);
   void Paint(HDC hdc);
   void PresentLayered();
+  // Re-blit the existing layer bitmap at a new constant alpha (no repaint).
+  void BlitLayerAtAlpha(BYTE alpha);
+  // One animation step toward the idle / active alpha target.
+  void TickIdleFade();
   void LayoutCells();
   // Fences-class: paint size is owned by the fence, not a transient HWND rect
   // during Explorer attach/create churn.
@@ -536,6 +543,10 @@ class FenceWindow {
   bool show_labels_ = true;
   // Grid pitch as a percent of the desktop's cell metrics (100 = follow).
   int cell_scale_ = 100;
+  // Idle fade: dim to this ULW constant alpha when the pointer is away.
+  bool fade_on_idle_ = false;
+  BYTE fade_alpha_ = 255;
+  DWORD fade_tick_ = 0;
   // F7 scrollbar drag state.
   bool thumb_dragging_ = false;
   int thumb_start_y_ = 0;

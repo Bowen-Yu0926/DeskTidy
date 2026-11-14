@@ -98,6 +98,8 @@ struct FenceLayout {
   bool show_labels = true;
   // Grid pitch as a percent of the desktop's own cell metrics (100 = follow).
   int cell_scale = 100;
+  // Dim the panel while the pointer is away (Fences "fade when not in use").
+  bool fade_on_idle = false;
   // Manual icon order (paths) when sort_by == "manual" (H1).
   std::vector<std::wstring> pin_order;
 };

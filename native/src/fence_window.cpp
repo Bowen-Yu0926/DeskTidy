@@ -67,7 +67,13 @@ constexpr int kExtFencePortalClear = 8;
 constexpr int kExtFencePortalUp = 9;
 constexpr int kExtFenceSortName = 10;
 constexpr int kExtFenceAutoHide = 15;
+constexpr int kExtFenceFadeIdle = 18;
 constexpr UINT kTimerAutoHide = 77;
+// Idle fade animation tick + how dim a fence goes when the pointer is away.
+constexpr UINT kTimerIdleFade = 79;
+constexpr BYTE kIdleFadeAlpha = 150;
+constexpr int kIdleFadeStep = 18;
+constexpr UINT kIdleFadeIntervalMs = 30;
 // Drag-to-edge auto-scroll tick (Explorer keeps scrolling while the cursor
 // rests against the edge; mouse-move alone would stop as soon as it settles).
 constexpr UINT kTimerDragScroll = 78;
@@ -800,13 +806,44 @@ void FenceWindow::PresentLayered() {
   POINT src{0, 0};
   BLENDFUNCTION blend{};
   blend.BlendOp = AC_SRC_OVER;
-  blend.SourceConstantAlpha = 255;
+  blend.SourceConstantAlpha = fade_alpha_;
   blend.AlphaFormat = AC_SRC_ALPHA;
   UpdateOverlayLayered(hwnd_, screen, &origin, &size, mem, &src, 0, &blend,
                       ULW_ALPHA);
 
   ReleaseDC(nullptr, screen);
   layer_dirty_ = false;
+}
+
+void FenceWindow::BlitLayerAtAlpha(BYTE alpha) {
+  // Fade steps must not repaint: Paint() walks every cell (icons + captions)
+  // and doing that per animation frame is what makes ULW overlays stutter.
+  // The layer bitmap already holds the last full render, so only the constant
+  // alpha changes here.
+  if (!hwnd_ || layer_dirty_ || !IsWindowVisible(hwnd_)) {
+    return;
+  }
+  int w = 0;
+  int h = 0;
+  if (!ResolveLayerSize(&w, &h)) {
+    return;
+  }
+  HDC screen = GetDC(nullptr);
+  if (!screen) {
+    return;
+  }
+  RECT wr{};
+  GetWindowRect(hwnd_, &wr);
+  POINT origin{wr.left, wr.top};
+  SIZE size{w, h};
+  POINT src{0, 0};
+  BLENDFUNCTION blend{};
+  blend.BlendOp = AC_SRC_OVER;
+  blend.SourceConstantAlpha = alpha;
+  blend.AlphaFormat = AC_SRC_ALPHA;
+  UpdateOverlayLayered(hwnd_, screen, &origin, &size, layer_dc_, &src, 0,
+                       &blend, ULW_ALPHA);
+  ReleaseDC(nullptr, screen);
 }
 
 void FenceWindow::RefreshLayer() {
@@ -883,6 +920,47 @@ void FenceWindow::SetCellScale(int percent) {
   PresentLayered();
   if (on_moved_) {
     on_moved_(this);
+  }
+}
+
+void FenceWindow::SetFadeOnIdle(bool on) {
+  if (on == fade_on_idle_) {
+    return;
+  }
+  fade_on_idle_ = on;
+  if (!hwnd_) {
+    return;
+  }
+  if (!on) {
+    KillTimer(hwnd_, kTimerIdleFade);
+    if (fade_alpha_ != 255) {
+      fade_alpha_ = 255;
+      BlitLayerAtAlpha(fade_alpha_);
+    }
+  }
+}
+
+void FenceWindow::TickIdleFade() {
+  // Target: dimmed while the pointer is outside, full while inside.
+  POINT pt{};
+  GetCursorPos(&pt);
+  RECT rc{};
+  GetWindowRect(hwnd_, &rc);
+  const BYTE target = PtInRect(&rc, pt) ? 255 : kIdleFadeAlpha;
+  if (fade_alpha_ == target) {
+    KillTimer(hwnd_, kTimerIdleFade);
+    return;
+  }
+  const int step = (target > fade_alpha_) ? kIdleFadeStep : -kIdleFadeStep;
+  int next = static_cast<int>(fade_alpha_) + step;
+  next = (std::min)(255, (std::max)(static_cast<int>(kIdleFadeAlpha), next));
+  if ((step > 0 && next > target) || (step < 0 && next < target)) {
+    next = target;
+  }
+  fade_alpha_ = static_cast<BYTE>(next);
+  BlitLayerAtAlpha(fade_alpha_);
+  if (fade_alpha_ == target) {
+    KillTimer(hwnd_, kTimerIdleFade);
   }
 }
 
@@ -1326,6 +1404,7 @@ bool FenceWindow::Create(HINSTANCE instance, const FenceLayout& layout) {
   content_locked_ = layout.content_locked;
   label_lines_ = (std::min)(3, (std::max)(1, layout.label_lines));
   cell_scale_ = (std::min)(150, (std::max)(85, layout.cell_scale));
+  fade_on_idle_ = layout.fade_on_idle;
   show_labels_ = layout.show_labels;
   sort_by_ = layout.sort_by.empty() ? "name" : layout.sort_by;
   view_mode_ = (layout.view_mode == "list") ? "list" : "grid";
@@ -1824,6 +1903,7 @@ FenceLayout FenceWindow::CurrentLayout() const {
   fl.content_locked = content_locked_;
   fl.label_lines = label_lines_;
   fl.cell_scale = cell_scale_;
+  fl.fade_on_idle = fade_on_idle_;
   fl.show_labels = show_labels_;
   fl.sort_by = sort_by_;
   fl.view_mode = view_mode_;
@@ -1900,6 +1980,13 @@ bool FenceWindow::Show() {
 void FenceWindow::Hide() {
   // A hidden fence must not leave its filter box floating on the desktop.
   EndFilter();
+  // Drop any in-flight idle fade: a dimmed layer would come back dim on Show.
+  if (fade_alpha_ != 255) {
+    fade_alpha_ = 255;
+  }
+  if (hwnd_) {
+    KillTimer(hwnd_, kTimerIdleFade);
+  }
   // Persist user-hide so ApplyPageVisibility does not resurrect (P1-2).
   // Fence-level: clear every page_geometries_ row — multi-page membership
   // used to leave sibling pages visible=true and resurrect on page switch.
@@ -5071,6 +5158,7 @@ void FenceWindow::ShowFenceMenu(POINT screen) {
       leaf(collapsed_ ? Tr("fence_expand") : Tr("fence_collapse"),
            kExtFenceCollapse),
       leaf(L"离开自动折叠", kExtFenceAutoHide, auto_hide_),
+      leaf(L"离开时淡化", kExtFenceFadeIdle, fade_on_idle_),
       leaf(Tr("fence_refresh"), kExtFenceRefresh),
       leaf(L"筛选图标…", kExtFenceFilter),
       leaf(Tr("fence_hide"), kExtFenceHide),
@@ -5215,6 +5303,11 @@ void FenceWindow::ShowFenceMenu(POINT screen) {
       SetCollapsed(!collapsed_);
     } else if (rc == kExtFenceAutoHide) {
       SetAutoHide(!auto_hide_);
+    } else if (rc == kExtFenceFadeIdle) {
+      SetFadeOnIdle(!fade_on_idle_);
+      if (on_moved_) {
+        on_moved_(this);  // persist the toggle
+      }
     } else if (rc == kExtFencePortalUp) {
       if (PortalGoUp() && on_refresh_) {
         on_refresh_(this);
@@ -5762,6 +5855,9 @@ LRESULT FenceWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
           SetCollapsed(false, /*persist=*/false);
         }
       }
+      if (fade_on_idle_ && fade_alpha_ != 255) {
+        SetTimer(hwnd_, kTimerIdleFade, kIdleFadeIntervalMs, nullptr);
+      }
       if (resizing_ && (wparam & MK_LBUTTON)) {
         UpdateHoverTip(-1);
         POINT pt{};
@@ -5939,6 +6035,9 @@ LRESULT FenceWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
     }
     case WM_MOUSELEAVE:
       UpdateHoverTip(-1);
+      if (fade_on_idle_) {
+        SetTimer(hwnd_, kTimerIdleFade, kIdleFadeIntervalMs, nullptr);
+      }
       // Fences Auto-hide: short delay so title-button / menu hops don't flicker.
       if (auto_hide_ && !collapsed_ && collapsible_ && !dragging_ &&
           !resizing_ && !icon_dragging_ && !rubber_ && !rename_edit_ &&
@@ -5947,6 +6046,10 @@ LRESULT FenceWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
       }
       return 0;
     case WM_TIMER:
+      if (wparam == kTimerIdleFade) {
+        TickIdleFade();
+        return 0;
+      }
       if (wparam == kTimerAutoHide) {
         KillTimer(hwnd_, kTimerAutoHide);
         if (auto_hide_ && !collapsed_ && collapsible_ && !dragging_ &&
