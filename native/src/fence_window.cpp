@@ -75,6 +75,14 @@ constexpr int kExtFenceSortDate = 11;
 constexpr int kExtFenceSortSize = 12;
 constexpr int kExtFenceSortType = 13;
 constexpr int kExtFenceSortManual = 14;
+constexpr int kExtFenceSortCreated = 17;
+// Per-fence grid pitch presets (percent of the desktop's own cell metrics).
+constexpr int kExtFenceSpacingDefault = 90;
+constexpr int kExtFenceSpacingCompact = 91;
+constexpr int kExtFenceSpacingNormal = 92;
+constexpr int kExtFenceSpacingWide = 93;
+constexpr int kExtFenceSpacingXl = 94;
+constexpr int kExtFenceShowTitle = 95;
 constexpr int kExtFenceViewGrid = 20;
 constexpr int kExtFenceViewList = 21;
 // Quick filter box (Fences-style type-to-narrow).
@@ -856,11 +864,40 @@ int FenceWindow::IconSizePx() const {
 }
 
 int FenceWindow::CellWidthPx() const {
-  return MulDiv(grid_metrics_.cell_w, icon_zoom_percent_, 100);
+  return MulDiv(MulDiv(grid_metrics_.cell_w, cell_scale_, 100),
+                icon_zoom_percent_, 100);
 }
 
 int FenceWindow::CellHeightPx() const {
-  return MulDiv(grid_metrics_.cell_h, icon_zoom_percent_, 100);
+  return MulDiv(MulDiv(grid_metrics_.cell_h, cell_scale_, 100),
+                icon_zoom_percent_, 100);
+}
+
+void FenceWindow::SetCellScale(int percent) {
+  const int clamped = (std::min)(150, (std::max)(85, percent));
+  if (clamped == cell_scale_) {
+    return;
+  }
+  cell_scale_ = clamped;
+  LayoutCells();
+  PresentLayered();
+  if (on_moved_) {
+    on_moved_(this);
+  }
+}
+
+void FenceWindow::SetShowTitle(bool show) {
+  if (show == show_title_) {
+    return;
+  }
+  show_title_ = show;
+  // The header strip is part of the cell layout origin, so a title toggle has
+  // to re-lay out, not just repaint.
+  LayoutCells();
+  PresentLayered();
+  if (on_moved_) {
+    on_moved_(this);
+  }
 }
 
 void FenceWindow::SetIconZoom(int percent) {
@@ -1288,6 +1325,7 @@ bool FenceWindow::Create(HINSTANCE instance, const FenceLayout& layout) {
   position_locked_ = layout.position_locked;
   content_locked_ = layout.content_locked;
   label_lines_ = (std::min)(3, (std::max)(1, layout.label_lines));
+  cell_scale_ = (std::min)(150, (std::max)(85, layout.cell_scale));
   show_labels_ = layout.show_labels;
   sort_by_ = layout.sort_by.empty() ? "name" : layout.sort_by;
   view_mode_ = (layout.view_mode == "list") ? "list" : "grid";
@@ -1785,6 +1823,7 @@ FenceLayout FenceWindow::CurrentLayout() const {
   fl.position_locked = position_locked_;
   fl.content_locked = content_locked_;
   fl.label_lines = label_lines_;
+  fl.cell_scale = cell_scale_;
   fl.show_labels = show_labels_;
   fl.sort_by = sort_by_;
   fl.view_mode = view_mode_;
@@ -2175,6 +2214,7 @@ void FenceWindow::SortCells() {
   // Short-TTL attr cache across refresh/sort storms (same paths re-queried).
   struct AttrRec {
     ULONGLONG mtime = 0;
+    ULONGLONG ctime = 0;
     ULONGLONG size = 0;
     bool ok = false;
     ULONGLONG tick = 0;
@@ -2195,6 +2235,10 @@ void FenceWindow::SortCells() {
       mt.LowPart = fa.ftLastWriteTime.dwLowDateTime;
       mt.HighPart = fa.ftLastWriteTime.dwHighDateTime;
       rec.mtime = mt.QuadPart;
+      ULARGE_INTEGER ct{};
+      ct.LowPart = fa.ftCreationTime.dwLowDateTime;
+      ct.HighPart = fa.ftCreationTime.dwHighDateTime;
+      rec.ctime = ct.QuadPart;
       ULARGE_INTEGER sz{};
       sz.LowPart = fa.nFileSizeLow;
       sz.HighPart = fa.nFileSizeHigh;
@@ -2230,8 +2274,9 @@ void FenceWindow::SortCells() {
     }
     return s;
   };
-  if (sort_by_ == "date") {
+  if (sort_by_ == "date" || sort_by_ == "created") {
     // Hoist GetFileAttributesExW out of the comparator (was N× per comparison).
+    const bool by_created = sort_by_ == "created";
     struct Rec {
       size_t idx;
       ULONGLONG ft;
@@ -2241,7 +2286,7 @@ void FenceWindow::SortCells() {
     recs.reserve(cells_.size());
     for (size_t i = 0; i < cells_.size(); ++i) {
       const AttrRec a = lookup_attr(cells_[i].item.path);
-      recs.push_back({i, a.mtime, a.ok});
+      recs.push_back({i, by_created ? a.ctime : a.mtime, a.ok});
     }
     std::stable_sort(recs.begin(), recs.end(), [](const Rec& a, const Rec& b) {
       if (!a.ok || !b.ok) {
@@ -4978,9 +5023,19 @@ void FenceWindow::ShowFenceMenu(POINT screen) {
   std::vector<ShellMenuExtra> sort_kids = {
       leaf(L"按名称", kExtFenceSortName, sort_by_ == "name"),
       leaf(L"按修改日期", kExtFenceSortDate, sort_by_ == "date"),
+      leaf(L"按创建日期", kExtFenceSortCreated, sort_by_ == "created"),
       leaf(L"按大小", kExtFenceSortSize, sort_by_ == "size"),
       leaf(L"按类型", kExtFenceSortType, sort_by_ == "type"),
       leaf(L"手动", kExtFenceSortManual, sort_by_ == "manual"),
+  };
+  // Fences: per-fence grid pitch. The desktop's own metrics stay the default;
+  // these scale this fence's cells so a dense fence and a sparse one can coexist.
+  std::vector<ShellMenuExtra> spacing_kids = {
+      leaf(L"跟随桌面", kExtFenceSpacingDefault, cell_scale_ == 100),
+      leaf(L"紧凑 85%", kExtFenceSpacingCompact, cell_scale_ == 85),
+      leaf(L"标准 100%", kExtFenceSpacingNormal, cell_scale_ == 100),
+      leaf(L"宽松 125%", kExtFenceSpacingWide, cell_scale_ == 125),
+      leaf(L"超宽 150%", kExtFenceSpacingXl, cell_scale_ == 150),
   };
   std::vector<ShellMenuExtra> view_kids = {
       leaf(Tr("view_grid"), kExtFenceViewGrid, view_mode_ != "list"),
@@ -5036,6 +5091,8 @@ void FenceWindow::ShowFenceMenu(POINT screen) {
   }
   extras.push_back(submenu(L"所在页面", std::move(page_kids)));
   extras.push_back(submenu(Tr("fence_sort"), std::move(sort_kids)));
+  extras.push_back(submenu(L"图标间距", std::move(spacing_kids)));
+  extras.push_back(leaf(L"显示标题栏", kExtFenceShowTitle, show_title_));
   extras.push_back(submenu(Tr("fence_view"), std::move(view_kids)));
   extras.push_back(submenu(Tr("fence_opacity"), std::move(opa_kids)));
   extras.push_back(submenu(Tr("fence_style"), std::move(style_kids)));
@@ -5172,6 +5229,17 @@ void FenceWindow::ShowFenceMenu(POINT screen) {
       SetSortBy("type");
     } else if (rc == kExtFenceSortManual) {
       SetSortBy("manual");
+    } else if (rc == kExtFenceSortCreated) {
+      SetSortBy("created");
+    } else if (rc == kExtFenceSpacingDefault ||
+               rc == kExtFenceSpacingCompact ||
+               rc == kExtFenceSpacingNormal ||
+               rc == kExtFenceSpacingWide ||
+               rc == kExtFenceSpacingXl) {
+      static const int kScale[] = {100, 85, 100, 125, 150};
+      SetCellScale(kScale[rc - kExtFenceSpacingDefault]);
+    } else if (rc == kExtFenceShowTitle) {
+      SetShowTitle(!show_title_);
     } else if (rc == kExtFenceViewGrid) {
       SetViewMode("grid");
     } else if (rc == kExtFenceViewList) {

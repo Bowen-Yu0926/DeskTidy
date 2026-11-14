@@ -96,6 +96,8 @@ struct FenceLayout {
   // the full name regardless of label_lines.
   int label_lines = 2;
   bool show_labels = true;
+  // Grid pitch as a percent of the desktop's own cell metrics (100 = follow).
+  int cell_scale = 100;
   // Manual icon order (paths) when sort_by == "manual" (H1).
   std::vector<std::wstring> pin_order;
 };

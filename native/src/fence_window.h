@@ -164,6 +164,12 @@ class FenceWindow {
   void SetLabelStyle(int lines, bool show);
   int LabelLines() const { return label_lines_; }
   bool ShowLabels() const { return show_labels_; }
+  // Per-fence grid pitch as a percent of the desktop's own cell metrics.
+  void SetCellScale(int percent);
+  int CellScale() const { return cell_scale_; }
+  // Title bar visibility (Fences lets a fence run title-less).
+  void SetShowTitle(bool show);
+  bool ShowTitle() const { return show_title_; }
   // Fences-style quick filter: narrows the visible tiles to names matching the
   // typed substring. Kept out of the layout so a filter never rewrites pins.
   void BeginFilter();
@@ -528,6 +534,8 @@ class FenceWindow {
   // Caption lines for idle tiles / caption visibility (Fences label options).
   int label_lines_ = 2;
   bool show_labels_ = true;
+  // Grid pitch as a percent of the desktop's cell metrics (100 = follow).
+  int cell_scale_ = 100;
   // F7 scrollbar drag state.
   bool thumb_dragging_ = false;
   int thumb_start_y_ = 0;
