@@ -1016,6 +1016,11 @@ bool App::Init(HINSTANCE instance) {
       [this](const std::wstring& style) { SetAllFenceStyle(style); });
   settings_.SetOnFenceOpacity(
       [this](int index, int pct) { SetFenceOpacityPctAt(index, pct); });
+  settings_.SetOnFenceColors(
+      [this](int index, bool enabled, const std::wstring& bg,
+             const std::wstring& accent) {
+        SetFenceColorsAt(index, enabled, bg, accent);
+      });
   settings_.SetOnFencePage(
       [this](int index, int page) { SetFencePageAt(index, page); });
   settings_.SetOnExtToggle([this](const std::wstring& id, bool value) {
@@ -2698,6 +2703,18 @@ void App::DispatchSettingsCommand(const std::wstring& id) {
     }
     return;
   }
+  if (id.rfind(L"fence_toggle_content_lock:", 0) == 0) {
+    const int index = _wtoi(id.c_str() + 26);
+    if (index >= 0 && index < static_cast<int>(fences_.size()) &&
+        fences_[static_cast<size_t>(index)]) {
+      FenceWindow* f = fences_[static_cast<size_t>(index)].get();
+      f->SetContentLocked(!f->IsContentLocked());
+      PersistLayouts();
+      PushExtensionSettings();
+      ShowToast(f->IsContentLocked() ? L"已锁定分区内容" : L"已解锁分区内容");
+    }
+    return;
+  }
   if (id.rfind(L"fence_toggle_visible:", 0) == 0) {
     const int index = _wtoi(id.c_str() + 21);
     if (index >= 0 && index < static_cast<int>(fences_.size()) &&
@@ -3720,7 +3737,19 @@ void App::PushExtensionSettings() {
     card.organize_kinds = f->OrganizeKinds();
     card.system_fence = f->Id().rfind("system_", 0) == 0;
     card.position_locked = f->IsPositionLocked();
+    card.content_locked = f->IsContentLocked();
     card.visible = f->VisibleOnPage(f->Page());
+    card.has_custom_colors = f->HasCustomColors();
+    if (card.has_custom_colors) {
+      auto hex = [](COLORREF c) {
+        wchar_t buf[8] = {};
+        swprintf_s(buf, L"#%02X%02X%02X", GetRValue(c), GetGValue(c),
+                   GetBValue(c));
+        return std::wstring(buf);
+      };
+      card.custom_bg = hex(f->CustomBg());
+      card.custom_accent = hex(f->CustomAccent());
+    }
     int alpha = f->Opacity();
     if (alpha < 0) {
       const FenceStylePreset* st = FenceStyleById(f->StyleId());
@@ -3881,6 +3910,42 @@ void App::SetFenceOpacityPctAt(int index, int opacity_pct) {
   fences_[index]->SetOpacity(alpha);
   PersistLayouts();
   PushExtensionSettings();
+}
+
+void App::SetFenceColorsAt(int index, bool enabled, const std::wstring& bg,
+                           const std::wstring& accent) {
+  if (index < 0 || index >= static_cast<int>(fences_.size()) ||
+      !fences_[index]) {
+    return;
+  }
+  // Colours arrive as "#rrggbb" from the settings page.
+  auto parse = [](const std::wstring& s, COLORREF fallback) -> COLORREF {
+    if (s.size() != 7 || s[0] != L'#') {
+      return fallback;
+    }
+    auto hex = [&](size_t at) -> int {
+      wchar_t buf[3] = {s[at], s[at + 1], 0};
+      wchar_t* end = nullptr;
+      const long v = wcstol(buf, &end, 16);
+      return (end && *end == 0) ? static_cast<int>(v) : -1;
+    };
+    const int r = hex(1);
+    const int g = hex(3);
+    const int b = hex(5);
+    if (r < 0 || g < 0 || b < 0) {
+      return fallback;
+    }
+    return RGB(r, g, b);
+  };
+  const FenceStylePreset* preset = FenceStyleById(fences_[index]->StyleId());
+  const COLORREF fb = preset ? preset->background : RGB(24, 58, 112);
+  const COLORREF fa = preset ? preset->accent : RGB(56, 189, 248);
+  fences_[index]->SetCustomColors(enabled, parse(bg, fb), parse(accent, fa));
+  PersistLayouts();
+  PushExtensionSettings();
+  if (enabled) {
+    ShowToast(L"已应用自定义配色");
+  }
 }
 
 void App::SyncVaultSessionState() {

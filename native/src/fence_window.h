@@ -201,6 +201,12 @@ class FenceWindow {
   const std::string& ViewMode() const { return view_mode_; }
   // -1 = inherit style preset; otherwise 0–255 panel alpha.
   void SetOpacity(int opacity);
+  // Override the preset's background/accent with explicit colours. Passing
+  // enabled=false falls back to the current style preset.
+  void SetCustomColors(bool enabled, COLORREF bg, COLORREF accent);
+  bool HasCustomColors() const { return has_custom_colors_; }
+  COLORREF CustomBg() const { return bg_; }
+  COLORREF CustomAccent() const { return accent_; }
   int Opacity() const { return opacity_override_; }
   // as_link: shell verb pastelink → create Desktop/portal .lnk (not copy/move).
   void PasteClipboardFiles(bool as_link = false);
@@ -220,6 +226,11 @@ class FenceWindow {
   void SetAutoHide(bool on);
   bool IsPositionLocked() const { return position_locked_; }
   void SetPositionLocked(bool locked);
+  // Content lock freezes the fence's icon set and order: no drag-reorder,
+  // no inbound/outbound drops, no delete/rename/paste. Moving the frame stays
+  // governed by position_locked (Fences keeps the two locks separate).
+  bool IsContentLocked() const { return content_locked_; }
+  void SetContentLocked(bool locked);
   void SetPageNames(std::vector<std::wstring> names) {
     page_names_ = std::move(names);
   }
@@ -345,6 +356,9 @@ class FenceWindow {
   void StartManualIconDrag(int index);
   void UpdateManualIconDrag(int x, int y);
   void FinishManualIconDrag(int x, int y);
+  // Scroll one step when an in-progress icon drag sits against the top/bottom
+  // edge. Returns true when the viewport actually moved (needs a re-present).
+  bool ScrollIfAtDragEdge(int x, int y);
   // P1-13: OLE pin-transfer drag out; unpin only on desktop release / real MOVE.
   void CommitDragOutPins(std::vector<std::wstring> paths);
   int InsertIndexAt(int x, int y) const;
@@ -442,6 +456,7 @@ class FenceWindow {
   bool collapsed_ = false;
   bool auto_hide_ = false;
   bool position_locked_ = false;
+  bool content_locked_ = false;
   HeaderBtn header_press_ = HeaderBtn::None;
   int expanded_h_ = 360;
   std::string sort_by_ = "name";

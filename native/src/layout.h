@@ -67,6 +67,8 @@ struct FenceLayout {
   bool auto_hide = false;
   // User lock: drag/resize off (not system locked fences).
   bool position_locked = false;
+  // Freezes icon set + order (no reorder / drop in-out / delete / rename).
+  bool content_locked = false;
   // name | date | size | type | manual
   std::string sort_by = "name";
   // grid | list

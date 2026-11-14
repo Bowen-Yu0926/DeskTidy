@@ -143,8 +143,14 @@ class SettingsWindow {
       std::vector<std::string> organize_kinds;
       bool system_fence = false;
       bool position_locked = false;
+      // Freezes icon set + order (separate from position lock, as in Fences).
+      bool content_locked = false;
       // User-hide (fence menu 「隐藏」); settings can Show again (Fences recover).
       bool visible = true;
+      // Custom colours override the preset; "#rrggbb" for the pickers.
+      bool has_custom_colors = false;
+      std::wstring custom_bg;
+      std::wstring custom_accent;
     };
     std::vector<FenceCard> fence_cards;
     // Per-page lock flags (index aligned with page_names_).
@@ -202,6 +208,11 @@ class SettingsWindow {
   }
   void SetOnFenceOpacity(std::function<void(int, int)> fn) {
     on_fence_opacity_ = std::move(fn);
+  }
+  // Custom bg/accent colours for one fence. `enabled` false = back to preset.
+  void SetOnFenceColors(std::function<void(int, bool, const std::wstring&,
+                                            const std::wstring&)> fn) {
+    on_fence_colors_ = std::move(fn);
   }
   void SetOnFenceStyleAll(std::function<void(const std::wstring&)> fn) {
     on_fence_style_all_ = std::move(fn);
@@ -309,6 +320,8 @@ class SettingsWindow {
   std::function<void(const std::wstring&, const std::wstring&)> on_hotkey_set_;
   std::function<void(int, const std::wstring&)> on_fence_style_;
   std::function<void(int, int)> on_fence_opacity_;
+  std::function<void(int, bool, const std::wstring&, const std::wstring&)>
+      on_fence_colors_;
   std::function<void(const std::wstring&)> on_fence_style_all_;
   PageFn on_fence_page_card_;
 

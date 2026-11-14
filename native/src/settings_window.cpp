@@ -764,8 +764,17 @@ std::wstring SettingsWindow::BuildStateJson() const {
     json += c.system_fence ? L"true" : L"false";
     json += L",\"position_locked\":";
     json += c.position_locked ? L"true" : L"false";
+    json += L",\"content_locked\":";
+    json += c.content_locked ? L"true" : L"false";
     json += L",\"visible\":";
     json += c.visible ? L"true" : L"false";
+    json += L",\"has_custom_colors\":";
+    json += c.has_custom_colors ? L"true" : L"false";
+    json += L",\"custom_bg\":\"";
+    json += JsonEscape(c.custom_bg);
+    json += L"\",\"custom_accent\":\"";
+    json += JsonEscape(c.custom_accent);
+    json += L"\",";
     json += L",\"organize_kinds\":[";
     for (size_t k = 0; k < c.organize_kinds.size(); ++k) {
       if (k) {
@@ -1174,6 +1183,11 @@ void SettingsWindow::DispatchAction(const std::wstring& json) {
   } else if (id == L"fence_set_opacity" && on_fence_opacity_) {
     on_fence_opacity_(JsonIntField(json, L"index", 0),
                       JsonIntField(json, L"value", 70));
+  } else if (id == L"fence_set_colors" && on_fence_colors_) {
+    on_fence_colors_(JsonIntField(json, L"index", 0),
+                     JsonIntField(json, L"enabled", 0) != 0,
+                     JsonStringField(json, L"bg"),
+                     JsonStringField(json, L"accent"));
   } else if (id == L"fence_set_page" && on_fence_page_card_) {
     on_fence_page_card_(JsonIntField(json, L"index", 0),
                         JsonIntField(json, L"page", 0));
@@ -1200,6 +1214,9 @@ void SettingsWindow::DispatchAction(const std::wstring& json) {
                 L"|" + title);
   } else if (id == L"fence_toggle_lock" && on_command_) {
     on_command_(L"fence_toggle_lock:" +
+                std::to_wstring(JsonIntField(json, L"index", 0)));
+  } else if (id == L"fence_toggle_content_lock" && on_command_) {
+    on_command_(L"fence_toggle_content_lock:" +
                 std::to_wstring(JsonIntField(json, L"index", 0)));
   } else if (id == L"fence_toggle_visible" && on_command_) {
     on_command_(L"fence_toggle_visible:" +

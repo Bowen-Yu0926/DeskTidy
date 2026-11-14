@@ -101,6 +101,9 @@ class App {
   void SetAllFenceStyle(const std::wstring& style_id);
   void SetPageBarStyle(const std::wstring& style_id);
   void SetFenceOpacityPctAt(int index, int opacity_pct);
+  // Custom bg/accent for one fence; `enabled` false reverts to the preset.
+  void SetFenceColorsAt(int index, bool enabled, const std::wstring& bg,
+                        const std::wstring& accent);
   void ApplyDockPrefs();
   void SyncPageChrome();
   void MaybeStartupUpdateCheck();

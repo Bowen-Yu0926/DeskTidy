@@ -53,6 +53,8 @@ constexpr int kExtFenceRefresh = 1;
 constexpr int kExtFenceHide = 2;
 constexpr int kExtFenceDissolve = 3;
 constexpr int kExtFenceLock = 4;
+// Freezes icon set/order (Fences keeps this separate from position lock).
+constexpr int kExtFenceLockContent = 16;
 constexpr int kExtFenceRename = 5;
 constexpr int kExtFenceCollapse = 6;
 // Formal blank-menu extras (were fallback-only) — ids stay in 1..99.
@@ -62,6 +64,9 @@ constexpr int kExtFencePortalUp = 9;
 constexpr int kExtFenceSortName = 10;
 constexpr int kExtFenceAutoHide = 15;
 constexpr UINT kTimerAutoHide = 77;
+// Drag-to-edge auto-scroll tick (Explorer keeps scrolling while the cursor
+// rests against the edge; mouse-move alone would stop as soon as it settles).
+constexpr UINT kTimerDragScroll = 78;
 constexpr int kExtFenceSortDate = 11;
 constexpr int kExtFenceSortSize = 12;
 constexpr int kExtFenceSortType = 13;
@@ -820,6 +825,20 @@ void FenceWindow::SetOpacity(int opacity) {
   ApplyStyle();
 }
 
+void FenceWindow::SetCustomColors(bool enabled, COLORREF bg, COLORREF accent) {
+  // Explicit custom colours override the preset's bg/accent but keep the
+  // preset's title colour, alpha and light/dark flag (ApplyStyle handles that).
+  has_custom_colors_ = enabled;
+  if (enabled) {
+    bg_ = bg;
+    accent_ = accent;
+  }
+  ApplyStyle();
+  if (hwnd_ && IsWindowVisible(hwnd_)) {
+    PresentLayered();
+  }
+}
+
 int FenceWindow::IconSizePx() const {
   if (view_mode_ == "list") {
     return S(hwnd_, kListIcon0);  // kListIcon0 is a 96-dpi design value.
@@ -1163,6 +1182,7 @@ bool FenceWindow::Create(HINSTANCE instance, const FenceLayout& layout) {
   collapsed_ = layout.collapsed;
   auto_hide_ = layout.auto_hide;
   position_locked_ = layout.position_locked;
+  content_locked_ = layout.content_locked;
   sort_by_ = layout.sort_by.empty() ? "name" : layout.sort_by;
   view_mode_ = (layout.view_mode == "list") ? "list" : "grid";
   show_title_ = layout.show_title;
@@ -1285,6 +1305,20 @@ void FenceWindow::SetPositionLocked(bool locked) {
   }
 }
 
+void FenceWindow::SetContentLocked(bool locked) {
+  if (content_locked_ == locked) {
+    return;
+  }
+  content_locked_ = locked;
+  if (hwnd_) {
+    PresentLayered();
+  }
+  // Persist through the same layout path position lock uses.
+  if (on_moved_) {
+    on_moved_(this);
+  }
+}
+
 void FenceWindow::EnsureDropTarget() {
   if (!hwnd_ || drop_target_) {
     return;
@@ -1293,6 +1327,11 @@ void FenceWindow::EnsureDropTarget() {
       new PathDropTarget(
           [this](const std::vector<std::wstring>& paths,
                  DWORD proposed) -> DWORD {
+            // Content lock freezes membership: refuse inbound drops so the
+            // source keeps its files (DROPEFFECT_NONE, never a fake MOVE).
+            if (content_locked_) {
+              return DROPEFFECT_NONE;
+            }
             // Fences/Explorer: drop on Recycle Bin icon deletes, never pins
             // into the fence that hosts the bin (desktop batch-drag bug).
             POINT pt{};
@@ -1637,6 +1676,7 @@ FenceLayout FenceWindow::CurrentLayout() const {
   fl.collapsed = collapsed_;
   fl.auto_hide = auto_hide_;
   fl.position_locked = position_locked_;
+  fl.content_locked = content_locked_;
   fl.sort_by = sort_by_;
   fl.view_mode = view_mode_;
   fl.opacity = opacity_override_;
@@ -2666,6 +2706,10 @@ void FenceWindow::CreateNewFolder() {
   if (rename_edit_) {
     return;
   }
+  if (content_locked_) {
+    ShowToast(L"分区内容已锁定，请先解锁");
+    return;
+  }
   const std::wstring parent =
       portal_path_.empty() ? DesktopDirectory() : PortalBrowsePath();
   const std::wstring path = UniqueNewFolderPath(parent);
@@ -3219,6 +3263,10 @@ void FenceWindow::BeginIconDrag(int index) {
   if (index < 0 || index >= static_cast<int>(cells_.size())) {
     return;
   }
+  if (content_locked_) {
+    ShowToast(L"分区内容已锁定，请先解锁");
+    return;
+  }
   if (cells_[static_cast<size_t>(index)].item.path.empty()) {
     return;
   }
@@ -3247,6 +3295,9 @@ void FenceWindow::BeginIconDrag(int index) {
 
 void FenceWindow::StartManualIconDrag(int index) {
   if (index < 0 || index >= static_cast<int>(cells_.size())) {
+    return;
+  }
+  if (content_locked_) {
     return;
   }
   icon_press_ = false;
@@ -3310,21 +3361,69 @@ void FenceWindow::UpdateManualIconDrag(int x, int y) {
     return;
   }
   drag_left_ = outside;
+  // Explorer/Fences: dragging an icon to the top/bottom edge scrolls the fence
+  // so it can be dropped at a seat outside the current viewport. The marquee
+  // path already did this; icon drags could not reach a scrolled-out seat.
+  bool scrolled = false;
+  if (!outside) {
+    const int header = S(hwnd_, kHeaderH0);
+    const int margin = S(hwnd_, 28);
+    const bool at_edge = y < header + margin || y > rc.bottom - margin;
+    // Keep a ticker running while parked on the edge: a mouse that stops
+    // moving must still keep scrolling, as it does in Explorer.
+    if (at_edge) {
+      SetTimer(hwnd_, kTimerDragScroll, 60, nullptr);
+    } else {
+      KillTimer(hwnd_, kTimerDragScroll);
+    }
+    scrolled = ScrollIfAtDragEdge(x, y);
+  } else {
+    KillTimer(hwnd_, kTimerDragScroll);
+  }
   drag_insert_ = outside ? -1 : InsertIndexAt(x, y);
   const bool structural =
       drag_insert_ != prev_insert || drag_left_ != prev_left;
   const DWORD now = GetTickCount();
-  if (structural || last_manual_drag_present_ms_ == 0 ||
+  if (structural || scrolled || last_manual_drag_present_ms_ == 0 ||
       now - last_manual_drag_present_ms_ >= 33u) {
     PresentLayered();
     last_manual_drag_present_ms_ = now;
   }
 }
 
+bool FenceWindow::ScrollIfAtDragEdge(int x, int y) {
+  if (!icon_dragging_) {
+    return false;
+  }
+  RECT rc{};
+  GetClientRect(hwnd_, &rc);
+  if (x < 0 || y < 0 || x >= rc.right || y >= rc.bottom) {
+    return false;
+  }
+  const int header = S(hwnd_, kHeaderH0);
+  const int margin = S(hwnd_, 28);
+  const int step = S(hwnd_, 24);
+  const int old_scroll = scroll_y_;
+  if (y < header + margin) {
+    scroll_y_ -= step;
+  } else if (y > rc.bottom - margin) {
+    scroll_y_ += step;
+  }
+  if (scroll_y_ == old_scroll) {
+    return false;
+  }
+  ClampScroll();
+  // Cells move with the viewport; the drag cursor is fixed, so the insert
+  // seat is recomputed by the caller against the new bounds.
+  LayoutCells();
+  return true;
+}
+
 void FenceWindow::FinishManualIconDrag(int x, int y) {
   if (!icon_dragging_) {
     return;
   }
+  KillTimer(hwnd_, kTimerDragScroll);
   icon_dragging_ = false;
   last_manual_drag_present_ms_ = 0;
   ReleaseCapture();
@@ -4302,6 +4401,10 @@ void FenceWindow::DeleteSelection(bool permanent) {
   if (paths.empty()) {
     return;
   }
+  if (content_locked_) {
+    ShowToast(L"分区内容已锁定，请先解锁");
+    return;
+  }
   // Explorer: after delete, keep keyboard focus on the next surviving icon.
   int first_sel = -1;
   for (size_t i = 0; i < selected_.size() && i < cells_.size(); ++i) {
@@ -4496,6 +4599,10 @@ void FenceWindow::CommitRenameAndAdvance(int delta) {
 }
 
 void FenceWindow::BeginInlineRename() {
+  if (content_locked_) {
+    ShowToast(L"分区内容已锁定，请先解锁");
+    return;
+  }
   // Explorer / Fences: F2 renames the anchor (or first selected) even when
   // multiple icons are selected — never a silent no-op.
   int index = -1;
@@ -4685,6 +4792,10 @@ void FenceWindow::FinishInlineRename(bool commit) {
 }
 
 void FenceWindow::PasteClipboardFiles(bool as_link) {
+  if (content_locked_) {
+    ShowToast(L"分区内容已锁定，请先解锁");
+    return;
+  }
   std::vector<std::wstring> paths;
   bool cut = false;
   if (!ClipboardGetFilesWithEffect(&paths, &cut) || paths.empty()) {
@@ -4768,6 +4879,9 @@ void FenceWindow::ShowFenceMenu(POINT screen) {
       leaf(Tr("fence_hide"), kExtFenceHide),
       leaf(position_locked_ ? Tr("fence_unlock") : Tr("fence_lock"),
            kExtFenceLock),
+      leaf(content_locked_ ? Tr("fence_unlock_content")
+                           : Tr("fence_lock_content"),
+           kExtFenceLockContent),
       leaf(Tr("fence_dissolve"), kExtFenceDissolve),
       leaf(portal_path_.empty() ? L"设为门户文件夹…" : L"更换门户文件夹…",
            kExtFencePortalSet),
@@ -4890,6 +5004,8 @@ void FenceWindow::ShowFenceMenu(POINT screen) {
       Hide();
     } else if (rc == kExtFenceLock) {
       SetPositionLocked(!position_locked_);
+    } else if (rc == kExtFenceLockContent) {
+      SetContentLocked(!content_locked_);
     } else if (rc == kExtFenceDissolve) {
       if (on_dissolve_) {
         on_dissolve_(this);
@@ -5627,6 +5743,20 @@ LRESULT FenceWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
         }
         return 0;
       }
+      if (wparam == kTimerDragScroll) {
+        if (!icon_dragging_) {
+          KillTimer(hwnd_, kTimerDragScroll);
+          return 0;
+        }
+        // Cursor is parked against an edge: keep scrolling on every tick.
+        POINT cur{};
+        if (GetCursorPos(&cur) && ScreenToClient(hwnd_, &cur) &&
+            ScrollIfAtDragEdge(cur.x, cur.y)) {
+          drag_insert_ = InsertIndexAt(cur.x, cur.y);
+          PresentLayered();
+        }
+        return 0;
+      }
       break;
     case WM_LBUTTONUP: {
       const int x = GET_X_LPARAM(lparam);
@@ -6031,24 +6161,36 @@ void FenceWindow::Paint(HDC hdc) {
         g.DrawLine(&pen, c.X, c.Y - s * 0.5f, c.X + s, c.Y + s * 0.4f);
       }
     }
-    // Lock / unlock padlock
+    // Lock / unlock padlock. Two independent locks share this glyph:
+    //   position lock → closed shackle
+    //   content lock  → filled body (set + order frozen)
     if (lock_rc.right > lock_rc.left) {
       const auto c = mid(lock_rc);
       const float bw = 7.f, bh = 6.f;
       Gdiplus::RectF body(c.X - bw * 0.5f, c.Y - 0.5f, bw, bh);
-      g.DrawRectangle(&pen, body);
+      if (content_locked_) {
+        g.FillRectangle(&title_brush, body);
+      } else {
+        g.DrawRectangle(&pen, body);
+      }
       // Shackle
       Gdiplus::REAL sh_top = c.Y - 6.5f;
       Gdiplus::REAL sh_bot = c.Y - 0.5f;
-      if (position_locked_) {
+      if (position_locked_ || content_locked_) {
         g.DrawArc(&pen, c.X - 3.2f, sh_top, 6.4f, 7.f, 200.f, 140.f);
       } else {
         // Open shackle — arc shifted right
         g.DrawArc(&pen, c.X - 1.2f, sh_top, 6.4f, 7.f, 200.f, 140.f);
         g.DrawLine(&pen, c.X + 5.f, sh_bot - 1.f, c.X + 5.f, sh_top + 2.f);
       }
-      // Keyhole
-      g.FillEllipse(&title_brush, c.X - 1.1f, c.Y + 0.8f, 2.2f, 2.2f);
+      // Keyhole (inverted when the body is filled, to stay visible)
+      if (content_locked_) {
+        Gdiplus::SolidBrush knock(Gdiplus::Color(
+            light_panel_ ? 40 : 200, 0, 0, 0));
+        g.FillEllipse(&knock, c.X - 1.1f, c.Y + 0.8f, 2.2f, 2.2f);
+      } else {
+        g.FillEllipse(&title_brush, c.X - 1.1f, c.Y + 0.8f, 2.2f, 2.2f);
+      }
       g.DrawLine(&pen, c.X, c.Y + 2.5f, c.X, c.Y + 4.2f);
     }
     // Delete = X

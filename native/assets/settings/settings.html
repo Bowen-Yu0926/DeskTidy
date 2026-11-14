@@ -1362,6 +1362,16 @@
       <label><input type="checkbox" id="fence-edit-kind-icon" /> 软件（快捷方式）</label>
       <label><input type="checkbox" id="fence-edit-kind-file" /> 文档（文件夹与其它文件）</label>
     </div>
+    <div class="group">自定义配色</div>
+    <div class="field-row">
+      <span class="label">背景色</span>
+      <input type="color" id="fence-edit-bg" value="#183A70" />
+      <span class="label">强调色</span>
+      <input type="color" id="fence-edit-accent" value="#38BDF8" />
+    </div>
+    <div class="kind-row">
+      <label><input type="checkbox" id="fence-edit-custom" /> 启用自定义配色（关闭则跟随上方预设样式）</label>
+    </div>
     <input type="hidden" id="fence-edit-index" value="-1" />
     <div class="dlg-actions">
       <button type="button" class="btn" id="fence-edit-cancel">取消</button>
@@ -1639,6 +1649,15 @@
     const kinds = Array.isArray(card.organize_kinds) ? card.organize_kinds.map(String) : [];
     iconEl.checked = kinds.indexOf('icon') >= 0;
     fileEl.checked = kinds.indexOf('file') >= 0;
+    // Seed the colour pickers from the fence's current colours so opening the
+    // dialog without touching them does not silently change the look.
+    const bgEl = document.getElementById('fence-edit-bg');
+    const accentEl = document.getElementById('fence-edit-accent');
+    const customEl = document.getElementById('fence-edit-custom');
+    const seed = STYLE_COLORS[card.style_id] || STYLE_COLORS.navy;
+    if (bgEl) bgEl.value = card.custom_bg || seed.bg;
+    if (accentEl) accentEl.value = card.custom_accent || seed.accent;
+    if (customEl) customEl.checked = !!card.has_custom_colors;
     mask.classList.add('on');
     setTimeout(() => { try { nameEl.focus(); nameEl.select(); } catch (e) {} }, 0);
   }
@@ -1657,6 +1676,18 @@
     const kinds = [];
     if (iconEl && iconEl.checked) kinds.push('icon');
     if (fileEl && fileEl.checked) kinds.push('file');
+    // Custom colours are a separate action so the preset path stays untouched.
+    const customEl = document.getElementById('fence-edit-custom');
+    const bgEl = document.getElementById('fence-edit-bg');
+    const accentEl = document.getElementById('fence-edit-accent');
+    if (customEl) {
+      post({
+        type: 'action', id: 'fence_set_colors', index: _fenceEditIndex,
+        enabled: customEl.checked ? 1 : 0,
+        bg: (bgEl && bgEl.value) || '',
+        accent: (accentEl && accentEl.value) || ''
+      });
+    }
     post({
       type: 'action', id: 'edit_fence', index: _fenceEditIndex,
       title: title, kinds: kinds.join(',')
@@ -1719,6 +1750,9 @@
         '<button type="button" class="icon-btn' + (c.position_locked ? ' on' : '') +
         '" data-fc-lock title="' + (c.position_locked ? '解锁位置' : '锁定位置') + '">' +
         (c.position_locked ? ICO.lock : ICO.unlock) + '</button>' +
+        '<button type="button" class="icon-btn' + (c.content_locked ? ' on' : '') +
+        '" data-fc-clock title="' + (c.content_locked ? '解锁内容' : '锁定内容') + '">' +
+        ICO.lock + '</button>' +
         '<button type="button" class="icon-btn" data-fc-edit title="编辑">' + ICO.edit + '</button>' +
         '<button type="button" class="icon-btn danger" data-fc-del title="' +
         (isSystem ? '系统分区不可删除' : '删除') + '"' +
@@ -1773,6 +1807,13 @@
         lockBtn.addEventListener('click', (e) => {
           e.stopPropagation();
           post({ type: 'action', id: 'fence_toggle_lock', index: i });
+        });
+      }
+      const clockBtn = el.querySelector('[data-fc-clock]');
+      if (clockBtn) {
+        clockBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          post({ type: 'action', id: 'fence_toggle_content_lock', index: i });
         });
       }
       const editBtn = el.querySelector('[data-fc-edit]');

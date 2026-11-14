@@ -515,6 +515,8 @@ AppState LoadAppStateFromPath(const std::wstring& path, bool inject_defaults) {
     FindBool(obj, "collapsed", &collapsed);
     bool position_locked = false;
     FindBool(obj, "position_locked", &position_locked);
+    bool content_locked = false;
+    FindBool(obj, "content_locked", &content_locked);
     std::string sort_by;
     FindString(obj, "sort_by", &sort_by);
     std::string view_mode;
@@ -601,6 +603,7 @@ AppState LoadAppStateFromPath(const std::wstring& path, bool inject_defaults) {
     fl.collapsed = collapsed;
     fl.auto_hide = auto_hide;
     fl.position_locked = position_locked;
+    fl.content_locked = content_locked;
     fl.sort_by = sort_by.empty() ? "name" : sort_by;
     fl.view_mode = (view_mode == "list") ? "list" : "grid";
     if (opacity >= 0 && opacity <= 255) {
@@ -1007,6 +1010,8 @@ bool SaveAppState(const AppState& state) {
         << "\"auto_hide\":" << (f.auto_hide ? "true" : "false") << ","
         << "\"position_locked\":"
         << (f.position_locked ? "true" : "false") << ","
+        << "\"content_locked\":"
+        << (f.content_locked ? "true" : "false") << ","
         << "\"sort_by\":\""
         << EscapeJson(f.sort_by.empty() ? "name" : f.sort_by) << "\","
         << "\"view_mode\":\""
