@@ -195,7 +195,7 @@ def main() -> int:
         sys.exit(f"Missing HTML: {portal_html}")
 
     ftp, remote_root = connect()
-    site = cfg("BYETHOST_SITE_URL", "https://bowen-yu0926.byethost10.com/")
+    site = cfg("BYETHOST_SITE_URL", "")
     print(f"Connected → {remote_root}  site={site}")
 
     if args.list:
