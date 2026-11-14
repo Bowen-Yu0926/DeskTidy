@@ -213,6 +213,52 @@ int main() {
            "defaults above mins");
   }
 
+  // 11) Export writes a standalone file: no .bak beside it, and the per-fence
+  // fields a restore depends on survive the round trip.
+  {
+    wchar_t tmp_dir[MAX_PATH] = {};
+    GetTempPathW(MAX_PATH, tmp_dir);
+    const std::wstring out =
+        std::wstring(tmp_dir) + L"desktidy_export_probe.json";
+    DeleteFileW(out.c_str());
+    DeleteFileW((out + L".bak").c_str());
+
+    AppState st;
+    st.current_page = 1;
+    st.page_names = {L"工作", L"文档"};
+    FenceLayout f;
+    f.id = "probe_fence";
+    f.title = L"探针";
+    f.cell_scale = 125;
+    f.show_title = false;
+    f.label_lines = 3;
+    f.show_labels = false;
+    f.fade_on_idle = true;
+    f.sort_by = "created";
+    st.fences.push_back(f);
+
+    const bool saved = SaveAppState(st, out);
+    Expect(saved, "export writes the requested path");
+    Expect(GetFileAttributesW(out.c_str()) != INVALID_FILE_ATTRIBUTES,
+           "export file exists");
+    Expect(GetFileAttributesW((out + L".bak").c_str()) == INVALID_FILE_ATTRIBUTES,
+           "export creates no .bak beside it");
+
+    const AppState back = LoadAppStateFromPath(out, /*inject_defaults=*/false);
+    Expect(back.fences.size() == 1, "export round-trips one fence");
+    if (back.fences.size() == 1) {
+      const FenceLayout& g = back.fences[0];
+      Expect(g.cell_scale == 125, "export keeps cell_scale");
+      Expect(!g.show_title, "export keeps show_title");
+      Expect(g.label_lines == 3, "export keeps label_lines");
+      Expect(!g.show_labels, "export keeps show_labels");
+      Expect(g.fade_on_idle, "export keeps fade_on_idle");
+      Expect(g.sort_by == "created", "export keeps sort_by");
+    }
+    DeleteFileW(out.c_str());
+    DeleteFileW((out + L".bak").c_str());
+  }
+
   if (g_fails) {
     std::fprintf(stderr, "%d assertion(s) failed\n", g_fails);
     return 1;
