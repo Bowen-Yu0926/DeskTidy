@@ -454,9 +454,36 @@ DesktopBandState QueryDesktopBandState() {
   // overlays get sunk instead of lifted. The raise branch checks the cover
   // first, so an actual cover still wins.
   state.fullscreen_cover = HasVisibleFullscreenCover();
+  // Raw state. The seat is derived from actual Z-order (see
+  // RaiseOverlayInDesktopBandWith), so no debounce is needed here — waiting
+  // for the Win+D animation to "settle" only delayed the correct seat and left
+  // the fence visibly covered in the meantime.
   state.show_desktop = IsShowDesktopActive();
   return state;
 }
+
+namespace {
+
+// A window can be WS_VISIBLE and still not be on screen: DWM "cloaks" windows
+// it is not compositing (other virtual desktops, suspended UWP hosts, the
+// TextInputHost overlay). IsWindowVisible() reports true for those, so any
+// occlusion test that trusts it will see phantom full-screen covers.
+bool IsWindowDwmCloaked(HWND hwnd) {
+  using Fn = HRESULT(WINAPI*)(HWND, DWORD, PVOID, DWORD);
+  static Fn get_attr = reinterpret_cast<Fn>(
+      GetProcAddress(GetModuleHandleW(L"dwmapi.dll"), "DwmGetWindowAttribute"));
+  if (!get_attr || !hwnd) {
+    return false;
+  }
+  DWORD cloaked = 0;
+  // DWMWA_CLOAKED = 14
+  if (FAILED(get_attr(hwnd, 14, &cloaked, sizeof(cloaked)))) {
+    return false;
+  }
+  return cloaked != 0;
+}
+
+}  // namespace
 
 bool IsShowDesktopActive() {
   const DefViewHost host = FindDefViewHost();
@@ -490,7 +517,16 @@ bool IsShowDesktopActive() {
       break;
     }
     cur = prev;
+    // Skip windows that cannot be on screen. A *minimising* window is still
+    // visible and non-zero for a few frames, so the zero-area check below
+    // matters: without it the walk answers "the desktop is showing" while an
+    // app is still on its way out, and the fence gets raised over that app.
     if (!IsWindowVisible(cur) || IsIconic(cur)) {
+      continue;
+    }
+    RECT rc{};
+    if (GetWindowRect(cur, &rc) &&
+        (rc.right <= rc.left || rc.bottom <= rc.top)) {
       continue;
     }
     DWORD pid = 0;
@@ -505,29 +541,31 @@ bool IsShowDesktopActive() {
         wcscmp(cls, L"Shell_SecondaryTrayWnd") == 0) {
       continue;
     }
+    // Visible per Win32 but not composited by DWM (other virtual desktop,
+    // suspended UWP) — it cannot be covering the desktop.
+    if (IsWindowDwmCloaked(cur)) {
+      continue;
+    }
     return false;
   }
   return true;
 }
 
 bool IsAppsForegroundQuiet() {
-  // Equivalent to:
-  //   !IsExplorerDesktopForeground() &&
-  //   !(IsShowDesktopActive() && !HasVisibleFullscreenCover())
-  // but skips EnumWindows cover scan unless DefView is TOPMOST (Win+D).
+  // True when a normal application owns the foreground, i.e. the desktop is
+  // NOT what the user is looking at. Everything below must therefore agree
+  // with IsShowDesktopActive(), or the caller will seat/skip inconsistently
+  // and the fences appear only on some ticks.
   if (IsExplorerDesktopForeground()) {
-    return false;
+    return false;  // desktop shell owns FG
   }
-  const DefViewHost host = FindDefViewHost();
-  const bool topmost_desk =
-      (host.defview && IsWindowAlive(host.defview) &&
-       (GetWindowLongPtrW(host.defview, GWL_EXSTYLE) & WS_EX_TOPMOST) != 0) ||
-      (host.host && IsWindowAlive(host.host) &&
-       (GetWindowLongPtrW(host.host, GWL_EXSTYLE) & WS_EX_TOPMOST) != 0);
-  if (!topmost_desk) {
-    return true;
+  // Win10 does not set DefView WS_EX_TOPMOST on Win+D (only some Win11 builds
+  // do), so that flag alone cannot decide this. Ask the real show-desktop
+  // question, which also covers the Progman/WorkerW foreground case.
+  if (IsShowDesktopActive()) {
+    return false;  // desktop is showing (Win+D) — not "apps quiet"
   }
-  return HasVisibleFullscreenCover();
+  return true;
 }
 
 namespace {
@@ -596,7 +634,24 @@ bool AlreadyStackedAfter(HWND hwnd, HWND insert_after) {
     return false;
   }
   if (insert_after == HWND_TOP) {
-    return GetWindow(hwnd, GW_HWNDPREV) == nullptr;
+    // "Top of the normal band" means no *non-topmost* window sits in front.
+    // Checking for a literal nullptr previous-window never matched: topmost
+    // shell windows (taskbar helpers, IME hosts) always sit above, so this
+    // returned false on every pass and re-issued SetWindowPos ~4× per Win+D.
+    // Each restack forces DWM to re-composite the layered surface, which is
+    // what the user sees as a flicker.
+    for (HWND cur = GetWindow(hwnd, GW_HWNDPREV); cur;
+         cur = GetWindow(cur, GW_HWNDPREV)) {
+      if (!IsWindowVisible(cur) || IsIconic(cur)) {
+        continue;
+      }
+      const LONG_PTR ex = GetWindowLongPtrW(cur, GWL_EXSTYLE);
+      if ((ex & WS_EX_TOPMOST) != 0) {
+        continue;  // taskbar band — above us by design
+      }
+      return false;  // a normal window is still in front
+    }
+    return true;
   }
   if (insert_after == HWND_BOTTOM) {
     return GetWindow(hwnd, GW_HWNDNEXT) == nullptr;
@@ -797,36 +852,64 @@ void RaiseOverlayInDesktopBandWith(HWND hwnd, const DesktopBandState& state) {
   HWND insert_after = HWND_BOTTOM;
   if (state.fullscreen_cover) {
     insert_after = host.host ? host.host : HWND_BOTTOM;
-  } else if (state.show_desktop) {
-    // Win+D show-desktop: the shell raises Progman/DefView to the top of the
-    // normal band. Seat the overlay immediately ABOVE DefView.
+  } else {
+    // One rule for the desktop band, regardless of show-desktop state:
+    //
+    //   1. Stay ABOVE DefView — otherwise the desktop surface (wallpaper +
+    //      icons) covers the overlay and it is invisible.
+    //   2. Stay BELOW a real foreground app — fences belong under APPWINDOWs.
+    //
+    // Both used to be separate branches keyed on IsShowDesktopActive(), which
+    // is a lagging heuristic: it only turns true after the Win+D animation
+    // finishes. During that gap the code took the "apps in front" branch and
+    // re-seated the overlay behind the app, so the fence visibly vanished and
+    // then reappeared. Deriving the seat from the actual Z-order removes the
+    // dependency on that timing entirely.
     //
     // SetWindowPos(hwnd, X) places hwnd *behind* X, so X must be the window
-    // that should sit directly in front of the overlay. Passing host.host put
-    // the fence BEHIND the full-screen WorkerW — invisible after Win+D.
-    // Correct target is whatever currently sits just above DefView (or DefView
-    // itself when nothing does), never HWND_TOP: that would clear the taskbar.
+    // that should sit directly in front of the overlay.
     HWND defview = host.defview ? host.defview : host.host;
     HWND in_front = defview ? GetWindow(defview, GW_HWNDPREV) : nullptr;
-    insert_after = in_front ? in_front : (defview ? defview : HWND_BOTTOM);
-  } else {
-    HWND above = WindowAboveDefView(host.defview, host.host, hwnd);
-    if (above && above != hwnd) {
-      insert_after = above;
-    } else {
-      HWND fg = GetForegroundWindow();
-      if (fg && IsWindowVisible(fg) && !IsIconic(fg)) {
-        DWORD pid = 0;
-        GetWindowThreadProcessId(fg, &pid);
-        if (pid != GetCurrentProcessId() && !IsShellFullscreenClass(fg)) {
-          insert_after = fg;
-        } else {
-          insert_after = host.host ? host.host : HWND_BOTTOM;
-        }
-      } else {
-        insert_after = host.host ? host.host : HWND_BOTTOM;
+    // Skip shell UI that covers the whole screen (Task View / Alt+Tab switcher,
+    // tooltips and other transient overlays). They sit in front of DefView in
+    // Z order but must never become the seat: tucking the fence behind them
+    // hides it completely, and their appearance/disappearance during a Win+D
+    // burst is exactly what made the fence flash.
+    for (int hops = 0; in_front && hops < 8; ++hops) {
+      if (in_front == hwnd || IsShellFullscreenClass(in_front)) {
+        in_front = GetWindow(in_front, GW_HWNDPREV);
+        continue;
       }
+      wchar_t fc[64] = {};
+      GetClassNameW(in_front, fc, 64);
+      if (wcscmp(fc, L"tooltips_class32") == 0 ||
+          wcscmp(fc, L"MultitaskingViewFrame") == 0) {
+        in_front = GetWindow(in_front, GW_HWNDPREV);
+        continue;
+      }
+      break;
     }
+    if (in_front) {
+      insert_after = in_front;
+    } else {
+      // DefView is already the frontmost non-topmost window: there is no
+      // window to sit behind, so the overlay goes to the top of the normal
+      // band. Falling back to `defview` here placed the overlay BEHIND the
+      // desktop surface — the fence was then covered by the very thing it was
+      // meant to sit on, which is the "fences vanish on Win+D" symptom.
+      // HWND_TOP is safe: the taskbar is WS_EX_TOPMOST and stays above.
+      insert_after = HWND_TOP;
+    }
+    // Deliberately NO "foreground app wins" override here.
+    //
+    // The overlay lives in the desktop band; a normal app window is above that
+    // whole band by construction, so the fence is already hidden behind it
+    // without any help. Chasing the foreground window made the seat MOVE every
+    // time focus changed: at boot Chrome was foreground so the fence sat behind
+    // Chrome, and the first Win+D then had to move it to the desktop band — a
+    // Z-order change that forces DWM to re-composite the layered surface, which
+    // is the flicker the user sees only on the FIRST Win+D (later presses find
+    // the seat already correct and do nothing).
   }
   // Skip no-op restacks: many open apps + N overlays × settle ticks used to
   // thrash DWM and make window drags feel stuck.
@@ -855,19 +938,50 @@ bool IsOverlayAboveDefView(HWND hwnd, const DefViewHost* cached) {
   if (IsIconic(hwnd)) {
     return false;
   }
-  // Actually compare Z-order. This used to stop at "attached + not iconic" and
-  // return true unconditionally, so the caller's health check reported a fence
-  // as fine while a full-screen WorkerW sat in front of it — the fence was
-  // invisible after Win+D and nothing ever tried to re-raise it.
+  // Does a window actually cover this overlay?
   //
-  // Walk up from the overlay: if we reach DefView (or the host) before hitting
-  // a visible foreign window, the overlay is in front of the desktop surface.
+  // Do NOT decide by class-name blacklist. The shell spawns an endless supply
+  // of helper windows (DummyDWMListenerWindow, MSCTFIME, TextInputHost, …)
+  // that are top-level and "visible" yet render nothing; enumerating them by
+  // name is unwinnable and made this check report "buried" forever, so the
+  // band restore looped without ever reaching a healthy state.
+  //
+  // Judge by what occlusion means: a visible window, from another process,
+  // with a real rectangle that intersects the overlay. DefView itself and the
+  // taskbar are expected neighbours, not occluders.
+  RECT self_rc{};
+  if (!GetWindowRect(hwnd, &self_rc)) {
+    return false;
+  }
+  // The desktop must actually be showing for "buried" to mean anything. When
+  // the shell is running a full-screen switcher (Task View / Alt+Tab /
+  // MultitaskingViewFrame) the desktop is covered BY DESIGN — the fences are
+  // supposed to be behind it. Reporting "buried" there made the band-restore
+  // loop fire on every tick during a switcher animation, which is what made
+  // the fences flash in and out while pressing Win+D repeatedly.
+  if (!IsShowDesktopActive()) {
+    return true;
+  }
   for (HWND cur = GetWindow(hwnd, GW_HWNDPREV); cur;
        cur = GetWindow(cur, GW_HWNDPREV)) {
     if (cur == host.defview || cur == host.host) {
       return true;  // overlay sits in front of DefView
     }
+    wchar_t cur_cls[64] = {};
+    GetClassNameW(cur, cur_cls, 64);
+    // The WorkerW that hosts DefView is the desktop surface itself, not an
+    // occluder. Counting it made the health check report "buried" on every
+    // pass, which re-armed the settle timer forever.
+    if (wcscmp(cur_cls, L"WorkerW") == 0 ||
+        wcscmp(cur_cls, L"Progman") == 0) {
+      continue;
+    }
     if (!IsWindowVisible(cur) || IsIconic(cur)) {
+      continue;
+    }
+    // Visible per Win32 but not composited by DWM (other virtual desktop,
+    // suspended UWP, TextInputHost overlay) — it cannot hide anything.
+    if (IsWindowDwmCloaked(cur)) {
       continue;
     }
     DWORD pid = 0;
@@ -881,19 +995,24 @@ bool IsOverlayAboveDefView(HWND hwnd, const DefViewHost* cached) {
         wcscmp(cls, L"Shell_SecondaryTrayWnd") == 0) {
       continue;  // taskbar lives above the band by design
     }
-    // Input-method hosts (TextInputHost / MSCTFIME) create a monitor-sized
-    // CoreWindow that is visible but fully transparent — it does not occlude
-    // the desktop. Counting it as an occluder made the health check fail
-    // forever after Win+D, so every settle tick tried to re-raise the fence.
-    if (wcscmp(cls, L"Windows.UI.Core.CoreWindow") == 0 ||
-        wcscmp(cls, L"MSCTFIME UI") == 0 || wcscmp(cls, L"IME") == 0 ||
-        wcscmp(cls, L"TextInputHost") == 0) {
+    RECT rc{};
+    if (!GetWindowRect(cur, &rc)) {
+      continue;
+    }
+    // Zero/negative-size helpers (DummyDWMListenerWindow and friends) render
+    // nothing — they cannot hide the overlay.
+    if (rc.right <= rc.left || rc.bottom <= rc.top) {
+      continue;
+    }
+    // Only an actual rectangle overlap hides the overlay.
+    if (rc.right <= self_rc.left || rc.left >= self_rc.right ||
+        rc.bottom <= self_rc.top || rc.top >= self_rc.bottom) {
       continue;
     }
     return false;  // a real window covers the overlay
   }
-  // Never reached DefView walking up: the overlay is below it.
-  return false;
+  // Walked to the top without meeting a covering window: not buried.
+  return true;
 }
 
 void OverlayWindowBatch::Hide(HWND hwnd) {

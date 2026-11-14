@@ -276,10 +276,15 @@ class App {
   void JoinWorkers();
   static void CALLBACK ForegroundWinEvent(HWINEVENTHOOK, DWORD, HWND, LONG,
                                           LONG, DWORD, DWORD);
+  // Win+D minimises every top-level window; watching MINIMIZESTART/END is the
+  // reliable signal (there is no shell notification for "show desktop").
+  static void CALLBACK MinimizeWinEvent(HWINEVENTHOOK, DWORD, HWND, LONG, LONG,
+                                        DWORD, DWORD);
 
   HINSTANCE instance_ = nullptr;
   HWND message_hwnd_ = nullptr;
   HWINEVENTHOOK fg_hook_ = nullptr;
+  HWINEVENTHOOK min_hook_ = nullptr;
   std::vector<std::thread> workers_;
   int band_restore_left_ = 0;
   bool band_restore_force_ = false;

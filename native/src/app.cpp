@@ -116,6 +116,9 @@ constexpr UINT kMsgSeatUnderApps = WM_APP + 56;
 constexpr UINT kMsgFgChanged = WM_APP + 57;
 // Organized blank wallpaper RMB → Desktop background menu (Paste/New/Undo).
 constexpr UINT kMsgDesktopBlankRClick = WM_APP + 58;
+// Hook-driven desktop marquee (the overlay must not SetCapture).
+constexpr UINT kMsgDesktopRubberMove = WM_APP + 59;
+constexpr UINT kMsgDesktopRubberUp = WM_APP + 61;
 // kDeskTidyMsgIconsPreloaded (desktop_items.h) — STA icon preload done.
 constexpr DWORD kTrayOpenDebounceMs = 450;
 // Min interval between full DisplayFingerprint() recomputes on the 2s watch
@@ -1655,6 +1658,12 @@ bool App::Init(HINSTANCE instance) {
   settings_.SetOrganizePrefs(prefs_.auto_organize_on_startup,
                              prefs_.auto_organize_watch);
   SyncPageChrome();
+  // Organized mode is the product default: Explorer icons hidden, fences shown.
+  // This must be set BEFORE ApplyPageVisibility(), which skips every fence when
+  // icons_visible_intent_ is true (its member initialiser). Booting with that
+  // default left the fences unmapped until the first band restore, which is
+  // exactly why the very first Win+D looked like "fences don't show".
+  icons_visible_intent_ = false;
   ApplyPageVisibility();
   InstallFenceKeyHook();
   dock_.SetVisible(dock_visible_);
@@ -1720,7 +1729,8 @@ bool App::Init(HINSTANCE instance) {
   LogDesktopShellCompatProfile();
   StartDesktopDblClickMonitor(message_hwnd_, kMsgDesktopDblClick,
                               kMsgDesktopBlankDown, kMsgDesktopPaste,
-                              kMsgDesktopBlankRClick);
+                              kMsgDesktopBlankRClick, kMsgDesktopRubberMove,
+                              kMsgDesktopRubberUp);
   settings_.SetOnExit([this]() { HandleSettingsClose(); });
   settings_.SetOnHideToTray([this]() {
     // P2-1: tray balloon (Shell_NotifyIcon NIF_INFO), not the custom toast.
@@ -7151,9 +7161,32 @@ void App::StartForegroundHook() {
   fg_hook_ = SetWinEventHook(EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND,
                              nullptr, &App::ForegroundWinEvent, 0, 0,
                              WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
+  // Win+D is implemented by minimising every top-level window; Windows exposes
+  // no "show desktop" notification, so polling Z-order is a heuristic that
+  // misfires mid-animation (a minimising window is still visible and
+  // non-zero-sized for a few frames). Watching MINIMIZESTART gives a real
+  // edge: a burst of minimises ending with the desktop in front is Win+D.
+  min_hook_ = SetWinEventHook(EVENT_SYSTEM_MINIMIZESTART,
+                              EVENT_SYSTEM_MINIMIZEEND, nullptr,
+                              &App::MinimizeWinEvent, 0, 0,
+                              WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
   if (!g_kb_hook) {
     g_kb_hook = SetWindowsHookExW(WH_KEYBOARD_LL, LowLevelKeyboardProc, nullptr,
                                   0);
+  }
+}
+
+void CALLBACK App::MinimizeWinEvent(HWINEVENTHOOK, DWORD event, HWND /*hwnd*/,
+                                    LONG, LONG, DWORD, DWORD) {
+  if (!g_app_for_hook || !g_app_for_hook->message_hwnd_) {
+    return;
+  }
+  // Stay non-blocking: OUTOFCONTEXT callbacks must not touch Z-order or the
+  // shell. Just nudge the band restore; it re-evaluates on its own tick.
+  if (event == EVENT_SYSTEM_MINIMIZESTART) {
+    PostMessageW(g_app_for_hook->message_hwnd_, kMsgBandRestore, 0, 0);
+  } else if (event == EVENT_SYSTEM_MINIMIZEEND) {
+    PostMessageW(g_app_for_hook->message_hwnd_, kMsgBandRestore, 0, 0);
   }
 }
 
@@ -7161,6 +7194,10 @@ void App::StopForegroundHook() {
   if (fg_hook_) {
     UnhookWinEvent(fg_hook_);
     fg_hook_ = nullptr;
+  }
+  if (min_hook_) {
+    UnhookWinEvent(min_hook_);
+    min_hook_ = nullptr;
   }
   if (g_kb_hook) {
     UnhookWindowsHookEx(g_kb_hook);
@@ -7274,9 +7311,14 @@ void App::OnDesktopContentRefresh() {
   }
   // Under normal apps, healthy chrome stays quiet (Fences/Rainmeter). Only
   // re-arm band restore when burial / show-desktop needs a real seat flip.
+  //
+  // Compare against show_desktop_seated_ using the SAME expression
+  // RestoreDesktopChrome() stores there. It stores `show_desktop`, which is
+  // QueryDesktopBandState().show_desktop. The old expression here also gated
+  // on !HasVisibleFullscreenCover(), so the two could never match and this
+  // re-armed the settle timer forever — an endless restore loop.
   if (!DesktopChromeHealthy() ||
-      (IsShowDesktopActive() && !HasVisibleFullscreenCover()) !=
-          show_desktop_seated_) {
+      QueryDesktopBandState().show_desktop != show_desktop_seated_) {
     ScheduleDesktopBandRestore();
   }
 }
@@ -7384,18 +7426,43 @@ void App::RestoreDesktopChrome() {
   // while a fullscreen cover is still live (Win+D over game must not "lift").
   // Apps FG first: skip cover EnumWindows on the common multi-app path.
   const bool apps_quiet = IsAppsForegroundQuiet();
-  const bool show_desktop =
-      apps_quiet ? false
-                 : (IsShowDesktopActive() && !HasVisibleFullscreenCover());
+  // Resolve the band facts ONCE for this pass and reuse them for every decision
+  // below. Previously `show_desktop` here was computed with its own cover gate
+  // while the reattach loop queried again, so the early-out and the raise could
+  // disagree about whether Win+D was active.
+  const DesktopBandState restore_band = QueryDesktopBandState();
+  // IsAppsForegroundQuiet() already returns false whenever IsShowDesktopActive()
+  // is true, so combining them with && double-negates and reports "not showing"
+  // in exactly the case we care about. Trust the band state alone.
+  const bool show_desktop = restore_band.show_desktop;
+  // NOTE: no transition guard here. Fences already refuses SC_MINIMIZE
+  // (FilterDesktopChromeSysCommand), so Win+D never hides them — they simply
+  // stay seated above DefView the whole time. Waiting for the animation to
+  // "settle" before re-seating is what produced the visible gap: for those
+  // ~200ms the fence was left at its old Z position and the freshly-raised
+  // DefView covered it. Keep the seat current instead.
   const bool band_changed = show_desktop != show_desktop_seated_;
   const bool healthy = DesktopChromeHealthy();
-  // Fences-class: while normal apps own FG and chrome is still attached, do
-  // not force Raise/ULW — settle storms used to freeze window drags.
-  if (apps_quiet && healthy && !band_changed) {
+  // A normal app owning the foreground means the desktop is deliberately
+  // covered — the fences SHOULD be behind it. Nothing to repair, and looping
+  // band restores here only burns CPU and thrashes Z-order. This must come
+  // before any `settling` logic: a stale force flag or leftover settle tick
+  // would otherwise keep re-raising fences under a maximized Chrome window.
+  if (apps_quiet && !show_desktop) {
+    // A normal app owns the foreground and the desktop is not showing: the
+    // fences are supposed to be behind it, so stop re-seating. Do NOT zero
+    // band_restore_left_ here — the opening tick of a real show-desktop
+    // transition can land in this branch before IsShowDesktopActive() flips,
+    // and clearing the budget would leave no ticks to seat the fences.
     band_restore_force_ = false;
     return;
   }
-  if (!band_restore_force_ && band_restore_left_ <= 0 && healthy &&
+  // Never early-out while the show-desktop band is active. `healthy` is derived
+  // from an instantaneous Z-order snapshot, and the shell keeps reshuffling
+  // during the Win+D transition — trusting it here is what made the fences
+  // appear only on some ticks. Re-seating below is idempotent.
+  const bool settling = band_restore_force_ || band_changed || show_desktop;
+  if (!settling && !band_restore_force_ && band_restore_left_ <= 0 && healthy &&
       !band_changed) {
     return;
   }
@@ -7413,10 +7480,6 @@ void App::RestoreDesktopChrome() {
   // Seat into desktop band (normal: above DefView; show-desktop: TOPMOST with
   // DefView). Chrome refuses minimize — no PresentLayered "Win+D fix".
   // Returns true when SoftSeat/show likely wiped ULW and needs RefreshLayer.
-  // Resolve the band facts ONCE for this restore pass. Re-querying per overlay
-  // let the first Raise land (show-desktop seen) while a later one read a
-  // half-minimized cover and sank — Win+D showed some fences but not others.
-  const DesktopBandState restore_band = QueryDesktopBandState();
   auto reattach = [band_changed, &restore_band](HWND hwnd) -> bool {
     if (!hwnd || !IsWindow(hwnd)) {
       return false;
@@ -7433,21 +7496,44 @@ void App::RestoreDesktopChrome() {
       RaiseOverlayInDesktopBandWith(hwnd, restore_band);
       return true;
     }
-    if (!IsOverlayAboveDefView(hwnd) || band_changed) {
+    // While the show-desktop band is active, always re-seat: the shell keeps
+    // reshuffling Z-order during the Win+D transition, so a one-shot
+    // IsOverlayAboveDefView() snapshot is a race — it reported "fine" on some
+    // ticks and "buried" on others, which is why the fences appeared only
+    // sometimes. Re-seating is idempotent (RaiseOverlay skips a no-op stack).
+    if (restore_band.show_desktop || !IsOverlayAboveDefView(hwnd) ||
+        band_changed) {
       RaiseOverlayInDesktopBandWith(hwnd, restore_band);
+      // The Win+D transition re-composites the desktop and can drop the
+      // overlay's ULW surface even though the window stays mapped and its
+      // Z-order is correct. Report "needs present" so the caller re-uploads
+      // pixels; otherwise the fence is correctly stacked yet renders blank.
+      if (restore_band.show_desktop) {
+        return true;
+      }
     }
     return false;
   };
   for (auto& fence : fences_) {
-    if (!fence || !fence->Hwnd() ||
-        !fence->VisibleOnPage(current_page_)) {
+    if (!fence) {
+      continue;
+    }
+    if (!fence->Hwnd()) {
+      continue;
+    }
+    if (!fence->VisibleOnPage(current_page_)) {
       continue;
     }
     if (fences_hidden_ || peek_active_ || icons_visible_intent_) {
       continue;
     }
     if (!IsWindowVisible(fence->Hwnd()) || IsIconic(fence->Hwnd())) {
+      // Show() blits the layered surface BEFORE mapping the window, so the
+      // first frame is already painted. Calling ShowWindow directly here left
+      // the window visible with an empty ULW surface — the fence only appeared
+      // on the next settle tick, which is why the first Win+D looked broken.
       fence->Show();
+      RaiseOverlayInDesktopBandWith(fence->Hwnd(), restore_band);
     } else {
       const bool need_present = reattach(fence->Hwnd());
       // SoftSeat FRAMECHANGED can blank ULW; Raise alone must not force a
@@ -8176,6 +8262,16 @@ LRESULT CALLBACK App::TrayWndProc(HWND hwnd, UINT msg, WPARAM wparam,
     case kMsgDesktopBlankDown:
       self->OnDesktopBlankLeftDown(lparam);
       return 0;
+    case kMsgDesktopRubberMove: {
+      POINT pt{GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
+      self->public_host_.UpdateRubberFromScreen(pt);
+      return 0;
+    }
+    case kMsgDesktopRubberUp: {
+      POINT pt{GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
+      self->public_host_.EndRubberFromScreen(pt);
+      return 0;
+    }
     case kMsgDesktopPaste:
       self->OnDesktopPaste(wparam != 0);
       return 0;
