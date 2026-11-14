@@ -798,9 +798,13 @@ void RaiseOverlayInDesktopBandWith(HWND hwnd, const DesktopBandState& state) {
   if (state.fullscreen_cover) {
     insert_after = host.host ? host.host : HWND_BOTTOM;
   } else if (state.show_desktop) {
-    // Win+D show-desktop → TOP with the shell. Mere desktop FG (click wallpaper
-    // with apps still restored) must keep overlays under APPWINDOWs (Fences).
-    insert_after = HWND_TOP;
+    // Win+D show-desktop: the shell raises Progman/DefView to the top of the
+    // normal band. Seat the overlay directly above that host, never HWND_TOP —
+    // HWND_TOP puts it above Shell_TrayWnd (taskbar), which the desktop band
+    // architecture forbids, and DWM then composites it out of view so the
+    // fence reads as "not shown" after Win+D.
+    HWND host_hwnd = host.host ? host.host : host.defview;
+    insert_after = host_hwnd ? host_hwnd : HWND_BOTTOM;
   } else {
     HWND above = WindowAboveDefView(host.defview, host.host, hwnd);
     if (above && above != hwnd) {
