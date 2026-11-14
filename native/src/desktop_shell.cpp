@@ -799,12 +799,16 @@ void RaiseOverlayInDesktopBandWith(HWND hwnd, const DesktopBandState& state) {
     insert_after = host.host ? host.host : HWND_BOTTOM;
   } else if (state.show_desktop) {
     // Win+D show-desktop: the shell raises Progman/DefView to the top of the
-    // normal band. Seat the overlay directly above that host, never HWND_TOP —
-    // HWND_TOP puts it above Shell_TrayWnd (taskbar), which the desktop band
-    // architecture forbids, and DWM then composites it out of view so the
-    // fence reads as "not shown" after Win+D.
-    HWND host_hwnd = host.host ? host.host : host.defview;
-    insert_after = host_hwnd ? host_hwnd : HWND_BOTTOM;
+    // normal band. Seat the overlay immediately ABOVE DefView.
+    //
+    // SetWindowPos(hwnd, X) places hwnd *behind* X, so X must be the window
+    // that should sit directly in front of the overlay. Passing host.host put
+    // the fence BEHIND the full-screen WorkerW — invisible after Win+D.
+    // Correct target is whatever currently sits just above DefView (or DefView
+    // itself when nothing does), never HWND_TOP: that would clear the taskbar.
+    HWND defview = host.defview ? host.defview : host.host;
+    HWND in_front = defview ? GetWindow(defview, GW_HWNDPREV) : nullptr;
+    insert_after = in_front ? in_front : (defview ? defview : HWND_BOTTOM);
   } else {
     HWND above = WindowAboveDefView(host.defview, host.host, hwnd);
     if (above && above != hwnd) {
@@ -851,7 +855,45 @@ bool IsOverlayAboveDefView(HWND hwnd, const DefViewHost* cached) {
   if (IsIconic(hwnd)) {
     return false;
   }
-  return true;
+  // Actually compare Z-order. This used to stop at "attached + not iconic" and
+  // return true unconditionally, so the caller's health check reported a fence
+  // as fine while a full-screen WorkerW sat in front of it — the fence was
+  // invisible after Win+D and nothing ever tried to re-raise it.
+  //
+  // Walk up from the overlay: if we reach DefView (or the host) before hitting
+  // a visible foreign window, the overlay is in front of the desktop surface.
+  for (HWND cur = GetWindow(hwnd, GW_HWNDPREV); cur;
+       cur = GetWindow(cur, GW_HWNDPREV)) {
+    if (cur == host.defview || cur == host.host) {
+      return true;  // overlay sits in front of DefView
+    }
+    if (!IsWindowVisible(cur) || IsIconic(cur)) {
+      continue;
+    }
+    DWORD pid = 0;
+    GetWindowThreadProcessId(cur, &pid);
+    if (pid == GetCurrentProcessId()) {
+      continue;  // our own other overlays don't occlude us
+    }
+    wchar_t cls[64] = {};
+    GetClassNameW(cur, cls, 64);
+    if (wcscmp(cls, L"Shell_TrayWnd") == 0 ||
+        wcscmp(cls, L"Shell_SecondaryTrayWnd") == 0) {
+      continue;  // taskbar lives above the band by design
+    }
+    // Input-method hosts (TextInputHost / MSCTFIME) create a monitor-sized
+    // CoreWindow that is visible but fully transparent — it does not occlude
+    // the desktop. Counting it as an occluder made the health check fail
+    // forever after Win+D, so every settle tick tried to re-raise the fence.
+    if (wcscmp(cls, L"Windows.UI.Core.CoreWindow") == 0 ||
+        wcscmp(cls, L"MSCTFIME UI") == 0 || wcscmp(cls, L"IME") == 0 ||
+        wcscmp(cls, L"TextInputHost") == 0) {
+      continue;
+    }
+    return false;  // a real window covers the overlay
+  }
+  // Never reached DefView walking up: the overlay is below it.
+  return false;
 }
 
 void OverlayWindowBatch::Hide(HWND hwnd) {
