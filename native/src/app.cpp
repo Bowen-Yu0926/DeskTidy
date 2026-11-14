@@ -1041,7 +1041,33 @@ bool App::Init(HINSTANCE instance) {
       return;
     }
     fences_[static_cast<size_t>(index)]->SetLabelStyle(lines, show);
-    PersistLayouts();
+    PushExtensionSettings();
+  });
+  settings_.SetOnFenceScale([this](int index, int value) {
+    if (index < 0 || index >= static_cast<int>(fences_.size()) ||
+        !fences_[static_cast<size_t>(index)]) {
+      return;
+    }
+    fences_[static_cast<size_t>(index)]->SetCellScale(value);
+    PushExtensionSettings();
+  });
+  settings_.SetOnFenceTitle([this](int index) {
+    if (index < 0 || index >= static_cast<int>(fences_.size()) ||
+        !fences_[static_cast<size_t>(index)]) {
+      return;
+    }
+    FenceWindow* f = fences_[static_cast<size_t>(index)].get();
+    f->SetShowTitle(!f->ShowTitle());
+    PushExtensionSettings();
+  });
+  settings_.SetOnFenceFade([this](int index) {
+    if (index < 0 || index >= static_cast<int>(fences_.size()) ||
+        !fences_[static_cast<size_t>(index)]) {
+      return;
+    }
+    FenceWindow* f = fences_[static_cast<size_t>(index)].get();
+    f->SetFadeOnIdle(!f->FadeOnIdle());
+    PushExtensionSettings();
   });
   settings_.SetOnExtToggle([this](const std::wstring& id, bool value) {
     if (id == L"minutes_enabled" || id == L"minutes_on_bar") {
@@ -3767,6 +3793,9 @@ void App::PushExtensionSettings() {
     card.content_locked = f->IsContentLocked();
     card.label_lines = f->LabelLines();
     card.show_labels = f->ShowLabels();
+    card.cell_scale = f->CellScale();
+    card.show_title = f->ShowTitle();
+    card.fade_on_idle = f->FadeOnIdle();
     card.visible = f->VisibleOnPage(f->Page());
     card.has_custom_colors = f->HasCustomColors();
     if (card.has_custom_colors) {

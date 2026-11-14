@@ -173,6 +173,7 @@ class FenceWindow {
   // Hover-away fade: dims the whole panel via ULW SourceConstantAlpha so the
   // layer bitmap is reused instead of repainted every frame.
   void SetFadeOnIdle(bool on);
+  bool FadeOnIdle() const { return fade_on_idle_; }
   // Fences-style quick filter: narrows the visible tiles to names matching the
   // typed substring. Kept out of the layout so a filter never rewrites pins.
   void BeginFilter();

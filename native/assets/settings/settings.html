@@ -526,6 +526,14 @@
     border: 1px solid var(--border); background: var(--card); color: var(--text);
   }
   .fence-tile .ft-labels .icon-btn { width: 22px; height: 22px; }
+  .fence-tile .ft-more {
+    display: flex; align-items: center; gap: 4px; font-size: 11px; color: var(--muted);
+  }
+  .fence-tile .ft-more select {
+    font-size: 11px; padding: 1px 4px; border-radius: 6px;
+    border: 1px solid var(--border); background: var(--card); color: var(--text);
+  }
+  .fence-tile .ft-more .icon-btn { width: 22px; height: 22px; }
   .fence-tile .ft-foot {
     display: flex; align-items: center; gap: 6px; margin-top: auto;
   }
@@ -1632,7 +1640,9 @@
     eye: '<svg viewBox="0 0 16 16"><path d="M1.5 8s2.5-4.5 6.5-4.5S14.5 8 14.5 8 12 12.5 8 12.5 1.5 8 1.5 8z"/><circle cx="8" cy="8" r="2"/></svg>',
     eyeOff: '<svg viewBox="0 0 16 16"><path d="M1.5 8s2.5-4.5 6.5-4.5S14.5 8 14.5 8 12 12.5 8 12.5 1.5 8 1.5 8z"/><circle cx="8" cy="8" r="2"/><path d="M3 3l10 10"/></svg>',
     edit: '<svg viewBox="0 0 16 16"><path d="M10.5 2.5l3 3L5 14H2v-3L10.5 2.5z"/><path d="M9 4l3 3"/></svg>',
-    del: '<svg viewBox="0 0 16 16"><path d="M4 4l8 8M12 4L4 12"/></svg>'
+    del: '<svg viewBox="0 0 16 16"><path d="M4 4l8 8M12 4L4 12"/></svg>',
+    bar: '<svg viewBox="0 0 16 16"><rect x="2.5" y="3" width="11" height="10" rx="1.5"/><path d="M2.5 6.5h11"/></svg>',
+    fade: '<svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="5.5"/><path d="M8 2.5v11" opacity="0.45"/></svg>'
   };
 
   function kindsLabel(kinds) {
@@ -1759,6 +1769,20 @@
         '" data-fc-slabels title="' +
         (c.show_labels === false ? '显示文件名' : '隐藏文件名') + '">' +
         (c.show_labels === false ? ICO.eyeOff : ICO.eye) + '</button></div>' +
+        '<div class="ft-more"><span>间距</span><select data-fc-scale>' +
+        [[85, '紧凑'], [100, '标准'], [125, '宽松'], [150, '超宽']]
+          .map(([v, label]) => '<option value="' + v + '"' +
+            ((Number(c.cell_scale) || 100) === v ? ' selected' : '') + '>' +
+            label + '</option>').join('') +
+        '</select><button type="button" class="icon-btn' +
+        (c.show_title === false ? '' : ' on') +
+        '" data-fc-title title="' +
+        (c.show_title === false ? '显示标题栏' : '隐藏标题栏') + '">' +
+        ICO.bar + '</button><button type="button" class="icon-btn' +
+        (c.fade_on_idle ? ' on' : '') +
+        '" data-fc-fade title="' +
+        (c.fade_on_idle ? '关闭离开淡化' : '离开时淡化') + '">' +
+        ICO.fade + '</button></div>' +
         '<div class="ft-kinds"></div>' +
         '<div class="ft-foot"><div class="ft-title"></div>' +
         '<button type="button" class="icon-btn' + (isVisible ? '' : ' on') +
@@ -1849,6 +1873,28 @@
           post({ type: 'action', id: 'fence_set_labels', index: i,
                  lines: Number(c.label_lines) || 2,
                  show: c.show_labels === false ? 1 : 0 });
+        });
+      }
+      const scaleSel = el.querySelector('[data-fc-scale]');
+      if (scaleSel) {
+        scaleSel.addEventListener('change', (e) => {
+          e.stopPropagation();
+          post({ type: 'action', id: 'fence_set_scale', index: i,
+                 value: Number(scaleSel.value) });
+        });
+      }
+      const titleBtn = el.querySelector('[data-fc-title]');
+      if (titleBtn) {
+        titleBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          post({ type: 'action', id: 'fence_toggle_title', index: i });
+        });
+      }
+      const fadeBtn = el.querySelector('[data-fc-fade]');
+      if (fadeBtn) {
+        fadeBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          post({ type: 'action', id: 'fence_toggle_fade', index: i });
         });
       }
       const editBtn = el.querySelector('[data-fc-edit]');

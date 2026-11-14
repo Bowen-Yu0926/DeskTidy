@@ -83,7 +83,6 @@ constexpr int kExtFenceSortType = 13;
 constexpr int kExtFenceSortManual = 14;
 constexpr int kExtFenceSortCreated = 17;
 // Per-fence grid pitch presets (percent of the desktop's own cell metrics).
-constexpr int kExtFenceSpacingDefault = 90;
 constexpr int kExtFenceSpacingCompact = 91;
 constexpr int kExtFenceSpacingNormal = 92;
 constexpr int kExtFenceSpacingWide = 93;
@@ -928,15 +927,17 @@ void FenceWindow::SetFadeOnIdle(bool on) {
     return;
   }
   fade_on_idle_ = on;
-  if (!hwnd_) {
-    return;
-  }
-  if (!on) {
+  if (hwnd_ && !on) {
     KillTimer(hwnd_, kTimerIdleFade);
     if (fade_alpha_ != 255) {
       fade_alpha_ = 255;
       BlitLayerAtAlpha(fade_alpha_);
     }
+  }
+  // Persist here rather than in the caller: every other per-fence setter owns
+  // its own persistence, and a caller that forgets loses the toggle on restart.
+  if (on_moved_) {
+    on_moved_(this);
   }
 }
 
@@ -1001,6 +1002,9 @@ void FenceWindow::SetLabelStyle(int lines, bool show) {
   show_labels_ = show;
   LayoutCells();
   PresentLayered();
+  if (on_moved_) {
+    on_moved_(this);
+  }
 }
 
 bool FenceWindow::NameMatchesFilter(const std::wstring& name) const {
@@ -5134,7 +5138,6 @@ void FenceWindow::ShowFenceMenu(POINT screen) {
   // Fences: per-fence grid pitch. The desktop's own metrics stay the default;
   // these scale this fence's cells so a dense fence and a sparse one can coexist.
   std::vector<ShellMenuExtra> spacing_kids = {
-      leaf(L"跟随桌面", kExtFenceSpacingDefault, cell_scale_ == 100),
       leaf(L"紧凑 85%", kExtFenceSpacingCompact, cell_scale_ == 85),
       leaf(L"标准 100%", kExtFenceSpacingNormal, cell_scale_ == 100),
       leaf(L"宽松 125%", kExtFenceSpacingWide, cell_scale_ == 125),
@@ -5321,9 +5324,6 @@ void FenceWindow::ShowFenceMenu(POINT screen) {
       SetAutoHide(!auto_hide_);
     } else if (rc == kExtFenceFadeIdle) {
       SetFadeOnIdle(!fade_on_idle_);
-      if (on_moved_) {
-        on_moved_(this);  // persist the toggle
-      }
     } else if (rc == kExtFencePortalUp) {
       if (PortalGoUp() && on_refresh_) {
         on_refresh_(this);
@@ -5340,13 +5340,12 @@ void FenceWindow::ShowFenceMenu(POINT screen) {
       SetSortBy("manual");
     } else if (rc == kExtFenceSortCreated) {
       SetSortBy("created");
-    } else if (rc == kExtFenceSpacingDefault ||
-               rc == kExtFenceSpacingCompact ||
+    } else if (rc == kExtFenceSpacingCompact ||
                rc == kExtFenceSpacingNormal ||
                rc == kExtFenceSpacingWide ||
                rc == kExtFenceSpacingXl) {
-      static const int kScale[] = {100, 85, 100, 125, 150};
-      SetCellScale(kScale[rc - kExtFenceSpacingDefault]);
+      static const int kScale[] = {85, 100, 125, 150};
+      SetCellScale(kScale[rc - kExtFenceSpacingCompact]);
     } else if (rc == kExtFenceShowTitle) {
       SetShowTitle(!show_title_);
     } else if (rc == kExtFenceViewGrid) {

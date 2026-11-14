@@ -770,6 +770,12 @@ std::wstring SettingsWindow::BuildStateJson() const {
     json += std::to_wstring(c.label_lines);
     json += L",\"show_labels\":";
     json += c.show_labels ? L"true" : L"false";
+    json += L",\"cell_scale\":";
+    json += std::to_wstring(c.cell_scale);
+    json += L",\"show_title\":";
+    json += c.show_title ? L"true" : L"false";
+    json += L",\"fade_on_idle\":";
+    json += c.fade_on_idle ? L"true" : L"false";
     json += L",\"visible\":";
     json += c.visible ? L"true" : L"false";
     json += L",\"has_custom_colors\":";
@@ -1199,6 +1205,13 @@ void SettingsWindow::DispatchAction(const std::wstring& json) {
     on_fence_labels_(JsonIntField(json, L"index", 0),
                      JsonIntField(json, L"lines", 2),
                      JsonIntField(json, L"show", 1) != 0);
+  } else if (id == L"fence_set_scale" && on_fence_scale_) {
+    on_fence_scale_(JsonIntField(json, L"index", 0),
+                    JsonIntField(json, L"value", 100));
+  } else if (id == L"fence_toggle_title" && on_fence_title_) {
+    on_fence_title_(JsonIntField(json, L"index", 0));
+  } else if (id == L"fence_toggle_fade" && on_fence_fade_) {
+    on_fence_fade_(JsonIntField(json, L"index", 0));
   } else if (id == L"goto_page" && on_command_) {
     current_page_ = JsonIntField(json, L"page", current_page_);
     on_command_(L"goto_page:" + std::to_wstring(current_page_));
