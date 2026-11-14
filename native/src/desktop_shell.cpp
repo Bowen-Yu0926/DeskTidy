@@ -659,7 +659,9 @@ bool AlreadyStackedAfter(HWND hwnd, HWND insert_after) {
   if (!insert_after || !IsWindow(insert_after)) {
     return false;
   }
-  return GetWindow(hwnd, GW_HWNDPREV) == insert_after;
+  // SetWindowPos(hwnd, X) puts hwnd IN FRONT OF X, so a settled seat means X is
+  // the window immediately BEHIND hwnd — i.e. hwnd's GW_HWNDNEXT.
+  return GetWindow(hwnd, GW_HWNDNEXT) == insert_after;
 }
 
 bool CoversMonitorRect(HWND hwnd, const RECT& mon) {
@@ -866,40 +868,23 @@ void RaiseOverlayInDesktopBandWith(HWND hwnd, const DesktopBandState& state) {
     // then reappeared. Deriving the seat from the actual Z-order removes the
     // dependency on that timing entirely.
     //
-    // SetWindowPos(hwnd, X) places hwnd *behind* X, so X must be the window
-    // that should sit directly in front of the overlay.
-    HWND defview = host.defview ? host.defview : host.host;
-    HWND in_front = defview ? GetWindow(defview, GW_HWNDPREV) : nullptr;
-    // Skip shell UI that covers the whole screen (Task View / Alt+Tab switcher,
-    // tooltips and other transient overlays). They sit in front of DefView in
-    // Z order but must never become the seat: tucking the fence behind them
-    // hides it completely, and their appearance/disappearance during a Win+D
-    // burst is exactly what made the fence flash.
-    for (int hops = 0; in_front && hops < 8; ++hops) {
-      if (in_front == hwnd || IsShellFullscreenClass(in_front)) {
-        in_front = GetWindow(in_front, GW_HWNDPREV);
-        continue;
-      }
-      wchar_t fc[64] = {};
-      GetClassNameW(in_front, fc, 64);
-      if (wcscmp(fc, L"tooltips_class32") == 0 ||
-          wcscmp(fc, L"MultitaskingViewFrame") == 0) {
-        in_front = GetWindow(in_front, GW_HWNDPREV);
-        continue;
-      }
-      break;
-    }
-    if (in_front) {
-      insert_after = in_front;
-    } else {
-      // DefView is already the frontmost non-topmost window: there is no
-      // window to sit behind, so the overlay goes to the top of the normal
-      // band. Falling back to `defview` here placed the overlay BEHIND the
-      // desktop surface — the fence was then covered by the very thing it was
-      // meant to sit on, which is the "fences vanish on Win+D" symptom.
-      // HWND_TOP is safe: the taskbar is WS_EX_TOPMOST and stays above.
-      insert_after = HWND_TOP;
-    }
+    // SetWindowPos(hwnd, X) places hwnd IN FRONT OF X in Z order, so X must be
+    // the window that should sit directly BELOW the overlay.
+    //
+    // Anchor on the TOP-LEVEL desktop host (Progman / WorkerW), never DefView.
+    // DefView is a CHILD of the host, so GetWindow(defview, GW_HWNDPREV) walks
+    // the host's child list rather than the top-level Z order. On a
+    // WorkerW-hosted desktop DefView has no siblings at all and that call
+    // returns null even with apps open far above the desktop — the old code
+    // then fell through to HWND_TOP, lifting every fence over Chrome / VS Code
+    // / Claude. That is the「分区盖到软件上面」symptom, and because the fence
+    // became the frontmost normal window it also swallowed their clicks.
+    //
+    // Placing the overlay directly in front of the host is exactly the desktop
+    // band: above the wallpaper/icons, and still behind every app window that
+    // sits above the host. No HWND_TOP fallback — that is what broke it.
+    HWND host_top = host.host ? host.host : (host.defview ? host.defview : nullptr);
+    insert_after = host_top ? host_top : HWND_BOTTOM;
     // Deliberately NO "foreground app wins" override here.
     //
     // The overlay lives in the desktop band; a normal app window is above that
