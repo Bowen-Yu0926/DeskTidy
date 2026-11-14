@@ -1,6 +1,7 @@
 #include "update_check.h"
 
 #include "paths_util.h"
+#include "update_json.h"
 
 #include <Shellapi.h>
 #include <bcrypt.h>
@@ -133,48 +134,6 @@ bool AllowedDownloadHost(const std::wstring& url) {
   return h == L"github.com" || h == L"objects.githubusercontent.com" ||
          (h.size() >= suffix.size() &&
           h.compare(h.size() - suffix.size(), suffix.size(), suffix) == 0);
-}
-
-std::string JsonStringField(const std::string& json, const char* key) {
-  const std::string needle = std::string("\"") + key + "\"";
-  size_t p = json.find(needle);
-  if (p == std::string::npos) {
-    return {};
-  }
-  p = json.find('"', json.find(':', p) + 1);
-  if (p == std::string::npos) {
-    return {};
-  }
-  ++p;
-  std::string v;
-  while (p < json.size() && json[p] != '"') {
-    if (json[p] == '\\' && p + 1 < json.size()) {
-      ++p;
-    }
-    v.push_back(json[p++]);
-  }
-  return v;
-}
-
-std::string JsonNumberField(const std::string& json, const char* key) {
-  const std::string needle = std::string("\"") + key + "\"";
-  size_t p = json.find(needle);
-  if (p == std::string::npos) {
-    return {};
-  }
-  p = json.find(':', p + needle.size());
-  if (p == std::string::npos) {
-    return {};
-  }
-  size_t s = p + 1;
-  while (s < json.size() && (json[s] == ' ' || json[s] == '\t')) {
-    ++s;
-  }
-  size_t e = s;
-  while (e < json.size() && json[e] >= '0' && json[e] <= '9') {
-    ++e;
-  }
-  return json.substr(s, e - s);
 }
 
 bool HttpGetJson(std::string* body, std::wstring* err) {
@@ -359,61 +318,6 @@ std::string FindSha256InText(const std::string& text,
   return FindHex64(text);
 }
 
-// Find the largest matching installer asset. Fills name/url/size.
-bool FindExeAsset(const std::string& json, std::string* name,
-                  std::wstring* url, long long* size) {
-  long long best = -1;
-  std::string best_name;
-  std::string best_url;
-  size_t pos = 0;
-  while (true) {
-    const size_t start = json.find('{', pos);
-    if (start == std::string::npos) {
-      break;
-    }
-    const size_t end = json.find('}', start);
-    if (end == std::string::npos) {
-      break;
-    }
-    pos = end + 1;
-    const std::string obj = json.substr(start, end - start + 1);
-    if (obj.find("browser_download_url") == std::string::npos) {
-      continue;
-    }
-    const std::string nm = JsonStringField(obj, "name");
-    const std::string ur = JsonStringField(obj, "browser_download_url");
-    if (nm.empty() || ur.empty()) {
-      continue;
-    }
-    if (nm.size() < 4 || nm.rfind(".exe") != nm.size() - 4) {
-      continue;
-    }
-    if (nm.rfind("DeskTidy_Setup_", 0) != 0) {
-      continue;
-    }
-    const std::string szs = JsonNumberField(obj, "size");
-    const long long sz = szs.empty() ? 0 : std::atoll(szs.c_str());
-    if (sz > best) {
-      best = sz;
-      best_name = nm;
-      best_url = ur;
-    }
-  }
-  if (best < 0) {
-    return false;
-  }
-  if (name) {
-    *name = best_name;
-  }
-  if (url) {
-    *url = Widen(best_url);
-  }
-  if (size) {
-    *size = best;
-  }
-  return true;
-}
-
 // sha256 for an asset: release body near the name, then a sidecar digest file.
 std::string FindChecksum(const std::string& json, const std::string& asset_name) {
   const std::string body = JsonStringField(json, "body");
@@ -424,21 +328,14 @@ std::string FindChecksum(const std::string& json, const std::string& asset_name)
   const std::wstring sidecars[] = {
       Widen(asset_name) + L".sha256", Widen(asset_name) + L".sha256sum",
       Widen(asset_name) + L".sha256.txt"};
-  size_t pos = 0;
-  while (true) {
-    const size_t start = json.find('{', pos);
-    if (start == std::string::npos) {
-      break;
+  std::string found;
+  ForEachArrayObject(json, "assets", [&](const std::string& obj) {
+    if (!found.empty()) {
+      return;
     }
-    const size_t end = json.find('}', start);
-    if (end == std::string::npos) {
-      break;
-    }
-    pos = end + 1;
-    const std::string obj = json.substr(start, end - start + 1);
     const std::string nm = JsonStringField(obj, "name");
     if (nm.empty()) {
-      continue;
+      return;
     }
     bool match = false;
     for (const auto& s : sidecars) {
@@ -448,24 +345,24 @@ std::string FindChecksum(const std::string& json, const std::string& asset_name)
       }
     }
     if (!match) {
-      continue;
+      return;
     }
     const std::string ur = JsonStringField(obj, "browser_download_url");
     if (ur.empty()) {
-      continue;
+      return;
     }
     std::string txt;
     std::wstring err;
     if (HttpGetTextUrl(Widen(ur), &txt, &err)) {
-      tok = FindHex64(txt);
+      const std::string tok = FindHex64(txt);
       if (!tok.empty()) {
-        return tok;
+        found = tok;
       }
     } else {
       LogLine(L"[update] sidecar digest fetch failed: %s", err.c_str());
     }
-  }
-  return {};
+  });
+  return found;
 }
 
 // Chunked streaming download to dir (atomic .part rename) with progress posts.
@@ -681,6 +578,7 @@ void SaveUpdateCache(const std::wstring& latest, const std::wstring& html) {
 }
 
 }  // namespace
+
 
 std::wstring NativeProductVersion() {
   wchar_t path[MAX_PATH] = {};

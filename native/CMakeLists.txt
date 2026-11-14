@@ -78,6 +78,7 @@ add_executable(desktidy_native WIN32
   src/ffmpeg_fetch.cpp
   src/fence_region_overlay.cpp
   src/update_check.cpp
+  src/update_json.cpp
   src/shell_clipboard.cpp
   src/icon_actions.cpp
   src/shell_context_menu.cpp
@@ -340,6 +341,20 @@ add_executable(test_desktop_item_identity
 target_include_directories(test_desktop_item_identity PRIVATE src)
 target_compile_definitions(test_desktop_item_identity PRIVATE
   UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+
+# Release-asset parsing (hand-rolled JSON scanner). No network: feeds the exact
+# response shape GitHub returns, nested "uploader" object included.
+add_executable(test_update_asset
+  tests/test_update_asset.cpp
+  src/update_json.cpp
+)
+target_include_directories(test_update_asset PRIVATE src)
+target_compile_definitions(test_update_asset PRIVATE
+  UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+target_link_libraries(test_update_asset PRIVATE user32)
+if(MSVC)
+  target_compile_options(test_update_asset PRIVATE /W4 /permissive- /utf-8)
+endif()
 if(MSVC)
   target_compile_options(test_desktop_item_identity PRIVATE /W4 /permissive- /utf-8)
 endif()

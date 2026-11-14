@@ -5627,13 +5627,12 @@ LRESULT FenceWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
       // Desktop overlay invariant: never activate or change Z-order on click,
       // keeping fences strictly below all app windows, prompts, and dialogs.
       //
-      // ANDEAT (not plain MA_NOACTIVATE): the plain flag still lets the click
-      // deactivate whatever window the user was typing in — clicking inside a
-      // fence rect made an app underneath lose focus even though we never took
-      // activation. ANDEAT consumes the activation click so the other window
-      // keeps focus; the fence still receives the mouse messages it needs for
-      // selection / marquee / drag.
-      return MA_NOACTIVATEANDEAT;
+      // MA_NOACTIVATE, never MA_NOACTIVATEANDEAT. The fence is WS_EX_NOACTIVATE,
+      // so every click arrives here; ANDEAT discards the mouse message
+      // (documented), which would keep the fence from ever seeing
+      // WM_LBUTTONDOWN — no icon selection, no drag. MA_NOACTIVATE keeps this
+      // window unactivated and still delivers the click.
+      return MA_NOACTIVATE;
     case WM_ACTIVATE:
       if (wparam != WA_INACTIVE) {
         RefreshLayer();
