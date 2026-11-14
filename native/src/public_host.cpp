@@ -1849,7 +1849,11 @@ void PublicHost::BeginRubberFromScreen(POINT screen, bool additive) {
   if (on_activated_) {
     on_activated_();
   }
-  SetFocus(hwnd_);
+  // Never SetFocus here. This runs from the global mouse hook on a blank
+  // desktop press, and the host is a MA_NOACTIVATE layered overlay: forcing
+  // keyboard focus onto a non-activating window steals it from whatever the
+  // user was typing in, so every app stops accepting input until they switch
+  // windows. Keyboard routing already goes through SetFenceKeyTarget above.
   drag_from_ = -1;
   drag_moved_ = false;
   const bool had_sel = HasSelection();
@@ -1863,7 +1867,47 @@ void PublicHost::BeginRubberFromScreen(POINT screen, bool additive) {
   if (had_sel && !additive) {
     Present();
   }
-  SetCapture(hwnd_);
+  // Do NOT SetCapture here. This runs from the global mouse hook on a blank
+  // desktop press: capturing there routes every later click to this overlay,
+  // so the user cannot select any other window (they must Alt+Tab out to
+  // recover). The hook itself keeps feeding Update/EndRubberFromScreen below,
+  // which is why no capture is needed.
+}
+
+void PublicHost::UpdateRubberFromScreen(POINT screen) {
+  if (!rubber_ || !hwnd_) {
+    return;
+  }
+  POINT client = screen;
+  ScreenToClient(hwnd_, &client);
+  rubber_rc_ = {rubber_origin_.x, rubber_origin_.y, client.x, client.y};
+  const int bw = std::abs(rubber_rc_.right - rubber_rc_.left);
+  const int bh = std::abs(rubber_rc_.bottom - rubber_rc_.top);
+  if (bw >= kDragThreshold || bh >= kDragThreshold) {
+    SelectIntersecting(rubber_rc_);
+  }
+  PresentRubberFast();
+}
+
+void PublicHost::EndRubberFromScreen(POINT screen) {
+  if (!rubber_ || !hwnd_) {
+    return;
+  }
+  POINT client = screen;
+  ScreenToClient(hwnd_, &client);
+  rubber_rc_ = {rubber_origin_.x, rubber_origin_.y, client.x, client.y};
+  const int bw = std::abs(rubber_rc_.right - rubber_rc_.left);
+  const int bh = std::abs(rubber_rc_.bottom - rubber_rc_.top);
+  const bool real_marquee = bw >= kDragThreshold || bh >= kDragThreshold;
+  if (real_marquee) {
+    SelectIntersecting(rubber_rc_);
+  }
+  rubber_ = false;
+  rubber_additive_ = false;
+  HideMarqueeBand();
+  if (real_marquee) {
+    Present();
+  }
 }
 // AIGC END
 
@@ -3075,7 +3119,13 @@ LRESULT PublicHost::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
         return HTTRANSPARENT;
       }
     }
-    return HTCLIENT;
+    // Everything else inside the bounding box is empty host chrome. The host
+    // window spans min→max of all float cells, so most of that rectangle is
+    // blank; returning HTCLIENT here swallowed clicks meant for whatever app
+    // sits underneath (typing into an editor became impossible until the user
+    // alt-tabbed away). Only a real icon hit (checked above) may take the
+    // click — blank space must pass through.
+    return HTTRANSPARENT;
   }
   if (msg == WM_APP + 60) {
     const int vk = static_cast<int>(wparam);

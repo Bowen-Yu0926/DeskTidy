@@ -102,7 +102,11 @@ class PublicHost {
   // Screen-space slot rects for “draw fence around icons” scoop.
   std::vector<std::pair<std::wstring, RECT>> SlotScreenRects() const;
   // Organized mode: blank DefView click → start float marquee (Explorer/Fences).
+  // The global mouse hook drives Update/End so the overlay never takes capture
+  // (capturing from a hook would swallow every later click system-wide).
   void BeginRubberFromScreen(POINT screen, bool additive);
+  void UpdateRubberFromScreen(POINT screen);
+  void EndRubberFromScreen(POINT screen);
   // Fences / Explorer: inline label EDIT (F2 / context Rename / slow name click).
   void BeginInlineRename();
   void FinishInlineRename(bool commit);

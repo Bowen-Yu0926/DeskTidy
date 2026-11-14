@@ -300,9 +300,6 @@ int TrackCommon(HWND owner, POINT screen, IContextMenu* pcm, UINT cmf_flags,
   pcm->QueryInterface(IID_IContextMenu2, reinterpret_cast<void**>(&g_pcm2));
   pcm->QueryInterface(IID_IContextMenu3, reinterpret_cast<void**>(&g_pcm3));
 
-  // Fences/Explorer: never SetForegroundWindow(fence/dock). That lifts the
-  // desktop-band overlay over APPWINDOWs (WeChat/VS Code). Arm the invisible
-  // TOOLWINDOW host instead — TrackPopupMenu already routes messages there.
   HWND track = g_host ? g_host : owner;
   if (!track) {
     DestroyMenu(menu);
@@ -316,7 +313,12 @@ int TrackCommon(HWND owner, POINT screen, IContextMenu* pcm, UINT cmf_flags,
     }
     return -1;
   }
-  SetForegroundWindow(track);
+  // Do NOT SetForegroundWindow(track). `track` is a 0x0 hidden TOOLWINDOW:
+  // making it foreground leaves the system with an invisible foreground, so
+  // every app stops accepting keyboard input until the user switches windows.
+  // TrackPopupMenu does not require the owner to be foreground — it only needs
+  // it to receive the menu's messages. Without the foreground grab the menu
+  // still tracks and dismisses on selection; Esc also closes it.
   const int cmd =
       TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, screen.x, screen.y,
                      0, track, nullptr);
@@ -579,13 +581,10 @@ std::string TrackMoveToPageThenFenceMenu(
                 names[pi].c_str());
   }
 
-  // Same as TrackCommon: FG the toolwindow host, not the fence (keeps band).
+  // Same rule as TrackCommon: never put the foreground on the hidden host.
   HWND track = EnsureMenuHost(GetModuleHandleW(nullptr));
   if (!track) {
     track = owner ? owner : GetDesktopWindow();
-  }
-  if (track) {
-    SetForegroundWindow(track);
   }
   const int cmd =
       TrackPopupMenu(root, TPM_RETURNCMD | TPM_NONOTIFY, screen.x, screen.y, 0,
