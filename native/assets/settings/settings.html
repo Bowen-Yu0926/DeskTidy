@@ -518,6 +518,14 @@
     display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--muted);
   }
   .fence-tile .ft-op input[type=range] { flex: 1; min-width: 0; }
+  .fence-tile .ft-labels {
+    display: flex; align-items: center; gap: 4px; font-size: 11px; color: var(--muted);
+  }
+  .fence-tile .ft-labels select {
+    font-size: 11px; padding: 1px 4px; border-radius: 6px;
+    border: 1px solid var(--border); background: var(--card); color: var(--text);
+  }
+  .fence-tile .ft-labels .icon-btn { width: 22px; height: 22px; }
   .fence-tile .ft-foot {
     display: flex; align-items: center; gap: 6px; margin-top: auto;
   }
@@ -1742,6 +1750,15 @@
         '<div class="ft-chips">' + chips + '</div>' +
         '<div class="ft-op"><input type="range" min="35" max="100" step="1" value="' +
         pct + '" data-fc-op /><span data-fc-pct>' + pct + '%</span></div>' +
+        '<div class="ft-labels"><span>标签</span><select data-fc-lines>' +
+        [1, 2, 3].map((n) => '<option value="' + n + '"' +
+          ((Number(c.label_lines) || 2) === n ? ' selected' : '') + '>' +
+          n + ' 行</option>').join('') +
+        '</select><button type="button" class="icon-btn' +
+        (c.show_labels === false ? '' : ' on') +
+        '" data-fc-slabels title="' +
+        (c.show_labels === false ? '显示文件名' : '隐藏文件名') + '">' +
+        (c.show_labels === false ? ICO.eyeOff : ICO.eye) + '</button></div>' +
         '<div class="ft-kinds"></div>' +
         '<div class="ft-foot"><div class="ft-title"></div>' +
         '<button type="button" class="icon-btn' + (isVisible ? '' : ' on') +
@@ -1814,6 +1831,24 @@
         clockBtn.addEventListener('click', (e) => {
           e.stopPropagation();
           post({ type: 'action', id: 'fence_toggle_content_lock', index: i });
+        });
+      }
+      const linesSel = el.querySelector('[data-fc-lines]');
+      if (linesSel) {
+        linesSel.addEventListener('change', (e) => {
+          e.stopPropagation();
+          post({ type: 'action', id: 'fence_set_labels', index: i,
+                 lines: Number(linesSel.value),
+                 show: c.show_labels === false ? 0 : 1 });
+        });
+      }
+      const slabelsBtn = el.querySelector('[data-fc-slabels]');
+      if (slabelsBtn) {
+        slabelsBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          post({ type: 'action', id: 'fence_set_labels', index: i,
+                 lines: Number(c.label_lines) || 2,
+                 show: c.show_labels === false ? 1 : 0 });
         });
       }
       const editBtn = el.querySelector('[data-fc-edit]');

@@ -145,6 +145,9 @@ class SettingsWindow {
       bool position_locked = false;
       // Freezes icon set + order (separate from position lock, as in Fences).
       bool content_locked = false;
+      // Caption lines for idle tiles (1..3) and caption visibility.
+      int label_lines = 2;
+      bool show_labels = true;
       // User-hide (fence menu 「隐藏」); settings can Show again (Fences recover).
       bool visible = true;
       // Custom colours override the preset; "#rrggbb" for the pickers.
@@ -218,6 +221,10 @@ class SettingsWindow {
     on_fence_style_all_ = std::move(fn);
   }
   void SetOnFencePage(PageFn fn) { on_fence_page_card_ = std::move(fn); }
+  // Caption lines (1..3) and caption visibility for one fence.
+  void SetOnFenceLabels(std::function<void(int, int, bool)> fn) {
+    on_fence_labels_ = std::move(fn);
+  }
   struct HotkeyRow {
     std::wstring id;
     std::wstring label;
@@ -324,6 +331,7 @@ class SettingsWindow {
       on_fence_colors_;
   std::function<void(const std::wstring&)> on_fence_style_all_;
   PageFn on_fence_page_card_;
+  std::function<void(int, int, bool)> on_fence_labels_;
 
   std::vector<std::wstring> fence_names_;
   std::vector<std::wstring> page_names_;

@@ -1026,6 +1026,14 @@ bool App::Init(HINSTANCE instance) {
       });
   settings_.SetOnFencePage(
       [this](int index, int page) { SetFencePageAt(index, page); });
+  settings_.SetOnFenceLabels([this](int index, int lines, bool show) {
+    if (index < 0 || index >= static_cast<int>(fences_.size()) ||
+        !fences_[static_cast<size_t>(index)]) {
+      return;
+    }
+    fences_[static_cast<size_t>(index)]->SetLabelStyle(lines, show);
+    PersistLayouts();
+  });
   settings_.SetOnExtToggle([this](const std::wstring& id, bool value) {
     if (id == L"minutes_enabled" || id == L"minutes_on_bar") {
       // One switch: enable feature ≡ show「纪要」on the page bar.
@@ -3748,6 +3756,8 @@ void App::PushExtensionSettings() {
     card.system_fence = f->Id().rfind("system_", 0) == 0;
     card.position_locked = f->IsPositionLocked();
     card.content_locked = f->IsContentLocked();
+    card.label_lines = f->LabelLines();
+    card.show_labels = f->ShowLabels();
     card.visible = f->VisibleOnPage(f->Page());
     card.has_custom_colors = f->HasCustomColors();
     if (card.has_custom_colors) {

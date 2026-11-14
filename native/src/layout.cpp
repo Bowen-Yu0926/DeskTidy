@@ -621,6 +621,13 @@ AppState LoadAppStateFromPath(const std::wstring& path, bool inject_defaults) {
     if (FindNumber(obj, "icon_zoom", &icon_zoom)) {
       fl.icon_zoom = (std::min)(160, (std::max)(70, icon_zoom));
     }
+    int label_lines = 2;
+    if (FindNumber(obj, "label_lines", &label_lines)) {
+      fl.label_lines = (std::min)(3, (std::max)(1, label_lines));
+    }
+    bool show_labels = true;
+    FindBool(obj, "show_labels", &show_labels);
+    fl.show_labels = show_labels;
     std::vector<std::string> pin_order;
     FindStringArray(obj, "pin_order", &pin_order);
     for (const auto& p : pin_order) {
@@ -1035,6 +1042,8 @@ bool SaveAppState(const AppState& state) {
     }
     out << "],"
         << "\"icon_zoom\":" << f.icon_zoom << ","
+        << "\"label_lines\":" << f.label_lines << ","
+        << "\"show_labels\":" << (f.show_labels ? "true" : "false") << ","
         << "\"pin_order\":[";
     for (size_t k = 0; k < f.pin_order.size(); ++k) {
       if (k) {

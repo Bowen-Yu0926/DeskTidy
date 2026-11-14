@@ -8,6 +8,14 @@ namespace {
 
 HWND g_key_target = nullptr;
 
+// The fence quick-filter EDIT is marked with this property at creation so the
+// key hook can tell it apart from a rename EDIT (which must keep its own keys).
+constexpr wchar_t kFilterEditProp[] = L"desktidy_fence_filter";
+
+bool IsFenceFilterEdit(HWND hwnd) {
+  return hwnd && GetPropW(hwnd, kFilterEditProp) != nullptr;
+}
+
 bool IsFenceOrPublicClass(const wchar_t* cls) {
   return cls && (wcscmp(cls, L"DeskTidyNativeFence") == 0 ||
                  wcscmp(cls, L"DeskTidyNativePublic") == 0);
@@ -29,6 +37,11 @@ bool ForegroundAllowsFenceKeys() {
     return true;
   }
   HWND fg = GetForegroundWindow();
+  // The quick-filter box takes the foreground while it is open; its keys must
+  // still reach the fence that owns it.
+  if (IsFenceFilterEdit(fg)) {
+    return true;
+  }
   return IsFenceOrPublicHwnd(fg);
 }
 
@@ -38,8 +51,9 @@ HWND ResolveFenceKeyTarget(POINT pt) {
   if (under) {
     GetClassNameW(under, cls, 64);
   }
-  if (under && wcscmp(cls, L"EDIT") == 0) {
-    // Inline rename owns keys — do not steal.
+  if (under && wcscmp(cls, L"EDIT") == 0 && !IsFenceFilterEdit(under)) {
+    // Inline rename owns keys — do not steal. The fence quick-filter box is
+    // the exception: it cannot receive keys itself, so the hook drives it.
     return nullptr;
   }
   // Settings / notes / Explorer folders own the keyboard — never steal.
@@ -49,6 +63,13 @@ HWND ResolveFenceKeyTarget(POINT pt) {
   // Prefer last-activated fence/public (Fences activation model).
   if (IsFenceOrPublicHwnd(g_key_target)) {
     return g_key_target;
+  }
+  // Filter box has the foreground: route its keys to the owning fence.
+  if (IsFenceFilterEdit(GetForegroundWindow())) {
+    HWND owner = GetWindow(GetForegroundWindow(), GW_OWNER);
+    if (IsFenceOrPublicHwnd(owner)) {
+      return owner;
+    }
   }
   // Fallback: cursor directly over fence/public chrome.
   if (IsFenceOrPublicClass(cls)) {
@@ -113,6 +134,8 @@ bool HandleFenceKeyDown(DWORD vk) {
   // Explorer: Ctrl+Insert = copy; Shift+Insert = paste (+Ctrl = pastelink).
   const bool is_insert_clip =
       !alt && vk == VK_INSERT && (ctrl || shift);
+  // Ctrl+F opens the fence's quick filter box.
+  const bool is_filter_chord = ctrl && !shift && !alt && vk == 'F';
   // Explorer: Ctrl+Shift+N new folder. Swallow only when a fence/public target
   // resolves — otherwise DeskNote's RegisterHotKey(Ctrl+Shift+N) keeps it.
   const bool is_new_folder = ctrl && shift && !alt && vk == 'N';
@@ -125,7 +148,8 @@ bool HandleFenceKeyDown(DWORD vk) {
       TryTypeAheadChar(vk, &type_ch);
 
   if (!is_base_key && !is_clip_chord && !is_typeahead && !is_new_folder &&
-      !is_shift_f10 && !is_insert_clip && !is_zoom_chord) {
+      !is_shift_f10 && !is_insert_clip && !is_zoom_chord &&
+      !is_filter_chord) {
     return false;
   }
   // Default Peek chord is Ctrl+Space — never swallow it over fence/public.
@@ -144,7 +168,10 @@ bool HandleFenceKeyDown(DWORD vk) {
   if (focus) {
     GetClassNameW(focus, focus_cls, 32);
   }
-  if (wcscmp(focus_cls, L"EDIT") == 0) {
+  // The fence filter box is a popup EDIT that never owns the input queue (the
+  // fence itself is never activated), so its characters must keep coming
+  // through this hook. A rename EDIT is a real focused control — let it be.
+  if (wcscmp(focus_cls, L"EDIT") == 0 && !IsFenceFilterEdit(focus)) {
     return false;
   }
   // lParam: bit0=ctrl, bit1=shift, bit2=typeahead (wParam = Unicode char)

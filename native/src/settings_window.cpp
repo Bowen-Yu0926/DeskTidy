@@ -766,6 +766,10 @@ std::wstring SettingsWindow::BuildStateJson() const {
     json += c.position_locked ? L"true" : L"false";
     json += L",\"content_locked\":";
     json += c.content_locked ? L"true" : L"false";
+    json += L",\"label_lines\":";
+    json += std::to_wstring(c.label_lines);
+    json += L",\"show_labels\":";
+    json += c.show_labels ? L"true" : L"false";
     json += L",\"visible\":";
     json += c.visible ? L"true" : L"false";
     json += L",\"has_custom_colors\":";
@@ -1191,6 +1195,10 @@ void SettingsWindow::DispatchAction(const std::wstring& json) {
   } else if (id == L"fence_set_page" && on_fence_page_card_) {
     on_fence_page_card_(JsonIntField(json, L"index", 0),
                         JsonIntField(json, L"page", 0));
+  } else if (id == L"fence_set_labels" && on_fence_labels_) {
+    on_fence_labels_(JsonIntField(json, L"index", 0),
+                     JsonIntField(json, L"lines", 2),
+                     JsonIntField(json, L"show", 1) != 0);
   } else if (id == L"goto_page" && on_command_) {
     current_page_ = JsonIntField(json, L"page", current_page_);
     on_command_(L"goto_page:" + std::to_wstring(current_page_));

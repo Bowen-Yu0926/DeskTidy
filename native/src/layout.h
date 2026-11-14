@@ -91,6 +91,11 @@ struct FenceLayout {
   std::map<int, FencePageGeometry> page_geometries;
   // Per-fence icon zoom percent (70..160). Persisted (H1).
   int icon_zoom = 100;
+  // Fences-style caption controls: how many lines an idle (unselected) label
+  // shows, and whether captions are drawn at all. Selected items always show
+  // the full name regardless of label_lines.
+  int label_lines = 2;
+  bool show_labels = true;
   // Manual icon order (paths) when sort_by == "manual" (H1).
   std::vector<std::wstring> pin_order;
 };

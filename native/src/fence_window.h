@@ -160,7 +160,23 @@ class FenceWindow {
   void SetIconZoom(int percent);
   int IconZoom() const { return icon_zoom_percent_; }
   int IconSizePx() const;
+  // Caption lines shown for an unselected tile (1..3) and caption visibility.
+  void SetLabelStyle(int lines, bool show);
+  int LabelLines() const { return label_lines_; }
+  bool ShowLabels() const { return show_labels_; }
+  // Fences-style quick filter: narrows the visible tiles to names matching the
+  // typed substring. Kept out of the layout so a filter never rewrites pins.
+  void BeginFilter();
+  void ApplyFilter(const std::wstring& text);
+  void EndFilter();
+  // Dismiss the filter box but keep the narrowed result (Enter).
+  void CloseFilterEdit();
+  bool FilterActive() const { return !filter_text_.empty(); }
 
+ private:
+  bool NameMatchesFilter(const std::wstring& name) const;
+
+ public:
   // H1: manual pin order persistence.
   void SetPinOrder(std::vector<std::wstring> order);
   const std::vector<std::wstring>& PinOrder() const { return pin_order_; }
@@ -477,6 +493,12 @@ class FenceWindow {
   POINT rubber_b_{};
   HWND rename_edit_ = nullptr;
   int rename_index_ = -1;
+  // Quick filter: the popup EDIT, its text, and the unfiltered item list so
+  // clearing the filter restores every pin without a disk rescan.
+  HWND filter_edit_ = nullptr;
+  WNDPROC filter_proc_ = nullptr;
+  std::wstring filter_text_;
+  std::vector<DesktopItem> all_items_;
   WNDPROC rename_proc_ = nullptr;
   std::vector<Cell> cells_;
   std::vector<char> selected_;
@@ -503,6 +525,9 @@ class FenceWindow {
   bool drop_highlight_ = false;
   // F4 icon zoom.
   int icon_zoom_percent_ = 100;
+  // Caption lines for idle tiles / caption visibility (Fences label options).
+  int label_lines_ = 2;
+  bool show_labels_ = true;
   // F7 scrollbar drag state.
   bool thumb_dragging_ = false;
   int thumb_start_y_ = 0;

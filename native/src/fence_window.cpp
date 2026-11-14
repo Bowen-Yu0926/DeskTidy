@@ -36,6 +36,10 @@
 #pragma comment(lib, "imm32.lib")
 
 namespace {
+// Defined with the other EDIT subclasses below; the filter box is created
+// long before that point in the file.
+LRESULT CALLBACK FilterEditProc(HWND hwnd, UINT msg, WPARAM wparam,
+                                LPARAM lparam);
 constexpr wchar_t kClassName[] = L"DeskTidyNativeFence";
 constexpr int kHeaderH0 = 32;
 constexpr int kCollapsedH0 = 44;
@@ -73,6 +77,8 @@ constexpr int kExtFenceSortType = 13;
 constexpr int kExtFenceSortManual = 14;
 constexpr int kExtFenceViewGrid = 20;
 constexpr int kExtFenceViewList = 21;
+// Quick filter box (Fences-style type-to-narrow).
+constexpr int kExtFenceFilter = 22;
 constexpr int kExtFenceOpaFollow = 30;
 constexpr int kExtFenceOpa40 = 31;
 constexpr int kExtFenceOpa55 = 32;
@@ -871,6 +877,104 @@ void FenceWindow::SetIconZoom(int percent) {
   }
 }
 
+void FenceWindow::SetLabelStyle(int lines, bool show) {
+  const int clamped = (std::min)(3, (std::max)(1, lines));
+  if (clamped == label_lines_ && show == show_labels_) {
+    return;
+  }
+  label_lines_ = clamped;
+  show_labels_ = show;
+  LayoutCells();
+  PresentLayered();
+}
+
+bool FenceWindow::NameMatchesFilter(const std::wstring& name) const {
+  if (filter_text_.empty()) {
+    return true;
+  }
+  // Case-insensitive substring, same feel as Explorer's type-to-find.
+  const auto it = std::search(
+      name.begin(), name.end(), filter_text_.begin(), filter_text_.end(),
+      [](wchar_t a, wchar_t b) { return towlower(a) == towlower(b); });
+  return it != name.end();
+}
+
+void FenceWindow::BeginFilter() {
+  if (!hwnd_ || collapsed_) {
+    return;
+  }  if (filter_edit_) {
+    SetFocus(filter_edit_);
+    SendMessageW(filter_edit_, EM_SETSEL, 0, -1);
+    return;
+  }
+  RECT rc{};
+  GetClientRect(hwnd_, &rc);
+  const int edit_h = S(hwnd_, 24);
+  // Pin the box to the fence's top strip so the filtered grid below it stays
+  // readable; popup (not WS_CHILD) because ULW hosts hide child EDITs.
+  POINT origin{S(hwnd_, 6), S(hwnd_, 4)};
+  ClientToScreen(hwnd_, &origin);
+  const int edit_w =
+      (std::max)(S(hwnd_, 120), static_cast<int>(rc.right - S(hwnd_, 12)));
+  filter_edit_ = CreateWindowExW(
+      WS_EX_TOOLWINDOW | WS_EX_TOPMOST, L"EDIT", filter_text_.c_str(),
+      WS_POPUP | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL, origin.x, origin.y,
+      edit_w, edit_h, hwnd_, nullptr, GetModuleHandleW(nullptr), nullptr);
+  if (!filter_edit_) {
+    return;
+  }
+  filter_proc_ = reinterpret_cast<WNDPROC>(
+      SetWindowLongPtrW(filter_edit_, GWLP_WNDPROC,
+                        reinterpret_cast<LONG_PTR>(FilterEditProc)));
+  SetPropW(filter_edit_, L"oldproc",
+           reinterpret_cast<HANDLE>(filter_proc_));
+  // Marks this EDIT for the key hook: it has no input queue of its own, so
+  // typed characters keep arriving through the hook instead of the control.
+  SetPropW(filter_edit_, L"desktidy_fence_filter",
+           reinterpret_cast<HANDLE>(1));
+  SetWindowLongPtrW(filter_edit_, GWLP_USERDATA,
+                    reinterpret_cast<LONG_PTR>(this));
+  SetFocus(filter_edit_);
+}
+
+void FenceWindow::ApplyFilter(const std::wstring& text) {
+  if (text == filter_text_) {
+    return;
+  }
+  filter_text_ = text;
+  std::vector<DesktopItem> narrowed;
+  narrowed.reserve(all_items_.size());
+  for (const auto& it : all_items_) {
+    if (NameMatchesFilter(it.name)) {
+      narrowed.push_back(it);
+    }
+  }
+  SetItems(std::move(narrowed));
+}
+
+void FenceWindow::CloseFilterEdit() {
+  if (!filter_edit_) {
+    return;
+  }
+  HWND edit = filter_edit_;
+  filter_edit_ = nullptr;
+  filter_proc_ = nullptr;
+  DestroyWindow(edit);
+}
+
+void FenceWindow::EndFilter() {
+  if (filter_edit_) {
+    HWND edit = filter_edit_;
+    filter_edit_ = nullptr;
+    filter_proc_ = nullptr;
+    DestroyWindow(edit);
+  }
+  if (!filter_text_.empty()) {
+    filter_text_.clear();
+    SetItems(all_items_);
+  }
+}
+
 void FenceWindow::RebuildIconsForZoom() {
   ClearIconCache();
   const int icon_sz = IconSizePx();
@@ -1183,6 +1287,8 @@ bool FenceWindow::Create(HINSTANCE instance, const FenceLayout& layout) {
   auto_hide_ = layout.auto_hide;
   position_locked_ = layout.position_locked;
   content_locked_ = layout.content_locked;
+  label_lines_ = (std::min)(3, (std::max)(1, layout.label_lines));
+  show_labels_ = layout.show_labels;
   sort_by_ = layout.sort_by.empty() ? "name" : layout.sort_by;
   view_mode_ = (layout.view_mode == "list") ? "list" : "grid";
   show_title_ = layout.show_title;
@@ -1253,6 +1359,7 @@ void FenceWindow::SetCollapsed(bool collapsed, bool persist) {
       expanded_h_ = (std::max)(cur_h, kFenceExpandedFloor);
     }
     collapsed_ = true;
+    EndFilter();
     SetOverlayScreenPos(hwnd_, rc.left, rc.top, w, S(hwnd_, kCollapsedH0),
                         SWP_NOZORDER);
   } else {
@@ -1677,6 +1784,8 @@ FenceLayout FenceWindow::CurrentLayout() const {
   fl.auto_hide = auto_hide_;
   fl.position_locked = position_locked_;
   fl.content_locked = content_locked_;
+  fl.label_lines = label_lines_;
+  fl.show_labels = show_labels_;
   fl.sort_by = sort_by_;
   fl.view_mode = view_mode_;
   fl.opacity = opacity_override_;
@@ -1750,6 +1859,8 @@ bool FenceWindow::Show() {
 }
 
 void FenceWindow::Hide() {
+  // A hidden fence must not leave its filter box floating on the desktop.
+  EndFilter();
   // Persist user-hide so ApplyPageVisibility does not resurrect (P1-2).
   // Fence-level: clear every page_geometries_ row — multi-page membership
   // used to leave sibling pages visible=true and resurrect on page switch.
@@ -1852,6 +1963,19 @@ void FenceWindow::SetViewMode(const std::string& mode) {
 }
 
 void FenceWindow::SetItems(std::vector<DesktopItem> items) {
+  // A refresh (watch tick / organize) must not silently widen a live filter:
+  // remember the unfiltered set and narrow the incoming list the same way.
+  all_items_ = items;
+  if (!filter_text_.empty()) {
+    std::vector<DesktopItem> narrowed;
+    narrowed.reserve(items.size());
+    for (auto& it : items) {
+      if (NameMatchesFilter(it.name)) {
+        narrowed.push_back(std::move(it));
+      }
+    }
+    items = std::move(narrowed);
+  }
   // Keep HICONs across refresh when the path set is stable (desktop watch /
   // organize often re-pushes the same pins). Avoid SHGetFileInfo storms.
   // Premultiplied bitmap cache is keyed by HICON — only drop it when icons
@@ -2274,7 +2398,7 @@ bool FenceWindow::IconLabelRect(size_t index, RECT* out) const {
   const int icon = IconSizePx();
   const int font_px = S(hwnd_, 11);
   const int line_h = font_px + S(hwnd_, 5);
-  const int idle_label_h = line_h * 2 + S(hwnd_, 4);
+  const int idle_label_h = line_h * label_lines_ + S(hwnd_, 4);
   const int iy = b.top + 4;
   const int label_top = iy + icon + 2;
   const int label_bottom = label_top + idle_label_h + S(hwnd_, 2);
@@ -2302,7 +2426,7 @@ bool FenceWindow::IconContentRect(size_t index, RECT* out) const {
   const int icon = IconSizePx();
   const int font_px = S(hwnd_, 11);
   const int line_h = font_px + S(hwnd_, 5);
-  const int idle_label_h = line_h * 2 + S(hwnd_, 4);
+  const int idle_label_h = line_h * label_lines_ + S(hwnd_, 4);
   const int iy = b.top + 4;
   const int label_top = iy + icon + 2;
   // Glyph + idle caption shelf. Selected paint may grow taller, but
@@ -2571,7 +2695,7 @@ void FenceWindow::EnsureCellVisible(int index) {
 }
 
 void FenceWindow::TypeAheadFind(wchar_t ch) {
-  if (!ch || cells_.empty()) {
+  if (!ch || all_items_.empty()) {
     return;
   }
   const DWORD now = GetTickCount();
@@ -2581,31 +2705,23 @@ void FenceWindow::TypeAheadFind(wchar_t ch) {
   typeahead_tick_ = now;
   typeahead_.push_back(ch);
   CharLowerBuffW(typeahead_.data() + (typeahead_.size() - 1), 1);
-  const int before = selection_anchor_;
-  TypeAheadFindNext();
-  // No match for extended prefix — restart with just this character (Explorer).
-  if (typeahead_.size() > 1 && selection_anchor_ == before) {
-    auto lower_name = [](std::wstring s) {
-      if (!s.empty()) {
-        CharLowerBuffW(s.data(), static_cast<DWORD>(s.size()));
-      }
-      return s;
-    };
-    bool matched =
-        selection_anchor_ >= 0 &&
-        selection_anchor_ < static_cast<int>(cells_.size()) &&
-        !cells_[static_cast<size_t>(selection_anchor_)].item.path.empty() &&
-        [&]() {
-          const std::wstring n =
-              lower_name(cells_[static_cast<size_t>(selection_anchor_)].item.name);
-          return n.size() >= typeahead_.size() &&
-                 n.compare(0, typeahead_.size(), typeahead_) == 0;
-        }();
-    if (!matched) {
-      typeahead_.assign(1, ch);
-      CharLowerBuffW(typeahead_.data(), 1);
-      TypeAheadFindNext();
+  // Type-to-find narrows the visible set (Fences quick filter) instead of only
+  // moving the selection: with a 40-icon fence, jumping the anchor still left
+  // the user hunting through the same wall of names.
+  if (filter_edit_) {
+    SetWindowTextW(filter_edit_, typeahead_.c_str());
+    SendMessageW(filter_edit_, EM_SETSEL, typeahead_.size(),
+                 typeahead_.size());
+  }
+  ApplyFilter(typeahead_);
+  // No prefix match — restart from just this character (Explorer).
+  if (typeahead_.size() > 1 && cells_.empty()) {
+    typeahead_.assign(1, ch);
+    CharLowerBuffW(typeahead_.data(), 1);
+    if (filter_edit_) {
+      SetWindowTextW(filter_edit_, typeahead_.c_str());
     }
+    ApplyFilter(typeahead_);
   }
 }
 
@@ -2652,29 +2768,12 @@ bool FenceWindow::TypeAheadBackspace() {
   }
   typeahead_.pop_back();
   typeahead_tick_ = GetTickCount();
-  if (typeahead_.empty()) {
-    return true;
+  if (filter_edit_) {
+    SetWindowTextW(filter_edit_, typeahead_.c_str());
+    SendMessageW(filter_edit_, EM_SETSEL, typeahead_.size(),
+                 typeahead_.size());
   }
-  // Re-select first match of the shortened prefix (Explorer).
-  auto lower_name = [](std::wstring s) {
-    if (!s.empty()) {
-      CharLowerBuffW(s.data(), static_cast<DWORD>(s.size()));
-    }
-    return s;
-  };
-  for (size_t i = 0; i < cells_.size(); ++i) {
-    if (cells_[i].item.path.empty()) {
-      continue;
-    }
-    std::wstring n = lower_name(cells_[i].item.name);
-    if (n.size() >= typeahead_.size() &&
-        n.compare(0, typeahead_.size(), typeahead_) == 0) {
-      SelectOnly(static_cast<int>(i));
-      EnsureCellVisible(static_cast<int>(i));
-      PresentLayered();
-      break;
-    }
-  }
+  ApplyFilter(typeahead_);
   return true;
 }
 
@@ -2776,6 +2875,10 @@ void FenceWindow::ShowSelectionContextMenu() {
 
 void FenceWindow::HandleFenceHotkey(int vk, bool ctrl, bool shift) {
   if (rename_edit_) {
+    return;
+  }
+  if (vk == 'F' && ctrl && !shift) {
+    BeginFilter();
     return;
   }
   if (vk == VK_ESCAPE) {
@@ -4514,6 +4617,44 @@ bool RenameEditImeComposing(HWND hwnd) {
   return bytes > 0;
 }
 
+LRESULT CALLBACK FilterEditProc(HWND hwnd, UINT msg, WPARAM wparam,
+                                LPARAM lparam) {
+  auto* self =
+      reinterpret_cast<FenceWindow*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+  auto call_old = [&]() -> LRESULT {
+    WNDPROC old = reinterpret_cast<WNDPROC>(GetPropW(hwnd, L"oldproc"));
+    if (old) {
+      return CallWindowProcW(old, hwnd, msg, wparam, lparam);
+    }
+    return DefWindowProcW(hwnd, msg, wparam, lparam);
+  };
+  if (msg == WM_KEYDOWN && wparam == VK_ESCAPE) {
+    // Esc abandons the filter entirely and restores the full set.
+    if (self) {
+      self->EndFilter();
+    }
+    return 0;
+  }
+  if (msg == WM_KEYDOWN && wparam == VK_RETURN) {
+    // Enter keeps the narrowed result but hands the keyboard back to the
+    // desktop — a popup EDIT that kept focus swallowed every later key.
+    if (self) {
+      self->CloseFilterEdit();
+    }
+    return 0;
+  }
+  if (msg == WM_CHAR && wparam == VK_ESCAPE) {
+    return 0;
+  }
+  const LRESULT r = call_old();
+  if (msg == WM_CHAR && self) {
+    wchar_t buf[260] = {};
+    GetWindowTextW(hwnd, buf, 260);
+    self->ApplyFilter(buf);
+  }
+  return r;
+}
+
 LRESULT CALLBACK RenameEditProc(HWND hwnd, UINT msg, WPARAM wparam,
                                 LPARAM lparam) {
   auto* self = reinterpret_cast<FenceWindow*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
@@ -4876,6 +5017,7 @@ void FenceWindow::ShowFenceMenu(POINT screen) {
            kExtFenceCollapse),
       leaf(L"离开自动折叠", kExtFenceAutoHide, auto_hide_),
       leaf(Tr("fence_refresh"), kExtFenceRefresh),
+      leaf(L"筛选图标…", kExtFenceFilter),
       leaf(Tr("fence_hide"), kExtFenceHide),
       leaf(position_locked_ ? Tr("fence_unlock") : Tr("fence_lock"),
            kExtFenceLock),
@@ -5034,6 +5176,8 @@ void FenceWindow::ShowFenceMenu(POINT screen) {
       SetViewMode("grid");
     } else if (rc == kExtFenceViewList) {
       SetViewMode("list");
+    } else if (rc == kExtFenceFilter) {
+      BeginFilter();
     } else if (rc == kExtFenceOpaFollow) {
       apply_opacity(-1);
     } else if (rc == kExtFenceOpa40) {
@@ -6037,6 +6181,9 @@ LRESULT FenceWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
     case WM_DESTROY:
       tip_ = nullptr;
       tip_index_ = -1;
+      // A popup EDIT outlives its owner's HWND: destroy it here or it floats
+      // over the desktop after the fence is removed.
+      CloseFilterEdit();
       ClearIcons();
       if (drop_target_) {
         RevokePathDropTarget(hwnd_);
@@ -6268,7 +6415,7 @@ void FenceWindow::Paint(HDC hdc) {
   sel_fmt.SetTrimming(Gdiplus::StringTrimmingNone);
 
   const int line_h = font_px + S(hwnd_, 5);
-  const int idle_label_h = line_h * 2 + S(hwnd_, 4);
+  const int idle_label_h = line_h * label_lines_ + S(hwnd_, 4);
   const int max_sel_lines = 8;
 
   // Cut ghost opacity matches Python _CUT_GHOST_OPACITY ≈ 0.42.
@@ -6416,14 +6563,14 @@ void FenceWindow::Paint(HDC hdc) {
       fmt = &ellipsis_fmt;
     }
     // Soft caption shadow (readability on light wallpapers).
-    {
+    if (show_labels_) {
       Gdiplus::RectF sb = label;
       sb.Y += 1.f;
       g.DrawString(cell.item.name.c_str(), -1, caption_font_, sb, fmt,
                    &cap_shadow);
+      g.DrawString(cell.item.name.c_str(), -1, caption_font_, label, fmt,
+                   name_brush);
     }
-    g.DrawString(cell.item.name.c_str(), -1, caption_font_, label, fmt,
-                 name_brush);
   };
 
   // Idle cells first, then selected on top (expanded captions overlay neighbors).
