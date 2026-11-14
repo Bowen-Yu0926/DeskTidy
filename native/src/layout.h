@@ -135,10 +135,7 @@ AppState LoadAppState();
 // Load any layout JSON (snapshots). When inject_defaults is false, missing /
 // empty files stay empty — no synthetic page-2 fence.
 AppState LoadAppStateFromPath(const std::wstring& path, bool inject_defaults = true);
-// `out_path` empty = the live layout file. A caller-supplied path is a plain
-// export: no .bak promotion, no display-profile carry-over from the live file.
-bool SaveAppState(const AppState& state,
-                  const std::wstring& out_path = std::wstring());
+bool SaveAppState(const AppState& state);
 // Back-compat helpers
 std::vector<FenceLayout> LoadLayouts();
 bool SaveLayouts(const std::vector<FenceLayout>& layouts);

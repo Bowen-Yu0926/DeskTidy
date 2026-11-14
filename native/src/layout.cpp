@@ -895,13 +895,10 @@ AppState LoadAppState() {
   return LoadAppStateFromPath(LayoutFilePath(), true);
 }
 
-bool SaveAppState(const AppState& state, const std::wstring& out_path) {
-  const bool exporting = !out_path.empty();
-  const std::wstring path = exporting ? out_path : LayoutFilePath();
-  // An export writes a standalone file: it must not inherit the live layout's
-  // display-profile rows, and it must not touch the live file's .bak.
+bool SaveAppState(const AppState& state) {
+  const std::wstring path = LayoutFilePath();
   std::string previous;
-  if (!exporting) {
+  {
     WIN32_FILE_ATTRIBUTE_DATA fad{};
     if (GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &fad)) {
       const ULARGE_INTEGER sz{fad.nFileSizeLow, fad.nFileSizeHigh};
@@ -1144,10 +1141,8 @@ bool SaveAppState(const AppState& state, const std::wstring& out_path) {
     return false;
   }
   // Only promote a previous *good* layout to .bak — never a runaway 2GB file.
-  // Exports are standalone files with no .bak history to maintain.
   WIN32_FILE_ATTRIBUTE_DATA fad{};
-  if (!exporting &&
-      GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &fad) &&
+  if (GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &fad) &&
       !(fad.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
     const ULARGE_INTEGER sz{fad.nFileSizeLow, fad.nFileSizeHigh};
     if (sz.QuadPart > 0 && sz.QuadPart <= kMaxLayoutJsonBytes) {

@@ -4535,23 +4535,14 @@ void App::ExportPrefs() {
   ofn.lpstrFilter = L"JSON (*.json)\0*.json\0All\0*.*\0";
   ofn.lpstrFile = path;
   ofn.nMaxFile = MAX_PATH;
-  ofn.lpstrTitle = L"导出配置与分区布局";
+  ofn.lpstrTitle = L"导出配置";
   ofn.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST;
   ofn.lpstrDefExt = L"json";
   if (!GetSaveFileNameW(&ofn)) {
     return;
   }
   SaveAppPrefsToPath(prefs_, path);
-  // Settings alone are not a backup: the fences (positions, sizes, membership,
-  // locks, colours) live in layout.json. Export both into the same file so a
-  // restore on another machine does not come back as an empty desktop.
-  const std::wstring layout_path = std::wstring(path) + L".layout.json";
-  const bool layout_ok = SaveAppState(BuildAppState(), layout_path);
-  if (!layout_ok) {
-    ShowToast(L"配置已导出，但分区布局导出失败");
-    return;
-  }
-  ShowToast(std::wstring(L"配置与分区布局已导出到 ") + path);
+  ShowToast(std::wstring(L"配置已导出到 ") + path);
 }
 
 void App::ImportPrefs() {
@@ -4578,27 +4569,8 @@ void App::ImportPrefs() {
   ApplyUiThemeId(prefs_.ui_theme);
   settings_.SetOrganizePrefs(prefs_.auto_organize_on_startup,
                              prefs_.auto_organize_watch);
-
-  // The layout travels next to the settings file (see ExportPrefs). Import it
-  // when present so the restore brings the fences back too, not just prefs.
-  const std::wstring layout_path = std::wstring(path) + L".layout.json";
-  bool layout_imported = false;
-  if (GetFileAttributesW(layout_path.c_str()) != INVALID_FILE_ATTRIBUTES) {
-    AppState imported = LoadAppStateFromPath(layout_path, false);
-    if (!imported.fences.empty()) {
-      // The exported file may come from another machine with a different
-      // monitor layout — clamp off-screen / degenerate rects before spawning.
-      HealFenceLayouts(&imported.fences);
-      ReloadFencesFromState(imported, /*heal_geometry=*/false);
-      PersistLayouts();
-      layout_imported = true;
-    }
-  }
   MistAlert(settings_.Hwnd(), L"导入完成",
-            layout_imported
-                ? L"配置与分区布局已导入，部分选项可能需要重启生效。"
-                : L"配置已导入（未找到分区布局文件），部分选项可能需要重启生效。",
-            MistMsgTone::Info);
+            L"配置已导入，部分选项可能需要重启生效。", MistMsgTone::Info);
 }
 
 void App::OpenNotes() { LaunchOrFocusDeskNote(); }
