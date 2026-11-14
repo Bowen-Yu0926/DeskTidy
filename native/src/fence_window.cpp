@@ -2267,6 +2267,12 @@ bool FenceWindow::FillMissingIcons() {
 
 void FenceWindow::SetSortBy(const std::string& sort_by) {
   const std::string next = sort_by.empty() ? "name" : sort_by;
+  // Content lock freezes the icon set AND its order, so re-sorting is a
+  // content mutation. Guarding here covers every caller (menu, settings page).
+  if (content_locked_ && next != sort_by_) {
+    ShowToast(L"分区内容已锁定，请先解锁");
+    return;
+  }
   const bool entering_manual = (next == "manual" && sort_by_ != "manual");
   sort_by_ = next;
   // Fences: switching to Manual freezes the current visual order — seed
@@ -4343,6 +4349,16 @@ void FenceWindow::ShowIconMenu(int index, POINT screen) {
   ShellVerbFn on_verb = [&](const std::wstring& verb) {
     if (verb == L"rename") {
       rename_picked = true;
+      return;
+    }
+    // Content lock freezes the icon set: any verb that would rescan the
+    // desktop (delete / paste / createlink / move / undo…) is a content
+    // mutation, so it must not run while locked. Same predicate the caller
+    // already uses to decide whether a rescan is needed.
+    if (content_locked_ && ShellVerbNeedsDesktopRescan(verb)) {
+      ShowToast(L"分区内容已锁定，请先解锁");
+      verb_ran = false;
+      last_verb.clear();
       return;
     }
     verb_ran = true;

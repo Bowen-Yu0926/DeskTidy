@@ -301,11 +301,15 @@ static bool FenceOnPage(const FenceLayout& f, int page) {
 std::string ResolveFenceByKind(const DesktopItem& item,
                                const std::vector<FenceLayout>& fences,
                                int current_page) {
+  // A content-locked fence opts out of rule-driven membership: the lock exists
+  // precisely to stop the set from changing on its own.
+  auto eligible = [&item](const FenceLayout& f) {
+    return !f.content_locked && FenceAcceptsItem(f.organize_kinds, item);
+  };
   // Python resolve_organize_target: try the current page first, then others.
   if (current_page >= 0) {
     for (const auto& f : fences) {
-      if (FenceOnPage(f, current_page) &&
-          FenceAcceptsItem(f.organize_kinds, item)) {
+      if (FenceOnPage(f, current_page) && eligible(f)) {
         return f.id;
       }
     }
@@ -314,7 +318,7 @@ std::string ResolveFenceByKind(const DesktopItem& item,
     if (FenceOnPage(f, current_page)) {
       continue;
     }
-    if (FenceAcceptsItem(f.organize_kinds, item)) {
+    if (eligible(f)) {
       return f.id;
     }
   }

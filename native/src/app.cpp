@@ -685,6 +685,15 @@ void App::WireFence(FenceWindow* fence) {
               rects[i].y + rects[i].h};
       ClampRectToWorkArea(&rr);
       FenceWindow* fw = list[i];
+      // A position-locked fence is a snap reference, never a rearrangement
+      // target: collision push and the seam pass above both write into `rects`
+      // without knowing about locks, so restore its live rect before applying.
+      // Otherwise dragging fence A shoves locked fence B off its seat.
+      if (fw != moved && fw->IsPositionLocked()) {
+        RECT live{};
+        GetWindowRect(fw->Hwnd(), &live);
+        rr = live;
+      }
       FencePageGeometry geo;
       geo.x = rr.left;
       geo.y = rr.top;
@@ -4199,6 +4208,12 @@ void App::RepinFromUndoStack() {
       keep.push_back(e);
       continue;
     }
+    // Undo re-adds a member, which a content-locked fence must refuse. Keep
+    // the entry so it still applies once the user unlocks.
+    if (fence->IsContentLocked()) {
+      keep.push_back(e);
+      continue;
+    }
     SuppressOrganizePath(e.path, 24.0 * 3600.0);
     SetPin(&pins_, e.path, e.fence_id);
     fence->SetSortBy("manual");
@@ -6247,6 +6262,12 @@ bool App::TransferPins(const std::wstring& src, const std::wstring& dst,
   if (!dst_fence->PortalPath().empty() || !src_fence->PortalPath().empty()) {
     return false;
   }
+  // Dragging icons between fences changes BOTH sets: the source loses members
+  // and the target gains them, so either lock must block the transfer.
+  if (src_fence->IsContentLocked() || dst_fence->IsContentLocked()) {
+    ShowToast(L"分区内容已锁定，请先解锁");
+    return false;
+  }
 
   // Only move paths that are actually pinned to src (avoids hijacking a file
   // that lives in two fences). A path not pinned to src is skipped.
@@ -6421,6 +6442,12 @@ void App::MoveDesktopItemsToFence(const std::vector<std::wstring>& paths,
     }
   }
   if (!target) {
+    return;
+  }
+  // A content-locked fence must not accept new members from any entry point —
+  // the menu path is as much a membership change as a drag-drop.
+  if (target->IsContentLocked()) {
+    ShowToast(L"分区内容已锁定，请先解锁");
     return;
   }
   // Fences Folder Portal: 「移动到分区」= MOVE into the mirrored folder.

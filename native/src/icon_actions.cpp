@@ -262,6 +262,13 @@ bool MoveOrCopyFileIntoDir(HWND owner, const std::wstring& src,
   from.push_back(L'\0');
   std::wstring to = dest;
   to.push_back(L'\0');
+  // Cross-volume "move" is a copy plus a source delete, which loses the file
+  // if the delete half fails and surprises anyone who expected Explorer's
+  // drag semantics. Every caller funnels through here, so degrading once at
+  // this boundary keeps cut/paste, menu moves and drops all consistent.
+  if (move && !SameVolume(src, dest_dir)) {
+    move = false;
+  }
   SHFILEOPSTRUCTW op{};
   op.hwnd = owner;
   op.wFunc = move ? FO_MOVE : FO_COPY;
