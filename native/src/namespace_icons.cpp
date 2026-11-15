@@ -3,6 +3,7 @@
 #include "desktop_shell.h"
 #include "log.h"
 #include "paths_util.h"
+#include "pin_store.h"
 
 #include <ShlObj.h>
 #include <Shobjidl.h>
@@ -524,7 +525,29 @@ int EnsureHostedSystemNamespaceIcons(PinMap* pins) {
   // Crash-safe: capture + persist the original visibility before first hide.
   PersistOriginalIconStateIfNeeded();
   const std::wstring dir = PublicSystemDir();
-  int n = 0;
+  // Returns the number of pin CHANGES (stale drops + new pins) so the caller
+  // knows whether the map needs persisting.
+  int changed = 0;
+  // Drop pins pointing at a PREVIOUS .public_system directory. The data root
+  // moved once (Python .desktidy\storage → DeskTidyNative), leaving 回收站 /
+  // 此电脑 pinned under both paths; RefreshDesktopIcons re-adds any pinned file
+  // that still exists on disk, so the fence showed two of each icon.
+  {
+    const std::wstring suffix = L"\\.public_system\\";
+    const std::wstring live_prefix = NormalizePinKey(dir) + L"\\";
+    for (auto it = pins->begin(); it != pins->end();) {
+      const std::wstring& p = it->first;  // already NormalizePinKey'd
+      const size_t at = p.find(suffix);
+      if (at == std::wstring::npos ||
+          p.compare(0, live_prefix.size(), live_prefix) == 0) {
+        ++it;
+        continue;
+      }
+      LogLine(L"[namespace] dropping stale pin %s", p.c_str());
+      it = pins->erase(it);
+      ++changed;
+    }
+  }
   for (const auto& ns : kSystemIcons) {
     const std::wstring dest = ShortcutPathFor(dir, ns.name);
     if (!CreateNamespaceShortcut(dest, ns.clsid, ns.name)) {
@@ -534,12 +557,12 @@ int EnsureHostedSystemNamespaceIcons(PinMap* pins) {
     // Prefer「常用」like Python ensure_hosted_system_namespace_public_icons.
     if (!FindPin(*pins, dest)) {
       SetPin(pins, dest, "system_common");
-      ++n;
+      ++changed;
     }
   }
   RefreshDesktopNamespaceIcons();
   StartNamespaceIconRebuildGuard();
-  return n;
+  return changed;
 }
 
 void RestoreDesktopIconsIfHidden() {
