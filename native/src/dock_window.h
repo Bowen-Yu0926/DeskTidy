@@ -19,6 +19,10 @@ class DockWindow {
   void RefreshLayer();
   void SetVisible(bool on);
   HWND Hwnd() const { return hwnd_; }
+  // True only while there is a slot to draw. Callers that seat the dock must
+  // check this: AttachOverlayToDesktop(show=true) ShowWindow()s unconditionally,
+  // so seating an empty dock resurrects the host after SetItems hid it.
+  bool HasItems() const { return !slots_.empty(); }
   void SetItems(std::vector<DesktopItem> items);
   bool FillMissingIcons();
   // P1-10: read dock items from the settings UI field (comma-separated paths,

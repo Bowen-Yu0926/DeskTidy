@@ -4720,7 +4720,7 @@ void App::SeatAllFencesUnderApps() {
       fence->RefreshLayer();
     }
   }
-  if (dock_visible_ && dock_.Hwnd()) {
+  if (dock_visible_ && dock_.Hwnd() && dock_.HasItems()) {
     if (seat(dock_.Hwnd()) && IsWindowVisible(dock_.Hwnd()) &&
         !IsIconic(dock_.Hwnd())) {
       dock_.RefreshLayer();
@@ -7091,7 +7091,7 @@ void App::ApplyPageVisibility() {
   } else {
     page_bar_.Hide();
   }
-  if (!icons_visible_intent_ && dock_visible_ &&
+  if (!icons_visible_intent_ && dock_visible_ && dock_.HasItems() &&
       (!dock_.Hwnd() || !IsWindowVisible(dock_.Hwnd()))) {
     dock_.Show();
   } else if (icons_visible_intent_) {
@@ -7180,7 +7180,8 @@ void App::SetPage(int page) {
   }
 
   // 4. 辅助控件状态平滑保持（无需频繁 Raise 强制 DWM 刷树）
-  if (dock_visible_ && dock_.Hwnd() && !IsWindowVisible(dock_.Hwnd())) {
+  if (dock_visible_ && dock_.Hwnd() && dock_.HasItems() &&
+      !IsWindowVisible(dock_.Hwnd())) {
     dock_.Show();
   }
   if (pet_visible_ && pet_.Hwnd() && !IsWindowVisible(pet_.Hwnd())) {
@@ -7613,8 +7614,14 @@ void App::RestoreDesktopChrome() {
       }
     }
   }
-  if (dock_visible_ && dock_.Hwnd()) {
+  // Same invariant as the float host below: dock_visible_ is the user's
+  // preference, not "the dock has icons". A dock whose configured paths all
+  // vanished renders nothing, and reattach() would ShowWindow() that empty
+  // host on every settle tick after SetItems had hidden it.
+  if (dock_visible_ && dock_.Hwnd() && dock_.HasItems()) {
     reattach(dock_.Hwnd());
+  } else if (dock_.Hwnd() && IsWindowVisible(dock_.Hwnd())) {
+    dock_.Hide();
   }
   if (pet_visible_ && pet_.Hwnd()) {
     const bool need_present = reattach(pet_.Hwnd());
@@ -7638,13 +7645,20 @@ void App::RestoreDesktopChrome() {
       page_bar_.RefreshLayer();
     }
   }
-  if (public_visible_ && public_host_.Hwnd()) {
+  // public_visible_ is the organized-mode flag, not "the layer has content".
+  // reattach() unconditionally ShowWindow()s, so seating an empty layer here
+  // resurrected the float host that RebuildPublicItems had just hidden — the
+  // icon stayed on screen after it was moved into a fence until the next
+  // rebuild. Enforce the same invariant the other seat sites use: the float
+  // layer is visible only while it has slots to draw.
+  if (public_visible_ && public_host_.Hwnd() && public_host_.HasItems()) {
     const bool need_present = reattach(public_host_.Hwnd());
-    if (need_present && public_host_.HasItems() &&
-        IsWindowVisible(public_host_.Hwnd()) &&
+    if (need_present && IsWindowVisible(public_host_.Hwnd()) &&
         !IsIconic(public_host_.Hwnd())) {
       public_host_.RefreshLayer();
     }
+  } else if (public_host_.Hwnd() && IsWindowVisible(public_host_.Hwnd())) {
+    public_host_.Hide();
   }
   show_desktop_seated_ = show_desktop;
 }
