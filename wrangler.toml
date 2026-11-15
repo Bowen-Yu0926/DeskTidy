@@ -1,0 +1,32 @@
+# Cloudflare Pages + D1 for the DeskTidy vault API.
+#
+# The Pages project (desktidy-site) builds this repo; Pages Functions under
+# functions/ are picked up automatically, so /api/* is served by
+# functions/api/[[path]].ts.
+#
+# One-time setup in the Cloudflare dashboard (Pages project → Settings →
+# Functions → D1 database bindings):
+#   Variable name : DB
+#   D1 database   : the database you created
+# That binding cannot be committed here — it is account-specific.
+#
+# Environment variable (Pages → Settings → Environment variables, encrypt it):
+#   VAULT_DATA_KEY : base64 of 32 random bytes
+#                    only needed for enc_ver=0 rows; the migrated seed is
+#                    plaintext so it is unused until a client writes with
+#                    enc_ver=0 again. Generate with:
+#                      python -c "import os,base64;print(base64.b64encode(os.urandom(32)).decode())"
+#
+# Apply schema + seed once:
+#   wrangler d1 execute desktidy-vault --remote --file=server/d1/schema.sql
+#   wrangler d1 execute desktidy-vault --remote --file=server/d1/seed.sql
+
+name = "desktidy-site"
+compatibility_date = "2026-11-15"
+
+# Local `wrangler pages dev` needs a binding too; the dashboard one is used in
+# production. Replace database_id with yours (wrangler d1 list).
+# [[d1_databases]]
+# binding = "DB"
+# database_name = "desktidy-vault"
+# database_id = "<your-d1-database-id>"

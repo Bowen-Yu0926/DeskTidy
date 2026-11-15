@@ -78,3 +78,5 @@ scripts/_selftest*
 # Local agent-tooling runtime state (never commit)
 .agent-teams/
 .cortexkit/
+.vault_key
+server/d1/seed.sql
