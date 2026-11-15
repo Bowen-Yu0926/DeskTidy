@@ -114,10 +114,18 @@ async function pbkdf2(password, salt, iterations) {
   return new Uint8Array(bits);
 }
 
+// Format: pbkdf2:<iterations>:<salt-b64>:<hash-b64>
+//
+// ':' rather than '$' on purpose. The seed script is applied through the D1
+// dashboard console, which treats '$' as a bound-parameter placeholder and
+// rejects the statement ("unrecognized token: \"$\""). SQLite itself is fine
+// with either; ':' keeps the same hash readable by any SQL tool.
+const HASH_PREFIX = 'pbkdf2:';
+
 async function hashPassword(password) {
   const salt = crypto.getRandomValues(new Uint8Array(16));
   const hash = await pbkdf2(password, salt, PBKDF2_ITERATIONS);
-  return `pbkdf2$${PBKDF2_ITERATIONS}$${b64encode(salt)}$${b64encode(hash)}`;
+  return `${HASH_PREFIX}${PBKDF2_ITERATIONS}:${b64encode(salt)}:${b64encode(hash)}`;
 }
 
 /** @returns {'ok'|'mismatch'|'legacy'} */
@@ -127,7 +135,7 @@ async function verifyPassword(password, stored) {
       stored.startsWith('$2b$')) {
     return 'legacy';  // bcrypt from the PHP backend; cannot be verified here
   }
-  const parts = stored.split('$');
+  const parts = stored.split(':');
   if (parts.length !== 4 || parts[0] !== 'pbkdf2') return 'mismatch';
   const iterations = parseInt(parts[1], 10);
   if (!Number.isFinite(iterations) || iterations < 1) return 'mismatch';

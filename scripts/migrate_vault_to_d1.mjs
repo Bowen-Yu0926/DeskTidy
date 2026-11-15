@@ -148,7 +148,9 @@ function normTime(raw) {
 function hashPassword(password) {
   const salt = randomBytes(16);
   const dk = pbkdf2Sync(password, salt, PBKDF2_ITERATIONS, 32, 'sha256');
-  return `pbkdf2$${PBKDF2_ITERATIONS}$${salt.toString('base64')}$${dk.toString('base64')}`;
+  // ':' separators, not '$' — the D1 dashboard console treats '$' as a bound
+  // parameter and refuses the statement. Must match verifyPassword().
+  return `pbkdf2:${PBKDF2_ITERATIONS}:${salt.toString('base64')}:${dk.toString('base64')}`;
 }
 
 // ------------------------------------------------------------------ main

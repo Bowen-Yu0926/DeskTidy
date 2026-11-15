@@ -10,7 +10,9 @@ CREATE TABLE IF NOT EXISTS vault_users (
   login TEXT NOT NULL,
   login_type TEXT NOT NULL CHECK (login_type IN ('phone', 'email')),
   display_name TEXT NOT NULL DEFAULT '',
-  -- "pbkdf2$<iterations>$<salt-b64>$<hash-b64>"; see functions/api/[[path]].ts.
+  -- "pbkdf2:<iterations>:<salt-b64>:<hash-b64>"; see functions/api/[[path]].ts.
+  -- Colon separators: the D1 dashboard console reads a dollar sign as a
+  -- bound parameter and rejects the whole statement.
   password_hash TEXT NOT NULL,
   kdf_salt TEXT NOT NULL DEFAULT '',
   kdf_iterations INTEGER NOT NULL DEFAULT 0,
