@@ -11,6 +11,7 @@
 #include <cstring>
 #include <cwctype>
 #include <fstream>
+#include <initializer_list>
 #include <mutex>
 #include <sstream>
 #include <string>
@@ -615,6 +616,23 @@ std::wstring MatchKey(const VaultHttpCredential& e) {
   return e.title + L"\n" + e.username;
 }
 
+// Reads the first field that exists. Servers differ on the column names they
+// expose: this repo's PHP backend returns username/password/url/note, while
+// star-nav (the unified Worker+D1 backend) returns the raw columns
+// username_enc/password_enc/url_enc/note_enc. Both mean the same thing here —
+// with enc_ver=1 the value is already client-side ciphertext, otherwise it is
+// plaintext.
+bool FindAnyString(const std::string& obj,
+                   std::initializer_list<const char*> names,
+                   std::string* out) {
+  for (const char* n : names) {
+    if (FindStringField(obj, n, out)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 VaultHttpCredential ParseCredentialObj(const std::string& obj) {
   VaultHttpCredential c;
   FindIntField(obj, "id", &c.id);
@@ -622,16 +640,16 @@ VaultHttpCredential ParseCredentialObj(const std::string& obj) {
   if (FindStringField(obj, "title", &title)) {
     c.title = WidenUtf8(title);
   }
-  if (FindStringField(obj, "username", &user)) {
+  if (FindAnyString(obj, {"username", "username_enc"}, &user)) {
     c.username = WidenUtf8(user);
   }
-  if (FindStringField(obj, "password", &pass)) {
+  if (FindAnyString(obj, {"password", "password_enc"}, &pass)) {
     c.password = WidenUtf8(pass);
   }
-  if (FindStringField(obj, "url", &url)) {
+  if (FindAnyString(obj, {"url", "url_enc"}, &url)) {
     c.url = WidenUtf8(url);
   }
-  if (FindStringField(obj, "note", &note)) {
+  if (FindAnyString(obj, {"note", "note_enc"}, &note)) {
     c.note = WidenUtf8(note);
   }
   FindBoolField(obj, "pinned", &c.pinned);
