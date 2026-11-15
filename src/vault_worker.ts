@@ -1,5 +1,5 @@
 /**
- * DeskTidy vault API — Cloudflare Pages Functions + D1.
+ * DeskTidy vault API — Cloudflare Worker + D1.
  *
  * Drop-in replacement for the PHP backend in server/desktidy-vault/. The client
  * (native/src/vault_http.cpp) talks to the same paths and the same response
@@ -8,7 +8,13 @@
  *   success: { "ok": true, "data": { ... } }
  *   failure: { "ok": false, "error": "<code>", "message": "<text>" }
  *
- * Route: /api/<rest> — see route() at the bottom.
+ * Route: /api/<rest> — see route() at the bottom. Requests outside /api are
+ * passed through to the static asset binding, so the same Worker can serve the
+ * intro pages alongside the API.
+ *
+ * Deployed with `npx wrangler deploy` (see wrangler.toml), not as Pages
+ * Functions — that build is configured with a deploy command, which runs
+ * `wrangler deploy` against this file's `main` entry.
  *
  * Storage of the four *_enc columns:
  *   enc_ver = 0  server-side AES-256-GCM, key from VAULT_DATA_KEY (32 bytes,
@@ -735,22 +741,30 @@ async function route(request, env, path, method) {
   return fail('not_found', `未知接口: ${method} ${path}`, 404);
 }
 
-export async function onRequest(context) {
-  const { request, env } = context;
-  const method = request.method.toUpperCase();
+export default {
+  async fetch(request, env, ctx) {
+    const method = request.method.toUpperCase();
+    const url = new URL(request.url);
 
-  if (method === 'OPTIONS') {
-    return new Response(null, { status: 204, headers: CORS });
-  }
+    // Anything outside /api belongs to the static site; hand it to the asset
+    // binding when one is configured, otherwise 404 (the API-only deployment).
+    if (!url.pathname.startsWith('/api/') && url.pathname !== '/api') {
+      if (env.ASSETS) return env.ASSETS.fetch(request);
+      return new Response('Not found', { status: 404 });
+    }
 
-  // /api/<rest> — the client's base URL ends in "/api/".
-  const url = new URL(request.url);
-  const path = url.pathname.replace(/^\/api\/?/, '').replace(/\/+$/, '');
+    if (method === 'OPTIONS') {
+      return new Response(null, { status: 204, headers: CORS });
+    }
 
-  try {
-    return await route(request, env, path, method);
-  } catch (e) {
-    if (e instanceof ApiError) return e.response;
-    return fail('server', `服务器错误: ${e.message || e}`, 500);
-  }
-}
+    // /api/<rest> — the client's base URL ends in "/api/".
+    const path = url.pathname.replace(/^\/api\/?/, '').replace(/\/+$/, '');
+
+    try {
+      return await route(request, env, path, method);
+    } catch (e) {
+      if (e instanceof ApiError) return e.response;
+      return fail('server', `服务器错误: ${e.message || e}`, 500);
+    }
+  },
+};

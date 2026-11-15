@@ -1,7 +1,12 @@
-# DeskTidy Vault on Cloudflare (Pages Functions + D1)
+# DeskTidy Vault on Cloudflare (Worker + D1)
 
 Replaces the PHP backend in `server/desktidy-vault/`. Same paths, same response
 envelope, so the client only needs a different API base URL.
+
+Deployed as a **Worker** (`npx wrangler deploy`, entry `src/vault_worker.ts`),
+not as Pages Functions — the project's build is configured with a deploy
+command, which runs wrangler against `wrangler.toml` rather than auto-routing a
+`functions/` directory. `[assets]` serves `docs/` for the non-`/api` paths.
 
 ## What gets stored
 

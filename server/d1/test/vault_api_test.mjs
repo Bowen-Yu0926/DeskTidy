@@ -11,9 +11,9 @@ import { pathToFileURL } from 'node:url';
 
 // Run from the repo root: node server/d1/test/vault_api_test.mjs
 const mod = await import(
-  pathToFileURL(join(process.cwd(), 'functions/api/[[path]].ts')).href
+  pathToFileURL(join(process.cwd(), 'src/vault_worker.ts')).href
 );
-const onRequest = mod.onRequest;
+const onRequest = mod.default.fetch;
 
 const db = new DatabaseSync(':memory:');
 db.exec(readFileSync('server/d1/schema.sql', 'utf8'));
@@ -61,7 +61,7 @@ async function call(method, path, { body, token } = {}) {
   const req = new Request('https://x.pages.dev/api/' + path, {
     method, headers, body: body ? JSON.stringify(body) : undefined,
   });
-  const res = await onRequest({ request: req, env });
+  const res = await onRequest(req, env, {});
   return { status: res.status, json: await res.json() };
 }
 

@@ -1,31 +1,32 @@
-# Cloudflare Pages + D1 for the DeskTidy vault API.
+# DeskTidy vault API — Cloudflare Worker + D1.
 #
-# The Pages project (desktidy-site) builds this repo; Pages Functions under
-# functions/ are picked up automatically, so /api/* is served by
-# functions/api/[[path]].ts.
+# The Pages/Workers build runs `npx wrangler deploy` with root directory "/",
+# so this file is the deployment manifest: `main` is the Worker entry and
+# `assets` serves the intro pages from docs/.
 #
-# One-time setup in the Cloudflare dashboard (Pages project → Settings →
-# Functions → D1 database bindings):
-#   Variable name : DB
-#   D1 database   : the database you created
-# That binding cannot be committed here — it is account-specific.
+# Bindings that must exist in the dashboard (they are account-specific and
+# cannot be committed):
+#   DB             → D1 database holding the vault tables
+#   VAULT_DATA_KEY → secret, base64 of 32 bytes (the AES key)
 #
-# Environment variable (Pages → Settings → Environment variables, encrypt it):
-#   VAULT_DATA_KEY : base64 of 32 random bytes
-#                    only needed for enc_ver=0 rows; the migrated seed is
-#                    plaintext so it is unused until a client writes with
-#                    enc_ver=0 again. Generate with:
-#                      python -c "import os,base64;print(base64.b64encode(os.urandom(32)).decode())"
-#
-# Apply schema + seed once:
+# One-time SQL:
 #   wrangler d1 execute desktidy-vault --remote --file=server/d1/schema.sql
 #   wrangler d1 execute desktidy-vault --remote --file=server/d1/seed.sql
+#
+# Deploy:
+#   npx wrangler deploy
 
-name = "desktidy-site"
+name = "desktidy-vault"
+main = "src/vault_worker.ts"
 compatibility_date = "2026-11-15"
 
-# Local `wrangler pages dev` needs a binding too; the dashboard one is used in
-# production. Replace database_id with yours (wrangler d1 list).
+# Intro pages. Kept so the same deployment answers both /api/* and /.
+[assets]
+directory = "docs"
+binding = "ASSETS"
+
+# Replace database_id with the value `wrangler d1 list` reports. The dashboard
+# binding is what production actually uses; this block is for local runs.
 # [[d1_databases]]
 # binding = "DB"
 # database_name = "desktidy-vault"
