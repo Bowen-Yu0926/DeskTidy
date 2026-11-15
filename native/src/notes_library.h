@@ -34,3 +34,10 @@ std::vector<NoteSearchHit> SearchNotesLibrary(
 // any note create / delete / rename (the cached listing is keyed on directory
 // mtimes, so this is a belt-and-suspenders guard for coarse mtime filesystems).
 void InvalidateNotesFileCache();
+
+// Every openable note file under `dir`, recursively, as absolute paths. Shares
+// the listing cache above (keyed on directory mtimes), so repeated calls while
+// nothing changed cost one FindFirstFile per directory. This is the single
+// source of truth for "what notes exist" — rails must read it instead of
+// keeping their own copy that only one renderer happens to refresh.
+std::vector<std::wstring> ListNoteFiles(const std::wstring& dir);

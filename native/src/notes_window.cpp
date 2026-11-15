@@ -8121,6 +8121,11 @@ void NotesWindow::EnsureOnlineNotesPanel() {
   online_notes_.SetOnOpenLocal([this](const std::wstring& p) {
     if (!p.empty()) {
       OpenPaths({p});
+      // 「转本地」landed a new .md under 云笔记 — the rail reads its own file
+      // list, so without this the new note stayed invisible in the tree until
+      // something else rebuilt it. Same refresh every other land-a-file path
+      // (NewOnlineNoteInEditor etc.) already does.
+      PushLibraryRailState(false);
       Present();
     }
   });
@@ -8319,7 +8324,12 @@ void NotesWindow::PushLibraryRailState(bool refresh_online) {
   json += L"],\"local\":[";
   bool first_local = true;
   const std::wstring root = NotesLibraryDir(false);
-  for (const auto& full : sidebar_paths_) {
+  // Enumerate the library on disk, not sidebar_paths_. That array is only
+  // filled by RebuildSidebar (the legacy TreeView rail); the WebView rail never
+  // calls it, so anything that lands a file without a TreeView rebuild — most
+  // visibly「转本地」— stayed missing from the tree. ListNoteFiles is
+  // mtime-cached, so the per-push cost is one FindFirstFile per directory.
+  for (const auto& full : ListNoteFiles(root)) {
     // SidebarRemovePaths clears slots to "" (keeps TreeView lParam); never
     // paint those ghosts — and drop paths already recycled off disk.
     if (full.empty() || IsOnlineNotePath(full) ||

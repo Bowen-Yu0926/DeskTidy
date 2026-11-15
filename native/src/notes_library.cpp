@@ -244,7 +244,7 @@ void WalkOpenable(const std::wstring& dir, int depth, int max_files,
   FindClose(h);
 }
 
-std::vector<std::wstring> ListNoteFiles(const std::wstring& dir) {
+std::vector<std::wstring> ListNoteFilesCached(const std::wstring& dir) {
   {
     std::lock_guard<std::mutex> lock(g_notes_files_mutex);
     if (g_notes_files_valid && g_notes_files_dir == dir) {
@@ -462,6 +462,10 @@ std::wstring PreviewOf(const std::wstring& line) {
 }
 
 }  // namespace
+
+std::vector<std::wstring> ListNoteFiles(const std::wstring& dir) {
+  return ListNoteFilesCached(dir);
+}
 
 void InvalidateNotesFileCache() {
   std::lock_guard<std::mutex> lock(g_notes_files_mutex);
