@@ -87,7 +87,10 @@ Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Explorer\StartupA
 Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run"; ValueType: binary; ValueName: "Desktidy"; Flags: uninsdeletevalue dontcreatekey
 
 [Run]
-Filename: "{app}\{#MyAppExeName}"; Description: "启动 {#MyAppName}"; Flags: nowait postinstall skipifsilent
+; No skipifsilent: the in-app updater installs with /SILENT and then quits, so
+; the postinstall entry is the ONLY thing that brings DeskTidy back. With
+; skipifsilent the update finished with no DeskTidy running at all.
+Filename: "{app}\{#MyAppExeName}"; Description: "启动 {#MyAppName}"; Flags: nowait postinstall
 
 [UninstallRun]
 Filename: "{app}\{#MyAppExeName}"; Parameters: "--uninstall-cleanup"; Flags: runhidden waituntilterminated; RunOnceId: "DeskTidyUninstallCleanup"
