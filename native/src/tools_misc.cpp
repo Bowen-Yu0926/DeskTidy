@@ -2,6 +2,7 @@
 
 #include "app_prefs.h"
 #include "display_geom.h"
+#include "fence_style.h"
 #include "help_center.h"
 #include "i18n.h"
 #include "log.h"
@@ -219,8 +220,15 @@ bool ApplyWallpaperPath(const std::wstring& path, bool stage, bool remember) {
   }
   std::wstring target = stage ? StageWallpaper(path) : path;
   SetWallpaperStyleFill();
-  return SystemParametersInfoW(SPI_SETDESKWALLPAPER, 0, target.data(),
-                               SPIF_UPDATEINIFILE | SPIF_SENDWININICHANGE) != 0;
+  const bool ok =
+      SystemParametersInfoW(SPI_SETDESKWALLPAPER, 0, target.data(),
+                            SPIF_UPDATEINIFILE | SPIF_SENDWININICHANGE) != 0;
+  if (ok) {
+    // Chameleon fences derive their palette from the wallpaper — recompute so
+    // the next paint picks up the new colours instead of the previous image's.
+    RefreshChameleonPalette();
+  }
+  return ok;
 }
 
 bool RememberAndSet(const std::wstring& path) {
