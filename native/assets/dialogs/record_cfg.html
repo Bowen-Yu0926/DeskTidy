@@ -6,9 +6,9 @@
 <title>录屏设置</title>
 <style>
   :root {
-    --bg: #EEF1F6; --card: #FFFFFF; --border: #C9D2DE; --text: #1A2332;
-    --muted: #64748B; --accent: #1D4ED8; --accent-soft: #E0E7FF;
-    --primary: #2563eb; --primary-hover: #1d4ed8;
+    --bg: #F5F6F7; --card: #FFFFFF; --border: #E5E6EB; --text: #1F2329;
+    --muted: #646A73; --accent: #1F6BFF; --accent-soft: #E8F0FF;
+    --primary: #1F6BFF; --primary-hover: #1A5FE0;
   }
   * { box-sizing: border-box; }
   html, body {
@@ -17,10 +17,10 @@
     background: var(--bg); color: var(--text); font-size: 13px;
   }
   #wrap { height: 100%; display: flex; flex-direction: column; padding: 14px 16px 12px; }
-  .title { font-size: 16px; font-weight: 800; margin: 0 0 10px; }
+  .title { font-size: 16px; font-weight: 600; margin: 0 0 10px; }
   .card {
-    flex: 1; background: var(--card); border: 1px solid var(--border); border-radius: 14px;
-    border-left: 3px solid var(--accent); padding: 14px 16px; overflow: auto;
+    flex: 1; background: var(--card); border: 1px solid var(--border); border-radius: 10px;
+    padding: 14px 16px; overflow: auto;
   }
   .field { margin-bottom: 12px; }
   .field label { display: block; font-size: 12px; color: var(--muted); font-weight: 700; margin-bottom: 4px; }
@@ -34,10 +34,10 @@
   .row { display: flex; gap: 8px; align-items: center; }
   .row input { flex: 1; min-width: 0; }
   .btn {
-    border: 1px solid var(--border); background: #fff; border-radius: 10px;
-    padding: 8px 12px; font: inherit; font-weight: 700; cursor: pointer; white-space: nowrap;
+    border: 1px solid var(--border); background: #fff; border-radius: 6px;
+    padding: 8px 12px; font: inherit; font-weight: 400; cursor: pointer; white-space: nowrap;
   }
-  .btn:hover { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+  .btn:hover { background: #F2F3F5; border-color: #D0D3D9; }
   .btn.primary { background: var(--primary); border-color: var(--primary); color: #fff; }
   .btn.primary:hover { background: var(--primary-hover); color: #fff; }
   .foot { display: flex; gap: 8px; justify-content: flex-end; margin-top: 12px; }

@@ -6,9 +6,9 @@
 <title>选择</title>
 <style>
   :root {
-    --bg: #EEF1F6; --card: #FFFFFF; --border: #C9D2DE; --text: #1A2332;
-    --muted: #64748B; --accent: #1D4ED8; --accent-soft: #E0E7FF;
-    --primary: #2563eb; --primary-hover: #1d4ed8; --row: #F8FAFC;
+    --bg: #F5F6F7; --card: #FFFFFF; --border: #E5E6EB; --text: #1F2329;
+    --muted: #646A73; --accent: #1F6BFF; --accent-soft: #E8F0FF;
+    --primary: #1F6BFF; --primary-hover: #1A5FE0; --row: #F5F6F7;
   }
   * { box-sizing: border-box; }
   html, body {
@@ -16,37 +16,40 @@
     font-family: "Microsoft YaHei", "微软雅黑", "Microsoft YaHei UI", "Segoe UI", sans-serif;
     background: transparent; color: var(--text); font-size: 13px;
   }
+  /* Frameless window: #wrap itself is the card, so the rounded white surface
+     floats on the desktop instead of a translucent dark plate. */
   #wrap {
     height: 100%; display: flex; flex-direction: column; padding: 14px 16px 12px;
-    background: rgba(15, 23, 42, 0.22); border-radius: 16px;
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 10px;
+    box-shadow: 0 8px 24px rgba(31, 35, 41, 0.12);
   }
   .title-row { display: flex; align-items: center; justify-content: space-between; margin: 0 0 4px; }
-  .title { font-size: 16px; font-weight: 800; margin: 0; }
+  .title { font-size: 15px; font-weight: 600; margin: 0; }
   #close {
-    width: 28px; height: 28px; border: none; background: transparent; color: var(--muted);
-    font-size: 18px; border-radius: 8px; cursor: pointer; line-height: 1;
+    width: 24px; height: 24px; border: none; background: transparent; color: var(--muted);
+    font-size: 16px; border-radius: 4px; cursor: pointer; line-height: 1;
   }
-  #close:hover { background: var(--accent-soft); color: var(--accent); }
+  #close:hover { background: #F2F3F5; color: var(--text); }
   .hint { margin: 0 0 10px; color: var(--muted); font-size: 12px; line-height: 1.4; word-break: break-all; }
   .panel {
     flex: 1; min-height: 0; display: flex; gap: 12px;
-    background: var(--card); border: 1px solid var(--border); border-radius: 14px;
-    border-left: 3px solid var(--accent); padding: 12px; overflow: hidden;
-    box-shadow: 0 12px 28px rgba(26,35,50,0.12);
+    background: var(--card); border: 1px solid var(--border); border-radius: 6px;
+    padding: 10px; overflow: hidden;
   }
   #list { flex: 1; min-width: 0; overflow: auto; display: flex; flex-direction: column; gap: 6px; }
   .item {
-    padding: 9px 12px; border: 1px solid var(--border); border-radius: 10px;
+    padding: 9px 12px; border: 1px solid var(--border); border-radius: 6px;
     background: var(--row); cursor: pointer; font-weight: 600;
   }
-  .item:hover { background: var(--accent-soft); }
-  .item.sel { background: var(--accent-soft); border-color: var(--accent); color: #1E3A8A; font-weight: 800; }
+  .item:hover { background: #F2F3F5; }
+  .item.sel { background: var(--accent-soft); border-color: var(--accent); color: #1F2329; font-weight: 600; }
   .side { width: 108px; flex-shrink: 0; display: flex; flex-direction: column; gap: 8px; }
   .btn {
-    border: 1px solid var(--border); background: #fff; border-radius: 10px;
-    padding: 8px 10px; font: inherit; font-weight: 700; cursor: pointer;
+    border: 1px solid var(--border); background: #fff; border-radius: 6px;
+    padding: 8px 10px; font: inherit; font-weight: 400; cursor: pointer;
   }
-  .btn:hover { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+  .btn:hover { background: #F2F3F5; border-color: #D0D3D9; }
   .btn.primary { background: var(--primary); border-color: var(--primary); color: #fff; }
   .btn.primary:hover { background: var(--primary-hover); color: #fff; }
   .foot { display: flex; gap: 8px; justify-content: space-between; align-items: center; margin-top: 12px; }

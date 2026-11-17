@@ -6,8 +6,8 @@
 <title>帮助</title>
 <style>
   :root {
-    --bg: #EEF1F6; --card: #FFFFFF; --border: #C9D2DE; --text: #1A2332;
-    --muted: #64748B; --accent: #1D4ED8; --accent-soft: #E0E7FF; --primary: #2563eb;
+    --bg: #F5F6F7; --card: #FFFFFF; --border: #E5E6EB; --text: #1F2329;
+    --muted: #646A73; --accent: #1F6BFF; --accent-soft: #E8F0FF; --primary: #1F6BFF;
   }
   * { box-sizing: border-box; }
   html, body {
@@ -16,27 +16,27 @@
     background: var(--bg); color: var(--text); font-size: 13px;
   }
   #wrap { height: 100%; display: flex; flex-direction: column; padding: 16px 18px 14px; gap: 12px; }
-  .title { font-size: 18px; font-weight: 800; margin: 0; }
+  .title { font-size: 18px; font-weight: 600; margin: 0; }
   .hint { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
   .actions { display: flex; flex-wrap: wrap; gap: 8px; }
   .btn {
-    border: 1px solid var(--border); background: #fff; border-radius: 10px;
-    padding: 8px 14px; font: inherit; font-weight: 700; cursor: pointer;
+    border: 1px solid var(--border); background: #fff; border-radius: 6px;
+    padding: 8px 14px; font: inherit; font-weight: 400; cursor: pointer;
   }
-  .btn:hover { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+  .btn:hover { background: #F2F3F5; border-color: #D0D3D9; }
   .btn.primary { background: var(--primary); border-color: var(--primary); color: #fff; }
-  .btn.primary:hover { filter: brightness(0.95); color: #fff; }
+  .btn.primary:hover { background: #1A5FE0; border-color: #1A5FE0; color: #fff; }
   .card {
     flex: 1; min-height: 0; overflow: auto;
-    background: var(--card); border: 1px solid var(--border); border-radius: 14px;
-    border-left: 3px solid var(--accent); padding: 14px 18px;
+    background: var(--card); border: 1px solid var(--border); border-radius: 10px;
+    padding: 14px 18px;
   }
   h2 { font-size: 14px; margin: 16px 0 8px; color: var(--accent); }
   h2:first-child { margin-top: 0; }
   p, li { color: var(--text); line-height: 1.55; }
   ul { padding-left: 1.2em; margin: 0 0 8px; }
   code {
-    background: #F1F5F9; padding: 1px 6px; border-radius: 4px; font-size: 12px;
+    background: #F5F6F7; padding: 1px 6px; border-radius: 4px; font-size: 12px;
   }
   .muted { color: var(--muted); font-size: 12px; }
   .foot { display: flex; justify-content: flex-end; }

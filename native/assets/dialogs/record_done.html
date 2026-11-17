@@ -6,10 +6,10 @@
 <title>录屏已保存</title>
 <style>
   :root {
-    --bg: #EEF1F6; --card: #FFFFFF; --border: #C9D2DE; --text: #1A2332;
-    --muted: #64748B; --accent: #1D4ED8; --accent-soft: #E0E7FF;
-    --primary: #2563eb; --primary-hover: #1d4ed8;
-    --danger: #DC2626; --danger-soft: #FEE2E2;
+    --bg: #F5F6F7; --card: #FFFFFF; --border: #E5E6EB; --text: #1F2329;
+    --muted: #646A73; --accent: #1F6BFF; --accent-soft: #E8F0FF;
+    --primary: #1F6BFF; --primary-hover: #1A5FE0;
+    --danger: #D83931; --danger-soft: #FDECEC;
   }
   * { box-sizing: border-box; }
   html, body {
@@ -23,9 +23,9 @@
   }
   #card {
     width: 100%; max-width: 440px; position: relative;
-    background: var(--card); border: 1px solid var(--border); border-radius: 16px;
-    border-left: 3px solid var(--primary); padding: 18px 18px 14px;
-    box-shadow: 0 18px 40px rgba(26,35,50,0.18);
+    background: var(--card); border: 1px solid var(--border); border-radius: 10px;
+    padding: 18px 18px 14px;
+    box-shadow: 0 18px 40px rgba(31,35,41,0.12);
   }
   #close {
     position: absolute; top: 10px; right: 12px; width: 28px; height: 28px;
@@ -33,7 +33,7 @@
     border-radius: 8px; cursor: pointer; line-height: 1;
   }
   #close:hover { background: var(--accent-soft); color: var(--accent); }
-  #title { margin: 0 28px 6px 0; font-size: 16px; font-weight: 800; }
+  #title { margin: 0 28px 6px 0; font-size: 16px; font-weight: 600; }
   #hint { margin: 0 0 12px; color: var(--muted); font-size: 12px; line-height: 1.45; }
   #folder {
     margin: 0 0 10px; color: var(--muted); font-size: 11px; line-height: 1.4;
@@ -45,7 +45,7 @@
   }
   #val {
     flex: 1; min-width: 0; height: 36px; padding: 0 12px;
-    border: 1px solid var(--border); border-radius: 10px; font: inherit;
+    border: 1px solid var(--border); border-radius: 6px; font: inherit;
   }
   #val:focus { outline: 2px solid var(--accent-soft); border-color: var(--accent); }
   #ext {
@@ -54,13 +54,13 @@
   }
   .foot { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; }
   .btn {
-    border: 1px solid var(--border); background: #fff; border-radius: 10px;
-    padding: 8px 16px; font: inherit; font-weight: 700; cursor: pointer;
+    border: 1px solid var(--border); background: #fff; border-radius: 6px;
+    padding: 8px 16px; font: inherit; font-weight: 400; cursor: pointer;
   }
-  .btn:hover { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+  .btn:hover { background: #F2F3F5; border-color: #D0D3D9; }
   .btn.primary { background: var(--primary); border-color: var(--primary); color: #fff; }
   .btn.primary:hover { background: var(--primary-hover); color: #fff; }
-  .btn.danger-ghost { color: var(--danger); border-color: #FECACA; }
+  .btn.danger-ghost { color: var(--danger); border-color: #F5C6C2; }
   .btn.danger-ghost:hover { background: var(--danger-soft); border-color: var(--danger); color: var(--danger); }
 </style>
 </head>

@@ -6,9 +6,9 @@
 <title>管理快照</title>
 <style>
   :root {
-    --bg: #EEF1F6; --card: #FFFFFF; --border: #C9D2DE; --text: #1A2332;
-    --muted: #64748B; --accent: #1D4ED8; --accent-soft: #E0E7FF;
-    --primary: #2563eb; --primary-hover: #1d4ed8; --danger: #DC2626; --row: #F8FAFC;
+    --bg: #F5F6F7; --card: #FFFFFF; --border: #E5E6EB; --text: #1F2329;
+    --muted: #646A73; --accent: #1F6BFF; --accent-soft: #E8F0FF;
+    --primary: #1F6BFF; --primary-hover: #1A5FE0; --danger: #D83931; --row: #F5F6F7;
   }
   * { box-sizing: border-box; }
   html, body {
@@ -17,22 +17,22 @@
     background: var(--bg); color: var(--text); font-size: 13px;
   }
   #wrap { height: 100%; display: flex; flex-direction: column; padding: 14px 16px 12px; }
-  .title { font-size: 16px; font-weight: 800; margin: 0 0 10px; }
+  .title { font-size: 16px; font-weight: 600; margin: 0 0 10px; }
   .panel {
     flex: 1; min-height: 0; display: grid; grid-template-columns: 1fr 1.15fr; gap: 12px;
   }
   .col {
-    background: var(--card); border: 1px solid var(--border); border-radius: 14px;
-    border-left: 3px solid var(--accent); padding: 12px; display: flex; flex-direction: column; min-height: 0;
+    background: var(--card); border: 1px solid var(--border); border-radius: 10px;
+    padding: 12px; display: flex; flex-direction: column; min-height: 0;
   }
-  .col h3 { margin: 0 0 8px; font-size: 13px; font-weight: 800; color: var(--muted); }
+  .col h3 { margin: 0 0 8px; font-size: 13px; font-weight: 600; color: var(--muted); }
   #list { flex: 1; overflow: auto; display: flex; flex-direction: column; gap: 6px; }
   .item {
-    padding: 9px 12px; border: 1px solid var(--border); border-radius: 10px;
+    padding: 9px 12px; border: 1px solid var(--border); border-radius: 6px;
     background: var(--row); cursor: pointer; font-weight: 700;
   }
-  .item:hover { background: var(--accent-soft); }
-  .item.sel { background: var(--accent-soft); border-color: var(--accent); color: #1E3A8A; }
+  .item:hover { background: #F2F3F5; }
+  .item.sel { background: var(--accent-soft); border-color: var(--accent); color: #1F2329; }
   #preview {
     flex: 1; overflow: auto; white-space: pre-wrap; font-family: Consolas, "Cascadia Mono", monospace;
     font-size: 12px; color: var(--muted); background: var(--row); border: 1px solid var(--border);
@@ -40,13 +40,13 @@
   }
   .foot { display: flex; gap: 8px; justify-content: flex-end; margin-top: 12px; }
   .btn {
-    border: 1px solid var(--border); background: #fff; border-radius: 10px;
-    padding: 8px 14px; font: inherit; font-weight: 700; cursor: pointer;
+    border: 1px solid var(--border); background: #fff; border-radius: 6px;
+    padding: 8px 14px; font: inherit; font-weight: 400; cursor: pointer;
   }
-  .btn:hover { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+  .btn:hover { background: #F2F3F5; border-color: #D0D3D9; }
   .btn.primary { background: var(--primary); border-color: var(--primary); color: #fff; }
   .btn.primary:hover { background: var(--primary-hover); }
-  .btn.danger { color: var(--danger); border-color: #FECACA; }
+  .btn.danger { color: var(--danger); border-color: #F5C6C2; }
   #empty { color: var(--muted); text-align: center; padding: 36px 8px; }
 </style>
 </head>

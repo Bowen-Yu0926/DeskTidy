@@ -132,6 +132,17 @@
       color: #1f2329;
       letter-spacing: 0.01em;
       word-break: break-word;
+      caret-color: #1f6bff;
+    }
+    /* Crepe draws the caret with prosemirror-virtual-cursor, whose colour came
+       from --crepe-color-outline (a hairline grey) — nearly invisible. DingTalk
+       paints a solid blue caret, so point the virtual cursor at the accent. */
+    #editor .ProseMirror,
+    #editor .ProseMirror-focused {
+      --prosemirror-virtual-cursor-color: #1f6bff;
+    }
+    #editor .ProseMirror .prosemirror-virtual-cursor {
+      border-left-width: 2px;
     }
     body.theme-dark #editor .ProseMirror {
       color: #e6e6e6;
@@ -361,11 +372,96 @@
     #editor .milkdown-image-block .image-wrapper {
       max-width: 100%;
     }
+    /* DingTalk inserts at the caret and keeps the image flush left; Crepe
+       centres every block image. */
+    #editor .milkdown-image-block > .image-wrapper {
+      margin: 0;
+      justify-content: flex-start;
+    }
+    /* Crepe's own chrome (an emoji caption bubble and a 4px bottom grip) is
+       replaced by the widget below, which is easier to hit and also deletes. */
+    #editor .milkdown-image-block .operation,
+    #editor .milkdown-image-block .image-resize-handle {
+      display: none;
+    }
     #editor .milkdown-image-block img {
       max-width: 100%;
       height: auto;
       border-radius: 4px;
     }
+    /* --- Image chrome: outline, size presets, corner resize, delete ------ */
+    #dsk-img-chrome {
+      position: fixed;
+      z-index: 60;
+      pointer-events: none;
+      display: none;
+    }
+    #dsk-img-chrome.on { display: block; }
+    #dsk-img-chrome .box {
+      position: absolute;
+      inset: 0;
+      border: 1px solid #1f6bff;
+      border-radius: 4px;
+    }
+    #dsk-img-chrome .bar {
+      position: absolute;
+      display: flex;
+      align-items: center;
+      gap: 2px;
+      padding: 3px;
+      background: #fff;
+      border: 1px solid #e5e6eb;
+      border-radius: 6px;
+      box-shadow: 0 4px 14px rgba(31, 35, 41, 0.14);
+      pointer-events: auto;
+      white-space: nowrap;
+    }
+    #dsk-img-chrome .bar button {
+      height: 24px;
+      padding: 0 7px;
+      border: none;
+      border-radius: 4px;
+      background: transparent;
+      color: #4e5969;
+      font: inherit;
+      font-size: 12px;
+      line-height: 24px;
+      cursor: pointer;
+    }
+    #dsk-img-chrome .bar button:hover { background: #f2f3f5; }
+    #dsk-img-chrome .bar button.on { background: #e8f0ff; color: #1f6bff; }
+    #dsk-img-chrome .bar button.del { color: #d83931; }
+    #dsk-img-chrome .bar button.del:hover { background: #fdecec; }
+    #dsk-img-chrome .bar .sep {
+      width: 1px;
+      height: 14px;
+      margin: 0 2px;
+      background: #e5e6eb;
+    }
+    #dsk-img-chrome .bar button svg { width: 14px; height: 14px; display: block; }
+    #dsk-img-chrome .bar button.del { display: flex; align-items: center; }
+    #dsk-img-chrome .handle {
+      position: absolute;
+      right: -6px;
+      bottom: -6px;
+      width: 12px;
+      height: 12px;
+      background: #fff;
+      border: 2px solid #1f6bff;
+      border-radius: 50%;
+      pointer-events: auto;
+      cursor: nwse-resize;
+    }
+    body.theme-dark #dsk-img-chrome .bar {
+      background: #262626;
+      border-color: #3a3a3a;
+      box-shadow: 0 4px 14px rgba(0, 0, 0, 0.5);
+    }
+    body.theme-dark #dsk-img-chrome .bar button { color: #c4c8ce; }
+    body.theme-dark #dsk-img-chrome .bar button:hover { background: #333; }
+    body.theme-dark #dsk-img-chrome .bar button.on { background: #1b3a6b; color: #7aa7ff; }
+    body.theme-dark #dsk-img-chrome .bar .sep { background: #3a3a3a; }
+    body.theme-dark #dsk-img-chrome .handle { background: #262626; }
     /* Floating UI chrome (block handle / slash menu / toolbar) must sit above
        the editor surface, which owns the whole stage. */
     .milkdown-block-handle,
@@ -624,6 +720,7 @@
   // ---------------------------------------------------------------------
   window.__desknoteWysiwygSet = function (md, theme, baseUrl) {
     mdDirty = false;
+    hideImgChrome();
     if (changePostTimer) {
       clearTimeout(changePostTimer);
       changePostTimer = null;
@@ -743,6 +840,209 @@
   }
 
   // ---------------------------------------------------------------------
+  // Image widget: click an image to get an outline, size presets, a corner
+  // drag handle and delete. Crepe's own node view only offers a height-only
+  // bottom handle plus a caption toggle, which is hard to hit and hides the
+  // affordance; this overlay is drawn in the page so it survives re-renders.
+  // ---------------------------------------------------------------------
+  var imgChrome = null;
+  var imgTarget = null;
+  var IMG_PRESETS = [0.25, 0.5, 0.75, 1];
+
+  function imgChromeEl() {
+    if (imgChrome) return imgChrome;
+    var el = document.createElement("div");
+    el.id = "dsk-img-chrome";
+    el.innerHTML =
+      '<div class="box"></div>' +
+      '<div class="bar">' +
+        '<button type="button" data-p="0.25">25%</button>' +
+        '<button type="button" data-p="0.5">50%</button>' +
+        '<button type="button" data-p="0.75">75%</button>' +
+        '<button type="button" data-p="1">100%</button>' +
+        '<span class="sep"></span>' +
+        '<button type="button" class="del" title="删除图片">' +
+          '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" ' +
+          'stroke-width="1.5"><path d="M3 4.5h10M6.5 4.5V3h3v1.5" ' +
+          'stroke-linecap="round"/><path d="M4.5 4.5l.6 8a1 1 0 0 0 1 .9h3.8a1 1 0 0 0 ' +
+          '1-.9l.6-8" stroke-linecap="round"/></svg>' +
+        '</button>' +
+      '</div>' +
+      '<div class="handle" title="拖拽调整大小"></div>';
+    document.body.appendChild(el);
+    el.querySelectorAll(".bar button[data-p]").forEach(function (b) {
+      b.addEventListener("mousedown", function (e) {
+        e.preventDefault();
+        e.stopPropagation();
+      });
+      b.addEventListener("click", function (e) {
+        e.preventDefault();
+        e.stopPropagation();
+        applyImgRatio(Number(b.getAttribute("data-p")));
+      });
+    });
+    el.querySelector(".del").addEventListener("mousedown", function (e) {
+      e.preventDefault();
+      e.stopPropagation();
+    });
+    el.querySelector(".del").addEventListener("click", function (e) {
+      e.preventDefault();
+      e.stopPropagation();
+      deleteImg();
+    });
+    el.querySelector(".handle").addEventListener("pointerdown", function (e) {
+      startImgDrag(e);
+    });
+    imgChrome = el;
+    return el;
+  }
+
+  function imgOrigin(img) {
+    var origin = Number(img && img.dataset ? img.dataset.origin : 0);
+    if (!origin || !isFinite(origin)) {
+      // Crepe records the ratio-1 height on load; before that, the rendered
+      // height is the best guess.
+      origin = (img && img.getBoundingClientRect().height) || 0;
+    }
+    return origin || 0;
+  }
+
+  // The node's ratio is the height multiplier Crepe applied; recover it from
+  // the rendered height so the presets are relative to the natural size.
+  function imgNaturalRatio(img) {
+    var origin = Number(img && img.dataset ? img.dataset.origin : 0);
+    var h = img.getBoundingClientRect().height || 0;
+    if (!origin || !isFinite(origin) || !h) return 1;
+    return h / origin;
+  }
+
+  function placeImgChrome() {
+    if (!imgChrome || !imgTarget) return;
+    var rect = imgTarget.getBoundingClientRect();
+    if (!rect.width || !rect.height) {
+      hideImgChrome();
+      return;
+    }
+    imgChrome.style.left = rect.left + "px";
+    imgChrome.style.top = rect.top + "px";
+    imgChrome.style.width = rect.width + "px";
+    imgChrome.style.height = rect.height + "px";
+    var bar = imgChrome.querySelector(".bar");
+    var above = rect.top > 44;
+    bar.style.left = "0px";
+    bar.style.top = above ? "-34px" : rect.height + 6 + "px";
+    var ratio = imgNaturalRatio(imgTarget);
+    imgChrome.querySelectorAll(".bar button[data-p]").forEach(function (b) {
+      var p = Number(b.getAttribute("data-p"));
+      b.classList.toggle("on", Math.abs(ratio - p) < 0.02);
+    });
+  }
+
+  function showImgChrome(img) {
+    if (!img) return;
+    imgTarget = img;
+    imgChromeEl().classList.add("on");
+    placeImgChrome();
+  }
+
+  function hideImgChrome() {
+    imgTarget = null;
+    if (imgChrome) imgChrome.classList.remove("on");
+  }
+
+  function applyImgRatio(ratio) {
+    if (!imgTarget || !editorApi) return;
+    var img = imgTarget;
+    var origin = imgOrigin(img);
+    // Paint immediately so the overlay follows the pointer, then let the
+    // editor commit the node attribute (which persists as `![alt|0.62]`).
+    if (origin) img.style.height = origin * ratio + "px";
+    img.dataset.height = String(origin * ratio);
+    try { editorApi.setImageRatio(img, ratio); } catch (e) {}
+    mdDirty = true;
+    signalDirty();
+    scheduleChangePost();
+    setTimeout(placeImgChrome, 0);
+  }
+
+  function deleteImg() {
+    if (!imgTarget || !editorApi) return;
+    var img = imgTarget;
+    hideImgChrome();
+    try {
+      if (editorApi.deleteImage(img)) {
+        mdDirty = true;
+        signalDirty();
+        scheduleChangePost();
+      }
+    } catch (e) {}
+  }
+
+  function startImgDrag(e) {
+    if (!imgTarget) return;
+    e.preventDefault();
+    e.stopPropagation();
+    var img = imgTarget;
+    var startY = e.clientY;
+    var startH = img.getBoundingClientRect().height;
+    var origin = imgOrigin(img);
+    var moved = false;
+
+    function onMove(ev) {
+      var h = Math.max(60, startH + (ev.clientY - startY));
+      if (origin) h = Math.min(h, origin * 4);
+      img.style.height = h + "px";
+      img.dataset.height = String(h);
+      moved = true;
+      placeImgChrome();
+    }
+    function onUp() {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      if (!moved || !origin) return;
+      var h = img.getBoundingClientRect().height;
+      applyImgRatio(Math.max(0.05, Math.min(4, h / origin)));
+    }
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+  }
+
+  function bindImageChrome() {
+    var root = document.getElementById("editor");
+    if (!root || root.__dskImgBound) return;
+    root.__dskImgBound = true;
+    root.addEventListener("mousedown", function (e) {
+      var img = e.target && e.target.closest
+        ? e.target.closest(".milkdown-image-block img")
+        : null;
+      if (img) {
+        showImgChrome(img);
+        return;
+      }
+      if (imgTarget) hideImgChrome();
+    }, true);
+    // Clicks on the top bar or outside the surface dismiss the widget too.
+    document.addEventListener("mousedown", function (e) {
+      if (!imgTarget) return;
+      var t = e.target;
+      if (!t || !t.closest) return;
+      if (t.closest("#dsk-img-chrome") || t.closest("#editor")) return;
+      hideImgChrome();
+    }, true);
+    // Anything that scrolls or reflows the surface moves the image under the
+    // overlay, so re-anchor on those.
+    window.addEventListener("scroll", function () {
+      if (imgTarget) placeImgChrome();
+    }, true);
+    window.addEventListener("resize", function () {
+      if (imgTarget) placeImgChrome();
+    });
+    document.addEventListener("keydown", function (e) {
+      if (e.key === "Escape" && imgTarget) hideImgChrome();
+    });
+  }
+
+  // ---------------------------------------------------------------------
   // WebView2 message bridge (protocol unchanged from the Toast shell)
   // ---------------------------------------------------------------------
   if (window.chrome && chrome.webview) {
@@ -807,6 +1107,7 @@
   function ready() {
     bindTitleField();
     bindSoftBreakKeys();
+    bindImageChrome();
     ensureBundleLoaded();
     post({ type: "ready" });
     setTimeout(function () {

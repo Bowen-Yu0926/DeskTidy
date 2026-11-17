@@ -102,6 +102,19 @@ function imageBlockConfig(baseHolder) {
   }
 }
 
+// Resolve the ProseMirror position of the image block that owns `el`. The node
+// view wraps the <img> in `.milkdown-image-block`; posAtDOM on that wrapper
+// gives the node's position inside the document.
+function imagePosOf(ctx, view, el) {
+  const host = el && el.closest ? el.closest('.milkdown-image-block') : null
+  if (!host || !view.dom.contains(host)) return -1
+  const pos = view.posAtDOM(host, 0)
+  if (pos < 0) return -1
+  const node = view.state.doc.nodeAt(pos)
+  if (!node || node.type !== imageBlockSchema.type(ctx)) return -1
+  return pos
+}
+
 export function createDeskNoteEditor(options) {
   const {
     root,
@@ -176,6 +189,33 @@ export function createDeskNoteEditor(options) {
           view.state.tr.replaceSelectionWith(node).scrollIntoView(),
         )
         view.focus()
+      })
+    },
+    // Image chrome (the floating widget in the shell page) works from the DOM
+    // node, because Crepe's node view gives no handle to the ProseMirror
+    // position. posAtDOM resolves it, then a plain transaction edits the node.
+    deleteImage(el) {
+      return crepe.editor.action((ctx) => {
+        const view = ctx.get(editorViewCtx)
+        const pos = imagePosOf(ctx, view, el)
+        if (pos < 0) return false
+        const node = view.state.doc.nodeAt(pos)
+        if (!node) return false
+        view.dispatch(view.state.tr.delete(pos, pos + node.nodeSize))
+        view.focus()
+        return true
+      })
+    },
+    setImageRatio(el, ratio) {
+      return crepe.editor.action((ctx) => {
+        const view = ctx.get(editorViewCtx)
+        const pos = imagePosOf(ctx, view, el)
+        if (pos < 0) return false
+        const n = Math.max(0.05, Math.min(4, Number(ratio) || 1))
+        view.dispatch(
+          view.state.tr.setNodeAttribute(pos, 'ratio', Number(n.toFixed(3))),
+        )
+        return true
       })
     },
     insertHardBreak() {

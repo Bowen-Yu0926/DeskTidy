@@ -5,26 +5,30 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>确认</title>
 <style>
+  /* DingTalk-flavoured light surface: white card, hairline border, flat
+     primary button. Shared token set with every other DeskTidy dialog. */
   :root {
-    --card: rgba(18, 24, 38, 0.94);
-    --border: rgba(255, 255, 255, 0.12);
-    --border-hover: rgba(255, 255, 255, 0.24);
-    --text: #F8FAFC;
-    --muted: #94A3B8;
-    --accent: #3B82F6;
-    --accent-hover: #60A5FA;
-    --accent-soft: rgba(59, 130, 246, 0.15);
-    --primary: #2563EB;
-    --primary-hover: #1D4ED8;
-    --danger: #EF4444;
-    --danger-hover: #DC2626;
-    --danger-soft: rgba(239, 68, 68, 0.20);
-    --warn: #F59E0B;
-    --warn-soft: rgba(245, 158, 11, 0.20);
-    --info: #3B82F6;
-    --info-soft: rgba(59, 130, 246, 0.20);
-    --shadow: 0 20px 50px rgba(0, 0, 0, 0.65), 0 0 0 1px rgba(255, 255, 255, 0.08);
-    --radius: 14px;
+    --card: #FFFFFF;
+    --border: #E5E6EB;
+    --border-hover: #D0D3D9;
+    --text: #1F2329;
+    --muted: #646A73;
+    --faint: #8F959E;
+    --hover: #F2F3F5;
+    --accent: #1F6BFF;
+    --accent-hover: #1A5FE0;
+    --accent-soft: #E8F0FF;
+    --primary: #1F6BFF;
+    --primary-hover: #1A5FE0;
+    --danger: #D83931;
+    --danger-hover: #B92B24;
+    --danger-soft: #FDECEC;
+    --warn: #D97706;
+    --warn-soft: #FEF3E2;
+    --info: #1F6BFF;
+    --info-soft: #E8F0FF;
+    --shadow: 0 8px 24px rgba(31, 35, 41, 0.12), 0 0 0 1px rgba(31, 35, 41, 0.04);
+    --radius: 10px;
   }
   * { box-sizing: border-box; }
   html, body {
@@ -47,11 +51,9 @@
     background: var(--card);
     border: 1px solid var(--border);
     border-radius: var(--radius);
-    padding: 20px 20px 18px;
+    padding: 20px 20px 16px;
     box-shadow: var(--shadow);
     position: relative;
-    backdrop-filter: blur(20px);
-    -webkit-backdrop-filter: blur(20px);
     animation: mistIn 160ms cubic-bezier(0.16, 1, 0.3, 1);
   }
   @keyframes mistIn {
@@ -59,37 +61,36 @@
     to { opacity: 1; transform: none; }
   }
   #close {
-    position: absolute; top: 12px; right: 12px; width: 28px; height: 28px;
-    border: none; background: transparent; color: #94A3B8; font-size: 18px;
-    border-radius: 8px; cursor: pointer; line-height: 1;
+    position: absolute; top: 10px; right: 10px; width: 24px; height: 24px;
+    border: none; background: transparent; color: var(--faint); font-size: 16px;
+    border-radius: 4px; cursor: pointer; line-height: 1;
     transition: all 120ms ease;
   }
-  #close:hover { background: rgba(255, 255, 255, 0.10); color: #FFFFFF; }
+  #close:hover { background: var(--hover); color: var(--text); }
   .head {
     display: flex; gap: 14px; align-items: flex-start;
     margin: 0 24px 0 0;
   }
   .badge {
     flex: 0 0 auto;
-    width: 38px; height: 38px; border-radius: 50%;
+    width: 36px; height: 36px; border-radius: 50%;
     display: grid; place-items: center;
     background: var(--info-soft); color: var(--info);
     margin-top: 1px;
-    box-shadow: 0 0 16px var(--info-soft);
   }
   .badge svg { width: 20px; height: 20px; display: block; }
-  body.warn .badge { background: var(--warn-soft); color: var(--warn); box-shadow: 0 0 16px var(--warn-soft); }
-  body.danger .badge { background: var(--danger-soft); color: var(--danger); box-shadow: 0 0 16px var(--danger-soft); }
+  body.warn .badge { background: var(--warn-soft); color: var(--warn); }
+  body.danger .badge { background: var(--danger-soft); color: var(--danger); }
   .head-text { min-width: 0; flex: 1; }
   #title {
-    margin: 0 0 6px; font-size: 16px; font-weight: 700; letter-spacing: 0;
-    line-height: 1.35; color: var(--text);
+    margin: 0 0 6px; font-size: 15px; font-weight: 600; letter-spacing: 0;
+    line-height: 1.4; color: var(--text);
   }
   #msg {
     margin: 0;
     color: var(--muted);
     font-size: 13px;
-    line-height: 1.55;
+    line-height: 1.6;
     white-space: pre-wrap;
     word-break: break-word;
   }
@@ -98,53 +99,51 @@
     margin-top: 20px;
   }
   .btn {
-    border: 1px solid var(--border);
-    background: rgba(255, 255, 255, 0.06);
-    border-radius: 8px;
-    min-width: 76px;
-    min-height: 32px;
-    padding: 6px 15px;
+    border: 1px solid var(--border-hover);
+    background: #fff;
+    border-radius: 4px;
+    min-width: 68px;
+    min-height: 30px;
+    padding: 5px 14px;
     font: inherit;
     font-size: 13px;
-    font-weight: 600;
+    font-weight: 400;
     color: var(--text);
     cursor: pointer;
     transition: all 120ms ease;
   }
-  .btn:hover { background: rgba(255, 255, 255, 0.12); border-color: var(--border-hover); }
+  .btn:hover { background: var(--hover); border-color: var(--border-hover); }
   .btn:active { transform: scale(0.98); }
   .btn:focus { outline: none; }
   .btn:focus-visible {
-    box-shadow: 0 0 0 2px #0F172A, 0 0 0 4px rgba(59, 130, 246, 0.6);
+    box-shadow: 0 0 0 2px rgba(31, 107, 255, 0.35);
   }
   .btn.ghost {
-    background: rgba(255, 255, 255, 0.05);
-    border-color: var(--border);
-    color: #CBD5E1;
+    background: #fff;
+    border-color: var(--border-hover);
+    color: var(--text);
   }
   .btn.ghost:hover {
-    background: rgba(255, 255, 255, 0.10);
-    color: #FFFFFF;
+    background: var(--hover);
+    color: var(--text);
   }
   .btn.primary {
-    background: linear-gradient(135deg, #3B82F6 0%, #1D4ED8 100%);
-    border-color: rgba(96, 165, 250, 0.4);
+    background: var(--primary);
+    border-color: var(--primary);
     color: #FFFFFF;
-    box-shadow: 0 2px 8px rgba(37, 99, 235, 0.35);
   }
   .btn.primary:hover {
-    background: linear-gradient(135deg, #60A5FA 0%, #2563EB 100%);
-    box-shadow: 0 4px 14px rgba(37, 99, 235, 0.5);
+    background: var(--primary-hover);
+    border-color: var(--primary-hover);
   }
   .btn.danger {
-    background: linear-gradient(135deg, #EF4444 0%, #B91C1C 100%);
-    border-color: rgba(248, 113, 113, 0.4);
+    background: var(--danger);
+    border-color: var(--danger);
     color: #FFFFFF;
-    box-shadow: 0 2px 8px rgba(239, 68, 68, 0.35);
   }
   .btn.danger:hover {
-    background: linear-gradient(135deg, #F87171 0%, #DC2626 100%);
-    box-shadow: 0 4px 14px rgba(239, 68, 68, 0.5);
+    background: var(--danger-hover);
+    border-color: var(--danger-hover);
   }
   #btn-no, #btn-cancel { display: none; }
   /* Confirm: 确定/删除 + 取消（市面删除确认，不用「是/否」） */
