@@ -71,6 +71,10 @@ struct FenceLayout {
   bool content_locked = false;
   // name | date | size | type | manual
   std::string sort_by = "name";
+  // Sort direction for sort_by. Default false matches the pre-toggle render
+  // (name/type ascending), and is overridden per key on load so date/size
+  // keep their "newest/largest first" default for existing layouts.
+  bool sort_desc = false;
   // grid | list
   std::string view_mode = "grid";
   // Panel alpha 0–255; -1 = inherit from style preset.
@@ -102,6 +106,21 @@ struct FenceLayout {
   bool fade_on_idle = false;
   // Manual icon order (paths) when sort_by == "manual" (H1).
   std::vector<std::wstring> pin_order;
+  // ---------------------------------------------------------------------
+  // Tabbed fences (Fences 6 parity). Fences sharing a non-empty tab_group id
+  // are stacked into ONE visible panel: the title bar paints a tab per member
+  // and only the active member's icons are shown. Switching tabs swaps which
+  // member renders — the group keeps a single seat on the desktop.
+  //
+  // Empty tab_group = an ordinary standalone fence, so every existing
+  // layout.json is unaffected.
+  // ---------------------------------------------------------------------
+  std::string tab_group;
+  // Per-fence label inside its group. Empty → falls back to `title`.
+  std::wstring tab_title;
+  // True for the member whose content is currently shown in the group panel.
+  // Exactly one member of a group should carry it; App reconciles on load.
+  bool tab_active = false;
 };
 
 struct AppState {

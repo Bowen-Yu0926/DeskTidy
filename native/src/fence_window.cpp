@@ -94,10 +94,16 @@ constexpr int kExtFenceSpacingNormal = 92;
 constexpr int kExtFenceSpacingWide = 93;
 constexpr int kExtFenceSpacingXl = 94;
 constexpr int kExtFenceShowTitle = 95;
+// Tabbed fences: join/leave a tab group.
+constexpr int kExtFenceTabJoin = 96;
+constexpr int kExtFenceTabLeave = 97;
 constexpr int kExtFenceViewGrid = 20;
 constexpr int kExtFenceViewList = 21;
 // Quick filter box (Fences-style type-to-narrow).
 constexpr int kExtFenceFilter = 22;
+// Sort direction (Explorer's ascending/descending toggle). Manual has none.
+constexpr int kExtFenceSortAsc = 23;
+constexpr int kExtFenceSortDesc = 24;
 constexpr int kExtFenceOpaFollow = 30;
 constexpr int kExtFenceOpa40 = 31;
 constexpr int kExtFenceOpa55 = 32;
@@ -930,6 +936,16 @@ void FenceWindow::SetOpacity(int opacity) {
   ApplyStyle();
 }
 
+void FenceWindow::SetRadius(int radius) {
+  // -1 = follow the style preset. 0 = square, capped at 40px so a small fence
+  // cannot be rounded into a circle.
+  radius_override_ = radius < 0 ? -1 : (std::min)(40, radius);
+  ApplyStyle();
+  if (hwnd_ && IsWindowVisible(hwnd_)) {
+    PresentLayered();
+  }
+}
+
 void FenceWindow::SetCustomColors(bool enabled, COLORREF bg, COLORREF accent) {
   // Explicit custom colours override the preset's bg/accent but keep the
   // preset's title colour, alpha and light/dark flag (ApplyStyle handles that).
@@ -1486,6 +1502,10 @@ bool FenceWindow::Create(HINSTANCE instance, const FenceLayout& layout) {
   fade_on_idle_ = layout.fade_on_idle;
   show_labels_ = layout.show_labels;
   sort_by_ = layout.sort_by.empty() ? "name" : layout.sort_by;
+  sort_desc_ = layout.sort_desc;
+  tab_group_ = layout.tab_group;
+  tab_title_ = layout.tab_title;
+  tab_active_ = layout.tab_active;
   view_mode_ = (layout.view_mode == "list") ? "list" : "grid";
   show_title_ = layout.show_title;
   collapsible_ = layout.collapsible;
@@ -2008,6 +2028,10 @@ FenceLayout FenceWindow::CurrentLayout() const {
   fl.fade_on_idle = fade_on_idle_;
   fl.show_labels = show_labels_;
   fl.sort_by = sort_by_;
+  fl.sort_desc = sort_desc_;
+  fl.tab_group = tab_group_;
+  fl.tab_title = tab_title_;
+  fl.tab_active = tab_active_;
   fl.view_mode = view_mode_;
   fl.opacity = opacity_override_;
   fl.radius = radius_override_;
@@ -2367,6 +2391,138 @@ bool FenceWindow::FillMissingIcons() {
   return true;
 }
 
+void FenceWindow::SetSortDescending(bool desc) {
+  if (desc == sort_desc_) {
+    return;
+  }
+  // Same guard as SetSortBy: re-sorting is a content mutation.
+  if (content_locked_) {
+    ShowToast(L"分区内容已锁定，请先解锁");
+    return;
+  }
+  if (sort_by_ == "manual") {
+    // Manual order has no direction — the user's stored order IS the order.
+    return;
+  }
+  sort_desc_ = desc;
+  SortCells();
+  selected_.assign(cells_.size(), 0);
+  selection_anchor_ = -1;
+  selection_focus_ = -1;
+  LayoutCells();
+  if (hwnd_) {
+    PresentLayered();
+  }
+  if (on_moved_) {
+    on_moved_(this);  // persist layout (incl. sort_desc)
+  }
+}
+
+void FenceWindow::ApplyLayoutGeometry(const FenceLayout& layout) {
+  if (!hwnd_) {
+    return;
+  }
+  expanded_h_ = (std::max)(layout.h, kFenceExpandedFloor);
+  const int win_h = collapsed_ ? S(hwnd_, kCollapsedH0) : layout.h;
+  SetWindowPos(hwnd_, nullptr, layout.x, layout.y, layout.w, win_h,
+               SWP_NOZORDER | SWP_NOACTIVATE);
+  LayoutCells();
+  layer_dirty_ = true;
+  if (IsWindowVisible(hwnd_) && !IsIconic(hwnd_)) {
+    PresentLayered();
+  }
+  if (on_moved_) {
+    on_moved_(this);
+  }
+}
+
+void FenceWindow::SetTabGroup(const std::string& group) {
+  if (group == tab_group_) {
+    return;
+  }
+  tab_group_ = group;
+  if (hwnd_ && IsWindowVisible(hwnd_)) {
+    PresentLayered();
+  }
+}
+
+void FenceWindow::SetTabActive(bool active) {
+  if (active == tab_active_) {
+    return;
+  }
+  tab_active_ = active;
+  if (hwnd_ && IsWindowVisible(hwnd_)) {
+    PresentLayered();
+  }
+}
+
+void FenceWindow::TabStripRects(std::vector<RECT>* out) const {
+  if (!out) {
+    return;
+  }
+  out->clear();
+  if (tab_entries_.size() < 2 || !hwnd_) {
+    return;
+  }
+  RECT rc{};
+  GetClientRect(hwnd_, &rc);
+  const int header = S(hwnd_, kHeaderH0);
+  const int pad = S(hwnd_, 4);
+  // Leave room for the right-hand chrome (collapse / lock / dissolve).
+  RECT collapse_rc{}, lock_rc{}, dissolve_rc{}, portal_up_rc{};
+  HeaderBtnRects(&collapse_rc, &lock_rc, &dissolve_rc, &portal_up_rc);
+  int right_limit = rc.right - pad;
+  auto consider = [&](const RECT& r) {
+    if (r.right > r.left && r.left < right_limit) {
+      right_limit = r.left - S(hwnd_, 4);
+    }
+  };
+  consider(collapse_rc);
+  consider(lock_rc);
+  consider(dissolve_rc);
+  const int left_start =
+      (portal_up_rc.right > portal_up_rc.left) ? portal_up_rc.right + 4
+                                               : S(hwnd_, 6);
+  const int avail = (std::max)(0, right_limit - left_start);
+  if (avail <= 0) {
+    return;
+  }
+  const int n = static_cast<int>(tab_entries_.size());
+  // Equal-width tabs; each tab is at least a few characters wide.
+  int tab_w = avail / n;
+  tab_w = (std::max)(S(hwnd_, 36), tab_w);
+  int x = left_start;
+  for (int i = 0; i < n; ++i) {
+    RECT r{x, S(hwnd_, 3), x + tab_w, header - S(hwnd_, 3)};
+    if (r.right > right_limit) {
+      r.right = right_limit;
+    }
+    if (r.right <= r.left) {
+      break;
+    }
+    out->push_back(r);
+    x = r.right + S(hwnd_, 2);
+    if (x >= right_limit) {
+      break;
+    }
+  }
+}
+
+int FenceWindow::HitTestTab(int x, int y) const {
+  if (tab_entries_.size() < 2) {
+    return -1;
+  }
+  std::vector<RECT> rects;
+  TabStripRects(&rects);
+  for (size_t i = 0; i < rects.size(); ++i) {
+    const RECT& r = rects[i];
+    if (x >= r.left && x < r.right && y >= r.top && y < r.bottom) {
+      return static_cast<int>(i);
+    }
+  }
+  return -1;
+}
+
 void FenceWindow::SetSortBy(const std::string& sort_by) {
   const std::string next = sort_by.empty() ? "name" : sort_by;
   // Content lock freezes the icon set AND its order, so re-sorting is a
@@ -2376,6 +2532,11 @@ void FenceWindow::SetSortBy(const std::string& sort_by) {
     return;
   }
   const bool entering_manual = (next == "manual" && sort_by_ != "manual");
+  // Switching the sort key resets the direction to that key's natural default
+  // (Explorer does the same): name/type ascending, date/size descending.
+  if (next != sort_by_) {
+    sort_desc_ = (next == "date" || next == "created" || next == "size");
+  }
   sort_by_ = next;
   // Fences: switching to Manual freezes the current visual order — seed
   // pin_order_ now so the next SetItems/watch refresh cannot scramble seats.
@@ -2483,11 +2644,12 @@ void FenceWindow::SortCells() {
       const AttrRec a = lookup_attr(cells_[i].item.path);
       recs.push_back({i, by_created ? a.ctime : a.mtime, a.ok});
     }
-    std::stable_sort(recs.begin(), recs.end(), [](const Rec& a, const Rec& b) {
+    std::stable_sort(recs.begin(), recs.end(), [desc = sort_desc_](const Rec& a,
+                                                                  const Rec& b) {
       if (!a.ok || !b.ok) {
-        return a.ok && !b.ok;
+        return a.ok && !b.ok;  // unreadable entries always sink
       }
-      return a.ft > b.ft;  // newest first (matches CompareFileTime > 0)
+      return desc ? (a.ft < b.ft) : (a.ft > b.ft);
     });
     std::vector<Cell> ordered;
     ordered.reserve(cells_.size());
@@ -2506,7 +2668,9 @@ void FenceWindow::SortCells() {
       recs.push_back({i, lookup_attr(cells_[i].item.path).size});
     }
     std::stable_sort(recs.begin(), recs.end(),
-                     [](const Rec& a, const Rec& b) { return a.size > b.size; });
+                     [desc = sort_desc_](const Rec& a, const Rec& b) {
+                       return desc ? (a.size < b.size) : (a.size > b.size);
+                     });
     std::vector<Cell> ordered;
     ordered.reserve(cells_.size());
     for (const auto& r : recs) {
@@ -2519,14 +2683,21 @@ void FenceWindow::SortCells() {
                        const std::wstring ea = ext_of(a.item.path);
                        const std::wstring eb = ext_of(b.item.path);
                        if (ea != eb) {
-                         return ea < eb;
+                         return sort_desc_ ? (eb < ea) : (ea < eb);
                        }
-                       return lower(a.item.name) < lower(b.item.name);
+                       const std::wstring la = lower(a.item.name);
+                       const std::wstring lb = lower(b.item.name);
+                       return sort_desc_ ? (lb < la) : (la < lb);
                      });
   } else {
     std::stable_sort(cells_.begin(), cells_.end(),
                      [&](const Cell& a, const Cell& b) {
-                       return lower(a.item.name) < lower(b.item.name);
+                       const std::wstring la = lower(a.item.name);
+                       const std::wstring lb = lower(b.item.name);
+                       // Explicit swapped comparison — NOT !less, which would
+                       // report true for equal keys and break strict weak
+                       // ordering (undefined behaviour in std::stable_sort).
+                       return sort_desc_ ? (lb < la) : (la < lb);
                      });
   }
 }
@@ -5255,6 +5426,8 @@ void FenceWindow::ShowFenceMenu(POINT screen) {
       leaf(L"按大小", kExtFenceSortSize, sort_by_ == "size"),
       leaf(L"按类型", kExtFenceSortType, sort_by_ == "type"),
       leaf(L"手动", kExtFenceSortManual, sort_by_ == "manual"),
+      leaf(L"升序 ↑", kExtFenceSortAsc, !sort_desc_),
+      leaf(L"降序 ↓", kExtFenceSortDesc, sort_desc_),
   };
   // Fences: per-fence grid pitch. The desktop's own metrics stay the default;
   // these scale this fence's cells so a dense fence and a sparse one can coexist.
@@ -5287,7 +5460,7 @@ void FenceWindow::ShowFenceMenu(POINT screen) {
                              OnPage(static_cast<int>(i))));
   }
   std::vector<ShellMenuExtra> style_kids;
-  for (size_t i = 0; i < all_styles.size() && i < 8; ++i) {
+  for (size_t i = 0; i < all_styles.size(); ++i) {
     style_kids.push_back(leaf(all_styles[i]->name,
                               kExtFenceStyleBase + static_cast<int>(i),
                               style_id_ == all_styles[i]->id));
@@ -5333,6 +5506,14 @@ leaf_en(collapsed_ ? Tr("fence_expand") : Tr("fence_collapse"),
   extras.push_back(submenu(Tr("fence_sort"), std::move(sort_kids)));
   extras.push_back(submenu(L"图标间距", std::move(spacing_kids)));
   extras.push_back(leaf(L"显示标题栏", kExtFenceShowTitle, show_title_));
+  // Tabbed fences: 「合并到标签组…」 opens a picker (App owns the fence list and
+  // the grouping rules), 「脱离标签组」 leaves the current group.
+  if (on_join_tab_group_) {
+    extras.push_back(leaf(L"合并到标签组…", kExtFenceTabJoin));
+  }
+  if (!tab_group_.empty()) {
+    extras.push_back(leaf(L"脱离标签组", kExtFenceTabLeave));
+  }
   extras.push_back(submenu(Tr("fence_view"), std::move(view_kids)));
   extras.push_back(submenu(Tr("fence_opacity"), std::move(opa_kids)));
   extras.push_back(submenu(Tr("fence_style"), std::move(style_kids)));
@@ -5481,12 +5662,24 @@ if (!position_locked_) {
       SetSortBy("manual");
     } else if (rc == kExtFenceSortCreated) {
       SetSortBy("created");
+    } else if (rc == kExtFenceSortAsc) {
+      SetSortDescending(false);
+    } else if (rc == kExtFenceSortDesc) {
+      SetSortDescending(true);
     } else if (rc == kExtFenceSpacingCompact ||
                rc == kExtFenceSpacingNormal ||
                rc == kExtFenceSpacingWide ||
                rc == kExtFenceSpacingXl) {
       static const int kScale[] = {85, 100, 125, 150};
       SetCellScale(kScale[rc - kExtFenceSpacingCompact]);
+    } else if (rc == kExtFenceTabJoin) {
+      if (on_join_tab_group_) {
+        on_join_tab_group_(this);
+      }
+    } else if (rc == kExtFenceTabLeave) {
+      if (on_leave_tab_group_) {
+        on_leave_tab_group_(this);
+      }
     } else if (rc == kExtFenceShowTitle) {
       SetShowTitle(!show_title_);
     } else if (rc == kExtFenceViewGrid) {
@@ -5534,8 +5727,7 @@ if (!position_locked_) {
                rc < kExtFencePageBase + 12) {
       TogglePageMembership(rc - kExtFencePageBase);
     } else if (rc >= kExtFenceStyleBase &&
-               rc < kExtFenceStyleBase + static_cast<int>(all_styles.size()) &&
-               rc < kExtFenceStyleBase + 8) {
+               rc < kExtFenceStyleBase + static_cast<int>(all_styles.size())) {
       SetStyleId(all_styles[static_cast<size_t>(rc - kExtFenceStyleBase)]->id);
       if (on_style_changed_) {
         on_style_changed_(this);
@@ -5583,6 +5775,12 @@ if (!position_locked_) {
   sort_item(502, "size", L"按大小");
   sort_item(503, "type", L"按类型");
   sort_item(504, "manual", L"手动");
+  AppendMenuW(sortm, MF_SEPARATOR, 0, nullptr);
+  const UINT dir_gray = (sort_by_ == "manual") ? MF_GRAYED : 0;
+  AppendMenuW(sortm, MF_STRING | dir_gray | (!sort_desc_ ? MF_CHECKED : 0), 505,
+              L"升序 ↑");
+  AppendMenuW(sortm, MF_STRING | dir_gray | (sort_desc_ ? MF_CHECKED : 0), 506,
+              L"降序 ↓");
   AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(sortm),
               Tr("fence_sort").c_str());
   HMENU viewm = CreatePopupMenu();
@@ -5651,6 +5849,10 @@ if (!position_locked_) {
     SetSortBy("type");
   } else if (cmd == 504) {
     SetSortBy("manual");
+  } else if (cmd == 505) {
+    SetSortDescending(false);
+  } else if (cmd == 506) {
+    SetSortDescending(true);
   } else if (cmd == 510) {
     SetViewMode("grid");
   } else if (cmd == 511) {
@@ -5888,6 +6090,19 @@ LRESULT FenceWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
           rubber_ = false;
           icon_press_ = false;
           SetCapture(hwnd_);
+          return 0;
+        }
+      }
+      // Tab strip (tabbed fences): clicking a non-active tab swaps the group's
+      // visible member. Checked before resize/drag so a tab click never starts
+      // a window drag.
+      {
+        const int tab = HitTestTab(press_client_.x, press_client_.y);
+        if (tab >= 0 && tab < static_cast<int>(tab_entries_.size())) {
+          if (!tab_entries_[static_cast<size_t>(tab)].active &&
+              on_tab_picked_) {
+            on_tab_picked_(tab_entries_[static_cast<size_t>(tab)].fence_id);
+          }
           return 0;
         }
       }
@@ -6598,23 +6813,67 @@ void FenceWindow::Paint(HDC hdc) {
     return (std::max)(title_left, leftmost - 6);
   }();
   if (show_title_) {
-    Gdiplus::RectF title_box(
-        static_cast<Gdiplus::REAL>(title_left),
-        static_cast<Gdiplus::REAL>(title_top),
-        static_cast<Gdiplus::REAL>((std::max)(0, chrome_right - title_left)),
-        static_cast<Gdiplus::REAL>(title_px + 6));
-    // Soft shadow for readability on glass (360-like caption).
-    Gdiplus::SolidBrush shadow_br(Gdiplus::Color(
-        light_panel_ ? 40 : 90,
-        light_panel_ ? 255 : 0, light_panel_ ? 255 : 0,
-        light_panel_ ? 255 : 0));
-    Gdiplus::RectF shadow_box = title_box;
-    shadow_box.Y += 1.f;
-    const std::wstring caption = DisplayTitle();
-    g.DrawString(caption.c_str(), -1, title_font_, shadow_box, &title_fmt,
-                 &shadow_br);
-    g.DrawString(caption.c_str(), -1, title_font_, title_box, &title_fmt,
-                 &title_brush);
+    if (tab_entries_.size() >= 2) {
+      // Tabbed fence: the title slot becomes a tab strip. Only the active tab
+      // gets a raised chip so the group reads as one panel with several
+      // compartments rather than N stacked title bars.
+      std::vector<RECT> tabs;
+      TabStripRects(&tabs);
+      const int tab_px = S(hwnd_, 12);
+      for (size_t i = 0; i < tabs.size() && i < tab_entries_.size(); ++i) {
+        const RECT& r = tabs[i];
+        const bool on = tab_entries_[i].active;
+        Gdiplus::GraphicsPath path;
+        const float rad = S(hwnd_, 7) * 1.0f;
+        Gdiplus::RectF rf(static_cast<Gdiplus::REAL>(r.left),
+                          static_cast<Gdiplus::REAL>(r.top),
+                          static_cast<Gdiplus::REAL>(r.right - r.left),
+                          static_cast<Gdiplus::REAL>(r.bottom - r.top));
+        path.AddArc(rf.X, rf.Y, rad, rad, 180.f, 90.f);
+        path.AddArc(rf.GetRight() - rad, rf.Y, rad, rad, 270.f, 90.f);
+        path.AddArc(rf.GetRight() - rad, rf.GetBottom() - rad, rad, rad, 0.f,
+                    90.f);
+        path.AddArc(rf.X, rf.GetBottom() - rad, rad, rad, 90.f, 90.f);
+        path.CloseFigure();
+        Gdiplus::SolidBrush chip(
+            on ? Gdiplus::Color(light_panel_ ? 235 : 120,
+                                light_panel_ ? 255 : 255,
+                                light_panel_ ? 255 : 255,
+                                light_panel_ ? 255 : 255)
+               : Gdiplus::Color(light_panel_ ? 60 : 40, 255, 255, 255));
+        g.FillPath(&chip, &path);
+        Gdiplus::StringFormat tf;
+        tf.SetAlignment(Gdiplus::StringAlignmentCenter);
+        tf.SetLineAlignment(Gdiplus::StringAlignmentCenter);
+        tf.SetTrimming(Gdiplus::StringTrimmingEllipsisCharacter);
+        tf.SetFormatFlags(Gdiplus::StringFormatFlagsNoWrap);
+        Gdiplus::SolidBrush ink(
+            on ? Gdiplus::Color(255, GetRValue(title_color_),
+                                GetGValue(title_color_),
+                                GetBValue(title_color_))
+               : Gdiplus::Color(160, 255, 255, 255));
+        g.DrawString(tab_entries_[i].label.c_str(), -1, title_font_, rf, &tf,
+                     &ink);
+      }
+    } else {
+      Gdiplus::RectF title_box(
+          static_cast<Gdiplus::REAL>(title_left),
+          static_cast<Gdiplus::REAL>(title_top),
+          static_cast<Gdiplus::REAL>((std::max)(0, chrome_right - title_left)),
+          static_cast<Gdiplus::REAL>(title_px + 6));
+      // Soft shadow for readability on glass (360-like caption).
+      Gdiplus::SolidBrush shadow_br(Gdiplus::Color(
+          light_panel_ ? 40 : 90,
+          light_panel_ ? 255 : 0, light_panel_ ? 255 : 0,
+          light_panel_ ? 255 : 0));
+      Gdiplus::RectF shadow_box = title_box;
+      shadow_box.Y += 1.f;
+      const std::wstring caption = DisplayTitle();
+      g.DrawString(caption.c_str(), -1, title_font_, shadow_box, &title_fmt,
+                   &shadow_br);
+      g.DrawString(caption.c_str(), -1, title_font_, title_box, &title_fmt,
+                   &title_brush);
+    }
   }
   // Title-bar icons only (no text): collapse · lock · delete. Edit stays in settings.
   {

@@ -225,10 +225,54 @@ class FenceWindow {
   const std::vector<DesktopItem> ItemSnapshot() const;
   void SetSortBy(const std::string& sort_by);
   const std::string& SortBy() const { return sort_by_; }
+  // ---- Tabbed fences (Fences 6) ----
+  // Members of the same non-empty group render as one panel: this window draws
+  // a tab per member and only the active member's icons.
+  const std::string& TabGroup() const { return tab_group_; }
+  void SetTabGroup(const std::string& group);
+  const std::wstring& TabTitle() const { return tab_title_; }
+  void SetTabTitle(const std::wstring& title) { tab_title_ = title; }
+  bool TabActive() const { return tab_active_; }
+  void SetTabActive(bool active);
+  // Tab strip labels/ids supplied by App (sibling members in layout order).
+  // Empty → this fence renders its normal standalone title.
+  struct TabEntry {
+    std::string fence_id;
+    std::wstring label;
+    bool active = false;
+  };
+  void SetTabEntries(std::vector<TabEntry> entries) {
+    tab_entries_ = std::move(entries);
+  }
+  // Fired when the user clicks a non-active tab.
+  void SetOnTabPicked(std::function<void(const std::string& fence_id)> fn) {
+    on_tab_picked_ = std::move(fn);
+  }
+  // 「合并到标签组…」 / 「脱离标签组」: App owns the target picker and the
+  // grouping rules, so the fence only reports the intent.
+  void SetOnJoinTabGroup(std::function<void(FenceWindow*)> fn) {
+    on_join_tab_group_ = std::move(fn);
+  }
+  void SetOnLeaveTabGroup(std::function<void(FenceWindow*)> fn) {
+    on_leave_tab_group_ = std::move(fn);
+  }
+  // Screen-independent tab rects in client coords (hit-test + paint share).
+  void TabStripRects(std::vector<RECT>* out) const;
+  int HitTestTab(int x, int y) const;
+  // Adopt another fence's seat (tab groups occupy one rectangle). Geometry
+  // only — style, pins and page membership stay with this fence.
+  void ApplyLayoutGeometry(const FenceLayout& layout);
+  // Sort direction. Manual order has no direction (it is the stored order).
+  bool SortDescending() const { return sort_desc_; }
+  void SetSortDescending(bool desc);
   void SetViewMode(const std::string& mode);
   const std::string& ViewMode() const { return view_mode_; }
   // -1 = inherit style preset; otherwise 0–255 panel alpha.
   void SetOpacity(int opacity);
+  // Corner radius in px @96 DPI. -1 = follow the style preset. The field and
+  // layout plumbing already existed; this exposes it to the settings page.
+  void SetRadius(int radius);
+  int RadiusOverride() const { return radius_override_; }
   // Override the preset's background/accent with explicit colours. Passing
   // enabled=false falls back to the current style preset.
   void SetCustomColors(bool enabled, COLORREF bg, COLORREF accent);
@@ -501,6 +545,18 @@ class FenceWindow {
   HeaderBtn header_press_ = HeaderBtn::None;
   int expanded_h_ = 360;
   std::string sort_by_ = "name";
+  // Tabbed-fence state (see layout.h FenceLayout::tab_group).
+  std::string tab_group_;
+  std::wstring tab_title_;
+  bool tab_active_ = false;
+  std::vector<TabEntry> tab_entries_;
+  std::function<void(const std::string&)> on_tab_picked_;
+  std::function<void(FenceWindow*)> on_join_tab_group_;
+  std::function<void(FenceWindow*)> on_leave_tab_group_;
+  // Descending order for sort_by_. Defaults match the pre-toggle behaviour so
+  // an upgraded layout.json renders exactly as before: name/type ascending,
+  // date/created/size descending (newest / largest first).
+  bool sort_desc_ = false;
   std::string view_mode_ = "grid";
   int opacity_override_ = -1;
   // H1: manual pin order (paths) mirrored to layout.pin_order.

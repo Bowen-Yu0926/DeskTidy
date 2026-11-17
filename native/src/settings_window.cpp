@@ -772,6 +772,12 @@ std::wstring SettingsWindow::BuildStateJson() const {
     json += c.show_labels ? L"true" : L"false";
     json += L",\"cell_scale\":";
     json += std::to_wstring(c.cell_scale);
+    json += L",\"sort_by\":\"";
+    json += JsonEscape(WidenUtf8(c.sort_by.empty() ? "name" : c.sort_by));
+    json += L"\",\"sort_desc\":";
+    json += c.sort_desc ? L"true" : L"false";
+    json += L",\"radius\":";
+    json += std::to_wstring(c.radius);
     json += L",\"show_title\":";
     json += c.show_title ? L"true" : L"false";
     json += L",\"fade_on_idle\":";
@@ -1208,6 +1214,13 @@ void SettingsWindow::DispatchAction(const std::wstring& json) {
   } else if (id == L"fence_set_scale" && on_fence_scale_) {
     on_fence_scale_(JsonIntField(json, L"index", 0),
                     JsonIntField(json, L"value", 100));
+  } else if (id == L"fence_set_sort" && on_fence_sort_) {
+    on_fence_sort_(JsonIntField(json, L"index", 0),
+                   JsonStringField(json, L"by"),
+                   JsonIntField(json, L"desc", 0) != 0);
+  } else if (id == L"fence_set_radius" && on_fence_radius_) {
+    on_fence_radius_(JsonIntField(json, L"index", 0),
+                     JsonIntField(json, L"value", -1));
   } else if (id == L"fence_toggle_title" && on_fence_title_) {
     on_fence_title_(JsonIntField(json, L"index", 0));
   } else if (id == L"fence_toggle_fade" && on_fence_fade_) {

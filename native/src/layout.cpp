@@ -519,6 +519,13 @@ AppState LoadAppStateFromPath(const std::wstring& path, bool inject_defaults) {
     FindBool(obj, "content_locked", &content_locked);
     std::string sort_by;
     FindString(obj, "sort_by", &sort_by);
+    // Missing key = pre-toggle layout.json. Fall back to the historical
+    // direction for that key so an upgrade does not silently re-order fences.
+    bool sort_desc = false;
+    if (!FindBool(obj, "sort_desc", &sort_desc)) {
+      const std::string key = sort_by.empty() ? "name" : sort_by;
+      sort_desc = (key == "date" || key == "created" || key == "size");
+    }
     std::string view_mode;
     FindString(obj, "view_mode", &view_mode);
     int opacity = -1;
@@ -605,6 +612,7 @@ AppState LoadAppStateFromPath(const std::wstring& path, bool inject_defaults) {
     fl.position_locked = position_locked;
     fl.content_locked = content_locked;
     fl.sort_by = sort_by.empty() ? "name" : sort_by;
+    fl.sort_desc = sort_desc;
     fl.view_mode = (view_mode == "list") ? "list" : "grid";
     if (opacity >= 0 && opacity <= 255) {
       fl.opacity = opacity;
@@ -640,6 +648,15 @@ AppState LoadAppStateFromPath(const std::wstring& path, bool inject_defaults) {
     for (const auto& p : pin_order) {
       fl.pin_order.push_back(NormalizeStoredPath(Widen(p)));
     }
+    std::string tab_group;
+    FindString(obj, "tab_group", &tab_group);
+    fl.tab_group = tab_group;
+    std::string tab_title;
+    FindString(obj, "tab_title", &tab_title);
+    fl.tab_title = Widen(tab_title);
+    bool tab_active = false;
+    FindBool(obj, "tab_active", &tab_active);
+    fl.tab_active = tab_active;
     state.fences.push_back(fl);
   }
   if (state.fences.empty()) {
@@ -1028,6 +1045,7 @@ bool SaveAppState(const AppState& state) {
         << (f.content_locked ? "true" : "false") << ","
         << "\"sort_by\":\""
         << EscapeJson(f.sort_by.empty() ? "name" : f.sort_by) << "\","
+        << "\"sort_desc\":" << (f.sort_desc ? "true" : "false") << ","
         << "\"view_mode\":\""
         << EscapeJson(f.view_mode == "list" ? "list" : "grid") << "\","
         << "\"visible\":" << (f.visible ? "true" : "false") << ","
@@ -1049,6 +1067,9 @@ bool SaveAppState(const AppState& state) {
     }
     out << "],"
         << "\"icon_zoom\":" << f.icon_zoom << ","
+        << "\"tab_group\":\"" << EscapeJson(f.tab_group) << "\","
+        << "\"tab_title\":\"" << EscapeJson(Narrow(f.tab_title)) << "\","
+        << "\"tab_active\":" << (f.tab_active ? "true" : "false") << ","
         << "\"label_lines\":" << f.label_lines << ","
         << "\"show_labels\":" << (f.show_labels ? "true" : "false") << ","
         << "\"cell_scale\":" << f.cell_scale << ","

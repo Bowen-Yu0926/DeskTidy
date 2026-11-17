@@ -217,6 +217,17 @@ class App {
   bool TryConsumeTrayOpen();
   bool SpawnFence(const FenceLayout& layout);
   void ApplyPageVisibility();
+  // Tabbed fences: push each member's tab strip (sibling labels + active flag)
+  // and decide which member of every group is the visible one. Call after any
+  // layout change that can move a fence in/out of a group.
+  void SyncFenceTabGroups();
+  // User picked a tab → make that member the group's active one, hide the
+  // previous one, persist.
+  void ActivateFenceTab(const std::string& fence_id);
+  // 「合并到标签组…」: ask which fence to group with, then put both into one
+  // group (a new id when neither is grouped yet).
+  void JoinFenceTabGroup(FenceWindow* fence);
+  void LeaveFenceTabGroup(FenceWindow* fence);
   void ApplyChromeTheme();
   void ApplyTrayThemeIcon();
   void TrimMemory();

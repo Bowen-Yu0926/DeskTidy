@@ -22,6 +22,7 @@
 #include "whitelist.h"
 #include "paths_util.h"
 #include "mist_msg.h"
+#include "mist_webview.h"
 #include "prompt_text.h"
 #include "cli_ipc.h"
 #include "fence_keys.h"
@@ -923,6 +924,13 @@ void App::WireFence(FenceWindow* fence) {
     return out;
   });
   fence->SetPageNames(page_names_);
+  fence->SetOnTabPicked([this](const std::string& id) {
+    ActivateFenceTab(id);
+  });
+  fence->SetOnJoinTabGroup(
+      [this](FenceWindow* f) { JoinFenceTabGroup(f); });
+  fence->SetOnLeaveTabGroup(
+      [this](FenceWindow* f) { LeaveFenceTabGroup(f); });
   fence->SetPageLockedQuery([this](int page) {
     // Same invariant as layout.cpp IsPageLocked: system pages 0/1 are locked.
     if (page == 0 || page == 1) {
@@ -1076,6 +1084,29 @@ bool App::Init(HINSTANCE instance) {
       return;
     }
     fences_[static_cast<size_t>(index)]->SetCellScale(value);
+    PushExtensionSettings();
+  });
+  settings_.SetOnFenceSort(
+      [this](int index, const std::wstring& by, bool desc) {
+        if (index < 0 || index >= static_cast<int>(fences_.size()) ||
+            !fences_[static_cast<size_t>(index)]) {
+          return;
+        }
+        FenceWindow* f = fences_[static_cast<size_t>(index)].get();
+        // Order matters: SetSortBy resets the direction to the new key's
+        // default, so apply the explicit direction afterwards. Both persist
+        // via on_moved_; the final push just refreshes the settings UI.
+        f->SetSortBy(NarrowUtf8(by));
+        f->SetSortDescending(desc);
+        PushExtensionSettings();
+      });
+  settings_.SetOnFenceRadius([this](int index, int value) {
+    if (index < 0 || index >= static_cast<int>(fences_.size()) ||
+        !fences_[static_cast<size_t>(index)]) {
+      return;
+    }
+    fences_[static_cast<size_t>(index)]->SetRadius(value);
+    PersistLayouts();
     PushExtensionSettings();
   });
   settings_.SetOnFenceTitle([this](int index) {
@@ -1565,6 +1596,10 @@ bool App::Init(HINSTANCE instance) {
     float_placements_ = m;
     SaveFloatPlacements(float_placements_);
   });
+  public_host_.SetOnIconZoomChanged([this](int zoom) {
+    prefs_.public_icon_zoom = zoom;
+    SaveAppPrefs(prefs_);
+  });
   public_host_.SetOnMoveToFence(
       [this](const std::vector<std::wstring>& paths, const std::string& fence_id) {
         MoveDesktopItemsToFence(paths, fence_id);
@@ -1621,6 +1656,7 @@ bool App::Init(HINSTANCE instance) {
   SaveAppPrefs(prefs_);
   todos_.ApplyUiTheme(prefs_.ui_theme);
   page_bar_.SetAnchorY(prefs_.page_bar_anchor_y);
+  public_host_.SetIconZoom(prefs_.public_icon_zoom);
   ApplyDockPrefs();
   RegisterNoteFileAssociations();
   display_fp_ = DisplayFingerprint();
@@ -1759,6 +1795,7 @@ bool App::Init(HINSTANCE instance) {
   // default left the fences unmapped until the first band restore, which is
   // exactly why the very first Win+D looked like "fences don't show".
   icons_visible_intent_ = false;
+  SyncFenceTabGroups();
   ApplyPageVisibility();
   InstallFenceKeyHook();
   dock_.SetVisible(dock_visible_);
@@ -2832,6 +2869,14 @@ void App::DispatchSettingsCommand(const std::wstring& id) {
       } else {
         // Restore persist flag; ApplyPageVisibility seats HWND only on
         // the current page (other pages stay soft-parked until switch).
+        // A tab-group member must not be un-hidden on its own: it shares one
+        // seat with its siblings, so showing it would stack two panels.
+        if (!f->TabGroup().empty()) {
+          ActivateFenceTab(f->Id());
+          ShowToast(L"已切换到该标签");
+          PushExtensionSettings();
+          return;
+        }
         f->Show();
         PersistLayouts();
         ApplyPageVisibility();
@@ -3255,6 +3300,11 @@ void App::TogglePeek() {
           !fence->VisibleOnPage(current_page_)) {
         continue;
       }
+      // Tabbed fences: only the active member occupies the group's seat, so
+      // raising every member would stack hidden tabs on top of each other.
+      if (!fence->TabGroup().empty() && !fence->TabActive()) {
+        continue;
+      }
       raise_topmost(fence->Hwnd());
       fence->RefreshLayer();
     }
@@ -3366,6 +3416,7 @@ void App::ReloadFencesFromState(const AppState& state, bool heal_geometry,
   SyncPageChrome();
   RefreshDesktopIcons();
   RefreshSettingsList();
+  SyncFenceTabGroups();
   ApplyPageVisibility();
   dock_.SetVisible(dock_visible_);
   pet_.SetVisible(pet_visible_);
@@ -3865,6 +3916,9 @@ void App::PushExtensionSettings() {
     card.label_lines = f->LabelLines();
     card.show_labels = f->ShowLabels();
     card.cell_scale = f->CellScale();
+    card.sort_by = f->SortBy();
+    card.sort_desc = f->SortDescending();
+    card.radius = f->RadiusOverride();
     card.show_title = f->ShowTitle();
     card.fade_on_idle = f->FadeOnIdle();
     card.visible = f->VisibleOnPage(f->Page());
@@ -4658,6 +4712,7 @@ void App::ApplyLoadedGeneralPrefs() {
     VaultHttpSetApiBase(prefs_.vault_api_base);
   }
   RestartVaultRefreshTimer();
+  public_host_.SetIconZoom(prefs_.public_icon_zoom);
   ApplyDockPrefs();
   SyncPageChrome();
   PushExtensionSettings();
@@ -7175,9 +7230,254 @@ void App::RebuildDockItems() {
   dock_.SetItems(std::move(dock_items));
 }
 
+void App::SyncFenceTabGroups() {
+  // Group members by tab_group, preserving layout order so the tab strip is
+  // stable across reloads. Empty group = standalone fence (no tab strip).
+  std::unordered_map<std::string, std::vector<size_t>> groups;
+  for (size_t i = 0; i < fences_.size(); ++i) {
+    if (!fences_[i] || fences_[i]->TabGroup().empty()) {
+      continue;
+    }
+    groups[fences_[i]->TabGroup()].push_back(i);
+  }
+  for (auto& kv : groups) {
+    auto& members = kv.second;
+    if (members.size() < 2) {
+      // A lone member is just a normal fence — clear its strip so it does not
+      // render a single-tab bar.
+      fences_[members[0]]->SetTabEntries({});
+      continue;
+    }
+    // Exactly one active member; default to the first if the persisted flag is
+    // missing or somehow set on several (older / hand-edited layout.json).
+    int active_pos = -1;
+    for (size_t k = 0; k < members.size(); ++k) {
+      if (fences_[members[k]]->TabActive()) {
+        active_pos = static_cast<int>(k);
+        break;
+      }
+    }
+    if (active_pos < 0) {
+      active_pos = 0;
+      fences_[members[0]]->SetTabActive(true);
+    }
+    std::vector<FenceWindow::TabEntry> entries;
+    entries.reserve(members.size());
+    for (size_t k = 0; k < members.size(); ++k) {
+      FenceWindow* f = fences_[members[k]];
+      // Non-active members must not claim the active flag — reconcile here so a
+      // stale layout.json cannot show two panels at once.
+      const bool is_active = static_cast<int>(k) == active_pos;
+      if (f->TabActive() != is_active) {
+        f->SetTabActive(is_active);
+      }
+      FenceWindow::TabEntry e;
+      e.fence_id = f->Id();
+      e.label = f->TabTitle().empty() ? f->Title() : f->TabTitle();
+      e.active = is_active;
+      entries.push_back(std::move(e));
+    }
+    // Every member gets the same strip so whichever one is visible (only the
+    // active one is) still renders the group's tabs.
+    for (size_t idx : members) {
+      fences_[idx]->SetTabEntries(entries);
+    }
+  }
+}
+
+void App::JoinFenceTabGroup(FenceWindow* fence) {
+  if (!fence) {
+    return;
+  }
+  // Candidates: other fences visible on at least one of this fence's pages.
+  // Grouping across pages would make the tab strip appear/disappear as the
+  // user switches pages, so membership stays page-compatible.
+  std::vector<FenceWindow*> candidates;
+  std::vector<std::wstring> labels;
+  for (auto& f : fences_) {
+    if (!f || f.get() == fence) {
+      continue;
+    }
+    bool shared_page = false;
+    for (int p : fence->Pages()) {
+      if (f->OnPage(p)) {
+        shared_page = true;
+        break;
+      }
+    }
+    if (!shared_page) {
+      continue;
+    }
+    candidates.push_back(f.get());
+    labels.push_back(f->Title());
+  }
+  if (candidates.empty()) {
+    ShowToast(L"没有可合并的其他分区（需在同一分页）");
+    return;
+  }
+
+  std::string picked_id;
+  MistWebDialog dlg;
+  dlg.owner = settings_.Hwnd();
+  dlg.user_data_subdir = L"webview2-tabgroup";
+  dlg.html_path = MistFindAssetHtml(L"dialogs\\pick_list.html");
+  if (dlg.html_path.empty()) {
+    ShowToast(L"找不到选择列表组件");
+    return;
+  }
+  dlg.build_state = [&]() {
+    std::wstring json = L"{\"type\":\"state\",\"title\":\"";
+    json += MistJsonEscape(L"合并到标签组");
+    json += L"\",\"hint\":\"";
+    json += MistJsonEscape(L"选择要与「" + fence->Title() + L"」合并的分区");
+    json += L"\",\"open_label\":\"";
+    json += MistJsonEscape(L"合并");
+    json += L"\",\"allow_new\":false,\"sel\":0,\"items\":[";
+    for (size_t i = 0; i < labels.size(); ++i) {
+      if (i) {
+        json += L',';
+      }
+      json += L'"';
+      json += MistJsonEscape(labels[i]);
+      json += L'"';
+    }
+    json += L"]}";
+    return json;
+  };
+  dlg.on_message = [&](const std::wstring& json) -> bool {
+    const std::wstring type = MistJsonStringField(json, L"type");
+    if (type != L"action") {
+      return false;
+    }
+    const std::wstring id = MistJsonStringField(json, L"id");
+    if (id == L"ready") {
+      MistWebDialogPushState(&dlg);
+      return false;
+    }
+    if (id == L"open") {
+      const int index = MistJsonIntField(json, L"index", -1);
+      if (index >= 0 && index < static_cast<int>(candidates.size())) {
+        picked_id = candidates[static_cast<size_t>(index)]->Id();
+        return true;
+      }
+      return false;
+    }
+    if (id == L"cancel") {
+      return true;
+    }
+    return false;
+  };
+  MistWebDialogRun(&dlg, L"合并到标签组", 480, 400);
+  if (picked_id.empty()) {
+    return;
+  }
+
+  // Target fence: reuse its group if it already has one, else start a new one
+  // keyed by its own id (stable, no counter to persist).
+  FenceWindow* target = nullptr;
+  for (auto& f : fences_) {
+    if (f && f->Id() == picked_id) {
+      target = f.get();
+      break;
+    }
+  }
+  if (!target) {
+    return;
+  }
+  std::string group = target->TabGroup();
+  if (group.empty()) {
+    group = target->Id();
+    target->SetTabGroup(group);
+  }
+  fence->SetTabGroup(group);
+  // The target stays the visible member; the joining fence becomes a tab.
+  fence->SetTabActive(false);
+  if (target->TabGroup() == group && !target->TabActive()) {
+    target->SetTabActive(true);
+  }
+  // Align the newcomer's geometry with the target so the group occupies one
+  // seat — otherwise the hidden member would keep a stale rectangle.
+  FenceLayout tl = target->CurrentLayout();
+  FenceLayout fl = fence->CurrentLayout();
+  fl.x = tl.x;
+  fl.y = tl.y;
+  fl.w = tl.w;
+  fl.h = tl.h;
+  fence->ApplyLayoutGeometry(fl);
+  SyncFenceTabGroups();
+  ApplyPageVisibility();
+  PersistLayouts();
+  PushExtensionSettings();
+}
+
+void App::LeaveFenceTabGroup(FenceWindow* fence) {
+  if (!fence || fence->TabGroup().empty()) {
+    return;
+  }
+  const std::string old_group = fence->TabGroup();
+  fence->SetTabGroup("");
+  fence->SetTabActive(false);
+  // If the leaver was the active member, promote another remaining member so
+  // the group never ends up with everything hidden.
+  bool group_has_active = false;
+  FenceWindow* first_left = nullptr;
+  for (auto& f : fences_) {
+    if (!f || f->TabGroup() != old_group) {
+      continue;
+    }
+    if (!first_left) {
+      first_left = f.get();
+    }
+    if (f->TabActive()) {
+      group_has_active = true;
+    }
+  }
+  if (!group_has_active && first_left) {
+    first_left->SetTabActive(true);
+  }
+  SyncFenceTabGroups();
+  ApplyPageVisibility();
+  PersistLayouts();
+  PushExtensionSettings();
+}
+
+void App::ActivateFenceTab(const std::string& fence_id) {
+  if (fence_id.empty()) {
+    return;
+  }
+  // Find the group of the clicked fence, then flip active flags within it.
+  std::string group;
+  for (auto& f : fences_) {
+    if (f && f->Id() == fence_id) {
+      group = f->TabGroup();
+      break;
+    }
+  }
+  if (group.empty()) {
+    return;
+  }
+  for (auto& f : fences_) {
+    if (!f || f->TabGroup() != group) {
+      continue;
+    }
+    f->SetTabActive(f->Id() == fence_id);
+  }
+  SyncFenceTabGroups();
+  ApplyPageVisibility();
+  PersistLayouts();
+}
+
 void App::ApplyPageVisibility() {
   if (peek_active_) {
     return;
+  }
+  // Tabbed fences: only the active member of a group may be shown. Compute the
+  // suppressed set once so the Show/Hide loop below stays a single pass.
+  std::unordered_set<FenceWindow*> tab_hidden;
+  for (auto& fence : fences_) {
+    if (fence && !fence->TabGroup().empty() && !fence->TabActive()) {
+      tab_hidden.insert(fence.get());
+    }
   }
   // Non-page-switch paths (peek end, show_fences toggle): still OK to Show/Hide
   // individually. Page clicks go through SetPage's OverlayWindowBatch.
@@ -7187,7 +7487,8 @@ void App::ApplyPageVisibility() {
     }
     // icons_visible_intent_: stock desktop — keep fences off DefView.
     if (!fences_hidden_ && !icons_visible_intent_ &&
-        fence->VisibleOnPage(current_page_)) {
+        fence->VisibleOnPage(current_page_) &&
+        tab_hidden.find(fence.get()) == tab_hidden.end()) {
       fence->Show();
     } else {
       fence->HideTransient();
@@ -7715,6 +8016,11 @@ void App::RestoreDesktopChrome() {
       continue;
     }
     if (!fence->VisibleOnPage(current_page_)) {
+      continue;
+    }
+    // Tabbed fences: a non-active member must stay hidden — its group sibling
+    // owns the seat.
+    if (!fence->TabGroup().empty() && !fence->TabActive()) {
       continue;
     }
     if (fences_hidden_ || peek_active_ || icons_visible_intent_) {

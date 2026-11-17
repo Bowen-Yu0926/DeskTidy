@@ -1416,7 +1416,10 @@
     sunset:   { bg: '#4C2A18', chip: 'linear-gradient(135deg, #F97316 0%, #7C2D12 100%)', accent: '#FB923C', text: '#FFFFFF', name: '落霞金' },
     midnight: { bg: '#381C56', chip: 'linear-gradient(135deg, #8B5CF6 0%, #4C1D95 100%)', accent: '#C084FC', text: '#FFFFFF', name: '幻夜紫' },
     rose:     { bg: '#4C182A', chip: 'linear-gradient(135deg, #F43F5E 0%, #881337 100%)', accent: '#FB7185', text: '#FFFFFF', name: '暮色红' },
-    slate:    { bg: '#2A3646', chip: 'linear-gradient(135deg, #64748B 0%, #1E293B 100%)', accent: '#94A3B8', text: '#FFFFFF', name: '静谧灰' }
+    slate:    { bg: '#2A3646', chip: 'linear-gradient(135deg, #64748B 0%, #1E293B 100%)', accent: '#94A3B8', text: '#FFFFFF', name: '静谧灰' },
+    // Chameleon: colours are derived from the wallpaper at paint time, so the
+    // chip is a neutral preview and the label explains the behaviour.
+    chameleon:{ bg: '#2A3646', chip: 'conic-gradient(from 210deg, #2563EB, #10B981, #F59E0B, #EC4899, #8B5CF6, #2563EB)', accent: '#94A3B8', text: '#FFFFFF', name: '跟随壁纸' }
   };
 
   const state = {
@@ -1794,6 +1797,27 @@
         '" data-fc-fade title="' +
         (c.fade_on_idle ? '关闭离开淡化' : '离开时淡化') + '">' +
         ICO.fade + '</button></div>' +
+        '<div class="ft-more"><span>排序</span><select data-fc-sort>' +
+        [['name', '名称'], ['date', '修改日期'], ['created', '创建日期'],
+         ['size', '大小'], ['type', '类型'], ['manual', '手动']]
+          .map(([v, label]) => '<option value="' + v + '"' +
+            ((c.sort_by || 'name') === v ? ' selected' : '') + '>' +
+            label + '</option>').join('') +
+        '</select><button type="button" class="icon-btn' +
+        (c.sort_desc ? ' on' : '') +
+        '" data-fc-sortdesc title="' +
+        ((c.sort_by || 'name') === 'manual' ? '手动排序无方向' :
+          (c.sort_desc ? '当前降序，点击切升序' : '当前升序，点击切降序')) +
+        '"' + ((c.sort_by || 'name') === 'manual' ? ' disabled' : '') + '>' +
+        (c.sort_desc ? '↓' : '↑') + '</button></div>' +
+        '<div class="ft-more"><span>圆角</span><select data-fc-radius>' +
+        [[-1, '跟随样式'], [0, '直角'], [6, '小'], [13, '中'], [20, '大'],
+         [40, '特大']]
+          .map(([v, label]) => '<option value="' + v + '"' +
+            ((Number.isFinite(Number(c.radius)) ? Number(c.radius) : -1) === v
+              ? ' selected' : '') + '>' +
+            label + '</option>').join('') +
+        '</select></div>' +
         '<div class="ft-kinds"></div>' +
         '<div class="ft-foot"><div class="ft-title"></div>' +
         '<button type="button" class="icon-btn' + (isVisible ? '' : ' on') +
@@ -1892,6 +1916,32 @@
           e.stopPropagation();
           post({ type: 'action', id: 'fence_set_scale', index: i,
                  value: Number(scaleSel.value) });
+        });
+      }
+      const sortSel = el.querySelector('[data-fc-sort]');
+      if (sortSel) {
+        sortSel.addEventListener('change', (e) => {
+          e.stopPropagation();
+          post({ type: 'action', id: 'fence_set_sort', index: i,
+                 by: sortSel.value,
+                 desc: c.sort_desc ? 1 : 0 });
+        });
+      }
+      const sortDescBtn = el.querySelector('[data-fc-sortdesc]');
+      if (sortDescBtn) {
+        sortDescBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          post({ type: 'action', id: 'fence_set_sort', index: i,
+                 by: c.sort_by || 'name',
+                 desc: c.sort_desc ? 0 : 1 });
+        });
+      }
+      const radiusSel = el.querySelector('[data-fc-radius]');
+      if (radiusSel) {
+        radiusSel.addEventListener('change', (e) => {
+          e.stopPropagation();
+          post({ type: 'action', id: 'fence_set_radius', index: i,
+                 value: Number(radiusSel.value) });
         });
       }
       const titleBtn = el.querySelector('[data-fc-title]');

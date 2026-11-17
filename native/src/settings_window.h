@@ -150,6 +150,11 @@ class SettingsWindow {
       bool show_labels = true;
       // Grid pitch percent, title bar visibility, idle fade.
       int cell_scale = 100;
+      // Sort key + direction (direction is ignored when sort_by == "manual").
+      std::string sort_by = "name";
+      bool sort_desc = false;
+      // Corner radius px @96 DPI; -1 = follow the style preset.
+      int radius = -1;
       bool show_title = true;
       bool fade_on_idle = false;
       // User-hide (fence menu 「隐藏」); settings can Show again (Fences recover).
@@ -232,6 +237,15 @@ class SettingsWindow {
   // Per-fence icon grid pitch (percent), title-bar visibility, idle fade.
   void SetOnFenceScale(std::function<void(int, int)> fn) {
     on_fence_scale_ = std::move(fn);
+  }
+  // Sort key + direction for one fence. `by` is name/date/created/size/type/
+  // manual; `desc` is ignored for manual.
+  void SetOnFenceSort(std::function<void(int, const std::wstring&, bool)> fn) {
+    on_fence_sort_ = std::move(fn);
+  }
+  // Corner radius px @96 DPI; -1 = follow the preset.
+  void SetOnFenceRadius(std::function<void(int, int)> fn) {
+    on_fence_radius_ = std::move(fn);
   }
   void SetOnFenceTitle(std::function<void(int)> fn) {
     on_fence_title_ = std::move(fn);
@@ -347,6 +361,8 @@ class SettingsWindow {
   PageFn on_fence_page_card_;
   std::function<void(int, int, bool)> on_fence_labels_;
   std::function<void(int, int)> on_fence_scale_;
+  std::function<void(int, const std::wstring&, bool)> on_fence_sort_;
+  std::function<void(int, int)> on_fence_radius_;
   std::function<void(int)> on_fence_title_;
   std::function<void(int)> on_fence_fade_;
 
