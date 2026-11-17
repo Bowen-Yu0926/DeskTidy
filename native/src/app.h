@@ -272,6 +272,9 @@ class App {
   bool IsSessionLocked() const { return session_locked_; }
   void DispatchHotkey(const std::string& id);
   void ScheduleDesktopBandRestore();
+  // Keep the settle timer alive while the Win+D transition is still flipping
+  // the band state, so the fixed 3-tick budget cannot be spent mid-animation.
+  void ExtendBandSettleIfTransitioning();
   // False while settings/vault/todos (owned modals) should keep desktop chrome still.
   bool DesktopChromeMayRestack() const;
   // True when current-page overlays are already attached + mapped (settle no-op).
@@ -302,6 +305,9 @@ class App {
   std::vector<std::thread> workers_;
   int band_restore_left_ = 0;
   bool band_restore_force_ = false;
+  // Start of the current Win+D settle burst; 0 = no burst in flight. Used to
+  // bound ExtendBandSettleIfTransitioning so a flapping probe cannot spin.
+  ULONGLONG band_settle_started_ms_ = 0;
   // Hybrid-GPU (Optimus/AMD switchable) overlay re-upload budget: re-Present
   // visible layered windows a few times after boot so a lost initial blit
   // recovers without a desktop click.

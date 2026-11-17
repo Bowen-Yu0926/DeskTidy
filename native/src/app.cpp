@@ -83,6 +83,10 @@ constexpr UINT kTimerRestore = 40;
 constexpr UINT kTimerPet = 41;
 constexpr UINT kTimerWatch = 42;
 constexpr UINT kTimerBandSettle = 43;
+// Upper bound on how long a Win+D transition may keep the settle timer alive.
+// The shell's re-composite settles well inside this; the cap only exists so a
+// permanently flapping band probe cannot spin the timer forever.
+constexpr ULONGLONG kBandSettleMaxMs = 1500;
 constexpr UINT kTimerUpdate = 44;
 constexpr UINT kTimerVault = 45;
 constexpr UINT kTimerOpenSettingsVault = 46;
@@ -7636,7 +7640,41 @@ void App::ScheduleDesktopBandRestore() {
   if (band_restore_left_ < 3) {
     band_restore_left_ = 3;
   }
+  // Stamp the burst start here, not on the first extension: the budget can be
+  // partly spent before ExtendBandSettleIfTransitioning ever runs, and the cap
+  // must measure the whole transition.
+  if (band_settle_started_ms_ == 0) {
+    band_settle_started_ms_ = GetTickCount64();
+  }
   SetTimer(message_hwnd_, kTimerBandSettle, 100, nullptr);
+}
+
+void App::ExtendBandSettleIfTransitioning() {
+  // Win+D is a multi-frame transition: the shell re-composites the desktop and
+  // re-orders Z between frames, and IsShowDesktopActive() flaps while the
+  // minimise animation is still running. The fixed 3-tick budget can be spent
+  // entirely inside that window, after which nothing re-seats the fences until
+  // the 4s keepalive — and that keepalive takes the "apps quiet" shortcut when
+  // a restored window briefly owns the foreground. Net effect: fences stay
+  // hidden until the user touches the desktop again.
+  //
+  // Keep the settle alive for as long as the band state disagrees with what we
+  // last seated. Bounded by kBandSettleMaxMs so a permanently flapping
+  // IsShowDesktopActive() cannot spin the timer forever.
+  if (!message_hwnd_ || band_restore_left_ <= 0) {
+    return;
+  }
+  if (GetTickCount64() - band_settle_started_ms_ > kBandSettleMaxMs) {
+    // Cap reached: stop extending AND clear the burst stamp, so the next Win+D
+    // gets a fresh budget instead of inheriting an already-expired stamp.
+    band_settle_started_ms_ = 0;
+    return;
+  }
+  const bool show_desktop = QueryDesktopBandState().show_desktop;
+  if (show_desktop != show_desktop_seated_) {
+    band_restore_left_ = (std::max)(band_restore_left_, 2);
+    SetTimer(message_hwnd_, kTimerBandSettle, 100, nullptr);
+  }
 }
 
 void App::StartForegroundHook() {
@@ -7862,6 +7900,13 @@ bool App::DesktopChromeHealthy() const {
   };
   for (const auto& fence : fences_) {
     if (!fence || !fence->Hwnd() || !fence->VisibleOnPage(current_page_)) {
+      continue;
+    }
+    // Tabbed fences: a non-active member is deliberately hidden and shares its
+    // group's seat. Counting it here would report "unhealthy" on every pass,
+    // so the settle timer would keep re-raising chrome — which is exactly the
+    // kind of Z-order churn that made Win+D restores flaky.
+    if (!fence->TabGroup().empty() && !fence->TabActive()) {
       continue;
     }
     if (!mapped_attached(fence->Hwnd())) {
@@ -8865,7 +8910,13 @@ LRESULT CALLBACK App::TrayWndProc(HWND hwnd, UINT msg, WPARAM wparam,
           // Z-order walk (burial is irrelevant under APPWINDOWs; desk FG hook
           // restacks when the user returns to the desktop).
           apps_fg_quiet = IsAppsForegroundQuiet();
-          if (apps_fg_quiet) {
+          // Show-desktop (Win+D) outranks the "apps quiet" shortcut: while the
+          // desktop is what the user is looking at, a hidden/buried fence is
+          // visible breakage, not an acceptable idle state. The quiet branch
+          // only refreshes dirty ULW and never re-seats Z-order, so taking it
+          // here would leave the fences missing until the next user action.
+          const bool show_desktop_now = IsShowDesktopActive();
+          if (apps_fg_quiet && !show_desktop_now) {
             for (auto& fence : self->fences_) {
               if (!fence || !fence->Hwnd() ||
                   !fence->VisibleOnPage(self->current_page_)) {
@@ -8883,6 +8934,10 @@ LRESULT CALLBACK App::TrayWndProc(HWND hwnd, UINT msg, WPARAM wparam,
             for (auto& fence : self->fences_) {
               if (!fence || !fence->Hwnd() ||
                   !fence->VisibleOnPage(self->current_page_)) {
+                continue;
+              }
+              // Tabbed fences: hidden group members are not "buried".
+              if (!fence->TabGroup().empty() && !fence->TabActive()) {
                 continue;
               }
               if (!IsWindowVisible(fence->Hwnd()) || IsIconic(fence->Hwnd())) {
@@ -8912,6 +8967,7 @@ LRESULT CALLBACK App::TrayWndProc(HWND hwnd, UINT msg, WPARAM wparam,
           KillTimer(hwnd, kTimerBandSettle);
           self->band_restore_left_ = 0;
           self->band_restore_force_ = false;
+          self->band_settle_started_ms_ = 0;
           return 0;
         }
         self->RestoreDesktopChrome();
@@ -8919,6 +8975,13 @@ LRESULT CALLBACK App::TrayWndProc(HWND hwnd, UINT msg, WPARAM wparam,
           KillTimer(hwnd, kTimerBandSettle);
           self->band_restore_left_ = 0;
           self->band_restore_force_ = false;
+          self->band_settle_started_ms_ = 0;
+        } else {
+          // Budget still has ticks left — extend it if the band state has not
+          // settled yet (the Win+D animation is longer than 3 × 100ms on some
+          // systems, and spending the whole budget mid-animation left the
+          // fences hidden until the next keepalive).
+          self->ExtendBandSettleIfTransitioning();
         }
         return 0;
       }
