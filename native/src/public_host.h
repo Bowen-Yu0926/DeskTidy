@@ -59,6 +59,14 @@ class PublicHost {
   void PersistSlotPlacements();
   // Explorer/Fences: snap loose floats to the icon grid (nearest free cells).
   void AlignIconsToGrid();
+  // Loose-float icon scale, percent of the desktop's own grid metrics.
+  // 70–160 mirrors the per-fence zoom range so both surfaces feel the same.
+  void SetIconZoom(int percent);
+  int IconZoom() const { return icon_zoom_; }
+  // Fired after a user-driven zoom so App can persist it in prefs.
+  void SetOnIconZoomChanged(std::function<void(int)> fn) {
+    on_icon_zoom_changed_ = std::move(fn);
+  }
   void SetOnPathReplaced(
       std::function<void(const std::wstring&, const std::wstring&)> fn) {
     on_path_replaced_ = std::move(fn);
@@ -253,6 +261,9 @@ class PublicHost {
   void UpdateHoverTip(int index);
   bool CaptionFitsLabel(const std::wstring& text, const RECT& label) const;
   int current_page_ = 0;
+  // Loose-float icon scale (percent of the desktop grid metrics). Loose floats
+  // are free-placed, so there is no sort order to apply — only zoom.
+  int icon_zoom_ = 100;
   FloatPlacementMap placements_;
   std::vector<Slot> slots_;
   std::vector<RECT> blocked_;
@@ -264,6 +275,7 @@ class PublicHost {
   std::function<void()> on_activated_;
   std::function<void(bool)> on_paste_;
   std::function<DWORD(const std::vector<std::wstring>&)> on_paths_dropped_;
+  std::function<void(int)> on_icon_zoom_changed_;
   std::function<void(const FloatPlacementMap&)> on_placements_changed_;
   std::function<void(const std::vector<std::wstring>&, const std::string&)>
       on_move_to_fence_;

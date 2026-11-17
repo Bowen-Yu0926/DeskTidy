@@ -94,6 +94,9 @@ struct AppPrefs {
   bool double_click_hide = false;   // feature removed; kept for prefs compat
   // Fences-class: unpinned desktop floats shared across pages (default on).
   bool enable_public_desktop = true;
+  // Loose-float icon zoom, percent of the desktop grid (70–160). Separate from
+  // per-fence zoom: the public strip is a different surface with its own size.
+  int public_icon_zoom = 100;
   // Desktop 「账」float position (-1 = default corner).
   int vault_launcher_x = -1;
   int vault_launcher_y = -1;

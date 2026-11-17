@@ -378,6 +378,9 @@ AppPrefs LoadAppPrefsFromPath(const std::wstring& path) {
       ParseBoolField(json, "public_desktop_pref_migrated_v1", false);
   // 公共区域功能（未入分区图标跨分页共享）默认且始终启用
   prefs.enable_public_desktop = true;
+  prefs.public_icon_zoom =
+      (std::min)(160, (std::max)(70,
+                                 ParseIntField(json, "public_icon_zoom", 100)));
   prefs.vault_launcher_x = ParseIntField(json, "vault_launcher_x", -1);
   prefs.vault_launcher_y = ParseIntField(json, "vault_launcher_y", -1);
   prefs.show_page_indicator =
@@ -526,6 +529,7 @@ void SaveAppPrefsToPath(const AppPrefs& prefs, const std::wstring& path) {
       << ",\n  \"enable_public_desktop\": "
       << (prefs.enable_public_desktop ? "true" : "false")
       << ",\n  \"public_desktop_pref_migrated_v1\": true"
+      << ",\n  \"public_icon_zoom\": " << prefs.public_icon_zoom
       << ",\n  \"vault_launcher_x\": " << prefs.vault_launcher_x
       << ",\n  \"vault_launcher_y\": " << prefs.vault_launcher_y
       << ",\n  \"show_page_indicator\": "

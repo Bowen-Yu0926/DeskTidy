@@ -47,6 +47,10 @@ constexpr int kHeaderH = 0;
 constexpr int kExtPublicRefresh = 1;
 constexpr int kExtPublicMovePage = 2;
 constexpr int kExtPublicAlignGrid = 3;
+// Icon zoom on loose floats: same 15pp steps and range as the fence zoom.
+constexpr int kExtPublicZoomIn = 4;
+constexpr int kExtPublicZoomOut = 5;
+constexpr int kExtPublicZoomReset = 6;
 constexpr int kDragThreshold = 6;
 bool g_reg = false;
 ULONG_PTR g_gdiplus = 0;
@@ -870,9 +874,21 @@ void PublicHost::Layout() {
     return;
   }
   metrics_ = QueryIconGridMetrics();
-  const int cell_w = (std::max)(48, metrics_.cell_w);
-  const int cell_h = (std::max)(56, metrics_.cell_h);
-  const int icon = (std::max)(16, metrics_.icon_size);
+  // Zoom is applied to a local copy so metrics_ stays the pristine desktop
+  // grid — SetItems/FillMissingIcons pre-load icons keyed on that size, and a
+  // mutated metrics_ would make every zoomed paint miss the icon cache.
+  const IconGridMetrics zoomed = [this]() {
+    IconGridMetrics m = QueryIconGridMetrics();
+    if (icon_zoom_ != 100) {
+      m.cell_w = MulDiv(m.cell_w, icon_zoom_, 100);
+      m.cell_h = MulDiv(m.cell_h, icon_zoom_, 100);
+      m.icon_size = MulDiv(m.icon_size, icon_zoom_, 100);
+    }
+    return m;
+  }();
+  const int cell_w = (std::max)(48, zoomed.cell_w);
+  const int cell_h = (std::max)(56, zoomed.cell_h);
+  const int icon = (std::max)(16, zoomed.icon_size);
   (void)icon;
 
   auto intersects_blocked = [](const std::vector<RECT>& blk, const RECT& slot) {
@@ -1161,6 +1177,9 @@ void PublicHost::ShowBackgroundMenu(POINT screen) {
   const std::vector<ShellMenuExtra> extras{
       {L"刷新", kExtPublicRefresh},
       {L"对齐图标到网格", kExtPublicAlignGrid},
+      {L"放大图标", kExtPublicZoomIn},
+      {L"缩小图标", kExtPublicZoomOut},
+      {L"图标恢复默认大小", kExtPublicZoomReset},
   };
   // Snapshot Desktop membership so New can SuppressOrganize (Fences: new
   // loose icons stay as floats; watch must not vacuum them into a fence).
@@ -1235,6 +1254,12 @@ void PublicHost::ShowBackgroundMenu(POINT screen) {
     on_refresh_();
   } else if (rc == kExtPublicAlignGrid) {
     AlignIconsToGrid();
+  } else if (rc == kExtPublicZoomIn) {
+    SetIconZoom(icon_zoom_ + 15);
+  } else if (rc == kExtPublicZoomOut) {
+    SetIconZoom(icon_zoom_ - 15);
+  } else if (rc == kExtPublicZoomReset) {
+    SetIconZoom(100);
   }
 }
 
@@ -1459,6 +1484,22 @@ void PublicHost::AlignIconsToGrid() {
   PersistSlotPlacements();
   if (IsWindowVisible(hwnd_) && !IsIconic(hwnd_)) {
     Present();
+  }
+}
+
+void PublicHost::SetIconZoom(int percent) {
+  const int clamped = (std::min)(160, (std::max)(70, percent));
+  if (clamped == icon_zoom_) {
+    return;
+  }
+  icon_zoom_ = clamped;
+  Layout();
+  PersistSlotPlacements();
+  if (IsWindowVisible(hwnd_) && !IsIconic(hwnd_)) {
+    Present();
+  }
+  if (on_icon_zoom_changed_) {
+    on_icon_zoom_changed_(icon_zoom_);
   }
 }
 
