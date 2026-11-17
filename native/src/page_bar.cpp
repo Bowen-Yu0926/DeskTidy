@@ -1,4 +1,5 @@
 #include "page_bar.h"
+#include "desktop_dblclick.h"
 
 #include "desktop_shell.h"
 #include "display_geom.h"
@@ -76,7 +77,9 @@ RECT PageBar::HostWorkArea() const {
   if (hwnd_ && IsWindow(hwnd_)) {
     RECT rc{};
     GetWindowRect(hwnd_, &rc);
-    POINT c{(rc.left + rc.right) / 2, (rc.top + rc.bottom) / 2};
+    // Anchor inside the visible peek strip on the left edge so a collapsed
+    // bar never crosses into a right-hand secondary monitor.
+    POINT c{rc.left + 2, (rc.top + rc.bottom) / 2};
     return WorkAreaAtPoint(c);
   }
   return PrimaryWorkArea();
@@ -719,9 +722,13 @@ void PageBar::ShowPageContextMenu(int page_index) {
   POINT pt{};
   GetCursorPos(&pt);
   // Desktop-band chrome: no SetForegroundWindow — keeps page bar under apps.
-  const int cmd = TrackPopupMenu(
-      menu, TPM_RETURNCMD | TPM_NONOTIFY | TPM_RIGHTBUTTON, pt.x, pt.y, 0,
-      hwnd_, nullptr);
+  int cmd = 0;
+  {
+    ScopedDesktopPopupMenuGuard menu_guard(hwnd_);
+    cmd = TrackPopupMenu(
+        menu, TPM_RETURNCMD | TPM_NONOTIFY | TPM_RIGHTBUTTON, pt.x, pt.y, 0,
+        hwnd_, nullptr);
+  }
   DestroyMenu(menu);
   PostMessageW(hwnd_, WM_NULL, 0, 0);
   if (cmd >= CmdColorBase && cmd < CmdColorBase + static_cast<int>(all_styles.size())) {
@@ -995,6 +1002,10 @@ void PageBar::Paint(HDC) {
     const BYTE bg = GetGValue(bg_);
     const BYTE bb = GetBValue(bg_);
     const bool is_light = (br * 299 + bg * 587 + bb * 114) / 1000 > 180;
+    // Clip off-workarea overhang to transparent (alpha=0) so collapsed state
+    // never intrudes into a right-docked taskbar or right secondary monitor.
+    const int clip_w = (std::min)(w, VisibleWidth() + kEdgeMargin);
+    g.SetClip(Gdiplus::Rect(0, 0, (std::max)(1, clip_w), h));
     const int pad_x = PadX();
     const int card_m = CardMargin();
     const bool float_style = IsFloatStyle();

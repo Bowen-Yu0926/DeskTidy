@@ -623,7 +623,8 @@ void App::WireFence(FenceWindow* fence) {
     std::vector<FenceWindow*> list;
     std::vector<LayoutRect> rects;
     for (auto& f : fences_) {
-      if (!f || !f->OnPage(page) || f->IsCollapsed()) {
+      if (!f || !f->OnPage(page) || f->IsCollapsed() ||
+          (!f->TabGroup().empty() && !f->TabActive())) {
         continue;
       }
       RECT r{};
@@ -720,6 +721,13 @@ void App::WireFence(FenceWindow* fence) {
       // ApplyPageGeometry refreshes expanded_h_ so Present keeps owned size.
       fw->ApplyPageGeometry(geo, /*present=*/true);
       fw->AttachToDesktopLayer();
+      if (!fw->TabGroup().empty()) {
+        for (auto& peer : fences_) {
+          if (peer && peer.get() != fw && peer->TabGroup() == fw->TabGroup()) {
+            peer->ApplyPageGeometry(geo, /*present=*/false);
+          }
+        }
+      }
     }
     PersistLayouts();
     RebuildPublicItems();  // reflow floats outside moved fence frames
@@ -2698,7 +2706,7 @@ void App::DispatchSettingsCommand(const std::wstring& id) {
     return;
   }
   if (id.rfind(L"toggle_page_lock:", 0) == 0) {
-    TogglePageLock(_wtoi(id.c_str() + 16));
+    TogglePageLock(_wtoi(id.c_str() + 17));
     PushExtensionSettings();
     return;
   }
@@ -4448,7 +4456,8 @@ void App::HideOffPageFences() {
       continue;
     }
     const bool want = !fences_hidden_ && !icons_visible_intent_ &&
-                      fence->VisibleOnPage(current_page_);
+                      fence->VisibleOnPage(current_page_) &&
+                      (fence->TabGroup().empty() || fence->TabActive());
     if (want) {
       continue;
     }
@@ -4503,7 +4512,8 @@ void App::SeatAllFencesUnderApps() {
       continue;
     }
     const bool want = !fences_hidden_ && !icons_visible_intent_ &&
-                      !peek_active_ && fence->VisibleOnPage(current_page_);
+                      !peek_active_ && fence->VisibleOnPage(current_page_) &&
+                      (fence->TabGroup().empty() || fence->TabActive());
     if (!want) {
       continue;
     }
@@ -6865,8 +6875,8 @@ void App::SyncFenceTabGroups() {
   for (auto& kv : groups) {
     auto& members = kv.second;
     if (members.size() < 2) {
-      // A lone member is just a normal fence — clear its strip so it does not
-      // render a single-tab bar.
+      fences_[members[0]]->SetTabGroup("");
+      fences_[members[0]]->SetTabActive(false);
       fences_[members[0]]->SetTabEntries({});
       continue;
     }
@@ -7069,6 +7079,7 @@ void App::ActivateFenceTab(const std::string& fence_id) {
   }
   // Find the group of the clicked fence, then flip active flags within it.
   std::string group;
+  FenceWindow* prev_active = nullptr;
   for (auto& f : fences_) {
     if (f && f->Id() == fence_id) {
       group = f->TabGroup();
@@ -7079,10 +7090,25 @@ void App::ActivateFenceTab(const std::string& fence_id) {
     return;
   }
   for (auto& f : fences_) {
+    if (f && f->TabGroup() == group && f->TabActive()) {
+      prev_active = f.get();
+      break;
+    }
+  }
+  FencePageGeometry active_geo{};
+  const bool have_geo = prev_active != nullptr;
+  if (have_geo) {
+    active_geo = prev_active->GeometryForPage(current_page_);
+  }
+  for (auto& f : fences_) {
     if (!f || f->TabGroup() != group) {
       continue;
     }
-    f->SetTabActive(f->Id() == fence_id);
+    const bool now_active = (f->Id() == fence_id);
+    f->SetTabActive(now_active);
+    if (have_geo && f.get() != prev_active) {
+      f->ApplyPageGeometry(active_geo, /*present=*/now_active);
+    }
   }
   SyncFenceTabGroups();
   ApplyPageVisibility();
@@ -7188,7 +7214,8 @@ void App::SetPage(int page) {
   for (auto& fence : fences_) {
     if (!fence || !fence->Hwnd()) continue;
     const bool want = !fences_hidden_ && !icons_visible_intent_ &&
-                      !peek_active_ && fence->VisibleOnPage(current_page_);
+                      !peek_active_ && fence->VisibleOnPage(current_page_) &&
+                      (fence->TabGroup().empty() || fence->TabActive());
     if (want) {
       arrivals.push_back(fence.get());
     } else {
@@ -8250,6 +8277,8 @@ void App::DissolveFence(FenceWindow* fence) {
       SavePins(pins_);
       SaveFloatPlacements(float_placements_);
     }
+    SyncFenceTabGroups();
+    ApplyPageVisibility();
     PersistLayouts();
     RefreshSettingsList();
     RefreshDesktopIcons();
@@ -8262,6 +8291,7 @@ void App::RenameFenceAt(int index, const std::wstring& title) {
     return;
   }
   fences_[static_cast<size_t>(index)]->SetTitle(title);
+  SyncFenceTabGroups();
   PersistLayouts();
   RefreshSettingsList();
 }
@@ -8277,6 +8307,11 @@ void App::SetFencePageAt(int index, int page) {
   if (PageLockedForFences(page) || PageLockedForFences(f->Page())) {
     ShowToast(L"该页面已锁定，无法移动分区");
     return;
+  }
+  if (!f->TabGroup().empty()) {
+    f->SetTabGroup("");
+    f->SetTabActive(false);
+    SyncFenceTabGroups();
   }
   f->SetPage(page);
   PersistLayouts();
@@ -9023,6 +9058,21 @@ LRESULT CALLBACK App::TrayWndProc(HWND hwnd, UINT msg, WPARAM wparam,
                 0))) {
         SetTimer(hwnd, kTimerIconsRefresh, 300, nullptr);
       }
+      if (wparam == SPI_SETDESKWALLPAPER ||
+          (lparam &&
+           _wcsicmp(reinterpret_cast<LPCWSTR>(lparam), L"ImmersiveColorSet") ==
+               0)) {
+        RefreshChameleonPalette();
+        for (auto& fence : self->fences_) {
+          if (fence && fence->StyleId() == kChameleonStyleId) {
+            fence->RefreshStyleFromPreset();
+          }
+        }
+        if (self->prefs_.page_bar_style == kChameleonStyleId) {
+          self->ApplyChromeTheme();
+        }
+        self->PushExtensionSettings();
+      }
       break;
     }
     case WM_WTSSESSION_CHANGE: {
@@ -9034,7 +9084,7 @@ LRESULT CALLBACK App::TrayWndProc(HWND hwnd, UINT msg, WPARAM wparam,
           self->pet_timer_ = 0;
         }
         if (self->restore_timer_) {
-          KillTimer(hwnd, kTimerBandSettle);
+          KillTimer(hwnd, kTimerRestore);
           self->restore_timer_ = 0;
         }
         self->band_restore_left_ = 0;

@@ -1,4 +1,5 @@
 #include "icon_actions.h"
+#include "desktop_dblclick.h"
 
 #include "namespace_icons.h"
 
@@ -590,9 +591,13 @@ int TrackIconShellMenu(HWND owner, POINT screen, bool include_unpin) {
   }
   // Avoid SetForegroundWindow(owner): desktop-band overlays (fence/dock) would
   // climb over APPWINDOWs. TrackPopupMenu still needs a message hwnd.
-  const int cmd =
-      TrackPopupMenu(menu, TPM_RETURNCMD | TPM_NONOTIFY | TPM_RIGHTBUTTON,
-                     screen.x, screen.y, 0, owner, nullptr);
+  int cmd = 0;
+  {
+    ScopedDesktopPopupMenuGuard menu_guard(owner);
+    cmd = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_NONOTIFY | TPM_RIGHTBUTTON,
+                         screen.x, screen.y, 0, owner, nullptr);
+  }
+  PostMessageW(owner, WM_NULL, 0, 0);
   DestroyMenu(menu);
   return cmd;
 }

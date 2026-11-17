@@ -96,6 +96,7 @@ class FenceWindow {
   // Painted caption: fence title at portal root; folder leaf when drilled in.
   std::wstring DisplayTitle() const;
   void SetStyleId(const std::string& style_id);
+  void RefreshStyleFromPreset();
   const std::string& StyleId() const { return style_id_; }
   FenceLayout CurrentLayout() const;
   // Returns true if this call re-uploaded pixels (PresentLayered) — i.e. the

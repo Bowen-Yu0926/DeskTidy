@@ -35,6 +35,8 @@ CLIPFORMAT PinTransferFormat() {
 }
 
 PinDragMoveFn g_pin_move_fn;
+std::function<bool(POINT)> g_public_sink_hit_fn;
+bool g_last_drag_escaped = false;
 bool g_over_pin_target = false;
 bool g_over_pin_invalid = false;
 bool g_pin_transferred = false;
@@ -116,8 +118,13 @@ bool IsPointOverDesktopUnpinZone(POINT pt) {
         wcscmp(cls, L"DeskTidyNativePetPages") == 0) {
       return false;
     }
-    if (wcscmp(cls, L"DeskTidyNativePublic") == 0 ||
-        wcscmp(cls, L"DeskTidyNativeMarquee") == 0 ||
+    if (wcscmp(cls, L"DeskTidyNativePublic") == 0) {
+      if (g_public_sink_hit_fn && g_public_sink_hit_fn(pt)) {
+        return false;
+      }
+      return true;
+    }
+    if (wcscmp(cls, L"DeskTidyNativeMarquee") == 0 ||
         wcscmp(cls, L"DeskTidyNativeDock") == 0) {
       return true;
     }
@@ -167,6 +174,7 @@ class SimpleDropSource : public IDropSource {
   HRESULT STDMETHODCALLTYPE QueryContinueDrag(BOOL escape,
                                               DWORD key_state) override {
     if (escape) {
+      g_last_drag_escaped = true;
       g_desktop_unpin_requested = false;
       return DRAGDROP_S_CANCEL;
     }
@@ -988,6 +996,7 @@ bool ShellDoDragFiles(const std::vector<std::wstring>& paths,
     return false;
   }
   // AIGC START
+  g_last_drag_escaped = false;
   g_float_drag_active = cancel_desktop_self_drop;
   BeginOleDragVisual(data, paths);
   DWORD effect = DROPEFFECT_COPY | DROPEFFECT_MOVE | DROPEFFECT_LINK;
@@ -1001,6 +1010,10 @@ bool ShellDoDragFiles(const std::vector<std::wstring>& paths,
 }
 
 void SetPinDragMoveFn(PinDragMoveFn fn) { g_pin_move_fn = std::move(fn); }
+bool LastShellDragWasEscaped() { return g_last_drag_escaped; }
+void SetPublicDropSinkHitFn(std::function<bool(POINT)> fn) {
+  g_public_sink_hit_fn = std::move(fn);
+}
 
 PinDragResult ShellDoDragPins(const std::vector<std::wstring>& paths,
                               const std::wstring& src_fence_id) {

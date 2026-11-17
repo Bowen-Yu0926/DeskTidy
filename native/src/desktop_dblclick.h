@@ -38,3 +38,14 @@ bool ForegroundIsDesktopShell();
 // current cursor position). Optional *tick_ms receives GetTickCount64 of the
 // click (DefView「新建」→ suppress watch-organize within a short window).
 bool GetLastDesktopRightClick(POINT* out, ULONGLONG* tick_ms = nullptr);
+
+// Register the owner HWND of an active desktop-band TrackPopupMenu so clicks
+// outside #32768 or pressing Esc dismiss the menu cleanly without requiring
+// SetForegroundWindow (which would lift overlays or steal app focus).
+void SetActiveDesktopPopupMenuOwner(HWND hwnd);
+struct ScopedDesktopPopupMenuGuard {
+  explicit ScopedDesktopPopupMenuGuard(HWND hwnd) {
+    SetActiveDesktopPopupMenuOwner(hwnd);
+  }
+  ~ScopedDesktopPopupMenuGuard() { SetActiveDesktopPopupMenuOwner(nullptr); }
+};

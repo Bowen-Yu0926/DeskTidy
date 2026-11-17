@@ -1,4 +1,5 @@
 #include "pet_window.h"
+#include "desktop_dblclick.h"
 
 #include "desktop_shell.h"
 #include "pet_lines.h"
@@ -2070,9 +2071,12 @@ void PetWindow::ShowContextMenu(POINT screen) {
   AppendMenuW(menu, MF_STRING, 3, L"待机");
   // Do not SetForegroundWindow(hwnd_) — pet sits in the desktop band; FG
   // would lift it over APPWINDOWs (same Fences-class rule as fences).
-  const int cmd =
-      TrackPopupMenu(menu, TPM_RETURNCMD | TPM_NONOTIFY | TPM_RIGHTBUTTON,
-                     screen.x, screen.y, 0, hwnd_, nullptr);
+  int cmd = 0;
+  {
+    ScopedDesktopPopupMenuGuard menu_guard(hwnd_);
+    cmd = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_NONOTIFY | TPM_RIGHTBUTTON,
+                         screen.x, screen.y, 0, hwnd_, nullptr);
+  }
   PostMessageW(hwnd_, WM_NULL, 0, 0);
   DestroyMenu(menu);
   if (cmd == 5) {

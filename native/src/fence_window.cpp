@@ -1,4 +1,5 @@
 #include "fence_window.h"
+#include "desktop_dblclick.h"
 
 #include "fence_keys.h"
 
@@ -924,6 +925,15 @@ void FenceWindow::SetStyleId(const std::string& style_id) {
   ApplyStyle();
   if (hwnd_ && IsWindowVisible(hwnd_)) {
     PresentLayered();
+  }
+}
+
+void FenceWindow::RefreshStyleFromPreset() {
+  ApplyStyle();
+  if (hwnd_ && IsWindowVisible(hwnd_)) {
+    PresentLayered();
+  } else {
+    layer_dirty_ = true;
   }
 }
 
@@ -5820,9 +5830,13 @@ if (!position_locked_) {
   preview_style_id_ = style_id_;
   style_preview_active_ = false;
   style_menu_open_ = true;
-  const int cmd =
-      TrackPopupMenu(menu, TPM_RETURNCMD | TPM_NONOTIFY | TPM_RIGHTBUTTON,
-                     screen.x, screen.y, 0, hwnd_, nullptr);
+  int cmd = 0;
+  {
+    ScopedDesktopPopupMenuGuard menu_guard(hwnd_);
+    cmd = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_NONOTIFY | TPM_RIGHTBUTTON,
+                         screen.x, screen.y, 0, hwnd_, nullptr);
+  }
+  PostMessageW(hwnd_, WM_NULL, 0, 0);
   style_menu_open_ = false;
   DestroyMenu(menu);
   if (cmd == 0) {
@@ -6836,11 +6850,9 @@ void FenceWindow::Paint(HDC hdc) {
         path.AddArc(rf.X, rf.GetBottom() - rad, rad, rad, 90.f, 90.f);
         path.CloseFigure();
         Gdiplus::SolidBrush chip(
-            on ? Gdiplus::Color(light_panel_ ? 235 : 120,
-                                light_panel_ ? 255 : 255,
-                                light_panel_ ? 255 : 255,
-                                light_panel_ ? 255 : 255)
-               : Gdiplus::Color(light_panel_ ? 60 : 40, 255, 255, 255));
+            on ? Gdiplus::Color(light_panel_ ? 235 : 120, 255, 255, 255)
+               : (light_panel_ ? Gdiplus::Color(28, 15, 23, 42)
+                               : Gdiplus::Color(40, 255, 255, 255)));
         g.FillPath(&chip, &path);
         Gdiplus::StringFormat tf;
         tf.SetAlignment(Gdiplus::StringAlignmentCenter);
@@ -6848,10 +6860,9 @@ void FenceWindow::Paint(HDC hdc) {
         tf.SetTrimming(Gdiplus::StringTrimmingEllipsisCharacter);
         tf.SetFormatFlags(Gdiplus::StringFormatFlagsNoWrap);
         Gdiplus::SolidBrush ink(
-            on ? Gdiplus::Color(255, GetRValue(title_color_),
-                                GetGValue(title_color_),
-                                GetBValue(title_color_))
-               : Gdiplus::Color(160, 255, 255, 255));
+            Gdiplus::Color(on ? 255 : 168, GetRValue(title_color_),
+                           GetGValue(title_color_),
+                           GetBValue(title_color_)));
         g.DrawString(tab_entries_[i].label.c_str(), -1, title_font_, rf, &tf,
                      &ink);
       }

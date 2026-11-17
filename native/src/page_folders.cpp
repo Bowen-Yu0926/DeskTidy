@@ -1,4 +1,5 @@
 #include "page_folders.h"
+#include "desktop_dblclick.h"
 
 #include "mist_msg.h"
 #include "mist_webview.h"
@@ -278,9 +279,13 @@ void OpenPageFolderMenu(HWND owner) {
   AppendMenuW(menu, MF_STRING, 100, L"编辑列表…");
   POINT pt{};
   GetCursorPos(&pt);
-  const int cmd =
-      TrackPopupMenu(menu, TPM_RETURNCMD | TPM_NONOTIFY, pt.x, pt.y, 0, owner,
-                     nullptr);
+  int cmd = 0;
+  {
+    ScopedDesktopPopupMenuGuard menu_guard(owner);
+    cmd = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_NONOTIFY, pt.x, pt.y, 0,
+                         owner, nullptr);
+  }
+  PostMessageW(owner, WM_NULL, 0, 0);
   DestroyMenu(menu);
   if (cmd == 100) {
     EditPageFoldersDialog(owner);

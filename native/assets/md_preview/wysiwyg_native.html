@@ -34,7 +34,8 @@
       flex: 1 1 auto;
       min-height: 0;
       width: 100%;
-      overflow: hidden;
+      overflow-y: auto;
+      overflow-x: hidden;
       position: relative;
     }
     #editor.desknote-body-pending::before {
@@ -1084,22 +1085,25 @@
 
   // Scroll reporting (host keeps the preview pane in sync).
   var suppressScrollEmit = false;
+  function scrollContainer() {
+    return document.getElementById("editor") || document.scrollingElement || document.documentElement;
+  }
   function emitScroll() {
     if (suppressScrollEmit) return;
-    var el = document.scrollingElement || document.documentElement;
+    var el = scrollContainer();
     var max = Math.max(1, el.scrollHeight - el.clientHeight);
     post({ type: "scroll", ratio: el.scrollTop / max });
   }
   window.addEventListener("scroll", emitScroll, true);
   window.__desknoteSetScrollRatio = function (r) {
     suppressScrollEmit = true;
-    var el = document.scrollingElement || document.documentElement;
+    var el = scrollContainer();
     var max = Math.max(1, el.scrollHeight - el.clientHeight);
     el.scrollTop = Math.max(0, Math.min(1, Number(r) || 0)) * max;
     setTimeout(function () { suppressScrollEmit = false; }, 30);
   };
   window.__desknoteGetScrollRatio = function () {
-    var el = document.scrollingElement || document.documentElement;
+    var el = scrollContainer();
     var max = Math.max(1, el.scrollHeight - el.clientHeight);
     return el.scrollTop / max;
   };

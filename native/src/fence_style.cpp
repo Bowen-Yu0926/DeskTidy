@@ -187,7 +187,8 @@ void HsvToRgb(double h, double s, double v, int* r, int* g, int* b) {
 // Read the wallpaper and return its dominant hue plus mean luminance.
 // Falls back to the solid desktop background colour when the wallpaper is a
 // solid fill (or unreadable), so chameleon still tracks the user's colour.
-void SampleWallpaperHue(double* hue, double* value, bool* ok) {
+void SampleWallpaperHue(double* hue, double* value, bool* has_chroma, bool* ok) {
+  *has_chroma = false;
   *hue = 210.0;   // navy-ish default
   *value = 0.25;
   *ok = false;
@@ -232,10 +233,24 @@ void SampleWallpaperHue(double* hue, double* value, bool* ok) {
       }
     }
   }
-  if (samples > 0) {
-    *value = (lum_sum / samples) / 255.0;
+  if (samples == 0) {
+    // Solid colour desktop (no wallpaper file): sample GetSysColor(COLOR_DESKTOP).
+    const COLORREF desk_c = GetSysColor(COLOR_DESKTOP);
+    const int r = GetRValue(desk_c);
+    const int g = GetGValue(desk_c);
+    const int b = GetBValue(desk_c);
+    double hh = 0, ss = 0, vv = 0;
+    RgbToHsv(r, g, b, &hh, &ss, &vv);
+    *value = (0.299 * r + 0.587 * g + 0.114 * b) / 255.0;
     *ok = true;
+    if (ss >= 0.12) {
+      *hue = hh;
+      *has_chroma = true;
+    }
+    return;
   }
+  *value = (lum_sum / samples) / 255.0;
+  *ok = true;
 
   int best = -1;
   double best_w = 0.0;
@@ -247,6 +262,7 @@ void SampleWallpaperHue(double* hue, double* value, bool* ok) {
   }
   if (best >= 0 && best_w > 0.0) {
     *hue = best * 15.0 + 7.5;
+    *has_chroma = true;
     return;
   }
   // No saturated content: keep the neutral default hue but still honour the
@@ -258,27 +274,32 @@ void SampleWallpaperHue(double* hue, double* value, bool* ok) {
 void RefreshChameleonPalette() {
   double hue = 210.0;
   double value = 0.25;
+  bool has_chroma = false;
   bool ok = false;
-  SampleWallpaperHue(&hue, &value, &ok);
+  SampleWallpaperHue(&hue, &value, &has_chroma, &ok);
   FenceStylePreset& p = ChameleonPreset();
   if (value >= 0.55) {
-    // Light wallpaper → light panel, saturated accent, dark ink.
-    p.background = RGB(static_cast<BYTE>((std::min)(255.0, 235.0)),
-                       static_cast<BYTE>((std::min)(255.0, 238.0)),
-                       static_cast<BYTE>((std::min)(255.0, 245.0)));
-    int ar, ag, ab;
-    HsvToRgb(hue, 0.78, 0.62, &ar, &ag, &ab);
+    int br = 240, bg = 242, bb = 246;
+    if (has_chroma) {
+      HsvToRgb(hue, 0.08, 0.96, &br, &bg, &bb);
+    }
+    p.background = RGB(br, bg, bb);
+    int ar = 71, ag = 85, ab = 105;
+    if (has_chroma) {
+      HsvToRgb(hue, 0.75, 0.62, &ar, &ag, &ab);
+    }
     p.accent = RGB(ar, ag, ab);
     p.title = RGB(28, 32, 40);
     p.alpha = 165;
     p.light = true;
   } else {
-    // Dark wallpaper → deep panel in the wallpaper's hue, bright accent.
-    int br, bg, bb;
-    HsvToRgb(hue, 0.55, 0.28, &br, &bg, &bb);
+    int br = 30, bg = 34, bb = 42;
+    int ar = 148, ag = 163, ab = 184;
+    if (has_chroma) {
+      HsvToRgb(hue, 0.55, 0.28, &br, &bg, &bb);
+      HsvToRgb(hue, 0.62, 0.95, &ar, &ag, &ab);
+    }
     p.background = RGB(br, bg, bb);
-    int ar, ag, ab;
-    HsvToRgb(hue, 0.62, 0.95, &ar, &ag, &ab);
     p.accent = RGB(ar, ag, ab);
     p.title = RGB(255, 255, 255);
     p.alpha = 150;

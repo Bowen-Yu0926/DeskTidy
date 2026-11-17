@@ -14,6 +14,11 @@
 // CF_HDROP. Portal/folder drags leave this false so Desktop can still receive.
 bool ShellDoDragFiles(const std::vector<std::wstring>& paths,
                       bool cancel_desktop_self_drop = false);
+// True when the last ShellDoDragFiles ended because the user pressed Esc.
+bool LastShellDragWasEscaped();
+// Optional predicate: returns true when `screen_pt` hits a valid drop-sink
+// slot (folder or Recycle Bin) inside DeskTidyNativePublic.
+void SetPublicDropSinkHitFn(std::function<bool(POINT)> fn);
 
 // Outcome of a pin drag (Fences-class: share to apps keeps the pin).
 enum class PinDragResult {

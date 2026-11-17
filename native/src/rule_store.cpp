@@ -267,19 +267,27 @@ bool ParseUnitValue(const std::wstring& token, bool is_age, long long* out) {
   }
   size_t i = 0;
   bool any_digit = false;
-  long long number = 0;
+  bool seen_dot = false;
+  double number = 0.0;
+  double frac_scale = 0.1;
   for (; i < token.size(); ++i) {
     const wchar_t c = token[i];
     if (c >= L'0' && c <= L'9') {
       any_digit = true;
-      if (number > 100000000000LL) {
-        return false;  // overflow guard
+      if (!seen_dot) {
+        if (number > 1e12) {
+          return false;  // overflow guard
+        }
+        number = number * 10.0 + static_cast<double>(c - L'0');
+      } else {
+        number += static_cast<double>(c - L'0') * frac_scale;
+        frac_scale *= 0.1;
       }
-      number = number * 10 + (c - L'0');
       continue;
     }
-    if (c == L'.' && any_digit) {
-      continue;  // fractional values are truncated; the integer part is enough
+    if (c == L'.' && any_digit && !seen_dot) {
+      seen_dot = true;
+      continue;
     }
     break;
   }
@@ -322,7 +330,7 @@ bool ParseUnitValue(const std::wstring& token, bool is_age, long long* out) {
       return false;
     }
   }
-  *out = number * mult;
+  *out = static_cast<long long>(number * static_cast<double>(mult) + 0.5);
   return true;
 }
 
@@ -359,8 +367,25 @@ bool ParseRangeBody(const std::wstring& body, bool is_age, AttrRule* rule) {
   if (dots == std::wstring::npos) {
     return false;
   }
-  if (!ParseUnitValue(body.substr(0, dots), is_age, &rule->lo) ||
-      !ParseUnitValue(body.substr(dots + 2), is_age, &rule->hi)) {
+  std::wstring lhs = body.substr(0, dots);
+  const std::wstring rhs = body.substr(dots + 2);
+  // Inherit trailing unit when omitted on lhs (e.g. "1.5..10mb" -> "1.5mb..10mb").
+  bool lhs_has_alpha = false;
+  for (wchar_t c : lhs) {
+    if ((c >= L'a' && c <= L'z') || (c >= L'A' && c <= L'Z')) {
+      lhs_has_alpha = true;
+      break;
+    }
+  }
+  if (!lhs_has_alpha) {
+    size_t u = 0;
+    while (u < rhs.size() && ((rhs[u] >= L'0' && rhs[u] <= L'9') || rhs[u] == L'.')) {
+      ++u;
+    }
+    lhs += rhs.substr(u);
+  }
+  if (!ParseUnitValue(lhs, is_age, &rule->lo) ||
+      !ParseUnitValue(rhs, is_age, &rule->hi)) {
     return false;
   }
   if (rule->hi < rule->lo) {
@@ -638,6 +663,7 @@ std::string ResolveFenceId(const std::wstring& path, bool is_link,
   // per resolve, and only when a size:/age:/dir: rule actually exists.
   bool attrs_loaded = false;
   bool attrs_ok = false;
+  bool attrs_is_dir = false;
   long long file_size = 0;
   long long age_seconds = 0;
   const std::wstring parent_dir = [&path]() {
@@ -655,6 +681,7 @@ std::string ResolveFenceId(const std::wstring& path, bool is_link,
       return;
     }
     attrs_ok = true;
+    attrs_is_dir = (fa.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
     ULARGE_INTEGER sz{};
     sz.LowPart = fa.nFileSizeLow;
     sz.HighPart = fa.nFileSizeHigh;
@@ -686,9 +713,9 @@ std::string ResolveFenceId(const std::wstring& path, bool is_link,
       hit = parent_dir.find(ar.text) != std::wstring::npos;
     } else {
       load_attrs();
-      if (attrs_ok) {
-        const long long v =
-            (kv.first.rfind(L"age:", 0) == 0) ? age_seconds : file_size;
+      const bool is_age_rule = (kv.first.rfind(L"age:", 0) == 0);
+      if (attrs_ok && (is_age_rule || (!attrs_is_dir && !is_link))) {
+        const long long v = is_age_rule ? age_seconds : file_size;
         switch (ar.op) {
           case AttrOp::Greater:
             hit = v > ar.lo;

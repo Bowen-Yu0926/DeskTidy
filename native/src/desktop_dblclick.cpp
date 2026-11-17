@@ -28,6 +28,20 @@ DWORD g_last_paste_ms = 0;
 DWORD g_last_blank_rclick_ms = 0;
 POINT g_last_rclick{-1, -1};
 ULONGLONG g_last_rclick_tick = 0;
+HWND g_popup_menu_owner = nullptr;
+
+bool IsPointOnWin32Menu(POINT pt) {
+  HWND hit = WindowFromPoint(pt);
+  wchar_t cls[64]{};
+  for (HWND cur = hit; cur; cur = GetParent(cur)) {
+    cls[0] = 0;
+    GetClassNameW(cur, cls, 64);
+    if (wcscmp(cls, L"#32768") == 0) {
+      return true;
+    }
+  }
+  return false;
+}
 
 bool IsOwnOverlay(HWND hwnd) {
   wchar_t cls[128]{};
@@ -56,6 +70,14 @@ LRESULT CALLBACK LowLevelMouseProc(int code, WPARAM wparam, LPARAM lparam) {
   if (code == HC_ACTION) {
     const auto* info = reinterpret_cast<MSLLHOOKSTRUCT*>(lparam);
     if (info) {
+      if (g_popup_menu_owner && IsWindow(g_popup_menu_owner)) {
+        if (wparam == WM_LBUTTONDOWN || wparam == WM_RBUTTONDOWN ||
+            wparam == WM_MBUTTONDOWN || wparam == WM_XBUTTONDOWN) {
+          if (!IsPointOnWin32Menu(info->pt)) {
+            PostMessageW(g_popup_menu_owner, WM_CANCELMODE, 0, 0);
+          }
+        }
+      }
       // Record desktop-background right-clicks (for shell-verb new-fence position).
       // Never swallow desktop right-clicks: let Windows Explorer host its full
       // native desktop menu (View / Sort / Refresh / Display / Personalize / New)
@@ -101,16 +123,13 @@ LRESULT CALLBACK LowLevelMouseProc(int code, WPARAM wparam, LPARAM lparam) {
                                     static_cast<WORD>(info->pt.y)));
           }
         } else if (wparam == WM_LBUTTONUP && g_rubber_up_msg) {
-          const bool was_moved = g_rubber_moved;
           g_rubber_dragging = false;
           g_rubber_moved = false;
-          // Only tell the host about a real marquee; a plain click needs no
-          // update at all.
-          if (was_moved) {
-            PostMessageW(g_notify, g_rubber_up_msg, 0,
-                         MAKELPARAM(static_cast<WORD>(info->pt.x),
-                                    static_cast<WORD>(info->pt.y)));
-          }
+          // Always notify EndRubberFromScreen so PublicHost::rubber_ resets
+          // to false even on a plain click (prevents HTCLIENT hit-test leak).
+          PostMessageW(g_notify, g_rubber_up_msg, 0,
+                       MAKELPARAM(static_cast<WORD>(info->pt.x),
+                                  static_cast<WORD>(info->pt.y)));
         }
       }
       if (wparam == WM_LBUTTONDBLCLK && g_msg && g_notify &&
@@ -159,7 +178,17 @@ bool ForegroundIsDesktopShell() {
   return false;
 }
 
+void SetActiveDesktopPopupMenuOwner(HWND hwnd) { g_popup_menu_owner = hwnd; }
+
 bool TryHandleDesktopPasteLlKey(WPARAM wparam, LPARAM lparam) {
+  if (g_popup_menu_owner && IsWindow(g_popup_menu_owner) &&
+      (wparam == WM_KEYDOWN || wparam == WM_SYSKEYDOWN)) {
+    const auto* kinfo = reinterpret_cast<KBDLLHOOKSTRUCT*>(lparam);
+    if (kinfo && kinfo->vkCode == VK_ESCAPE) {
+      PostMessageW(g_popup_menu_owner, WM_CANCELMODE, 0, 0);
+      return true;
+    }
+  }
   if (!g_paste_msg || !g_notify || !IsWindow(g_notify)) {
     return false;
   }

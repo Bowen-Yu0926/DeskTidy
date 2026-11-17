@@ -22,6 +22,26 @@ std::string NormalizeOrganizeTarget(std::string id) {
   return id;
 }
 
+RuleMap FilterUserSpecificRules(const RuleMap& rules) {
+  const RuleMap defaults = DefaultRules();
+  std::unordered_map<std::wstring, std::string> def_map;
+  for (const auto& d : defaults) {
+    def_map[d.first] = d.second;
+  }
+  RuleMap custom;
+  for (const auto& kv : rules) {
+    if (kv.first == L"*") {
+      continue;
+    }
+    auto dit = def_map.find(kv.first);
+    if (dit != def_map.end() && dit->second == kv.second) {
+      continue;
+    }
+    custom[kv.first] = kv.second;
+  }
+  return custom;
+}
+
 bool FenceIdAlive(const std::string& id,
                   const std::vector<FenceLayout>* fences) {
   if (id.empty() || !fences) {
@@ -84,6 +104,7 @@ int OrganizeApplyDefaultPins(
   CategoryFenceMap cat_map;
   FilenameRulesMap filename_rules;
   LoadCategoriesBoth(&cat_map, &filename_rules);
+  const RuleMap custom_rules = FilterUserSpecificRules(rules);
   int n = 0;
   for (const auto& it : items) {
     if (ShouldSkipVirtual(it, *pins, wl, reassign, honor_suppress)) {
@@ -91,17 +112,15 @@ int OrganizeApplyDefaultPins(
     }
     const std::string* existing = FindPin(*pins, it.path);
     const std::string prev = existing ? *existing : std::string();
-    // P1-4: kinds-aware fence first (Python resolve_organize_target).
-    std::string target;
-    if (fences && !fences->empty()) {
+    std::string target = ResolveCategoryFenceId(it.path, cat_map, filename_rules);
+    if (target.empty() && !custom_rules.empty()) {
+      PinMap no_pins;
+      target = ResolveFenceId(it.path, it.is_link, no_pins, custom_rules, "", "");
+    }
+    if (target.empty() && fences && !fences->empty()) {
       target = ResolveFenceByKind(it, *fences, current_page);
     }
-    // Settings 类别分区映射 / 文件名规则 (organize_categories.json).
     if (target.empty()) {
-      target = ResolveCategoryFenceId(it.path, cat_map, filename_rules);
-    }
-    if (target.empty()) {
-      // Empty pin map: ResolveFenceId must not echo a stale software-side pin.
       PinMap no_pins;
       target = ResolveFenceId(it.path, it.is_link, no_pins, rules, software_id,
                              common_id);
@@ -135,17 +154,19 @@ std::vector<std::wstring> OrganizePreviewVirtualPins(
   CategoryFenceMap cat_map;
   FilenameRulesMap filename_rules;
   LoadCategoriesBoth(&cat_map, &filename_rules);
+  const RuleMap custom_rules = FilterUserSpecificRules(rules);
   for (const auto& it : items) {
     if (ShouldSkipVirtual(it, pins, wl, /*reassign=*/false,
                           /*honor_suppress=*/true)) {
       continue;
     }
-    std::string target;
-    if (fences && !fences->empty()) {
-      target = ResolveFenceByKind(it, *fences, current_page);
+    std::string target = ResolveCategoryFenceId(it.path, cat_map, filename_rules);
+    if (target.empty() && !custom_rules.empty()) {
+      PinMap no_pins;
+      target = ResolveFenceId(it.path, it.is_link, no_pins, custom_rules, "", "");
     }
-    if (target.empty()) {
-      target = ResolveCategoryFenceId(it.path, cat_map, filename_rules);
+    if (target.empty() && fences && !fences->empty()) {
+      target = ResolveFenceByKind(it, *fences, current_page);
     }
     if (target.empty()) {
       target = ResolveFenceId(it.path, it.is_link, pins, rules, software_id,

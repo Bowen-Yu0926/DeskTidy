@@ -312,19 +312,28 @@ bool NotesWebView::Create(HWND parent) {
   CreateDirectoryW(NativeDataDir().c_str(), nullptr);
   CreateDirectoryW(udir.c_str(), nullptr);
 
+  const HWND host_guard = host_;
   const HRESULT hr = CreateCoreWebView2EnvironmentWithOptions(
       nullptr, udir.c_str(), nullptr,
       Callback<ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler>(
-          [this](HRESULT result, ICoreWebView2Environment* env) -> HRESULT {
-            if (FAILED(result) || !env) {
+          [this, host_guard](HRESULT result, ICoreWebView2Environment* env) -> HRESULT {
+            if (FAILED(result) || !env || !IsWindow(host_guard) ||
+                GetWindowLongPtrW(host_guard, GWLP_USERDATA) !=
+                    reinterpret_cast<LONG_PTR>(this)) {
               return S_OK;
             }
             env->CreateCoreWebView2Controller(
-                host_,
+                host_guard,
                 Callback<ICoreWebView2CreateCoreWebView2ControllerCompletedHandler>(
-                    [this](HRESULT result2,
+                    [this, host_guard](HRESULT result2,
                            ICoreWebView2Controller* controller) -> HRESULT {
                       if (FAILED(result2) || !controller) {
+                        return S_OK;
+                      }
+                      if (!IsWindow(host_guard) ||
+                          GetWindowLongPtrW(host_guard, GWLP_USERDATA) !=
+                              reinterpret_cast<LONG_PTR>(this)) {
+                        controller->Close();
                         return S_OK;
                       }
                       controller_ = controller;
@@ -546,7 +555,7 @@ bool NotesWebView::Create(HWND parent) {
                                   if (kind_ == Kind::kViewer) {
                                     SetPreview(pending_set_, pending_base_);
                                   } else {
-                                    SetMarkdown(pending_set_);
+                                    SetMarkdown(pending_set_, pending_base_);
                                   }
                                   pending_set_.clear();
                                   pending_base_.clear();
@@ -850,7 +859,7 @@ void NotesWebView::OnWebMessage(const std::wstring& json) {
     } else if (on_need_content) {
       on_need_content();
     } else if (!pending_md_.empty()) {
-      SetMarkdown(pending_md_);
+      SetMarkdown(pending_md_, asset_base_dir_);
     }
   } else if (type == L"action" && kind_ == Kind::kLibrary) {
     if (on_library_action) {
@@ -901,6 +910,7 @@ void NotesWebView::Destroy() {
     controller_ = nullptr;
   }
   if (host_) {
+    SetWindowLongPtrW(host_, GWLP_USERDATA, 0);
     DestroyWindow(host_);
     host_ = nullptr;
   }

@@ -8377,6 +8377,8 @@ void NotesWindow::PushLibraryRailState(bool refresh_online) {
       json += PathIsPinned(full) ? L"true" : L"false";
       json += L",\"locked\":";
       json += PathIsLocked(full) ? L"true" : L"false";
+      json += L",\"line\":";
+      json += std::to_wstring(hit.line);
       json += L"}";
     }
   } else {

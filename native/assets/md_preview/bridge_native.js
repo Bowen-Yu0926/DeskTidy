@@ -155,10 +155,16 @@
       var alt = imgs[i].getAttribute("alt") || "";
       var bar = alt.lastIndexOf("|");
       if (bar >= 0) {
-        var w = parseInt(alt.slice(bar + 1), 10);
-        if (!isNaN(w) && w >= 16) {
+        var rawSpec = alt.slice(bar + 1).trim();
+        var num = parseFloat(rawSpec);
+        if (!isNaN(num) && num > 0) {
           imgs[i].setAttribute("alt", alt.slice(0, bar));
-          imgs[i].setAttribute("width", w);
+          if (num >= 16 && rawSpec.indexOf(".") < 0) {
+            imgs[i].setAttribute("width", Math.round(num));
+          } else if (num <= 4) {
+            imgs[i].style.width = Math.round(num * 100) + "%";
+            imgs[i].style.height = "auto";
+          }
         }
       }
       if (!baseUrl) continue;

@@ -868,7 +868,7 @@ std::wstring SettingsWindow::BuildStateJson() const {
     }
     json += L"]}";
   }
-  json += L"\",\"hotkeys\":[";
+  json += L"],\"hotkeys\":[";
   for (size_t i = 0; i < hotkey_rows_.size(); ++i) {
     if (i) {
       json += L',';

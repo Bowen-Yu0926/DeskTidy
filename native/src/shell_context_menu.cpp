@@ -1,4 +1,5 @@
 #include "shell_context_menu.h"
+#include "desktop_dblclick.h"
 
 #include "log.h"
 
@@ -328,9 +329,12 @@ int TrackCommon(HWND owner, POINT screen, IContextMenu* pcm, UINT cmf_flags,
   // 0x0 hidden host window. Doing so gives the system an invisible foreground,
   // which steals input focus from all other applications and makes mouse clicks
   // fail until another window is activated.
-  const int cmd =
-      TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, screen.x, screen.y,
-                     0, track, nullptr);
+  int cmd = 0;
+  {
+    ScopedDesktopPopupMenuGuard menu_guard(track);
+    cmd = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, screen.x,
+                         screen.y, 0, track, nullptr);
+  }
   ReleaseCapture();
   PostMessageW(track, WM_NULL, 0, 0);
   if (owner) {
@@ -432,9 +436,12 @@ int TrackFallbackDesktopMenu(HWND owner, POINT screen,
     DestroyMenu(menu);
     return 0;
   }
-  const int cmd =
-      TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, screen.x, screen.y,
-                     0, track, nullptr);
+  int cmd = 0;
+  {
+    ScopedDesktopPopupMenuGuard menu_guard(track);
+    cmd = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, screen.x,
+                         screen.y, 0, track, nullptr);
+  }
   ReleaseCapture();
   PostMessageW(track, WM_NULL, 0, 0);
   if (owner) {
@@ -677,9 +684,12 @@ std::string TrackMoveToPageThenFenceMenu(
   if (!track) {
     track = owner ? owner : GetDesktopWindow();
   }
-  const int cmd =
-      TrackPopupMenu(root, TPM_RETURNCMD | TPM_NONOTIFY, screen.x, screen.y, 0,
-                     track, nullptr);
+  int cmd = 0;
+  {
+    ScopedDesktopPopupMenuGuard menu_guard(track);
+    cmd = TrackPopupMenu(root, TPM_RETURNCMD | TPM_NONOTIFY, screen.x,
+                         screen.y, 0, track, nullptr);
+  }
   ReleaseCapture();
   DestroyMenu(root);
   if (cmd <= 0 || cmd >= static_cast<int>(cmd_ids.size())) {

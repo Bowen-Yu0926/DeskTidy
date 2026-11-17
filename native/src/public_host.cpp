@@ -520,6 +520,27 @@ void PublicHost::EnsureDropTarget() {
     drop_target_->Release();
     drop_target_ = nullptr;
   }
+  SetPublicDropSinkHitFn([this](POINT screen_pt) -> bool {
+    if (!hwnd_ || !IsWindowVisible(hwnd_)) {
+      return false;
+    }
+    POINT cp = screen_pt;
+    ScreenToClient(hwnd_, &cp);
+    const int hit = HitTest(cp.x, cp.y);
+    if (hit < 0 || hit >= static_cast<int>(slots_.size())) {
+      return false;
+    }
+    if (IsSelected(hit)) {
+      return false;
+    }
+    const std::wstring& p = slots_[static_cast<size_t>(hit)].item.path;
+    if (GetLnkNamespaceClsid(p) == L"{645FF040-5081-101B-9F08-00AA002F954E}") {
+      return true;
+    }
+    const DWORD attr = GetFileAttributesW(p.c_str());
+    return attr != INVALID_FILE_ATTRIBUTES &&
+           (attr & FILE_ATTRIBUTE_DIRECTORY) != 0;
+  });
 }
 
 void PublicHost::EnsureCaptionFonts() {
@@ -932,10 +953,8 @@ void PublicHost::Layout() {
       search_right =
           (std::max)(search_right, static_cast<int>(b.right) + step_x);
     }
-    search_bottom =
-        (std::min)(search_bottom, static_cast<int>(work.bottom) + step_y * 8);
-    search_right =
-        (std::min)(search_right, static_cast<int>(work.right) + step_x * 4);
+    search_bottom = (std::min)(search_bottom, static_cast<int>(work.bottom));
+    search_right = (std::min)(search_right, static_cast<int>(work.right));
     // Pre-filter blocked rects to this monitor's search region: a rect that
     // provably cannot intersect any candidate is dropped from the inner scan
     // (results unchanged — candidates are all within [sx0,search_right]×[sy0,search_bottom]).
@@ -1437,12 +1456,25 @@ int PublicHost::HitTest(int x, int y) const {
   // Fences / Explorer: only glyph + caption are "the icon". Cell padding and
   // empty host chrome stay blank so rubber-band multi-select can start
   // (full-cell hit made nearly every pixel an icon — no batch select).
-  const int dpi = SystemDpi();
+  POINT sp{x, y};
+  if (hwnd_) {
+    ClientToScreen(hwnd_, &sp);
+  }
+  const int dpi = hwnd_ ? DpiAtPoint(sp) : SystemDpi();
   const int font_px = ScalePxForDpi(12, dpi);
   const int line_h = font_px + ScalePxForDpi(5, dpi);
   const int label_h = line_h * 2 + ScalePxForDpi(4, dpi);
   for (size_t i = 0; i < slots_.size(); ++i) {
     const RECT& b = slots_[i].bounds;
+    // Selected slots render a full-bounds highlight plate: honour the full
+    // visual highlight box so clicking near its rim starts a multi-drag
+    // instead of passing through to blank desktop and clearing selection.
+    if (IsSelected(static_cast<int>(i))) {
+      if (x >= b.left && x < b.right && y >= b.top && y < b.bottom) {
+        return static_cast<int>(i);
+      }
+      continue;
+    }
     const RECT& ir = slots_[i].icon_rc;
     const int content_l = (std::min)(ir.left, b.left + 2);
     const int content_t = (std::min)(ir.top, b.top + 2);
@@ -1790,8 +1822,8 @@ void PublicHost::PresentMarqueeBand() {
   POINT br{r.right, r.bottom};
   ClientToScreen(hwnd_, &tl);
   ClientToScreen(hwnd_, &br);
-  const int bw = br.x - tl.x;
-  const int bh = br.y - tl.y;
+  int bw = br.x - tl.x;
+  int bh = br.y - tl.y;
   if (bw < 2 || bh < 2) {
     HideMarqueeBand();
     return;
@@ -1807,18 +1839,32 @@ void PublicHost::PresentMarqueeBand() {
     RegisterClassExW(&wc);
     marquee_class = true;
   }
+  const RECT mwork = WorkAreaAtPoint(tl);
+  const int cl = (std::max)(static_cast<int>(mwork.left), static_cast<int>(tl.x));
+  const int ct = (std::max)(static_cast<int>(mwork.top), static_cast<int>(tl.y));
+  const int cr = (std::min)(static_cast<int>(mwork.right), static_cast<int>(tl.x) + bw);
+  const int cb = (std::min)(static_cast<int>(mwork.bottom), static_cast<int>(tl.y) + bh);
+  if (cr <= cl || cb <= ct) {
+    HideMarqueeBand();
+    return;
+  }
+  tl.x = cl;
+  tl.y = ct;
+  bw = cr - cl;
+  bh = cb - ct;
   if (!marquee_hwnd_ || !IsWindow(marquee_hwnd_)) {
     marquee_hwnd_ = CreateWindowExW(
-        WS_EX_TOOLWINDOW | WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE |
-            WS_EX_TOPMOST,
+        WS_EX_TOOLWINDOW | WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE,
         kMarqueeClass, L"", WS_POPUP, tl.x, tl.y, bw, bh, nullptr, nullptr,
         GetModuleHandleW(nullptr), nullptr);
     if (!marquee_hwnd_) {
       return;
     }
+    AttachOverlayToDesktop(marquee_hwnd_, false);
   }
-  SetWindowPos(marquee_hwnd_, HWND_TOPMOST, tl.x, tl.y, bw, bh,
+  SetWindowPos(marquee_hwnd_, HWND_NOTOPMOST, tl.x, tl.y, bw, bh,
                SWP_NOACTIVATE | SWP_SHOWWINDOW | SWP_NOREDRAW);
+  RaiseOverlayInDesktopBand(marquee_hwnd_);
   HDC screen = GetDC(nullptr);
   HDC mem = CreateCompatibleDC(screen);
   BITMAPINFO bi{};
@@ -3008,12 +3054,22 @@ void PublicHost::BeginOleDrag() {
       drag_from_ < static_cast<int>(slots_.size())) {
     paths.push_back(slots_[static_cast<size_t>(drag_from_)].item.path);
   }
-  // Diagnose "marquee then drag does nothing": if this fires with 0 paths the
-  // selection was lost between the marquee and the drag, not the OLE call.
-  LogLine(L"[public] BeginOleDrag paths=%zu drag_from=%d sel_size=%zu slots=%zu",
-          paths.size(), drag_from_, selected_.size(), slots_.size());
   if (paths.empty()) {
     return;
+  }
+  POINT drag_start_screen = drag_press_;
+  if (hwnd_) {
+    ClientToScreen(hwnd_, &drag_start_screen);
+  }
+  RECT host_wr{};
+  if (hwnd_) {
+    GetWindowRect(hwnd_, &host_wr);
+  }
+  std::unordered_map<std::wstring, POINT> orig_seats;
+  for (const auto& s : slots_) {
+    POINT sc{host_wr.left + (s.bounds.left + s.bounds.right) / 2,
+             host_wr.top + (s.bounds.top + s.bounds.bottom) / 2};
+    orig_seats[NormalizePinKey(s.item.path)] = sc;
   }
   drag_from_ = -1;
   drag_moved_ = false;
@@ -3028,13 +3084,36 @@ void PublicHost::BeginOleDrag() {
   // aggressively after DoDragDrop — that stacked multi-select on one point or
   // erased placements so Refresh looked like「文件消失」.
   bool dropped = ShellDoDragFiles(paths, /*cancel_desktop_self_drop=*/true);
+  const bool drag_escaped = LastShellDragWasEscaped();
   POINT pt{};
   GetCursorPos(&pt);
   HWND under = WindowFromPoint(pt);
   for (HWND cur = under; cur; cur = GetParent(cur)) {
-    if (cur == hwnd_ || cur == marquee_hwnd_) {
-      // Dropped back on our float chrome — treat as cancel (no-op move).
+    if (cur == marquee_hwnd_) {
       dropped = false;
+      break;
+    }
+    if (cur == hwnd_) {
+      // Only treat as self-drop cancel when NOT dropped onto a float folder/bin.
+      POINT cp = pt;
+      ScreenToClient(hwnd_, &cp);
+      const int hslot = HitTest(cp.x, cp.y);
+      bool valid_sink = false;
+      if (hslot >= 0 && hslot < static_cast<int>(slots_.size()) &&
+          !IsSelected(hslot)) {
+        const std::wstring& sp = slots_[static_cast<size_t>(hslot)].item.path;
+        if (GetLnkNamespaceClsid(sp) ==
+            L"{645FF040-5081-101B-9F08-00AA002F954E}") {
+          valid_sink = true;
+        } else {
+          const DWORD a = GetFileAttributesW(sp.c_str());
+          valid_sink = a != INVALID_FILE_ATTRIBUTES &&
+                       (a & FILE_ATTRIBUTE_DIRECTORY) != 0;
+        }
+      }
+      if (!valid_sink) {
+        dropped = false;
+      }
       break;
     }
   }
@@ -3122,12 +3201,28 @@ void PublicHost::BeginOleDrag() {
       }
       continue;
     }
-    if (!dropped && !modifier_landed && paths.size() == 1) {
-      // Single-icon cancel/desktop release: park under cursor (Explorer).
-      UpsertFloatPlacement(&placements_, p, current_page_, pt);
-      placements_dirty = true;
+    if (!dropped && !modifier_landed && !drag_escaped) {
+      if (paths.size() == 1 && over_desktop_blank(pt)) {
+        UpsertFloatPlacement(&placements_, p, current_page_, pt);
+        placements_dirty = true;
+      } else if (paths.size() > 1 && over_desktop_blank(pt)) {
+        const int dx = pt.x - drag_start_screen.x;
+        const int dy = pt.y - drag_start_screen.y;
+        if (std::abs(dx) >= kDragThreshold || std::abs(dy) >= kDragThreshold) {
+          auto oit = orig_seats.find(NormalizePinKey(p));
+          POINT base = (oit != orig_seats.end()) ? oit->second : pt;
+          POINT target_pt{base.x + dx, base.y + dy};
+          const RECT wrc = WorkAreaAtPoint(pt);
+          target_pt.x = (std::max)(static_cast<int>(wrc.left) + 24,
+                        (std::min)(static_cast<int>(wrc.right) - 24, static_cast<int>(target_pt.x)));
+          target_pt.y = (std::max)(static_cast<int>(wrc.top) + 24,
+                        (std::min)(static_cast<int>(wrc.bottom) - 24, static_cast<int>(target_pt.y)));
+          UpsertFloatPlacement(&placements_, p, current_page_, target_pt);
+          placements_dirty = true;
+        }
+      }
     }
-    // Multi cancel: keep prior seats. Successful drop while file still exists
+    // Esc cancel: keep prior seats. Successful drop while file still exists
     // (e.g. pinned by a fence): RebuildPublicItems heals via FindPin — do not
     // EraseFloat here or icons vanish for a frame / forever if heal races.
   }
@@ -3224,7 +3319,7 @@ LRESULT PublicHost::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
   }
   switch (msg) {
     case WM_MOUSEACTIVATE:
-      return MA_NOACTIVATE;
+      return MA_NOACTIVATEANDEAT;
     case WM_PAINT: {
       PAINTSTRUCT ps{};
       BeginPaint(hwnd_, &ps);
@@ -3239,14 +3334,11 @@ LRESULT PublicHost::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
       }
       const int x = GET_X_LPARAM(lparam);
       const int y = GET_Y_LPARAM(lparam);
-      SetFocus(hwnd_);
       drag_from_ = HitTest(x, y);
       drag_moved_ = false;
       drag_press_ = {x, y};
       rubber_ = false;
       rubber_additive_ = false;
-      LogLine(L"[public] LBUTTONDOWN hit=%d sel=%d", drag_from_,
-              HasSelection() ? 1 : 0);
       const bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
       const bool shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
       if (drag_from_ >= 0) {
