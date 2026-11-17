@@ -3008,6 +3008,10 @@ void PublicHost::BeginOleDrag() {
       drag_from_ < static_cast<int>(slots_.size())) {
     paths.push_back(slots_[static_cast<size_t>(drag_from_)].item.path);
   }
+  // Diagnose "marquee then drag does nothing": if this fires with 0 paths the
+  // selection was lost between the marquee and the drag, not the OLE call.
+  LogLine(L"[public] BeginOleDrag paths=%zu drag_from=%d sel_size=%zu slots=%zu",
+          paths.size(), drag_from_, selected_.size(), slots_.size());
   if (paths.empty()) {
     return;
   }
@@ -3241,6 +3245,8 @@ LRESULT PublicHost::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
       drag_press_ = {x, y};
       rubber_ = false;
       rubber_additive_ = false;
+      LogLine(L"[public] LBUTTONDOWN hit=%d sel=%d", drag_from_,
+              HasSelection() ? 1 : 0);
       const bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
       const bool shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
       if (drag_from_ >= 0) {
