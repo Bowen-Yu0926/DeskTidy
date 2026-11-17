@@ -171,6 +171,13 @@ add_custom_command(TARGET deskNote POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E copy_if_different
           ${CMAKE_CURRENT_SOURCE_DIR}/assets/md_preview/vendor/toastui-editor.min.css
           $<TARGET_FILE_DIR:desktidy_native>/assets/md_preview/vendor/toastui-editor.min.css
+  # DeskNote WYSIWYG editor (Milkdown Crepe) — built by native/tools/build_crepe.js.
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          ${CMAKE_CURRENT_SOURCE_DIR}/assets/md_preview/vendor/desknote-editor.js
+          $<TARGET_FILE_DIR:desktidy_native>/assets/md_preview/vendor/desknote-editor.js
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          ${CMAKE_CURRENT_SOURCE_DIR}/assets/md_preview/vendor/desknote-editor.css
+          $<TARGET_FILE_DIR:desktidy_native>/assets/md_preview/vendor/desknote-editor.css
   COMMAND ${CMAKE_COMMAND} -E make_directory
           $<TARGET_FILE_DIR:desktidy_native>/assets/online_notes
   COMMAND ${CMAKE_COMMAND} -E copy_if_different
@@ -236,6 +243,13 @@ add_custom_command(TARGET desktidy_native POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E copy_if_different
           ${CMAKE_CURRENT_SOURCE_DIR}/assets/md_preview/vendor/toastui-editor.min.css
           $<TARGET_FILE_DIR:desktidy_native>/assets/md_preview/vendor/toastui-editor.min.css
+  # DeskNote WYSIWYG editor (Milkdown Crepe) — built by native/tools/build_crepe.js.
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          ${CMAKE_CURRENT_SOURCE_DIR}/assets/md_preview/vendor/desknote-editor.js
+          $<TARGET_FILE_DIR:desktidy_native>/assets/md_preview/vendor/desknote-editor.js
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          ${CMAKE_CURRENT_SOURCE_DIR}/assets/md_preview/vendor/desknote-editor.css
+          $<TARGET_FILE_DIR:desktidy_native>/assets/md_preview/vendor/desknote-editor.css
   COMMAND ${CMAKE_COMMAND} -E copy_if_different
           ${CMAKE_CURRENT_SOURCE_DIR}/assets/md_preview/viewer_native.html
           $<TARGET_FILE_DIR:desktidy_native>/assets/md_preview/viewer_native.html

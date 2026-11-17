@@ -41,8 +41,14 @@ class NotesWebView {
 
   // Fire-and-forget script (Shift+Enter soft break, etc.).
   void EvalScript(const std::wstring& js);
-  // WYSIWYG editor (kWysiwyg).
-  void SetMarkdown(const std::wstring& md);
+  // Insert an image node at the caret (WYSIWYG). `url` stays relative in the
+  // saved markdown; the page resolves it against the note folder.
+  void InsertImage(const std::wstring& url, const std::wstring& alt);
+  // WYSIWYG editor (kWysiwyg). `base_dir` is the note's folder: Toast loads
+  // from https://app.desknote/, so `assets/x.png` would resolve inside the
+  // shell folder and 404 — the page prefixes relative srcs with this dir.
+  void SetMarkdown(const std::wstring& md,
+                   const std::wstring& base_dir = std::wstring());
   // Last known markdown (updated by SetMarkdown / Toast `changed`) — no IPC.
   const std::wstring& CachedMarkdown() const { return pending_md_; }
   // Host-side title compose without a Toast round-trip.
@@ -110,6 +116,10 @@ class NotesWebView {
 
  private:
   void NavigateHome();
+  // Map the note's folder to https://note.assets/ so relative image srcs
+  // (`assets/x.png`) load from the page's own origin instead of 404ing inside
+  // the shell folder. Returns the URL prefix ("" when `dir` is unusable).
+  std::wstring SetAssetBaseDir(const std::wstring& dir);
   void OnReady();
   void OnWebMessage(const std::wstring& json);
   static LRESULT CALLBACK HostProc(HWND, UINT, WPARAM, LPARAM);
@@ -132,6 +142,8 @@ class NotesWebView {
   std::wstring pending_md_;
   std::wstring pending_set_;
   std::wstring pending_base_;
+  // Folder currently mapped to https://note.assets/ (empty = none).
+  std::wstring asset_base_dir_;
   std::wstring pending_vault_json_;
   std::wstring pending_library_json_;
   void PushVaultAccountsData();

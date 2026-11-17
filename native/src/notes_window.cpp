@@ -1194,7 +1194,7 @@ bool NotesWindow::Create(HINSTANCE instance) {
       md = ComposeMarkdownWithNativeTitle(md);
     }
     if (!LooksLikeEmptyMarkdownSeed(md) || web_.CachedMarkdown().empty()) {
-      web_.SetMarkdown(md);
+      web_.SetMarkdown(md, NoteBaseDir());
     }
   };
   {
@@ -1613,7 +1613,7 @@ void NotesWindow::ApplyUiTheme(const std::string& ui_theme) {
     SchedulePreviewRefresh();
   }
   if (wysiwyg_) {
-    web_.SetMarkdown(CurrentPlainText());
+    web_.SetMarkdown(CurrentPlainText(), NoteBaseDir());
   }
 }
 
@@ -1974,7 +1974,17 @@ bool NotesWindow::InsertImageFile(const std::wstring& src_path) {
   const size_t dslash = dest.find_last_of(L"\\/");
   const std::wstring name =
       dslash == std::wstring::npos ? dest : dest.substr(dslash + 1);
-  const std::wstring md = L"![](assets/" + name + L")\n";
+  const std::wstring rel = L"assets/" + name;
+  // WYSIWYG stage is the visible editor — RichEdit is only the staging buffer,
+  // so the node has to be inserted in Toast (the markdown stays relative).
+  if (wysiwyg_ && web_.Ready()) {
+    const size_t ndot = name.find_last_of(L'.');
+    web_.InsertImage(rel, ndot == std::wstring::npos ? name
+                                                     : name.substr(0, ndot));
+    MarkDirty();
+    return true;
+  }
+  const std::wstring md = L"![](" + rel + L")\n";
   SendMessageW(edit_, EM_REPLACESEL, TRUE, reinterpret_cast<LPARAM>(md.c_str()));
   MarkDirty();
   if (preview_) {
@@ -6189,7 +6199,7 @@ void NotesWindow::EnsureMarkdownEditor(bool force_reload) {
       PostMessageW(hwnd_, WM_APP + 83, 0, 0);
     } else {
       has_pending_tab_markdown_ = false;
-      web_.SetMarkdown(md);
+      web_.SetMarkdown(md, NoteBaseDir());
     }
   }
   EnsureTabStates();
@@ -6641,7 +6651,13 @@ bool NotesWindow::PasteImageToMarkdown() {
   const size_t slash = dest.find_last_of(L"\\/");
   const std::wstring name =
       slash == std::wstring::npos ? dest : dest.substr(slash + 1);
-  const std::wstring md = L"![](assets/" + name + L")";
+  const std::wstring rel = L"assets/" + name;
+  if (wysiwyg_ && web_.Ready()) {
+    web_.InsertImage(rel, name.substr(0, name.find_last_of(L'.')));
+    MarkDirty();
+    return true;
+  }
+  const std::wstring md = L"![](" + rel + L")";
   SendMessageW(edit_, EM_REPLACESEL, TRUE, reinterpret_cast<LPARAM>(md.c_str()));
   MarkDirty();
   if (preview_) {
@@ -10281,8 +10297,7 @@ LRESULT CALLBACK NotesWindow::TitleEditProc(HWND hwnd, UINT msg, WPARAM wparam,
     if (self->wysiwyg_ && self->web_.ContentReady() && self->web_.Host()) {
       SetFocus(self->web_.Host());
       self->web_.EvalScript(
-          L"try{var e=document.querySelector("
-          L"'.toastui-editor-ww-container .ProseMirror');"
+          L"try{var e=document.querySelector('.ProseMirror');"
           L"if(e)e.focus()}catch(ex){}");
     } else if (self->edit_) {
       SetFocus(self->edit_);
@@ -11232,7 +11247,7 @@ LRESULT NotesWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
     case WM_APP + 83:
       if (has_pending_tab_markdown_) {
         has_pending_tab_markdown_ = false;
-        web_.SetMarkdown(pending_tab_markdown_);
+        web_.SetMarkdown(pending_tab_markdown_, NoteBaseDir());
       }
       return 0;
     case WM_APP + 84: {

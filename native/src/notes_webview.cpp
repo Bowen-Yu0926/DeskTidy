@@ -635,6 +635,12 @@ void NotesWebView::NavigateHome() {
           L"app.desknote", folder.c_str(),
           COREWEBVIEW2_HOST_RESOURCE_ACCESS_KIND_ALLOW);
     }
+    // Re-apply the note folder mapping (survives a controller rebuild).
+    if (!asset_base_dir_.empty()) {
+      web3->SetVirtualHostNameToFolderMapping(
+          L"note.assets", asset_base_dir_.c_str(),
+          COREWEBVIEW2_HOST_RESOURCE_ACCESS_KIND_ALLOW);
+    }
     const std::wstring url =
         L"https://app.desknote/" + leaf + L"?v=" + token;
     web->Navigate(url.c_str());
@@ -853,7 +859,7 @@ void NotesWebView::OnReady() {
     }
     return;
   }
-  SetMarkdown(md);
+  SetMarkdown(md, base);
 }
 
 void NotesWebView::OnWebMessage(const std::wstring& json) {
@@ -1064,6 +1070,18 @@ void NotesWebView::EvalScript(const std::wstring& js) {
   web->ExecuteScript(js.c_str(), nullptr);
 }
 
+void NotesWebView::InsertImage(const std::wstring& url,
+                               const std::wstring& alt) {
+  auto* web = static_cast<ICoreWebView2*>(webview_);
+  if (!web || !ready_ || kind_ != Kind::kWysiwyg || url.empty()) {
+    return;
+  }
+  const std::wstring json = L"{\"type\":\"insertImage\",\"url\":\"" +
+                            JsonEscape(url) + L"\",\"alt\":\"" +
+                            JsonEscape(alt) + L"\"}";
+  web->PostWebMessageAsJson(json.c_str());
+}
+
 void NotesWebView::AckClean() {
   // Cover Toast 150ms debounce + trailing exit-slot + in-flight posts.
   quiet_dirty_until_ = GetTickCount64() + 600;
@@ -1074,13 +1092,16 @@ void NotesWebView::AckClean() {
   web->PostWebMessageAsJson(L"{\"type\":\"ackClean\"}");
 }
 
-void NotesWebView::SetMarkdown(const std::wstring& md) {
+void NotesWebView::SetMarkdown(const std::wstring& md,
+                               const std::wstring& base_dir) {
   // Keep cache coherent so SyncFromWysiwyg / Save can skip PullMarkdown IPC.
   pending_md_ = md;
   applying_set_ = true;
+  const std::wstring base = SetAssetBaseDir(base_dir);
   auto* web = static_cast<ICoreWebView2*>(webview_);
   if (!web || !ready_) {
     pending_set_ = md;
+    pending_base_ = base_dir;
     // Not painted yet — cache is already the new doc; allow later changed.
     applying_set_ = false;
     return;
@@ -1088,13 +1109,56 @@ void NotesWebView::SetMarkdown(const std::wstring& md) {
   const std::wstring theme =
       theme_.empty() ? L"light" : theme_;
   const std::wstring json = L"{\"type\":\"set\",\"theme\":\"" + theme +
+                            L"\",\"baseUrl\":\"" + JsonEscape(base) +
                             L"\",\"md\":\"" + JsonEscape(md) + L"\"}";
   web->PostWebMessageAsJson(json.c_str());
+}
+
+// Relative image srcs inside the Toast page resolve against
+// https://app.desknote/ (the shell folder) and 404. Mapping the note's own
+// folder to a second virtual host lets the page prefix them with it; the
+// markdown itself keeps the plain `assets/x.png` form on disk.
+std::wstring NotesWebView::SetAssetBaseDir(const std::wstring& dir) {
+  if (dir.empty()) {
+    // Callers that only push text keep the mapping the note open set up.
+    return asset_base_dir_.empty() ? std::wstring() : L"https://note.assets/";
+  }
+  wchar_t canon[MAX_PATH * 4] = {};
+  const DWORD n = GetFullPathNameW(dir.c_str(), MAX_PATH * 4, canon, nullptr);
+  if (n == 0 || n >= MAX_PATH * 4) {
+    return asset_base_dir_.empty() ? std::wstring() : L"https://note.assets/";
+  }
+  const std::wstring full(canon);
+  // Already mapped to this folder — nothing to do.
+  if (_wcsicmp(full.c_str(), asset_base_dir_.c_str()) == 0) {
+    return L"https://note.assets/";
+  }
+  // Online notes ("online://<id>") have no folder of their own — keep whatever
+  // mapping the last local note set rather than mapping a bogus path.
+  const DWORD attr = GetFileAttributesW(full.c_str());
+  if (attr == INVALID_FILE_ATTRIBUTES ||
+      (attr & FILE_ATTRIBUTE_DIRECTORY) == 0) {
+    return asset_base_dir_.empty() ? std::wstring() : L"https://note.assets/";
+  }
+  auto* web = static_cast<ICoreWebView2*>(webview_);
+  ComPtr<ICoreWebView2_3> web3;
+  if (!web || FAILED(web->QueryInterface(IID_PPV_ARGS(&web3))) || !web3) {
+    // Controller not up yet: report no base, the next push retries.
+    return asset_base_dir_.empty() ? std::wstring() : L"https://note.assets/";
+  }
+  const HRESULT hr = web3->SetVirtualHostNameToFolderMapping(
+      L"note.assets", full.c_str(), COREWEBVIEW2_HOST_RESOURCE_ACCESS_KIND_ALLOW);
+  if (FAILED(hr)) {
+    return asset_base_dir_.empty() ? std::wstring() : L"https://note.assets/";
+  }
+  asset_base_dir_ = full;
+  return L"https://note.assets/";
 }
 
 void NotesWebView::SetPreview(const std::wstring& md,
                               const std::wstring& base_dir) {
   auto* web = static_cast<ICoreWebView2*>(webview_);
+  const std::wstring base = SetAssetBaseDir(base_dir);
   if (!web || !ready_) {
     pending_set_ = md;
     pending_base_ = base_dir;
@@ -1104,7 +1168,7 @@ void NotesWebView::SetPreview(const std::wstring& md,
       theme_.empty() ? L"light" : theme_;
   const std::wstring json =
       L"{\"type\":\"set\",\"theme\":\"" + theme + L"\",\"baseUrl\":\"" +
-      JsonEscape(base_dir) + L"\",\"md\":\"" + JsonEscape(md) + L"\"}";
+      JsonEscape(base) + L"\",\"md\":\"" + JsonEscape(md) + L"\"}";
   web->PostWebMessageAsJson(json.c_str());
 }
 

@@ -147,9 +147,21 @@
   }
 
   function rewriteRelativeImages(root, baseUrl) {
-    if (!baseUrl) return;
     var imgs = root.querySelectorAll("img[src]");
     for (var i = 0; i < imgs.length; i++) {
+      // DeskNote encodes a drag-resized width in the alt slot as "name|NN"
+      // (see wysiwyg_native.html) so the plain markdown keeps it; strip it
+      // here and render it as a width attribute.
+      var alt = imgs[i].getAttribute("alt") || "";
+      var bar = alt.lastIndexOf("|");
+      if (bar >= 0) {
+        var w = parseInt(alt.slice(bar + 1), 10);
+        if (!isNaN(w) && w >= 16) {
+          imgs[i].setAttribute("alt", alt.slice(0, bar));
+          imgs[i].setAttribute("width", w);
+        }
+      }
+      if (!baseUrl) continue;
       var src = imgs[i].getAttribute("src") || "";
       if (
         !src ||

@@ -80,3 +80,6 @@ scripts/_selftest*
 .cortexkit/
 .vault_key
 server/d1/seed.sql
+
+# Editor build toolchain (native/tools) — reinstall with npm install
+native/tools/node_modules/

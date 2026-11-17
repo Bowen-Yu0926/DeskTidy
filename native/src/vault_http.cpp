@@ -546,6 +546,15 @@ class VaultClient {
       WinHttpCloseHandle(conn);
       return false;
     }
+    // 站点防护（byethost/ifastnet 的 openresty 层）把"不带 Accept-Encoding
+    // 的请求"视为脚本流量：即使携带解出的 __test cookie 也持续下发挑战页，
+    // 所有 vault 请求因此全部失败。启用 WinHTTP 自动压缩后，WinHTTP 会
+    // 自动附上 "Accept-Encoding: gzip, deflate" 并透明解压响应体；
+    // 挑战页检测（body 含 aes.js）在解压后的明文上依然有效。
+    DWORD decompression =
+        WINHTTP_DECOMPRESSION_FLAG_GZIP | WINHTTP_DECOMPRESSION_FLAG_DEFLATE;
+    WinHttpSetOption(req, WINHTTP_OPTION_DECOMPRESSION, &decompression,
+                     sizeof(decompression));
 
     std::wstring headers = L"Accept: application/json\r\n";
     if (body_utf8) {

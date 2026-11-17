@@ -4,12 +4,10 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>deskNote WYSIWYG</title>
-  <!-- font-toolbar-v6: A± injects missing size so <select> never blanks -->
-  <!-- Kick Toast download ASAP (do not block title chrome on 160KB CSS).
-       Must use -all (self-contained). Plain toastui-editor.min.js expects
-       external ProseMirror modules and leaves the body stuck pending. -->
-  <link rel="preload" href="vendor/toastui-editor-all.min.js" as="script" />
-  <link rel="preload" href="vendor/toastui-editor.min.css" as="style" />
+  <!-- Milkdown Crepe, pre-bundled to a single file pair (tools/build_crepe.js).
+       Self-contained: no network, no CDN, fonts inlined. -->
+  <link rel="preload" href="vendor/desknote-editor.js" as="script" />
+  <link rel="stylesheet" href="vendor/desknote-editor.css" />
   <style>
     html, body {
       height: 100%;
@@ -27,72 +25,17 @@
       background: #1e1e1e;
       color: #e6e6e6;
     }
-    /* Toolbar sits above the title (Typora / market note chrome). */
-    #toolbar-host {
-      flex: 0 0 auto;
-      display: flex;
-      flex-direction: row;
-      align-items: center;
-      background: #f7f8fa;
-      border-bottom: 1px solid #e8ebef;
-      overflow: visible;
-      min-height: 46px;
-    }
-    body.theme-dark #toolbar-host {
-      background: #252526;
-      border-bottom-color: #333;
-    }
-    #toolbar-host .toastui-editor-toolbar {
-      border-bottom: none !important;
-      flex: 1 1 auto;
-      min-width: 0;
-      overflow: visible !important;
-    }
-    #toolbar-host .toastui-editor-defaultUI-toolbar {
-      overflow: visible !important;
-      min-height: 46px;
-    }
-    /* Title chrome is native Win32 (instant). Keep DOM for joinTitleBody only. */
+    /* Title chrome is native Win32 (instant). Kept for splitTitleBody. */
     #title-wrap {
       display: none !important;
-      flex: 0 0 auto;
-      padding: 0;
-      border: none;
-      height: 0;
-      overflow: hidden;
     }
-    body.theme-dark #title-wrap {
-      border-bottom-color: #333;
-    }
-    #note-title {
-      width: 100%;
-      border: none;
-      outline: none;
-      background: transparent;
-      font-family: "Microsoft YaHei", "微软雅黑", "Microsoft YaHei UI", sans-serif;
-      /* Relative size so 125%/150% DPI still reads as a title, not a poster. */
-      font-size: clamp(18px, 1.25rem + 0.35vw, 26px);
-      font-weight: 650;
-      line-height: 1.35;
-      color: #1f2937 !important;
-      padding: 0;
-      margin: 0;
-    }
-    body.theme-dark #note-title {
-      color: #1f2937 !important;
-    }
-    #note-title::placeholder {
-      color: #c0c4cc;
-      font-weight: 500;
-    }
-    body.theme-dark #note-title::placeholder {
-      color: #6b7280;
-    }
+    /* Editor surface fills the stage under the native title strip. */
     #editor {
       flex: 1 1 auto;
       min-height: 0;
       width: 100%;
       overflow: hidden;
+      position: relative;
     }
     #editor.desknote-body-pending::before {
       content: "";
@@ -106,378 +49,89 @@
     body.theme-dark #editor.desknote-body-pending::before {
       background: #2a2a2a;
     }
-    body.theme-dark #editor {
-      background: #1e1e1e;
+
+    /* --- Crepe surface: reading width + desk-note typography ------------- */
+    #editor .milkdown {
+      height: 100%;
+      background: transparent;
     }
-    /* Toast height:100% alone collapses the WW pane under the toolbar. */
-    .toastui-editor-defaultUI {
-      border: none !important;
-      height: 100% !important;
-      display: flex !important;
-      flex-direction: column !important;
-    }
-    /* Toolbar is lifted into #toolbar-host — hide any leftover strip in #editor. */
-    #editor .toastui-editor-toolbar,
-    #editor .toastui-editor-defaultUI-toolbar {
-      display: none !important;
-      height: 0 !important;
-      min-height: 0 !important;
-      margin: 0 !important;
-      padding: 0 !important;
-      overflow: hidden !important;
-      border: none !important;
-    }
-    .toastui-editor-toolbar {
-      flex: 0 0 auto !important;
-    }
-    .toastui-editor-main {
-      flex: 1 1 auto !important;
-      min-height: 0 !important;
-      height: auto !important;
-    }
-    .toastui-editor-main-container,
-    .toastui-editor-ww-container,
-    .toastui-editor-md-container {
-      height: 100% !important;
-    }
-    .toastui-editor-contents,
-    .ProseMirror {
+    #editor .ProseMirror {
+      box-sizing: border-box;
+      max-width: 860px;
+      margin: 0 auto;
+      padding: 20px 32px 45vh;
       min-height: 100%;
-      box-sizing: border-box;
-      line-height: 1.7;
-      /* Toast defaults (#222 / #ccc bullets / #eee hr) read washed-out on white. */
+      outline: none;
+      font-family: "Microsoft YaHei", "微软雅黑", "Microsoft YaHei UI", sans-serif;
+      font-size: 12pt;
+      line-height: 1.75;
       color: #1a1f27;
     }
-    .toastui-editor-contents p,
-    .toastui-editor-contents li,
-    .toastui-editor-contents ul,
-    .toastui-editor-contents ol,
-    .toastui-editor-contents table {
-      color: #1a1f27;
+    body.theme-dark #editor .ProseMirror {
+      color: #e6e6e6;
     }
-    .toastui-editor-contents h1,
-    .toastui-editor-contents h2,
-    .toastui-editor-contents h3,
-    .toastui-editor-contents h4,
-    .toastui-editor-contents h5,
-    .toastui-editor-contents h6 {
-      color: #111827;
+    #editor .ProseMirror > * + * {
+      margin-top: 0.72em;
     }
-    .toastui-editor-contents h1 {
-      border-bottom-color: #6b7280;
+    /* Images never overflow the column; Crepe sizes them by ratio. */
+    #editor .milkdown-image-block {
+      max-width: 100%;
     }
-    .toastui-editor-contents h2 {
-      border-bottom-color: #9ca3af;
+    #editor .milkdown-image-block .image-wrapper {
+      max-width: 100%;
     }
-    .toastui-editor-contents ul > li::before {
-      background-color: #4b5563 !important;
+    #editor .milkdown-image-block img {
+      max-width: 100%;
+      height: auto;
     }
-    .toastui-editor-contents ol > li::before {
-      color: #4b5563 !important;
+    /* Floating UI chrome (block handle / slash menu / toolbar) must sit above
+       the editor surface, which owns the whole stage. */
+    .milkdown-block-handle,
+    .milkdown-slash-menu,
+    .milkdown-toolbar,
+    .milkdown-link-preview,
+    .milkdown-link-edit,
+    .milkdown-latex-inline-edit {
+      z-index: 30;
     }
-    .toastui-editor-contents hr {
-      border-top: 1px solid #9ca3af !important;
-    }
-    .toastui-editor-contents blockquote {
-      border-left-color: #9ca3af;
-      color: #374151;
-    }
-    .toastui-editor-contents blockquote p,
-    .toastui-editor-contents blockquote ul {
-      color: #374151;
-    }
-    .toastui-editor-contents del {
-      color: #6b7280;
-    }
-    /* Sibling of Toast toolbar inside #toolbar-host — sits after CB row. */
-    #toolbar-host > .desknote-font-tools,
-    .desknote-font-tools {
-      display: flex !important;
-      float: none;
-      flex: 0 0 auto;
-      align-items: center;
-      gap: 6px;
-      margin: 0 10px 0 0;
-      padding: 0 0 0 10px;
-      border-left: 1px solid #c0c6d0;
-      height: 46px;
-      box-sizing: border-box;
-      visibility: visible !important;
-      opacity: 1 !important;
-      position: relative;
+    /* Drag-resize handle: keep it visible on hover (Crepe hides it until then). */
+    #editor .milkdown-image-block .image-resize-handle {
       z-index: 5;
     }
-    body.theme-dark .desknote-font-tools {
-      border-left-color: #4a4a4a;
-    }
-    .desknote-font-tools select {
-      height: 26px;
-      border: 1px solid #b4bcc8;
-      border-radius: 4px;
-      background: #f4f5f7;
-      color: #1a1f27;
-      font-size: 12px;
-      padding: 0 6px;
-      outline: none;
-      cursor: pointer;
-    }
-    body.theme-dark .desknote-font-tools select {
-      background: #2a2a2a;
-      border-color: #555;
-      color: #e8e8e8;
-    }
-    .desknote-font-tools select.desknote-font-face {
-      min-width: 96px;
-      width: 104px;
-    }
-    .desknote-font-tools select.desknote-font-size {
-      min-width: 52px;
-      width: 56px;
-    }
-    .desknote-font-tools button.desknote-font-step {
-      height: 26px;
-      min-width: 28px;
-      padding: 0 6px;
-      border: 1px solid #b4bcc8;
-      border-radius: 4px;
-      background: #f4f5f7;
-      color: #1a1f27;
-      font-size: 12px;
-      font-family: "Microsoft YaHei", "微软雅黑", sans-serif;
-      line-height: 1;
-      cursor: pointer;
-    }
-    .desknote-font-tools button.desknote-font-step:hover {
-      background: #e8ebf0;
-    }
-    .desknote-font-tools button.desknote-font-step:active {
-      background: #d6dce4;
-    }
-    body.theme-dark .desknote-font-tools button.desknote-font-step {
-      background: #2a2a2a;
-      border-color: #555;
-      color: #e8e8e8;
-    }
-    body.theme-dark .desknote-font-tools button.desknote-font-step:hover {
-      background: #333;
+    /* Chinese code block language picker. */
+    #editor .milkdown-code-block .cm-editor {
+      font-family: Consolas, "Cascadia Mono", monospace;
     }
   </style>
 </head>
 <body>
-  <div id="toolbar-host"></div>
   <div id="title-wrap">
     <input id="note-title" type="text" placeholder="标题" autocomplete="off" spellcheck="true" />
   </div>
   <div id="editor"></div>
-  <!-- Toast (~500KB) loads async after title chromeReady — Typora-class open. -->
+  <!-- Bundle loads async after title chromeReady — Typora-class open. -->
   <script>
 (function () {
-  var editor = null;
+  var editorApi = null;   // createDeskNoteEditor() handle
   var suppress = false;
-  var paddingExit = false;
   var latestMd = "";
   var mdDirty = false;
   var changePostTimer = null;
-  var exitSlotTimer = null;
   var ignoreDirtyPostsUntil = 0;
   var CHANGE_POST_MS = 150;
-  var EXIT_SLOT_MS = 100;
   var titleEl = null;
-  var toastLoading = false;
-  var toastLoaded = false;
-  var pendingBoot = null; // { md, theme } while Toast script loads
-  var zhLangApplied = false;
+  var bundleLoading = false;
+  var bundleLoaded = false;
+  var pendingBoot = null;  // { md, theme, baseUrl } while the bundle loads
   var editorFontFace = "Microsoft YaHei";
   var editorFontPt = 12;
+  var assetBaseUrl = "";
 
-  // Offline zh-CN tooltips / dialogs (Toast defaults are English).
-  function applyZhLanguage() {
-    if (zhLangApplied) return;
-    if (!(window.toastui && toastui.Editor &&
-        typeof toastui.Editor.setLanguage === "function")) {
-      return;
-    }
-    zhLangApplied = true;
-    toastui.Editor.setLanguage(["zh-CN", "zh", "zh-cn"], {
-      Markdown: "Markdown",
-      WYSIWYG: "所见即所得",
-      Write: "编辑",
-      Preview: "预览",
-      Headings: "标题",
-      Paragraph: "正文",
-      Bold: "加粗",
-      Italic: "斜体",
-      Strike: "删除线",
-      Code: "行内代码",
-      Line: "水平线",
-      Blockquote: "引用",
-      "Unordered list": "无序列表",
-      "Ordered list": "有序列表",
-      Task: "任务列表",
-      Indent: "增加缩进",
-      Outdent: "减少缩进",
-      "Insert link": "插入链接",
-      "Insert CodeBlock": "插入代码块",
-      "Insert table": "插入表格",
-      "Insert image": "插入图片",
-      Heading: "标题",
-      "Image URL": "图片地址",
-      "Select image file": "选择图片文件",
-      "Choose a file": "选择文件",
-      "No file": "未选择文件",
-      Description: "说明",
-      OK: "确定",
-      More: "更多",
-      Cancel: "取消",
-      File: "文件",
-      URL: "链接地址",
-      "Link text": "链接文字",
-      "Add row to up": "在上方插入行",
-      "Add row to down": "在下方插入行",
-      "Add column to left": "在左侧插入列",
-      "Add column to right": "在右侧插入列",
-      "Remove row": "删除行",
-      "Remove column": "删除列",
-      "Align column to left": "左对齐",
-      "Align column to center": "居中对齐",
-      "Align column to right": "右对齐",
-      "Remove table": "删除表格",
-      "Would you like to paste as table?": "是否粘贴为表格？",
-      "Text color": "文字颜色",
-      "Auto scroll enabled": "已开启同步滚动",
-      "Auto scroll disabled": "已关闭同步滚动",
-      "Choose language": "选择语言"
-    });
-  }
-
-  function ensureToastCss() {
-    if (document.getElementById("desknote-toast-css")) return;
-    var link = document.createElement("link");
-    link.id = "desknote-toast-css";
-    link.rel = "stylesheet";
-    link.href = "vendor/toastui-editor.min.css";
-    document.head.appendChild(link);
-  }
-
-  // Register htmlInline <span> so schema.marks.span exists (same hook as
-  // @toast-ui/editor-plugin-color-syntax). Without this, font tools cannot
-  // addMark and a text fallback used to paste raw "<span style=...>".
-  function desknoteFontPlugin() {
-    return {
-      toHTMLRenderers: {
-        htmlInline: {
-          span: function (node, ctx) {
-            return ctx.entering
-              ? { type: "openTag", tagName: "span", attributes: node.attrs || {} }
-              : { type: "closeTag", tagName: "span" };
-          }
-        }
-      },
-      wysiwygCommands: {
-        desknoteFont: function (payload, state, dispatch) {
-          var schema = state.schema;
-          if (!schema.marks || !schema.marks.span) return false;
-          var style = payload && payload.style;
-          if (!style) return false;
-          var from = state.selection.from;
-          var to = state.selection.to;
-          if (from === to) return false;
-          var mark = schema.marks.span.create({
-            htmlAttrs: { style: style }
-          });
-          dispatch(
-            state.tr
-              .removeMark(from, to, schema.marks.span)
-              .addMark(from, to, mark)
-              .scrollIntoView()
-          );
-          return true;
-        }
-      }
-    };
-  }
-
-  // Empty Editor while waiting for host SetMarkdown — first open then only
-  // pays setMarkdown (Typora-class), not another ProseMirror ctor.
-  function warmBootEditor() {
-    if (editor || pendingBoot) return;
-    if (!(window.toastui && toastui.Editor)) return;
-    applyZhLanguage();
-    bindTitleField();
-    var el = document.getElementById("editor");
-    if (!el) return;
-    el.classList.remove("desknote-body-pending");
-    el.innerHTML = "";
-    var h = Math.max(80, (window.innerHeight || 480) - 64);
-    suppress = true;
-    try {
-      editor = new toastui.Editor({
-        el: el,
-        height: h + "px",
-        initialEditType: "wysiwyg",
-        previewStyle: "vertical",
-        usageStatistics: false,
-        language: "zh-CN",
-        hideModeSwitch: true,
-        initialValue: "",
-        autofocus: false,
-        plugins: [desknoteFontPlugin],
-      });
-      editor.on("change", function () {
-        if (suppress || paddingExit) return;
-        mdDirty = true;
-        signalDirty();
-        scheduleChangePost();
-        scheduleTrailingExitSlot();
-      });
-      placeToolbarAboveTitle();
-    } catch (e) {
-      editor = null;
-    } finally {
-      setTimeout(function () { suppress = false; }, 0);
+  function post(msg) {
+    if (window.chrome && chrome.webview && chrome.webview.postMessage) {
+      chrome.webview.postMessage(JSON.stringify(msg));
     }
   }
-
-  function onToastScriptReady() {
-    toastLoaded = true;
-    toastLoading = false;
-    applyZhLanguage();
-    if (pendingBoot) {
-      var p = pendingBoot;
-      pendingBoot = null;
-      boot(p.md, p.theme);
-    } else {
-      warmBootEditor();
-    }
-  }
-
-  function ensureToastLoaded() {
-    if (toastLoaded && window.toastui && toastui.Editor) {
-      // Script already up — still drain a queued set (host may have raced).
-      if (pendingBoot && !editor) {
-        var queued = pendingBoot;
-        pendingBoot = null;
-        boot(queued.md, queued.theme);
-      } else if (!editor && !pendingBoot) {
-        warmBootEditor();
-      }
-      return;
-    }
-    if (toastLoading) return;
-    toastLoading = true;
-    ensureToastCss();
-    var s = document.createElement("script");
-    s.src = "vendor/toastui-editor-all.min.js";
-    s.async = true;
-    s.onload = onToastScriptReady;
-    s.onerror = function () {
-      toastLoading = false;
-    };
-    document.head.appendChild(s);
-  }
-
-  // Overlap Toast fetch with host round-trip (ready → SetMarkdown).
-  ensureToastLoaded();
 
   function trimStr(s) {
     return String(s || "").replace(/^\s+|\s+$/g, "");
@@ -486,7 +140,7 @@
   // When false, body-only files keep no leading "# …" until the user types a title.
   var emitTitleLine = true;
 
-  // Leading ATX heading ↔ title field; remainder is body (Typora-like).
+  // Leading ATX heading ↔ native title strip; remainder is the body (Typora).
   function splitTitleBody(md) {
     var raw = String(md || "");
     if (raw.charCodeAt(0) === 0xfeff) raw = raw.slice(1);
@@ -513,10 +167,7 @@
     m = /^(#{1,6})[ \t]*(.*?)\s*$/.exec(raw);
     if (m) {
       emitTitleLine = true;
-      return {
-        title: trimStr(m[2].replace(/\s+#+\s*$/, "")),
-        body: prefix
-      };
+      return { title: trimStr(m[2].replace(/\s+#+\s*$/, "")), body: prefix };
     }
     emitTitleLine = false;
     return { title: "", body: prefix + raw };
@@ -526,9 +177,7 @@
     var t = trimStr(title).replace(/[\r\n]+/g, " ");
     var b = String(body || "").replace(/^\r?\n+/, "");
     // Body-only notes: do not invent an empty "# \n\n" on first save.
-    if (!t && !emitTitleLine) {
-      return b;
-    }
+    if (!t && !emitTitleLine) return b;
     emitTitleLine = true;
     return "# " + t + "\n\n" + b;
   }
@@ -536,9 +185,7 @@
   // Host owns the visible title; keep a shadow string for compose/save.
   var hostTitle = "";
 
-  function currentTitle() {
-    return hostTitle;
-  }
+  function currentTitle() { return hostTitle; }
 
   function setTitleValue(t) {
     hostTitle = t || "";
@@ -547,20 +194,19 @@
 
   function composedMarkdown() {
     var body = "";
-    if (editor && typeof editor.getMarkdown === "function") {
-      body = editor.getMarkdown() || "";
+    if (editorApi) {
+      try { body = editorApi.getMarkdown() || ""; } catch (e) { body = ""; }
     }
     return joinTitleBody(currentTitle(), body);
   }
 
-  // Native title EN_CHANGE → keep Toast composed markdown in sync.
+  // Native title EN_CHANGE → keep the composed markdown in sync.
   window.__desknoteSetHostTitle = function (t) {
     hostTitle = String(t || "").replace(/[\r\n]+/g, " ");
     if (hostTitle) emitTitleLine = true;
     if (titleEl) titleEl.value = hostTitle;
     if (suppress) {
-      latestMd = joinTitleBody(hostTitle, editor && editor.getMarkdown
-          ? (editor.getMarkdown() || "") : "");
+      latestMd = composedMarkdown();
       return;
     }
     mdDirty = true;
@@ -569,84 +215,9 @@
     post({ type: "changed", md: latestMd });
   };
 
-  // Toast UI / ProseMirror: cursor cannot sit after a trailing table/code block
-  // (nhn/tui.editor#2735). Ctrl+Enter exits, but market note apps (Typora-like)
-  // always leave a blank paragraph below so click / type outside works.
-  function lastContentBlockNeedsExitSlot(root) {
-    if (!root || !root.lastElementChild) return false;
-    var last = root.lastElementChild;
-    if (last.tagName === "TABLE") return true;
-    if (last.tagName === "PRE") return true;
-    if (last.classList && (
-        last.classList.contains("toastui-editor-ww-code-block") ||
-        last.classList.contains("toastui-editor-ww-code-block-group"))) {
-      return true;
-    }
-    if (last.querySelector && last.querySelector(
-        "table, pre, .toastui-editor-ww-code-block")) {
-      var only = last.children && last.children.length === 1;
-      if (only) return true;
-    }
-    return false;
-  }
-
-  function scheduleTrailingExitSlot() {
-    if (exitSlotTimer) return;
-    exitSlotTimer = setTimeout(function () {
-      exitSlotTimer = null;
-      ensureTrailingExitSlot();
-    }, EXIT_SLOT_MS);
-  }
-
-  function ensureTrailingExitSlot() {
-    if (!editor || suppress || paddingExit) return;
-    var root = document.querySelector(
-      ".toastui-editor-ww-container .ProseMirror");
-    if (!lastContentBlockNeedsExitSlot(root)) return;
-    paddingExit = true;
-    var view = editor.wwEditor && editor.wwEditor.view;
-    if (view && view.state && view.state.schema && view.state.schema.nodes.paragraph) {
-      try {
-        var state = view.state;
-        var para = state.schema.nodes.paragraph;
-        var node = (para.createAndFill && para.createAndFill()) || para.create();
-        if (node) {
-          view.dispatch(state.tr.insert(state.doc.content.size, node));
-          return;
-        }
-      } catch (e) {
-      } finally {
-        setTimeout(function () { paddingExit = false; }, 0);
-      }
-    }
-    try {
-      var md = editor.getMarkdown() || "";
-      if (/\n\n\s*$/.test(md)) return;
-      suppress = true;
-      editor.setMarkdown(md.replace(/\s*$/, "") + "\n\n", false);
-    } catch (e2) {
-    } finally {
-      setTimeout(function () {
-        paddingExit = false;
-        suppress = false;
-      }, 0);
-    }
-  }
-
   function refreshLatestMd() {
     latestMd = composedMarkdown();
     mdDirty = false;
-  }
-
-  function flushChangePost() {
-    if (changePostTimer) {
-      clearTimeout(changePostTimer);
-      changePostTimer = null;
-    }
-    if (mdDirty) {
-      refreshLatestMd();
-    }
-    post({ type: "changed", md: latestMd });
   }
 
   function scheduleChangePost() {
@@ -655,9 +226,7 @@
     changePostTimer = setTimeout(function () {
       changePostTimer = null;
       if (Date.now() < ignoreDirtyPostsUntil) return;
-      if (mdDirty) {
-        refreshLatestMd();
-      }
+      if (mdDirty) refreshLatestMd();
       post({ type: "changed", md: latestMd });
     }, CHANGE_POST_MS);
   }
@@ -674,204 +243,157 @@
       clearTimeout(changePostTimer);
       changePostTimer = null;
     }
-    if (exitSlotTimer) {
-      clearTimeout(exitSlotTimer);
-      exitSlotTimer = null;
-    }
   }
 
   function focusBody() {
+    try { if (editorApi) editorApi.focus(); } catch (e) {}
+  }
+
+  // ---------------------------------------------------------------------
+  // Boot
+  // ---------------------------------------------------------------------
+  function ensureEditorCss() {
+    // Already linked in <head>; kept for parity with older shells.
+  }
+
+  function onBundleReady() {
+    bundleLoaded = true;
+    bundleLoading = false;
+    var queued = pendingBoot;
+    pendingBoot = null;
+    if (queued) boot(queued.md, queued.theme, queued.baseUrl);
+    else if (!editorApi) boot("", "light", "");
+  }
+
+  function ensureBundleLoaded() {
+    if (bundleLoaded && window.__desknoteEditor) {
+      if (pendingBoot && !editorApi) {
+        var queued = pendingBoot;
+        pendingBoot = null;
+        boot(queued.md, queued.theme, queued.baseUrl);
+      }
+      return;
+    }
+    if (bundleLoading) return;
+    bundleLoading = true;
+    var s = document.createElement("script");
+    s.src = "vendor/desknote-editor.js";
+    s.async = true;
+    s.onload = onBundleReady;
+    s.onerror = function () { bundleLoading = false; };
+    document.head.appendChild(s);
+  }
+
+  // Overlap the bundle fetch with the host round-trip (ready → set).
+  ensureBundleLoaded();
+
+  function applyDoc(md, theme) {
+    var parts = splitTitleBody(md || "");
+    setTitleValue(parts.title);
+    latestMd = joinTitleBody(parts.title, parts.body);
+    var dark = String(theme || "").toLowerCase().indexOf("dark") >= 0;
+    document.body.classList.toggle("theme-dark", dark);
+    return parts;
+  }
+
+  function boot(md, theme, baseUrl) {
+    if (!(window.__desknoteEditor && window.__desknoteEditor.createDeskNoteEditor)) {
+      pendingBoot = { md: md || "", theme: theme || "", baseUrl: baseUrl || "" };
+      ensureBundleLoaded();
+      return;
+    }
+    assetBaseUrl = String(baseUrl || "");
+    var parts = applyDoc(md || "", theme);
+    var el = document.getElementById("editor");
+    if (el) {
+      el.classList.remove("desknote-body-pending");
+      el.innerHTML = "";
+    }
+    suppress = true;
     try {
-      if (editor && typeof editor.focus === "function") {
-        editor.focus();
-      }
-      var view = editor && editor.wwEditor && editor.wwEditor.view;
-      if (view) view.focus();
-    } catch (e) {}
+      editorApi = window.__desknoteEditor.createDeskNoteEditor({
+        root: el,
+        defaultValue: parts.body || "",
+        assetBaseUrl: assetBaseUrl,
+        onMarkdownUpdated: function (markdown) {
+          if (suppress) return;
+          mdDirty = true;
+          signalDirty();
+          scheduleChangePost();
+        },
+        onMounted: function () {
+          setTimeout(function () {
+            suppress = false;
+            applyDefaultFont();
+            post({ type: "contentReady" });
+            try { focusBody(); } catch (e) {}
+          }, 0);
+        }
+      });
+    } catch (e) {
+      editorApi = null;
+      suppress = false;
+      post({ type: "contentReady" });
+    }
   }
 
-  // Shift+Enter (Notepad-class): blank line below, caret at the *visual*
-  // column (pixel X) — char-count spaces mis-align under YaHei / CJK.
-  // Never split at the caret (trailing text stays on the original line).
-  var softBreakGuardUntil = 0;
-  var softBreakMeasureCanvas = null;
-  function measureSpaceWidth(view, pos) {
+  // ---------------------------------------------------------------------
+  // Host → page
+  // ---------------------------------------------------------------------
+  window.__desknoteWysiwygSet = function (md, theme, baseUrl) {
+    mdDirty = false;
+    if (changePostTimer) {
+      clearTimeout(changePostTimer);
+      changePostTimer = null;
+    }
+    assetBaseUrl = String(baseUrl || "");
+    var parts = applyDoc(md || "", theme || "");
+    // Body surface ready to cover the RichEdit staging buffer.
+    post({ type: "chromeReady" });
+    if (!editorApi) {
+      var elPend = document.getElementById("editor");
+      if (elPend) elPend.classList.add("desknote-body-pending");
+      pendingBoot = { md: md || "", theme: theme || "", baseUrl: assetBaseUrl };
+      ensureBundleLoaded();
+      return;
+    }
+    var elLive = document.getElementById("editor");
+    if (elLive) elLive.classList.remove("desknote-body-pending");
+    suppress = true;
     try {
-      var dom = view.domAtPos(pos);
-      var el =
-        dom && dom.node
-          ? dom.node.nodeType === 3
-            ? dom.node.parentElement
-            : dom.node
-          : view.dom;
-      var cs = window.getComputedStyle(el || view.dom);
-      if (!softBreakMeasureCanvas) {
-        softBreakMeasureCanvas = document.createElement("canvas");
-      }
-      var ctx = softBreakMeasureCanvas.getContext("2d");
-      ctx.font =
-        cs.font ||
-        (cs.fontStyle + " " + cs.fontWeight + " " + cs.fontSize + " " +
-          cs.fontFamily);
-      var w = ctx.measureText(" ").width;
-      if (w > 0.5) return w;
-    } catch (e) {}
-    return 8;
-  }
-  function insertSoftLineBreak() {
-    if (!editor) return false;
-    var now = Date.now();
-    if (now < softBreakGuardUntil) return true;
-    softBreakGuardUntil = now + 80;
-    function markChanged() {
-      mdDirty = true;
-      signalDirty();
-      scheduleChangePost();
+      editorApi.setAssetBaseUrl(assetBaseUrl);
+      editorApi.setMarkdown(parts.body || "");
+      post({ type: "contentReady" });
+    } catch (e) {
+      post({ type: "contentReady" });
+    } finally {
+      setTimeout(function () {
+        suppress = false;
+        window.__desknoteWysiwygResize(window.innerHeight);
+        try { focusBody(); } catch (e) {}
+      }, 50);
     }
-    var view = editor.wwEditor && editor.wwEditor.view;
-    if (view && view.state) {
-      try {
-        var state = view.state;
-        var tr = state.tr;
-        if (!state.selection.empty) {
-          tr.deleteSelection();
-        }
-        var $from = tr.selection.$from;
-        if ($from.parent && $from.parent.isTextblock) {
-          var caretPos = tr.selection.from;
-          var targetLeft = 0;
-          try {
-            targetLeft = view.coordsAtPos(caretPos).left;
-          } catch (eC) {
-            targetLeft = 0;
-          }
-          var schema = state.schema;
-          var para = schema.nodes.paragraph || $from.parent.type;
-          var after = $from.after($from.depth);
-          var newBlock = para.createAndFill() || para.create();
-          tr.insert(after, newBlock);
-          var startPos = after + 1;
-          var Sel = state.selection.constructor;
-          if (Sel && typeof Sel.create === "function") {
-            tr.setSelection(Sel.create(tr.doc, startPos));
-          } else if (Sel && typeof Sel.near === "function") {
-            tr.setSelection(Sel.near(tr.doc.resolve(startPos), 1));
-          }
-          view.dispatch(tr.scrollIntoView());
-          // Pad by pixel X so YaHei / CJK lines line up with the old caret.
-          try {
-            var pos0 = view.state.selection.from;
-            var startLeft = view.coordsAtPos(pos0).left;
-            var dx = targetLeft - startLeft;
-            if (dx > 1) {
-              var sw = measureSpaceWidth(view, pos0);
-              var n = Math.max(0, Math.round(dx / sw));
-              // Clamp runaway pads (tiny space width / zoom glitches).
-              if (n > 200) n = 200;
-              if (n > 0) {
-                view.dispatch(
-                  view.state.tr
-                    .insertText(new Array(n + 1).join(" "))
-                    .scrollIntoView()
-                );
-              }
-            }
-          } catch (ePad) {}
-          markChanged();
-          view.focus();
-          return true;
-        }
-      } catch (e0) {}
+  };
+
+  window.__desknoteWysiwygGet = function () {
+    if (mdDirty || editorApi) refreshLatestMd();
+    // Pull during Save — drop pending dirty timers so a late post cannot
+    // re-arm the tab disc before the host's ackClean arrives.
+    if (changePostTimer) {
+      clearTimeout(changePostTimer);
+      changePostTimer = null;
     }
-    return false;
-  }
-  window.__desknoteSoftBreak = insertSoftLineBreak;
+    mdDirty = false;
+    return latestMd;
+  };
 
-  function bindSoftBreakKeys() {
-    var root = document.getElementById("editor") || document.body;
-    if (!root || root.__desknoteSoftBound) return;
-    root.__desknoteSoftBound = true;
-    root.addEventListener(
-      "keydown",
-      function (e) {
-        if (e.key !== "Enter" || !e.shiftKey || e.ctrlKey || e.altKey ||
-            e.metaKey) {
-          return;
-        }
-        e.preventDefault();
-        e.stopPropagation();
-        if (typeof e.stopImmediatePropagation === "function") {
-          e.stopImmediatePropagation();
-        }
-        insertSoftLineBreak();
-      },
-      true
-    );
-  }
-
-  function bindTitleField() {
-    titleEl = document.getElementById("note-title");
-    if (!titleEl || titleEl.__desknoteBound) return;
-    titleEl.__desknoteBound = true;
-    titleEl.addEventListener("input", function () {
-      if (suppress) return;
-      // Typing a title opts into the leading "# …" slot for this document.
-      emitTitleLine = true;
-      mdDirty = true;
-      signalDirty();
-      scheduleChangePost();
-    });
-    // Enter / Down in title → jump to body (Typora).
-    titleEl.addEventListener("keydown", function (e) {
-      if (e.key === "Enter" || e.key === "ArrowDown") {
-        e.preventDefault();
-        focusBody();
-      }
-    });
-  }
-
-  function syncFontToolbarControls() {
-    var faceEl = document.getElementById("desknote-font-face");
-    var sizeEl = document.getElementById("desknote-font-size");
-    if (faceEl) {
-      faceEl.value =
-        /simsun/i.test(editorFontFace) || editorFontFace === "宋体"
-          ? "SimSun"
-          : "Microsoft YaHei";
-    }
-    if (sizeEl) {
-      // <select> blanks when value is not in options (A± can hit 9/13/…).
-      var want = String(Math.max(8, Math.min(48, Number(editorFontPt) || 12)));
-      var found = false;
-      for (var i = 0; i < sizeEl.options.length; i++) {
-        if (sizeEl.options[i].value === want) {
-          found = true;
-          break;
-        }
-      }
-      if (!found) {
-        var opt = document.createElement("option");
-        opt.value = want;
-        opt.textContent = want;
-        var inserted = false;
-        var nWant = Number(want);
-        for (var j = 0; j < sizeEl.options.length; j++) {
-          if (Number(sizeEl.options[j].value) > nWant) {
-            sizeEl.insertBefore(opt, sizeEl.options[j]);
-            inserted = true;
-            break;
-          }
-        }
-        if (!inserted) sizeEl.appendChild(opt);
-      }
-      sizeEl.value = want;
-    }
-  }
-
-  // Soft document default only — never !important (Word: unmarked text).
-  function setDefaultEditorFont(face, pt) {
+  window.__desknoteSetEditorFont = function (face, pt) {
     editorFontFace = String(face || "Microsoft YaHei");
     editorFontPt = Math.max(8, Math.min(48, Number(pt) || 12));
+    applyDefaultFont();
+  };
+
+  function applyDefaultFont() {
     var style = document.getElementById("desknote-font-style");
     if (!style) {
       style = document.createElement("style");
@@ -880,472 +402,67 @@
     }
     var safe = editorFontFace.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
     style.textContent =
-      ".toastui-editor-contents .ProseMirror{" +
+      "#editor .ProseMirror{" +
       'font-family:"' + safe + '","Microsoft YaHei","微软雅黑",sans-serif;' +
       "font-size:" + editorFontPt + "pt;" +
-      "line-height:1.7;" +
+      "line-height:1.75;" +
       "color:#1a1f27;" +
       "}";
-    syncFontToolbarControls();
   }
-
-  function readRangeFontStyle(state, from, to) {
-    var style = "";
-    state.doc.nodesBetween(from, to, function (node) {
-      if (style || !node.isText) return;
-      var marks = node.marks || [];
-      for (var i = 0; i < marks.length; i++) {
-        var a = marks[i].attrs || {};
-        var ha = a.htmlAttrs || a;
-        if (ha && ha.style) {
-          style = String(ha.style);
-          return false;
-        }
-      }
-    });
-    return style;
-  }
-
-  function mergeFontStyle(existing, face, pt, mode) {
-    var fam = null;
-    var size = null;
-    if (existing) {
-      var m = /font-family\s*:\s*([^;]+)/i.exec(existing);
-      if (m) fam = m[1].trim();
-      m = /font-size\s*:\s*([^;]+)/i.exec(existing);
-      if (m) size = m[1].trim();
-    }
-    if (mode === "face" || mode === "both") {
-      fam = '"' + String(face || "Microsoft YaHei").replace(/"/g, "") + '"';
-    }
-    if (mode === "size" || mode === "both") {
-      size = Math.max(8, Math.min(48, Number(pt) || 12)) + "pt";
-    }
-    var parts = [];
-    if (fam) parts.push("font-family: " + fam);
-    if (size) parts.push("font-size: " + size);
-    return parts.join("; ");
-  }
-
-  // Clicking <select> clears the WW selection — remember it on mousedown.
-  var savedWwSel = null;
-  function rememberWwSelection() {
-    savedWwSel = null;
-    if (!editor || typeof editor.getSelection !== "function") return;
-    try {
-      var sel = editor.getSelection();
-      if (sel && sel.length >= 2 && sel[0] !== sel[1]) {
-        savedWwSel = [sel[0], sel[1]];
-      }
-    } catch (e) {}
-  }
-  function restoreWwSelection() {
-    if (!savedWwSel || !editor || typeof editor.setSelection !== "function") {
-      return false;
-    }
-    try {
-      editor.setSelection(savedWwSel[0], savedWwSel[1]);
-      return true;
-    } catch (e) {
-      return false;
-    }
-  }
-
-  // Word / WPS: restyle the selection via schema.marks.span (never paste HTML text).
-  function applyFontToSelection(face, pt, mode) {
-    mode = mode || "both";
-    if (!editor) {
-      setDefaultEditorFont(face, pt);
-      return false;
-    }
-    restoreWwSelection();
-    var view = editor.wwEditor && editor.wwEditor.view;
-    if (!view) {
-      setDefaultEditorFont(face, pt);
-      return false;
-    }
-    var state = view.state;
-    var sel = state.selection;
-    if (sel.empty) {
-      setDefaultEditorFont(face, pt);
-      return false;
-    }
-    var style = mergeFontStyle(
-      readRangeFontStyle(state, sel.from, sel.to), face, pt, mode);
-
-    // Prefer registered command (span mark from desknoteFontPlugin).
-    if (typeof editor.exec === "function") {
-      try {
-        if (editor.exec("desknoteFont", { style: style, face: face, pt: pt, mode: mode })) {
-          if (mode === "face" || mode === "both") editorFontFace = face;
-          if (mode === "size" || mode === "both") {
-            editorFontPt = Math.max(8, Math.min(48, Number(pt) || 12));
-          }
-          syncFontToolbarControls();
-          if (!suppress) {
-            mdDirty = true;
-            signalDirty();
-            scheduleChangePost();
-          }
-          return true;
-        }
-      } catch (e) {}
-    }
-
-    var markType = state.schema.marks && state.schema.marks.span;
-    if (markType) {
-      try {
-        var mark = markType.create({ htmlAttrs: { style: style } });
-        view.dispatch(
-          state.tr
-            .removeMark(sel.from, sel.to, markType)
-            .addMark(sel.from, sel.to, mark)
-            .scrollIntoView()
-        );
-        if (mode === "face" || mode === "both") editorFontFace = face;
-        if (mode === "size" || mode === "both") {
-          editorFontPt = Math.max(8, Math.min(48, Number(pt) || 12));
-        }
-        syncFontToolbarControls();
-        if (!suppress) {
-          mdDirty = true;
-          signalDirty();
-          scheduleChangePost();
-        }
-        return true;
-      } catch (e2) {}
-    }
-
-    // No raw-HTML text fallback — that showed "<span style=...>" in the body.
-    setDefaultEditorFont(face, pt);
-    return false;
-  }
-
-  // Host bootstrap / prefs restore — default face only, not selection restyle.
-  function applyEditorFontStyle(face, pt) {
-    setDefaultEditorFont(face, pt);
-  }
-
-  function bumpEditorFontSize(delta) {
-    var next = Math.max(8, Math.min(48, (Number(editorFontPt) || 12) + delta));
-    applyFontToSelection(editorFontFace, next, "size");
-    post({ type: "fontPrefs", face: editorFontFace, pt: next });
-  }
-
-  function bindFontStepButton(btn, delta) {
-    if (!btn || btn.getAttribute("data-bound") === "1") return;
-    btn.setAttribute("data-bound", "1");
-    btn.addEventListener("mousedown", rememberWwSelection);
-    btn.addEventListener("click", function (e) {
-      e.preventDefault();
-      bumpEditorFontSize(delta);
-    });
-  }
-
-  function ensureFontToolbar() {
-    var host = document.getElementById("toolbar-host");
-    if (!host) return false;
-    var existing = document.getElementById("desknote-font-tools");
-    // Always mount as #toolbar-host sibling of Toast bar (after CB icons).
-    if (existing) {
-      if (existing.parentElement !== host) {
-        host.appendChild(existing);
-      }
-      // Upgrade older toolbar markup that lacked A+/A−.
-      if (!document.getElementById("desknote-font-bigger")) {
-        existing.insertAdjacentHTML(
-          "beforeend",
-          '<button type="button" id="desknote-font-smaller" class="desknote-font-step" title="减小字号">A-</button>' +
-            '<button type="button" id="desknote-font-bigger" class="desknote-font-step" title="增大字号">A+</button>'
-        );
-      }
-      bindFontStepButton(document.getElementById("desknote-font-smaller"), -1);
-      bindFontStepButton(document.getElementById("desknote-font-bigger"), 1);
-      syncFontToolbarControls();
-      return true;
-    }
-    var wrap = document.createElement("div");
-    wrap.id = "desknote-font-tools";
-    wrap.className = "desknote-font-tools";
-    wrap.setAttribute("aria-label", "字体");
-    wrap.innerHTML =
-      '<select id="desknote-font-face" class="desknote-font-face" title="字体（作用于选中文字）">' +
-      '<option value="Microsoft YaHei" selected>微软雅黑</option>' +
-      '<option value="SimSun">宋体</option>' +
-      "</select>" +
-      '<select id="desknote-font-size" class="desknote-font-size" title="字号（作用于选中文字）">' +
-      [10, 11, 12, 14, 16, 18, 20, 22, 24, 28, 32]
-        .map(function (n) {
-          return '<option value="' + n + '"' + (n === 12 ? " selected" : "") +
-            ">" + n + "</option>";
-        })
-        .join("") +
-      "</select>" +
-      '<button type="button" id="desknote-font-smaller" class="desknote-font-step" title="减小字号">A-</button>' +
-      '<button type="button" id="desknote-font-bigger" class="desknote-font-step" title="增大字号">A+</button>';
-    host.appendChild(wrap);
-    var faceEl = document.getElementById("desknote-font-face");
-    var sizeEl = document.getElementById("desknote-font-size");
-    if (faceEl) {
-      faceEl.addEventListener("mousedown", rememberWwSelection);
-      faceEl.addEventListener("focus", rememberWwSelection);
-      faceEl.addEventListener("change", function () {
-        var face = faceEl.value;
-        var pt = sizeEl ? Number(sizeEl.value) : editorFontPt;
-        applyFontToSelection(face, pt, "face");
-        post({ type: "fontPrefs", face: face, pt: pt });
-      });
-    }
-    if (sizeEl) {
-      sizeEl.addEventListener("mousedown", rememberWwSelection);
-      sizeEl.addEventListener("focus", rememberWwSelection);
-      sizeEl.addEventListener("change", function () {
-        var face = faceEl ? faceEl.value : editorFontFace;
-        var pt = Number(sizeEl.value);
-        applyFontToSelection(face, pt, "size");
-        post({ type: "fontPrefs", face: face, pt: pt });
-      });
-    }
-    bindFontStepButton(document.getElementById("desknote-font-smaller"), -1);
-    bindFontStepButton(document.getElementById("desknote-font-bigger"), 1);
-    setDefaultEditorFont(editorFontFace || "Microsoft YaHei", editorFontPt);
-    return true;
-  }
-
-  // Lift Toast toolbar above the title field (order: toolbar → title → body).
-  function placeToolbarAboveTitle() {
-    var host = document.getElementById("toolbar-host");
-    if (!host) return;
-    var bar = document.querySelector(
-      "#editor .toastui-editor-toolbar, #editor .toastui-editor-defaultUI-toolbar");
-    if (!bar) {
-      bar = document.querySelector(
-        ".toastui-editor-toolbar, .toastui-editor-defaultUI-toolbar");
-    }
-    if (bar) {
-      var move = bar.classList.contains("toastui-editor-toolbar")
-        ? bar
-        : (bar.closest(".toastui-editor-toolbar") || bar);
-      if (move.parentElement !== host) {
-        host.insertBefore(move, host.firstChild);
-      }
-    }
-    ensureFontToolbar();
-    setTimeout(ensureFontToolbar, 40);
-    setTimeout(ensureFontToolbar, 200);
-  }
-
-  function applyDoc(md, theme) {
-    var parts = splitTitleBody(md || "");
-    setTitleValue(parts.title);
-    latestMd = joinTitleBody(parts.title, parts.body);
-    return parts;
-  }
-
-  function boot(md, theme) {
-    if (!(window.toastui && toastui.Editor)) {
-      pendingBoot = { md: md || "", theme: theme || "" };
-      ensureToastLoaded();
-      return;
-    }
-    // Warm instance already built — fill content only (fast path).
-    if (editor) {
-      window.__desknoteWysiwygSet(md || "", theme || "");
-      return;
-    }
-    applyZhLanguage();
-    bindTitleField();
-    var el = document.getElementById("editor");
-    if (el) {
-      el.classList.remove("desknote-body-pending");
-      el.innerHTML = "";
-    }
-    var parts = applyDoc(md || "", theme);
-    var dark = String(theme || "").toLowerCase().indexOf("dark") >= 0;
-    document.body.classList.toggle("theme-dark", dark);
-    var h = Math.max(80, (window.innerHeight || 480) - 64);
-    suppress = true;
-    editor = new toastui.Editor({
-      el: el,
-      height: h + "px",
-      initialEditType: "wysiwyg",
-      previewStyle: "vertical",
-      usageStatistics: false,
-      language: "zh-CN",
-      hideModeSwitch: true,
-      initialValue: parts.body || "",
-      autofocus: false,
-      plugins: [desknoteFontPlugin],
-    });
-    editor.on("change", function () {
-      if (suppress || paddingExit) return;
-      mdDirty = true;
-      signalDirty();
-      scheduleChangePost();
-      scheduleTrailingExitSlot();
-    });
-    bindSoftBreakKeys();
-    placeToolbarAboveTitle();
-    // Editor painted — clear host applying_set_ (chromeReady already revealed).
-    post({ type: "contentReady" });
-    setTimeout(function () {
-      suppress = false;
-      try {
-        bindSoftBreakKeys();
-        placeToolbarAboveTitle();
-        window.__desknoteWysiwygResize(window.innerHeight);
-        ensureTrailingExitSlot();
-        // Native host owns title focus; WW focuses body when ready.
-        focusBody();
-      } catch (e) {}
-    }, 0);
-  }
-
-  function post(msg) {
-    if (window.chrome && chrome.webview && chrome.webview.postMessage) {
-      chrome.webview.postMessage(JSON.stringify(msg));
-    }
-  }
-
-  window.__desknoteWysiwygSet = function (md, theme) {
-    mdDirty = false;
-    if (changePostTimer) {
-      clearTimeout(changePostTimer);
-      changePostTimer = null;
-    }
-    bindTitleField();
-    // Title first (Typora): paint before Toast parses so host can swap off
-    // RichEdit staging without waiting on the ~500KB bundle / Editor ctor.
-    var parts = applyDoc(md || "", theme || "");
-    var dark = String(theme || "").toLowerCase().indexOf("dark") >= 0;
-    document.body.classList.toggle("theme-dark", dark);
-    // Body surface ready to cover RichEdit staging (title is already native).
-    post({ type: "chromeReady" });
-    if (!editor) {
-      var elPend = document.getElementById("editor");
-      if (elPend) elPend.classList.add("desknote-body-pending");
-      pendingBoot = { md: md || "", theme: theme || "" };
-      ensureToastLoaded();
-      return;
-    }
-    var elLive = document.getElementById("editor");
-    if (elLive) elLive.classList.remove("desknote-body-pending");
-    suppress = true;
-    try {
-      editor.setMarkdown(parts.body || "", false);
-      post({ type: "contentReady" });
-    } finally {
-      setTimeout(function () {
-        suppress = false;
-        placeToolbarAboveTitle();
-        ensureTrailingExitSlot();
-        window.__desknoteWysiwygResize(window.innerHeight);
-        try {
-          focusBody();
-        } catch (e) {}
-      }, 50);
-    }
-  };
-
-  window.__desknoteWysiwygGet = function () {
-    if (mdDirty || editor) {
-      refreshLatestMd();
-    }
-    // Pull during Save — drop pending dirty timers so a late exit-slot
-    // cannot re-arm the tab disc before host ackClean arrives.
-    if (changePostTimer) {
-      clearTimeout(changePostTimer);
-      changePostTimer = null;
-    }
-    if (exitSlotTimer) {
-      clearTimeout(exitSlotTimer);
-      exitSlotTimer = null;
-    }
-    mdDirty = false;
-    return latestMd;
-  };
-
-  window.__desknoteSetEditorFont = function (face, pt) {
-    ensureFontToolbar();
-    applyEditorFontStyle(face, pt);
-  };
 
   window.__desknoteWysiwygResize = function (h) {
     var total = Math.max(120, Number(h) || window.innerHeight || 480);
-    var chrome = 0;
-    var th = document.getElementById("toolbar-host");
-    if (th) chrome += th.offsetHeight || 0;
-    // Native host owns the title strip — do not reserve hidden #title-wrap.
-    var nh = Math.max(80, total - chrome);
-    if (editor && typeof editor.setHeight === "function") {
-      editor.setHeight(nh + "px");
-    }
-    var root = document.querySelector(".toastui-editor-defaultUI");
-    if (root) {
-      root.style.height = nh + "px";
-    }
+    var el = document.getElementById("editor");
+    if (el) el.style.height = total + "px";
   };
 
-  // DeskTidy vault mirror: [复制] links + double-click masked password.
-  document.addEventListener("click", function (ev) {
-    var a = ev.target && ev.target.closest ? ev.target.closest("a") : null;
-    if (!a) return;
-    var href = a.getAttribute("href") || "";
-    if (href.indexOf("desknote-vault://") !== 0) return;
-    try { ev.preventDefault(); ev.stopPropagation(); } catch (err) {}
-    var q = {};
-    href.replace(/[?&]([^=]+)=([^&]*)/g, function (_, k, v) {
-      q[k] = decodeURIComponent(v || "");
-    });
-    post({
-      type: "vaultCopy",
-      i: q.i || "",
-      field: q.f || q.field || "pass",
-      title: "",
-      user: ""
-    });
-  }, true);
+  // Shift+Enter: Crepe maps it to a plain Enter; the host steals the key and
+  // asks for a hard break instead (Notepad-class line break, no new block).
+  window.__desknoteSoftBreak = function () {
+    if (!editorApi) return false;
+    try {
+      editorApi.insertHardBreak();
+      mdDirty = true;
+      signalDirty();
+      scheduleChangePost();
+      return true;
+    } catch (e) { return false; }
+  };
 
-  document.addEventListener("dblclick", function (ev) {
-    var el = ev.target;
-    if (!el) return;
-    if (el.closest && el.closest("a")) return;
-    var block = el.closest
-      ? el.closest("li") || el.closest("p") || el.closest("div") || el
-      : el;
-    var text = ((block.innerText || block.textContent || "") + "").trim();
-    if (text.indexOf("密码") < 0) return;
-    if (text.indexOf("\u2022") < 0 && text.indexOf("*") < 0 &&
-        text.indexOf("\u25CF") < 0) {
-      return;
-    }
-    var title = "";
-    var user = "";
-    var cur = block;
-    while (cur && !title) {
-      var prev = cur.previousElementSibling;
-      while (prev) {
-        var tag = (prev.tagName || "").toLowerCase();
-        if (/^h[1-6]$/.test(tag)) {
-          title = ((prev.innerText || prev.textContent || "") + "").trim();
-          break;
-        }
-        if (tag === "li" || tag === "p") {
-          var pt = ((prev.innerText || prev.textContent || "") + "").trim();
-          if (pt.indexOf("用户名") >= 0 && !user) {
-            user = pt.replace(/^[\s\S]*用户名\s*[:：]\s*/, "")
-                     .replace(/[`·复制]/g, "").trim();
-          }
-        }
-        prev = prev.previousElementSibling;
+  function bindSoftBreakKeys() {
+    var root = document.getElementById("editor") || document.body;
+    if (!root || root.__desknoteSoftBound) return;
+    root.__desknoteSoftBound = true;
+    root.addEventListener("keydown", function (e) {
+      if (e.key !== "Enter" || !e.shiftKey || e.ctrlKey || e.altKey ||
+          e.metaKey) {
+        return;
       }
-      cur = cur.parentElement;
-    }
-    if (!title) return;
-    post({ type: "vaultCopy", field: "pass", title: title, user: user || "" });
-    try { ev.preventDefault(); } catch (err) {}
-  }, true);
+      e.preventDefault();
+      e.stopPropagation();
+      if (typeof e.stopImmediatePropagation === "function") {
+        e.stopImmediatePropagation();
+      }
+      window.__desknoteSoftBreak();
+    }, true);
+  }
 
+  function bindTitleField() {
+    titleEl = document.getElementById("note-title");
+    if (!titleEl || titleEl.__desknoteBound) return;
+    titleEl.__desknoteBound = true;
+    titleEl.addEventListener("input", function () {
+      if (suppress) return;
+      emitTitleLine = true;
+      mdDirty = true;
+      signalDirty();
+      scheduleChangePost();
+    });
+  }
+
+  // ---------------------------------------------------------------------
+  // WebView2 message bridge (protocol unchanged from the Toast shell)
+  // ---------------------------------------------------------------------
   if (window.chrome && chrome.webview) {
     chrome.webview.addEventListener("message", function (e) {
       var msg = e.data || {};
@@ -1353,36 +470,67 @@
         try { msg = JSON.parse(msg); } catch (err) { msg = {}; }
       }
       if (msg.type === "set") {
-        window.__desknoteWysiwygSet(msg.md || "", msg.theme || "");
+        window.__desknoteWysiwygSet(msg.md || "", msg.theme || "",
+                                    msg.baseUrl || "");
         window.__desknoteWysiwygResize(window.innerHeight);
       } else if (msg.type === "ackClean") {
         // Host saved — drop pending dirty posts so the tab check can stick.
         clearPendingDirtyPosts();
       } else if (msg.type === "get") {
         post({ type: "md", md: window.__desknoteWysiwygGet() });
+      } else if (msg.type === "insertImage") {
+        if (!editorApi) return;
+        var url = msg.url || "";
+        if (!url) return;
+        try {
+          editorApi.insertImage(url, msg.alt || "");
+          mdDirty = true;
+          signalDirty();
+          scheduleChangePost();
+        } catch (err) {}
       } else if (msg.type === "insert") {
-        if (!editor) return;
-        focusBody();
-        if (typeof editor.insertText === "function") {
-          editor.insertText(msg.md || "");
-        } else {
-          editor.setMarkdown((editor.getMarkdown() || "") + (msg.md || ""), false);
-        }
+        if (!editorApi) return;
+        try {
+          editorApi.insertText(msg.md || "");
+          mdDirty = true;
+          signalDirty();
+          scheduleChangePost();
+        } catch (err) {}
       }
     });
   }
 
+  // Scroll reporting (host keeps the preview pane in sync).
+  var suppressScrollEmit = false;
+  function emitScroll() {
+    if (suppressScrollEmit) return;
+    var el = document.scrollingElement || document.documentElement;
+    var max = Math.max(1, el.scrollHeight - el.clientHeight);
+    post({ type: "scroll", ratio: el.scrollTop / max });
+  }
+  window.addEventListener("scroll", emitScroll, true);
+  window.__desknoteSetScrollRatio = function (r) {
+    suppressScrollEmit = true;
+    var el = document.scrollingElement || document.documentElement;
+    var max = Math.max(1, el.scrollHeight - el.clientHeight);
+    el.scrollTop = Math.max(0, Math.min(1, Number(r) || 0)) * max;
+    setTimeout(function () { suppressScrollEmit = false; }, 30);
+  };
+  window.__desknoteGetScrollRatio = function () {
+    var el = document.scrollingElement || document.documentElement;
+    var max = Math.max(1, el.scrollHeight - el.clientHeight);
+    return el.scrollTop / max;
+  };
+
   function ready() {
     bindTitleField();
-    ensureFontToolbar();
-    ensureToastLoaded();
+    bindSoftBreakKeys();
+    ensureBundleLoaded();
     post({ type: "ready" });
     setTimeout(function () {
-      ensureFontToolbar();
-      var cur = latestMd || (editor && editor.getMarkdown ? composedMarkdown() : "");
+      var cur = latestMd || (editorApi ? composedMarkdown() : "");
       if (!cur || cur === "# \n\n") {
-        // Still ask host if we have no real content yet.
-        if (!editor) post({ type: "needContent" });
+        if (!editorApi) post({ type: "needContent" });
       }
       window.__desknoteWysiwygResize(window.innerHeight);
     }, 50);

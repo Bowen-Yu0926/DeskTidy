@@ -1,0 +1,14 @@
+{
+  "name": "desknote-editor-build",
+  "private": true,
+  "description": "Bundles the DeskNote WYSIWYG editor (Milkdown Crepe) into assets/md_preview/vendor/desknote-editor.{js,css}",
+  "scripts": {
+    "build": "node build_crepe.js"
+  },
+  "dependencies": {
+    "@milkdown/crepe": "7.23.0"
+  },
+  "devDependencies": {
+    "esbuild": "0.25.0"
+  }
+}
