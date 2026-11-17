@@ -1038,7 +1038,7 @@ bool App::Init(HINSTANCE instance) {
   settings_.SetOnOrganizeReassign([this]() { OrganizeReassign(); });
   settings_.SetExtraHandlers(
       [this]() { SaveLayoutSnapshot(); },
-      [this]() { RestoreLayoutSnapshot(); }, []() {},
+      [this]() { RestoreLayoutSnapshot(); },
       [this]() { OpenMinutes(); },
       [this]() { PickAndSetWallpaper(settings_.Hwnd()); },
       [this]() { OpenLayoutEditor(); }, [this]() { OpenNotes(); },

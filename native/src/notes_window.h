@@ -254,7 +254,6 @@ class NotesWindow {
   // Coalesce rapid SwitchToTab disk writes (Notepad++ / VS Code style).
   void SchedulePersistTabs();
   void LoadTabSession();
-                      const std::wstring& title, const std::wstring& user);
   // Same stem as window title / tab chip (title_hint → H1 → localized filename).
   // disk_peek: read first heading from disk when the path is not an open tab.
   std::wstring NoteDisplayName(const std::wstring& path,

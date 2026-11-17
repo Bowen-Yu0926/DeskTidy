@@ -159,7 +159,6 @@ add_custom_command(TARGET deskNote POST_BUILD
           ${CMAKE_CURRENT_SOURCE_DIR}/assets/md_preview/wysiwyg_native.html
           $<TARGET_FILE_DIR:desktidy_native>/assets/md_preview/wysiwyg_native.html
   COMMAND ${CMAKE_COMMAND} -E copy_if_different
-  COMMAND ${CMAKE_COMMAND} -E copy_if_different
           ${CMAKE_CURRENT_SOURCE_DIR}/assets/md_preview/vendor/toastui-editor.min.js
           $<TARGET_FILE_DIR:desktidy_native>/assets/md_preview/vendor/toastui-editor.min.js
   COMMAND ${CMAKE_COMMAND} -E copy_if_different
@@ -226,7 +225,6 @@ add_custom_command(TARGET desktidy_native POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E copy_if_different
           ${CMAKE_CURRENT_SOURCE_DIR}/assets/md_preview/wysiwyg_native.html
           $<TARGET_FILE_DIR:desktidy_native>/assets/md_preview/wysiwyg_native.html
-  COMMAND ${CMAKE_COMMAND} -E copy_if_different
   COMMAND ${CMAKE_COMMAND} -E copy_if_different
           ${CMAKE_CURRENT_SOURCE_DIR}/assets/md_preview/vendor/toastui-editor.min.js
           $<TARGET_FILE_DIR:desktidy_native>/assets/md_preview/vendor/toastui-editor.min.js
