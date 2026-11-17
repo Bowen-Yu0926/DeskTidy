@@ -349,7 +349,8 @@ class NotesWindow {
   void SyncRefreshFromCloud();
   bool PathIsCloudSynced(const std::wstring& path) const;
   void LoadAndSweepCloudSync();
-  // Fire-and-forget VaultHttpUpdateNote (local save already done).
+  // Fire-and-forget VaultHttpUpdateNote (local save already done). A failed
+  // upload is re-queued and retried; the user is told when it fails.
   void QueueCloudNotePush(int note_id, std::wstring title, std::wstring body);
   HWND sidebar_results_ = nullptr;
   HWND status_ = nullptr;

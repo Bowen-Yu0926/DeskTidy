@@ -8178,6 +8178,9 @@ void NotesWindow::EnsureLibraryCloudLogin() {
     MistAlert(hwnd_, L"在线笔记",
               L"登录失败（用户名或密码错误，或服务端不可达）。",
               MistMsgTone::Danger);
+  } else {
+    // Flush anything queued while logged out.
+    NoteCloudNotifyPushWorker();
   }
 }
 
@@ -8203,13 +8206,12 @@ bool NotesWindow::PathIsCloudSynced(const std::wstring& path) const {
 }
 
 namespace {
-// Cloud note push worker state — file-scope on purpose: the detached worker
-// must not touch NotesWindow members, which die with the window. Process exit
-// ends the idle thread, same as the old detached saves did.
-std::mutex g_cloud_push_mutex;
-std::condition_variable g_cloud_push_cv;
-std::map<int, std::pair<std::wstring, std::wstring>> g_cloud_push_queue;
-bool g_cloud_push_worker_started = false;
+// Worker→UI notification (WM_APP+87): the push outcome, so a failed upload is
+// visible instead of silently leaving local and cloud diverged.
+constexpr UINT kMsgCloudPushFailed = WM_APP + 87;
+// Backoff before retrying a failed batch. The queue keeps the latest body per
+// note, so a retry never resurrects stale content.
+constexpr unsigned kCloudPushRetryMs = 5000;
 }  // namespace
 
 void NotesWindow::QueueCloudNotePush(int note_id, std::wstring title,
@@ -8221,43 +8223,50 @@ void NotesWindow::QueueCloudNotePush(int note_id, std::wstring title,
     title = L"未命名";
   }
   online_body_cache_[note_id] = OnlineBodyCache{title, body};
-  // One worker thread + latest-wins queue. The old detached-thread-per-save
-  // spawned unbounded threads and let an older request finish after a newer
-  // one (racing bodies back in time). Local is already durable; network must
-  // not block typing / tab switches.
-  {
-    std::lock_guard<std::mutex> lock(g_cloud_push_mutex);
-    g_cloud_push_queue[note_id] =
-        std::make_pair(std::move(title), std::move(body));
-    const bool start = !g_cloud_push_worker_started;
-    g_cloud_push_worker_started = true;
-    if (start) {
-      std::thread([]() {
-        std::map<int, std::pair<std::wstring, std::wstring>> batch;
-        for (;;) {
-          {
-            std::unique_lock<std::mutex> lock(g_cloud_push_mutex);
-            g_cloud_push_cv.wait(
-                lock, [] { return !g_cloud_push_queue.empty(); });
-            batch.swap(g_cloud_push_queue);
-          }
-          // Same session gate the old per-thread check had; queued batches
-          // made while logged out are dropped (next save re-queues).
-          if (!VaultHttpLoggedIn()) {
-            batch.clear();
-            continue;
-          }
-          for (const auto& kv : batch) {
-            VaultHttpNote updated;
-            VaultHttpUpdateNote(kv.first, kv.second.first, kv.second.second,
-                                &updated);
-          }
-          batch.clear();
-        }
-      }).detach();
-    }
+  // One worker thread + latest-wins queue (state lives in notes_cloud_sync so
+  // it survives this window). The old detached-thread-per-save spawned
+  // unbounded threads and let an older request finish after a newer one.
+  NoteCloudPushEnqueue(note_id, title, body);
+  if (!NoteCloudPushMarkWorkerStarted()) {
+    return;
   }
-  g_cloud_push_cv.notify_one();
+  // Only the HWND is captured — the worker outlives the window and must not
+  // dereference it. The push outcome goes back via PostMessage.
+  std::thread([hwnd = hwnd_]() {
+    for (;;) {
+      // Blocks until something is queued.
+      NoteCloudPushWaitForRetry(1000u * 60u * 60u);
+      auto batch = NoteCloudPushTakeAll();
+      if (batch.empty()) {
+        continue;
+      }
+      // Not logged in: keep the batch queued instead of dropping it. The old
+      // code cleared the queue here and relied on "the next save re-queues" —
+      // if the user stopped editing, those edits never left the machine.
+      if (!VaultHttpLoggedIn()) {
+        NoteCloudPushRequeue(batch);
+        NoteCloudPushWaitForRetry(kCloudPushRetryMs);
+        continue;
+      }
+      int failed = 0;
+      for (const auto& kv : batch) {
+        VaultHttpNote updated;
+        if (!VaultHttpUpdateNote(kv.first, kv.second.first,
+                                 kv.second.second, &updated)) {
+          ++failed;
+        }
+      }
+      if (failed > 0) {
+        // Re-queue what failed so the edit is retried, then tell the UI.
+        NoteCloudPushRequeue(batch);
+        if (hwnd && IsWindow(hwnd)) {
+          PostMessageW(hwnd, kMsgCloudPushFailed,
+                       static_cast<WPARAM>(failed), 0);
+        }
+        NoteCloudPushWaitForRetry(kCloudPushRetryMs);
+      }
+    }
+  }).detach();
 }
 
 void NotesWindow::EnsureLibraryRail() {
@@ -11354,6 +11363,16 @@ LRESULT NotesWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
             status_,
             (L"已从云端同步 " + std::to_wstring(updated) + L" 个文件").c_str());
       }
+      return 0;
+    }
+    case kMsgCloudPushFailed: {
+      // A cloud push attempt failed (network / expired session). The worker
+      // already re-queued the batch and will retry; this only makes the
+      // divergence visible so the user is not told everything synced.
+      if (status_) {
+        SetWindowTextW(status_, L"云端同步失败，稍后自动重试…");
+      }
+      ShowToast(L"云笔记上传失败，将在稍后自动重试");
       return 0;
     }
     case WM_APP + 60:

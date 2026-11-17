@@ -1,6 +1,8 @@
 #pragma once
 
+#include <map>
 #include <string>
+#include <utility>
 #include <vector>
 
 // Local file ↔ vault online-note link. 「转云 / 转本地」只改同步属性，文件仍是同一份。
@@ -38,3 +40,20 @@ int NoteCloudSweepPendingDeletes(NoteCloudSyncStore* store);
 
 long long NoteCloudUnixNow();
 long long NoteCloudUnixAfterHours(int hours);
+
+// --- DeskNote cloud-body upload queue -------------------------------------
+// Process-scoped (the detached worker outlives any window), so it lives in
+// notes_cloud_sync.cpp rather than on NotesWindow. Latest-wins per note id.
+void NoteCloudPushEnqueue(int note_id, const std::wstring& title,
+                          const std::wstring& body);
+// Take everything queued so far; the caller owns the batch.
+std::map<int, std::pair<std::wstring, std::wstring>> NoteCloudPushTakeAll();
+// Put a batch back without clobbering newer bodies queued meanwhile.
+void NoteCloudPushRequeue(
+    const std::map<int, std::pair<std::wstring, std::wstring>>& batch);
+// Returns true exactly once, when the worker should be started.
+bool NoteCloudPushMarkWorkerStarted();
+// Wake the worker so a parked/backing-off batch retries now.
+void NoteCloudNotifyPushWorker();
+// Sleep up to `ms`, waking early on a notify. Caller must hold no lock.
+void NoteCloudPushWaitForRetry(unsigned ms);

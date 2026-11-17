@@ -2,6 +2,7 @@
 
 #include "display_geom.h"
 #include "mist_msg.h"
+#include "notes_cloud_sync.h"
 #include "notes_library.h"
 #include "paths_util.h"
 #include "prompt_text.h"
@@ -707,6 +708,7 @@ void OnlineNotesWindow::EnsureLogin() {
     return;
   }
   status_ = L"登录成功";
+  NoteCloudNotifyPushWorker();  // flush batches parked while logged out
   RefreshList();
 }
 

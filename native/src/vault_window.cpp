@@ -4,6 +4,7 @@
 #include "display_geom.h"
 #include "i18n.h"
 #include "mist_msg.h"
+#include "notes_cloud_sync.h"
 #include "paths_util.h"
 #include "prompt_text.h"
 #include "toast.h"
@@ -1820,6 +1821,8 @@ LRESULT VaultWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
       const bool ok = wparam != 0;
       if (ok) {
         ShowToast(L"云登录成功");
+        // DeskNote may have parked cloud-note uploads while logged out.
+        NoteCloudNotifyPushWorker();
         StartCloudRefresh();
       } else {
         MistAlert(hwnd_, Tr("vault").c_str(),

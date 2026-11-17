@@ -3,10 +3,15 @@
 #include "paths_util.h"
 #include "vault_http.h"
 
+#include <chrono>
+#include <condition_variable>
 #include <ctime>
 #include <fstream>
+#include <map>
+#include <mutex>
 #include <sstream>
 #include <string>
+#include <utility>
 
 namespace {
 
@@ -333,4 +338,76 @@ int NoteCloudSweepPendingDeletes(NoteCloudSyncStore* store) {
   }
   store->pending_deletes = std::move(keep);
   return deleted;
+}
+
+// --- DeskNote cloud-body upload queue -------------------------------------
+// Process-scoped state. The worker thread outlives any NotesWindow, so the
+// queue cannot live on the window (it used to, and a window teardown would
+// have stranded queued bodies).
+namespace {
+std::mutex g_push_mutex;
+std::condition_variable g_push_cv;
+std::map<int, std::pair<std::wstring, std::wstring>> g_push_queue;
+bool g_push_worker_started = false;
+// Set by NotifyPushWorker so a wakeup that lands between "queue drained" and
+// "start waiting" is not lost (a plain notify_one would be).
+bool g_push_wake = false;
+}  // namespace
+
+void NoteCloudPushEnqueue(int note_id, const std::wstring& title,
+                          const std::wstring& body) {
+  if (note_id <= 0) {
+    return;
+  }
+  {
+    std::lock_guard<std::mutex> lock(g_push_mutex);
+    g_push_queue[note_id] = std::make_pair(title, body);
+  }
+  g_push_cv.notify_one();
+}
+
+std::map<int, std::pair<std::wstring, std::wstring>> NoteCloudPushTakeAll() {
+  std::map<int, std::pair<std::wstring, std::wstring>> batch;
+  {
+    std::lock_guard<std::mutex> lock(g_push_mutex);
+    batch.swap(g_push_queue);
+  }
+  return batch;
+}
+
+void NoteCloudPushRequeue(
+    const std::map<int, std::pair<std::wstring, std::wstring>>& batch) {
+  std::lock_guard<std::mutex> lock(g_push_mutex);
+  for (const auto& kv : batch) {
+    // emplace, not operator[]: never overwrite a newer body that was queued
+    // while this batch was in flight (latest-wins).
+    g_push_queue.emplace(kv.first, kv.second);
+  }
+}
+
+bool NoteCloudPushMarkWorkerStarted() {
+  std::lock_guard<std::mutex> lock(g_push_mutex);
+  const bool start = !g_push_worker_started;
+  g_push_worker_started = true;
+  return start;
+}
+
+void NoteCloudNotifyPushWorker() {
+  {
+    std::lock_guard<std::mutex> lock(g_push_mutex);
+    // Latch the wakeup: the worker may be between TakeAll() and wait_for(),
+    // where a bare notify_one would be lost and the batch would sit for the
+    // full retry interval.
+    g_push_wake = true;
+  }
+  g_push_cv.notify_one();
+}
+
+void NoteCloudPushWaitForRetry(unsigned ms) {
+  std::unique_lock<std::mutex> lock(g_push_mutex);
+  // Wake on a pending batch or a latched notify (new edit / login).
+  g_push_cv.wait_for(lock, std::chrono::milliseconds(ms), [] {
+    return !g_push_queue.empty() || g_push_wake;
+  });
+  g_push_wake = false;
 }
