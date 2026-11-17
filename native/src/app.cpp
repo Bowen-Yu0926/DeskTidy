@@ -4344,8 +4344,16 @@ void App::OnDesktopBlankRightClick(LPARAM screen_pt) {
     InvalidateDesktopScanCache();
     RefreshDesktopIcons();
   };
-  TrackShellFolderBackgroundMenu(message_hwnd_, screen, desk, {}, on_verb,
-                                 on_before, on_intercept);
+  const int rc = TrackShellFolderBackgroundMenu(
+      message_hwnd_, screen, desk, {}, on_verb, on_before, on_intercept);
+  if (rc < 0) {
+    // Explorer's background IContextMenu could not be acquired (shell restart,
+    // Explorer crash, non-standard shell). Previously this returned silently
+    // and the user got no menu at all — no Refresh / New / Paste — which reads
+    // as "the system options disappeared". Show a minimal working menu instead.
+    LogLine(L"[menu] desktop background menu unavailable; using fallback");
+    TrackFallbackDesktopMenu(message_hwnd_, screen, desk);
+  }
 }
 
 void App::RememberPinUndo(const std::wstring& path,

@@ -69,3 +69,12 @@ int TrackShellFolderBackgroundMenu(HWND owner, POINT screen,
 // Silent folder-background verb (e.g. "undo") — Explorer Ctrl+Z / blank Undo.
 bool InvokeShellFolderVerb(HWND owner, const std::wstring& folder,
                            const wchar_t* verb);
+
+// Minimal fallback menu for the desktop blank area, used when the Explorer
+// background IContextMenu cannot be acquired (shell restart, Explorer crash,
+// unusual shell replacements). Without it the user gets a menu with no
+// system items at all — no Refresh / New / Paste / View — which looks like
+// the feature is broken rather than degraded.
+// Returns the chosen custom id (0 = nothing / cancelled).
+int TrackFallbackDesktopMenu(HWND owner, POINT screen,
+                             const std::wstring& folder);

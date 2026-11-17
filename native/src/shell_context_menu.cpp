@@ -313,15 +313,31 @@ int TrackCommon(HWND owner, POINT screen, IContextMenu* pcm, UINT cmf_flags,
     }
     return -1;
   }
-  // Do NOT SetForegroundWindow(track). `track` is a 0x0 hidden TOOLWINDOW:
-  // making it foreground leaves the system with an invisible foreground, so
-  // every app stops accepting keyboard input until the user switches windows.
-  // TrackPopupMenu does not require the owner to be foreground — it only needs
-  // it to receive the menu's messages. Without the foreground grab the menu
-  // still tracks and dismisses on selection; Esc also closes it.
+  // TrackPopupMenu REQUIRES the owner to be the foreground window. Without it
+  // the menu does not receive the click-outside that should dismiss it, and
+  // the system can leave the mouse capture with the menu — which is exactly
+  // the reported symptom: after a blank-area right-click the desktop icons
+  // stop responding until the user right-clicks again (the second menu grabs
+  // and then properly releases focus).
+  //
+  // The host is a 0x0 WS_EX_TOOLWINDOW popup, so making it foreground does not
+  // add a taskbar entry or steal visible focus from the user. The standard
+  // recipe (Raymond Chen) is SetForegroundWindow before, and a posted WM_NULL
+  // after so the menu window can release the foreground cleanly.
+  HWND prev_fg = GetForegroundWindow();
+  SetForegroundWindow(track);
   const int cmd =
       TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, screen.x, screen.y,
                      0, track, nullptr);
+  // Required so the menu dismisses correctly next click, and so the foreground
+  // does not stay stuck on the invisible host.
+  PostMessageW(track, WM_NULL, 0, 0);
+  if (prev_fg && IsWindow(prev_fg) && prev_fg != track) {
+    // Hand the foreground back when the menu was opened over a real window
+    // (e.g. a fence). Ignore failure: Windows only allows this for the process
+    // that owns the current foreground.
+    SetForegroundWindow(prev_fg);
+  }
   if (owner) {
     PostMessageW(owner, WM_NULL, 0, 0);
   }
@@ -380,6 +396,86 @@ int TrackCommon(HWND owner, POINT screen, IContextMenu* pcm, UINT cmf_flags,
 }
 
 }  // namespace
+
+int TrackFallbackDesktopMenu(HWND owner, POINT screen,
+                             const std::wstring& folder) {
+  if (folder.empty()) {
+    return 0;
+  }
+  HMENU menu = CreatePopupMenu();
+  if (!menu) {
+    return 0;
+  }
+  // Ids match the shell-verb strings so the caller's on_verb handler works
+  // unchanged: it receives the verb name, not an id.
+  constexpr int kRefresh = 1;
+  constexpr int kPaste = 2;
+  constexpr int kPasteLink = 3;
+  constexpr int kNewFolder = 4;
+  constexpr int kOpenExplorer = 5;
+  constexpr int kPersonalize = 6;
+
+  const bool can_paste = IsClipboardFormatAvailable(CF_HDROP) != FALSE ||
+                         IsClipboardFormatAvailable(CF_DIB) != FALSE;
+  AppendMenuW(menu, MF_STRING | (can_paste ? 0 : MF_GRAYED), kPaste,
+              L"粘贴");
+  AppendMenuW(menu, MF_STRING | (can_paste ? 0 : MF_GRAYED), kPasteLink,
+              L"粘贴快捷方式");
+  AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+  AppendMenuW(menu, MF_STRING, kNewFolder, L"新建文件夹");
+  AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+  AppendMenuW(menu, MF_STRING, kRefresh, L"刷新");
+  AppendMenuW(menu, MF_STRING, kOpenExplorer, L"在资源管理器中打开桌面");
+  AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+  AppendMenuW(menu, MF_STRING, kPersonalize, L"个性化");
+
+  HWND track = EnsureMenuHost(GetModuleHandleW(nullptr));
+  if (!track) {
+    track = owner;
+  }
+  if (!track) {
+    DestroyMenu(menu);
+    return 0;
+  }
+  SetForegroundWindow(track);
+  const int cmd =
+      TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, screen.x, screen.y,
+                     0, track, nullptr);
+  PostMessageW(track, WM_NULL, 0, 0);
+  if (owner) {
+    PostMessageW(owner, WM_NULL, 0, 0);
+  }
+  DestroyMenu(menu);
+
+  switch (cmd) {
+    case kRefresh: {
+      // Ask the shell to re-enumerate the desktop. SHCNE_ASSOCCHANGED is the
+      // documented "icons/extensions changed, refresh views" notification and
+      // does not depend on Explorer's private WM_COMMAND ids.
+      SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, nullptr, nullptr);
+      return 0;
+    }
+    case kPaste:
+      InvokeShellFolderVerb(owner, folder, L"paste");
+      return 0;
+    case kPasteLink:
+      InvokeShellFolderVerb(owner, folder, L"pastelink");
+      return 0;
+    case kNewFolder:
+      InvokeShellFolderVerb(owner, folder, L"newfolder");
+      return 0;
+    case kOpenExplorer:
+      ShellExecuteW(owner, L"open", folder.c_str(), nullptr, nullptr,
+                    SW_SHOWNORMAL);
+      return 0;
+    case kPersonalize:
+      ShellExecuteW(owner, L"open", L"ms-settings:personalization",
+                    nullptr, nullptr, SW_SHOWNORMAL);
+      return 0;
+    default:
+      return 0;
+  }
+}
 
 bool ShellVerbNeedsDesktopRescan(const std::wstring& verb) {
   // Unknown/empty after Invoke: treat as mutating (safer than missing a delete).

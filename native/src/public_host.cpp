@@ -1250,6 +1250,13 @@ void PublicHost::ShowBackgroundMenu(POINT screen) {
   };
   const int rc = TrackShellFolderBackgroundMenu(hwnd_, screen, desk, extras,
                                                 on_verb, on_before, on_intercept);
+  if (rc < 0) {
+    // Explorer background menu unavailable — keep the loose-float actions
+    // reachable instead of showing nothing.
+    LogLine(L"[menu] public background menu unavailable; using fallback");
+    TrackFallbackDesktopMenu(hwnd_, screen, desk);
+    return;
+  }
   if (rc == kExtPublicRefresh && on_refresh_) {
     on_refresh_();
   } else if (rc == kExtPublicAlignGrid) {
