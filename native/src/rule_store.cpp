@@ -244,6 +244,155 @@ void InsertNormalizedRule(RuleMap* rules, const std::wstring& key,
   (*rules)[key] = val;
 }
 
+// ---------------------------------------------------------------------------
+// Attribute rules — Fences 6 matches by more than name/extension.
+//
+// Kept as prefixed *patterns* rather than a new rule struct so every existing
+// rules.json keeps working untouched, and so the RuleMap stays one
+// pattern→fence map (insertion order = priority) that all callers already
+// understand.
+//
+//   size:>10mb   size:<500kb   size:1mb..50mb     file size
+//   age:>30d     age:<7d       age:1d..30d        mtime age
+//   dir:<substr>                                  parent folder path contains
+//
+// Units: b/kb/mb/gb (case-insensitive); s/m/h/d/w for age.
+// ---------------------------------------------------------------------------
+
+// Parse "<number><unit>" → bytes (size) or seconds (age). Returns false on a
+// malformed token so the caller can reject the rule at edit time.
+bool ParseUnitValue(const std::wstring& token, bool is_age, long long* out) {
+  if (!out || token.empty()) {
+    return false;
+  }
+  size_t i = 0;
+  bool any_digit = false;
+  long long number = 0;
+  for (; i < token.size(); ++i) {
+    const wchar_t c = token[i];
+    if (c >= L'0' && c <= L'9') {
+      any_digit = true;
+      if (number > 100000000000LL) {
+        return false;  // overflow guard
+      }
+      number = number * 10 + (c - L'0');
+      continue;
+    }
+    if (c == L'.' && any_digit) {
+      continue;  // fractional values are truncated; the integer part is enough
+    }
+    break;
+  }
+  if (!any_digit) {
+    return false;
+  }
+  std::wstring unit;
+  for (; i < token.size(); ++i) {
+    wchar_t c = token[i];
+    if (c >= L'A' && c <= L'Z') {
+      c = static_cast<wchar_t>(c - L'A' + L'a');
+    }
+    unit.push_back(c);
+  }
+  long long mult = 1;
+  if (is_age) {
+    if (unit == L"s" || unit.empty()) {
+      mult = 1;
+    } else if (unit == L"m") {
+      mult = 60;
+    } else if (unit == L"h") {
+      mult = 3600;
+    } else if (unit == L"d") {
+      mult = 86400;
+    } else if (unit == L"w") {
+      mult = 604800;
+    } else {
+      return false;
+    }
+  } else {
+    if (unit == L"b" || unit.empty()) {
+      mult = 1;
+    } else if (unit == L"kb") {
+      mult = 1024;
+    } else if (unit == L"mb") {
+      mult = 1024 * 1024;
+    } else if (unit == L"gb") {
+      mult = 1024LL * 1024 * 1024;
+    } else {
+      return false;
+    }
+  }
+  *out = number * mult;
+  return true;
+}
+
+enum class AttrOp { Greater, Less, Between };
+
+struct AttrRule {
+  bool valid = false;
+  AttrOp op = AttrOp::Greater;
+  long long lo = 0;
+  long long hi = 0;
+  std::wstring text;  // dir: substring (already folded)
+};
+
+// Parse the ">N" / "<N" / "N..M" body shared by size: and age:.
+bool ParseRangeBody(const std::wstring& body, bool is_age, AttrRule* rule) {
+  if (!rule || body.empty()) {
+    return false;
+  }
+  if (body[0] == L'>') {
+    if (!ParseUnitValue(body.substr(1), is_age, &rule->lo)) {
+      return false;
+    }
+    rule->op = AttrOp::Greater;
+    return true;
+  }
+  if (body[0] == L'<') {
+    if (!ParseUnitValue(body.substr(1), is_age, &rule->lo)) {
+      return false;
+    }
+    rule->op = AttrOp::Less;
+    return true;
+  }
+  const size_t dots = body.find(L"..");
+  if (dots == std::wstring::npos) {
+    return false;
+  }
+  if (!ParseUnitValue(body.substr(0, dots), is_age, &rule->lo) ||
+      !ParseUnitValue(body.substr(dots + 2), is_age, &rule->hi)) {
+    return false;
+  }
+  if (rule->hi < rule->lo) {
+    std::swap(rule->lo, rule->hi);
+  }
+  rule->op = AttrOp::Between;
+  return true;
+}
+
+// Classify a rule key. Returns false for plain name/extension rules so the
+// hot path can skip attribute handling entirely.
+bool ParseAttrRule(const std::wstring& key, AttrRule* rule) {
+  if (!rule) {
+    return false;
+  }
+  *rule = AttrRule{};
+  if (key.rfind(L"size:", 0) == 0) {
+    rule->valid = ParseRangeBody(key.substr(5), /*is_age=*/false, rule);
+    return true;
+  }
+  if (key.rfind(L"age:", 0) == 0) {
+    rule->valid = ParseRangeBody(key.substr(4), /*is_age=*/true, rule);
+    return true;
+  }
+  if (key.rfind(L"dir:", 0) == 0) {
+    rule->text = FoldLower(key.substr(4));
+    rule->valid = !rule->text.empty();
+    return true;
+  }
+  return false;
+}
+
 }  // namespace
 
 const std::wstring& RuleMap::FoldedKey(size_t i) const {
@@ -443,6 +592,18 @@ std::string ValidateRule(const std::wstring& pattern, const std::string& fence_i
   if (pattern.rfind(L"kind:", 0) == 0) {
     return "kind: 已废弃：请改用扩展名规则（如 .pdf）";
   }
+  // Attribute rules (Fences 6 parity): size:/age:/dir:. Validate the syntax
+  // here so a typo is rejected at edit time instead of silently never matching.
+  {
+    AttrRule ar;
+    if (ParseAttrRule(pattern, &ar)) {
+      if (!ar.valid) {
+        return "属性规则格式无效：size:>10mb / size:1mb..50mb / "
+               "age:>30d / dir:下载";
+      }
+      return "";
+    }
+  }
   // Glob / extension: reject unterminated character classes.
   int depth = 0;
   for (wchar_t ch : pattern) {
@@ -473,6 +634,79 @@ std::string ResolveFenceId(const std::wstring& path, bool is_link,
   const std::wstring name = BaseNameOf(path);
   const std::wstring ext = is_link ? L".lnk" : ExtOf(path);
 
+  // Lazily-filled attributes for the attribute rules. One GetFileAttributesExW
+  // per resolve, and only when a size:/age:/dir: rule actually exists.
+  bool attrs_loaded = false;
+  bool attrs_ok = false;
+  long long file_size = 0;
+  long long age_seconds = 0;
+  const std::wstring parent_dir = [&path]() {
+    const size_t slash = path.find_last_of(L"\\/");
+    return slash == std::wstring::npos ? std::wstring()
+                                       : FoldLower(path.substr(0, slash));
+  }();
+  auto load_attrs = [&]() {
+    if (attrs_loaded) {
+      return;
+    }
+    attrs_loaded = true;
+    WIN32_FILE_ATTRIBUTE_DATA fa{};
+    if (!GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &fa)) {
+      return;
+    }
+    attrs_ok = true;
+    ULARGE_INTEGER sz{};
+    sz.LowPart = fa.nFileSizeLow;
+    sz.HighPart = fa.nFileSizeHigh;
+    file_size = static_cast<long long>(sz.QuadPart);
+    ULARGE_INTEGER mt{};
+    mt.LowPart = fa.ftLastWriteTime.dwLowDateTime;
+    mt.HighPart = fa.ftLastWriteTime.dwHighDateTime;
+    // FILETIME → 100ns since 1601. Convert to "age in seconds" against now.
+    const ULONGLONG ft_ticks = mt.QuadPart;
+    FILETIME now_ft{};
+    GetSystemTimeAsFileTime(&now_ft);
+    ULARGE_INTEGER now{};
+    now.LowPart = now_ft.dwLowDateTime;
+    now.HighPart = now_ft.dwHighDateTime;
+    if (now.QuadPart > ft_ticks) {
+      age_seconds = static_cast<long long>((now.QuadPart - ft_ticks) / 10000000ULL);
+    }
+  };
+  // Pass 0: attribute rules (size / age / dir). Evaluated before extension and
+  // name so an explicit size/age/dir condition can win over a broad glob —
+  // otherwise "*.zip" would always beat "size:>100mb".
+  for (const auto& kv : rules) {
+    AttrRule ar;
+    if (!ParseAttrRule(kv.first, &ar) || !ar.valid) {
+      continue;
+    }
+    bool hit = false;
+    if (!ar.text.empty()) {
+      hit = parent_dir.find(ar.text) != std::wstring::npos;
+    } else {
+      load_attrs();
+      if (attrs_ok) {
+        const long long v =
+            (kv.first.rfind(L"age:", 0) == 0) ? age_seconds : file_size;
+        switch (ar.op) {
+          case AttrOp::Greater:
+            hit = v > ar.lo;
+            break;
+          case AttrOp::Less:
+            hit = v < ar.lo;
+            break;
+          case AttrOp::Between:
+            hit = v >= ar.lo && v <= ar.hi;
+            break;
+        }
+      }
+    }
+    if (hit) {
+      return kv.second;
+    }
+  }
+
   // Pass 1: extension exact, case-insensitive (Python match_extension —
   // extension priority; rule extensions are compared after str.lower()).
   {
@@ -490,6 +724,12 @@ std::string ResolveFenceId(const std::wstring& path, bool is_link,
   size_t idx = 0;
   for (const auto& kv : rules) {
     if (IsExtensionKey(kv.first)) {
+      ++idx;
+      continue;
+    }
+    // Attribute keys are not name patterns — never fnmatch them.
+    AttrRule probe;
+    if (ParseAttrRule(kv.first, &probe)) {
       ++idx;
       continue;
     }
