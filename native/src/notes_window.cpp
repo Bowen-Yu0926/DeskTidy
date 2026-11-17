@@ -37,15 +37,19 @@
 
 #include <algorithm>
 #include <cmath>
+#include <condition_variable>
 #include <cstdio>
 #include <cstring>
 #include <cwctype>
 #include <fstream>
 #include <functional>
+#include <map>
+#include <mutex>
 #include <regex>
 #include <sstream>
 #include <string>
 #include <thread>
+#include <utility>
 
 #pragma comment(lib, "comdlg32.lib")
 
@@ -3487,12 +3491,9 @@ void NotesWindow::PersistTabs() {
   }
   EnsureTabStates();
   const std::wstring file = JoinPath(NativeDataDir(), L"notes_tabs.json");
-  std::ofstream out(file, std::ios::binary);
-  if (!out) {
-    return;
-  }
   // Objects carry optional title so cold-start tab chips match last-known heading
   // (Typora / VS Code: reopen session shows document titles, not only filenames).
+  std::ostringstream out;
   out << "{\n  \"current\": " << tab_index_ << ",\n  \"tabs\": [\n";
   for (size_t i = 0; i < tab_paths_.size(); ++i) {
     out << "    {\"path\": \"" << EscapeJson(NarrowUtf8(tab_paths_[i]))
@@ -3525,6 +3526,10 @@ void NotesWindow::PersistTabs() {
     out << "\n";
   }
   out << "  ]\n}\n";
+  // Atomic replace: the old in-place ofstream truncated notes_tabs.json first,
+  // so a crash mid-write (timer fires every 400ms of typing) corrupted the
+  // whole session file.
+  AtomicWriteUtf8File(file, out.str(), false);
 }
 
 void NotesWindow::LoadTabSession() {
@@ -8173,6 +8178,16 @@ bool NotesWindow::PathIsCloudSynced(const std::wstring& path) const {
   return L && L->sync && L->note_id > 0;
 }
 
+namespace {
+// Cloud note push worker state — file-scope on purpose: the detached worker
+// must not touch NotesWindow members, which die with the window. Process exit
+// ends the idle thread, same as the old detached saves did.
+std::mutex g_cloud_push_mutex;
+std::condition_variable g_cloud_push_cv;
+std::map<int, std::pair<std::wstring, std::wstring>> g_cloud_push_queue;
+bool g_cloud_push_worker_started = false;
+}  // namespace
+
 void NotesWindow::QueueCloudNotePush(int note_id, std::wstring title,
                                      std::wstring body) {
   if (note_id <= 0) {
@@ -8182,15 +8197,43 @@ void NotesWindow::QueueCloudNotePush(int note_id, std::wstring title,
     title = L"未命名";
   }
   online_body_cache_[note_id] = OnlineBodyCache{title, body};
-  // Local is already durable; network must not block typing / tab switches.
-  std::thread([note_id, title = std::move(title),
-               body = std::move(body)]() mutable {
-    if (!VaultHttpLoggedIn()) {
-      return;
+  // One worker thread + latest-wins queue. The old detached-thread-per-save
+  // spawned unbounded threads and let an older request finish after a newer
+  // one (racing bodies back in time). Local is already durable; network must
+  // not block typing / tab switches.
+  {
+    std::lock_guard<std::mutex> lock(g_cloud_push_mutex);
+    g_cloud_push_queue[note_id] =
+        std::make_pair(std::move(title), std::move(body));
+    const bool start = !g_cloud_push_worker_started;
+    g_cloud_push_worker_started = true;
+    if (start) {
+      std::thread([]() {
+        std::map<int, std::pair<std::wstring, std::wstring>> batch;
+        for (;;) {
+          {
+            std::unique_lock<std::mutex> lock(g_cloud_push_mutex);
+            g_cloud_push_cv.wait(
+                lock, [] { return !g_cloud_push_queue.empty(); });
+            batch.swap(g_cloud_push_queue);
+          }
+          // Same session gate the old per-thread check had; queued batches
+          // made while logged out are dropped (next save re-queues).
+          if (!VaultHttpLoggedIn()) {
+            batch.clear();
+            continue;
+          }
+          for (const auto& kv : batch) {
+            VaultHttpNote updated;
+            VaultHttpUpdateNote(kv.first, kv.second.first, kv.second.second,
+                                &updated);
+          }
+          batch.clear();
+        }
+      }).detach();
     }
-    VaultHttpNote updated;
-    VaultHttpUpdateNote(note_id, title, body, &updated);
-  }).detach();
+  }
+  g_cloud_push_cv.notify_one();
 }
 
 void NotesWindow::EnsureLibraryRail() {
@@ -8226,6 +8269,27 @@ void NotesWindow::UpdateLibraryRailActiveOnly() {
   library_web_.EvalScript(script);
 }
 
+void NotesWindow::EnsureLibraryListFetch() {
+  if (library_list_busy_) {
+    library_list_refresh_pending_ = true;
+    return;
+  }
+  library_list_busy_ = true;
+  // VaultHttp* is cookie-mutex guarded and safe off-thread. Only hwnd is
+  // captured (no `this`): if the window dies before completion, PostMessage
+  // fails and the payload is freed here.
+  std::thread([hwnd = hwnd_]() {
+    std::vector<VaultHttpNote> remote;
+    const bool ok = VaultHttpListNotes(&remote);
+    auto* res =
+        new std::pair<bool, std::vector<VaultHttpNote>>(ok, std::move(remote));
+    if (!PostMessageW(hwnd, WM_APP + 85, 0,
+                      reinterpret_cast<LPARAM>(res))) {
+      delete res;
+    }
+  }).detach();
+}
+
 void NotesWindow::PushLibraryRailState(bool refresh_online) {
   if (!library_web_.Host()) {
     return;
@@ -8235,33 +8299,50 @@ void NotesWindow::PushLibraryRailState(bool refresh_online) {
     library_online_stale_ = true;
   } else if (refresh_online || library_online_stale_ ||
              library_online_cache_.empty()) {
-    std::vector<VaultHttpNote> remote;
-    if (VaultHttpListNotes(&remote)) {
-      library_online_cache_.clear();
-      library_online_cache_.reserve(remote.size());
-      for (const auto& n : remote) {
-        LibraryOnlineItem it;
-        it.id = n.id;
-        it.title = n.title.empty() ? L"未命名" : n.title;
-        it.updated_at = n.updated_at;
-        library_online_cache_.push_back(std::move(it));
-      }
-      library_online_stale_ = false;
-    }
+    // Async fetch — see EnsureLibraryListFetch. The rail renders whatever the
+    // cache holds (possibly empty) and refreshes when WM_APP+85 lands.
+    EnsureLibraryListFetch();
   }
   wchar_t qbuf[256]{};
   if (sidebar_search_) {
     GetWindowTextW(sidebar_search_, qbuf, 256);
   }
+  const std::wstring query = qbuf;
+  // One prefs read per push — NotesLibraryDir loads the prefs JSON each call.
+  const std::wstring root = NotesLibraryDir(false);
+  std::vector<NoteSearchHit> body_hits;
+  const bool local_matched = !query.empty();
+  if (local_matched) {
+    // Load search prefs once per window — LoadAppPrefs() re-reads the JSON
+    // from disk on every debounced keystroke otherwise.
+    if (!sidebar_search_prefs_loaded_) {
+      const AppPrefs prefs = LoadAppPrefs();
+      notes_search_case_sensitive_ = prefs.notes_search_case_sensitive;
+      notes_search_max_hits_ = prefs.notes_search_max_hits;
+      notes_search_max_file_bytes_ = prefs.notes_search_max_file_bytes;
+      sidebar_search_prefs_loaded_ = true;
+    }
+    // Full-text (file name + body) match on the host side. The WebView rail
+    // only holds titles, so body hits must be computed here — the rail shows
+    // exactly the hit set, line + preview included.
+    body_hits = SearchNotesLibrary(root, query,
+                                   notes_search_case_sensitive_,
+                                   notes_search_max_hits_,
+                                   notes_search_max_file_bytes_);
+  }
   std::wstring json = L"{\"query\":\"";
-  json += JsonEscLib(qbuf);
+  json += JsonEscLib(query);
   json += L"\",\"active\":\"";
   json += JsonEscLib(path_);
   json += L"\",\"logged_in\":";
   json += VaultHttpLoggedIn() ? L"true" : L"false";
+  json += L",\"local_matched\":";
+  json += local_matched ? L"true" : L"false";
   json += L",\"online\":[";
   bool first_online = true;
-  // Synced local files (same path, sync attribute).
+  // Synced local files (same path, sync attribute). Keys are normalized the
+  // same way as the `key` lookups below (lowercase + backslash), otherwise a
+  // link stored with forward slashes / different case silently misses.
   std::set<std::wstring> synced_keys;
   for (const auto& L : cloud_sync_.links) {
     if (!L.sync || L.note_id <= 0 || L.path.empty()) {
@@ -8270,7 +8351,16 @@ void NotesWindow::PushLibraryRailState(bool refresh_online) {
     if (GetFileAttributesW(L.path.c_str()) == INVALID_FILE_ATTRIBUTES) {
       continue;
     }
-    synced_keys.insert(L.path);
+    std::wstring nkey = L.path;
+    for (auto& c : nkey) {
+      if (c == L'/') {
+        c = L'\\';
+      }
+      if (c >= L'A' && c <= L'Z') {
+        c = static_cast<wchar_t>(c - L'A' + L'a');
+      }
+    }
+    synced_keys.insert(std::move(nkey));
     if (!first_online) {
       json += L',';
     }
@@ -8289,24 +8379,17 @@ void NotesWindow::PushLibraryRailState(bool refresh_online) {
   }
   // Pure remote rows only when never bound locally. After「转本地」sync=false
   // + pending_deletes must NOT reappear here (was leaking as online:// ghosts).
-  for (size_t i = 0; i < library_online_cache_.size(); ++i) {
-    const auto& n = library_online_cache_[i];
-    bool hide = false;
-    for (const auto& L : cloud_sync_.links) {
-      if (L.note_id == n.id) {
-        hide = true;
-        break;
-      }
-    }
-    if (!hide) {
-      for (const auto& d : cloud_sync_.pending_deletes) {
-        if (d.note_id == n.id) {
-          hide = true;
-          break;
-        }
-      }
-    }
-    if (hide) {
+  // Set-based: the old per-item nested scans were O(online × links).
+  std::set<int> linked_ids;
+  for (const auto& L : cloud_sync_.links) {
+    linked_ids.insert(L.note_id);
+  }
+  std::set<int> pending_delete_ids;
+  for (const auto& d : cloud_sync_.pending_deletes) {
+    pending_delete_ids.insert(d.note_id);
+  }
+  for (const auto& n : library_online_cache_) {
+    if (linked_ids.count(n.id) || pending_delete_ids.count(n.id)) {
       continue;
     }
     if (!first_online) {
@@ -8323,64 +8406,121 @@ void NotesWindow::PushLibraryRailState(bool refresh_online) {
   }
   json += L"],\"local\":[";
   bool first_local = true;
-  const std::wstring root = NotesLibraryDir(false);
-  // Enumerate the library on disk, not sidebar_paths_. That array is only
-  // filled by RebuildSidebar (the legacy TreeView rail); the WebView rail never
-  // calls it, so anything that lands a file without a TreeView rebuild — most
-  // visibly「转本地」— stayed missing from the tree. ListNoteFiles is
-  // mtime-cached, so the per-push cost is one FindFirstFile per directory.
-  for (const auto& full : ListNoteFiles(root)) {
-    // SidebarRemovePaths clears slots to "" (keeps TreeView lParam); never
-    // paint those ghosts — and drop paths already recycled off disk.
-    if (full.empty() || IsOnlineNotePath(full) ||
-        IsVaultAccountsNotePath(full)) {
-      continue;
-    }
-    if (GetFileAttributesW(full.c_str()) == INVALID_FILE_ATTRIBUTES) {
-      continue;
-    }
-    std::wstring key = full;
-    for (auto& c : key) {
-      if (c == L'/') {
-        c = L'\\';
+  if (local_matched) {
+    // Search mode: list only full-text hits (file name + body). Each hit
+    // carries the match line and a body preview so the rail explains why the
+    // file matched (file-name hits have line == -1 and no preview).
+    for (const auto& hit : body_hits) {
+      const std::wstring& full = hit.path;
+      if (full.empty() || IsOnlineNotePath(full) ||
+          IsVaultAccountsNotePath(full)) {
+        continue;
       }
-      if (c >= L'A' && c <= L'Z') {
-        c = static_cast<wchar_t>(c - L'A' + L'a');
+      if (GetFileAttributesW(full.c_str()) == INVALID_FILE_ATTRIBUTES) {
+        continue;
       }
-    }
-    if (synced_keys.count(key)) {
-      continue;
-    }
-    if (PathIsCloudSynced(full)) {
-      continue;
-    }
-    if (!first_local) {
-      json += L',';
-    }
-    first_local = false;
-    std::wstring folder = L"本地库";
-    if (!root.empty() && full.size() > root.size() + 1 &&
-        _wcsnicmp(full.c_str(), root.c_str(), root.size()) == 0) {
-      std::wstring rel = full.substr(root.size() + 1);
-      const size_t slash = rel.find_last_of(L"\\/");
-      if (slash != std::wstring::npos) {
-        folder = rel.substr(0, slash);
+      std::wstring key = full;
+      for (auto& c : key) {
+        if (c == L'/') {
+          c = L'\\';
+        }
+        if (c >= L'A' && c <= L'Z') {
+          c = static_cast<wchar_t>(c - L'A' + L'a');
+        }
       }
+      if (synced_keys.count(key) || PathIsCloudSynced(full)) {
+        continue;
+      }
+      if (!first_local) {
+        json += L',';
+      }
+      first_local = false;
+      std::wstring sub;
+      if (hit.line >= 0) {
+        sub = L"行 " + std::to_wstring(hit.line + 1) + L"：";
+      } else {
+        sub = L"文件名匹配";
+      }
+      if (!hit.preview.empty()) {
+        sub += hit.preview;
+      }
+      json += L"{\"kind\":\"local\",\"path\":\"";
+      json += JsonEscLib(full);
+      json += L"\",\"title\":\"";
+      json += JsonEscLib(NoteDisplayName(full, false));
+      json += L"\",\"folder\":\"";
+      json += JsonEscLib(sub);
+      json += L"\",\"pinned\":";
+      json += PathIsPinned(full) ? L"true" : L"false";
+      json += L",\"locked\":";
+      json += PathIsLocked(full) ? L"true" : L"false";
+      json += L"}";
     }
-    json += L"{\"kind\":\"local\",\"path\":\"";
-    json += JsonEscLib(full);
-    json += L"\",\"title\":\"";
-    json += JsonEscLib(NoteDisplayName(full, false));
-    json += L"\",\"folder\":\"";
-    json += JsonEscLib(folder);
-    json += L"\",\"pinned\":";
-    json += PathIsPinned(full) ? L"true" : L"false";
-    json += L",\"locked\":";
-    json += PathIsLocked(full) ? L"true" : L"false";
-    json += L"}";
+  } else {
+    // Enumerate the library on disk, not sidebar_paths_. That array is only
+    // filled by RebuildSidebar (the legacy TreeView rail); the WebView rail never
+    // calls it, so anything that lands a file without a TreeView rebuild — most
+    // visibly「转本地」— stayed missing from the tree. ListNoteFiles is
+    // mtime-cached, so the per-push cost is one FindFirstFile per directory.
+    for (const auto& full : ListNoteFiles(root)) {
+      // SidebarRemovePaths clears slots to "" (keeps TreeView lParam); never
+      // paint those ghosts — and drop paths already recycled off disk.
+      if (full.empty() || IsOnlineNotePath(full) ||
+          IsVaultAccountsNotePath(full)) {
+        continue;
+      }
+      if (GetFileAttributesW(full.c_str()) == INVALID_FILE_ATTRIBUTES) {
+        continue;
+      }
+      std::wstring key = full;
+      for (auto& c : key) {
+        if (c == L'/') {
+          c = L'\\';
+        }
+        if (c >= L'A' && c <= L'Z') {
+          c = static_cast<wchar_t>(c - L'A' + L'a');
+        }
+      }
+      if (synced_keys.count(key)) {
+        continue;
+      }
+      if (PathIsCloudSynced(full)) {
+        continue;
+      }
+      if (!first_local) {
+        json += L',';
+      }
+      first_local = false;
+      std::wstring folder = L"本地库";
+      if (!root.empty() && full.size() > root.size() + 1 &&
+          _wcsnicmp(full.c_str(), root.c_str(), root.size()) == 0) {
+        std::wstring rel = full.substr(root.size() + 1);
+        const size_t slash = rel.find_last_of(L"\\/");
+        if (slash != std::wstring::npos) {
+          folder = rel.substr(0, slash);
+        }
+      }
+      json += L"{\"kind\":\"local\",\"path\":\"";
+      json += JsonEscLib(full);
+      json += L"\",\"title\":\"";
+      json += JsonEscLib(NoteDisplayName(full, false));
+      json += L"\",\"folder\":\"";
+      json += JsonEscLib(folder);
+      json += L"\",\"pinned\":";
+      json += PathIsPinned(full) ? L"true" : L"false";
+      json += L",\"locked\":";
+      json += PathIsLocked(full) ? L"true" : L"false";
+      json += L"}";
+    }
   }
   json += L"]}";
-  library_web_.PushLibraryState(json);
+  // Identical state → skip EvalScript + the page's full innerHTML rebuild.
+  // Pushes fire from many paths (tab switches, title ticks, actions); without
+  // this gate every one of them re-rendered the rail for nothing.
+  if (json != last_library_json_) {
+    last_library_json_ = json;
+    library_web_.PushLibraryState(json);
+  }
 }
 
 void NotesWindow::HandleLibraryRailAction(const std::wstring& json) {
@@ -8403,6 +8543,26 @@ void NotesWindow::HandleLibraryRailAction(const std::wstring& json) {
     const std::wstring path = LibJsonString(json, L"path");
     if (!path.empty()) {
       OpenPaths({path});
+      // Search hits carry the match line — jump there once the tab loads.
+      const std::wstring line_key = L"line";
+      const std::wstring needle = std::wstring(L"\"") + line_key + L"\"";
+      if (json.find(needle) != std::wstring::npos) {
+        const int line = LibJsonInt(json, L"line");
+        if (line >= 0) {
+          // Same as OpenSidebarResult: leave WYSIWYG so the RichEdit caret
+          // jump is visible (P1-19).
+          if (wysiwyg_) {
+            wysiwyg_ = false;
+            ApplyWysiwygVisibility();
+            LayoutClient();
+          }
+          if (preview_ && preview_web_.Host()) {
+            preview_web_.Hide();
+          }
+          pending_goto_line_ = line;
+          PostMessageW(hwnd_, WM_APP + 60, 0, 0);
+        }
+      }
     }
     return;
   }
@@ -8621,6 +8781,23 @@ void NotesWindow::ConvertPathToLocal(const std::wstring& path, int note_id) {
   }
 }
 
+namespace {
+// Worker→UI payload for「同步」(WM_APP+86). Bodies are fetched off-thread and
+// applied (file writes + editor reload) on the UI thread, so a slow server
+// never blocks typing and edits made while the fetch runs are respected.
+struct SyncCloudBody {
+  std::wstring path;
+  int note_id = 0;
+  std::wstring title;
+  std::wstring body;
+};
+struct SyncCloudResult {
+  bool list_ok = false;
+  std::vector<VaultHttpNote> list;
+  std::vector<SyncCloudBody> bodies;
+};
+}  // namespace
+
 void NotesWindow::SyncRefreshFromCloud() {
   if (!VaultHttpLoggedIn()) {
     EnsureLibraryCloudLogin();
@@ -8628,57 +8805,46 @@ void NotesWindow::SyncRefreshFromCloud() {
       return;
     }
   }
-  library_online_stale_ = true;
-  std::vector<VaultHttpNote> remote;
-  if (!VaultHttpListNotes(&remote)) {
-    MistAlert(hwnd_, L"同步", L"拉取云端列表失败。", MistMsgTone::Warn);
+  if (sync_cloud_busy_) {
+    if (status_) {
+      SetWindowTextW(status_, L"同步正在进行…");
+    }
     return;
   }
-  library_online_cache_.clear();
-  for (const auto& n : remote) {
-    LibraryOnlineItem it;
-    it.id = n.id;
-    it.title = n.title.empty() ? L"未命名" : n.title;
-    it.updated_at = n.updated_at;
-    library_online_cache_.push_back(std::move(it));
+  library_online_stale_ = true;
+  // Snapshot the links: cloud_sync_ may mutate while the fetch is in flight.
+  std::vector<NoteCloudLink> links;
+  for (const auto& L : cloud_sync_.links) {
+    if (L.sync && L.note_id > 0 && !L.path.empty()) {
+      links.push_back(L);
+    }
   }
-  library_online_stale_ = false;
-  int updated = 0;
-  for (auto& L : cloud_sync_.links) {
-    if (!L.sync || L.note_id <= 0 || L.path.empty()) {
-      continue;
-    }
-    VaultHttpNote n;
-    if (!VaultHttpGetNote(L.note_id, &n)) {
-      continue;
-    }
-    const std::wstring body =
-        n.body.empty()
-            ? (L"# " + (n.title.empty() ? std::wstring(L"未命名") : n.title) +
-               L"\n\n")
-            : n.body;
-    if (AtomicWriteUtf8File(L.path, NarrowUtf8(body), false)) {
-      online_body_cache_[L.note_id] = OnlineBodyCache{n.title, body};
-      ++updated;
-      if (_wcsicmp(path_.c_str(), L.path.c_str()) == 0) {
-        loading_ = true;
-        SetWindowTextW(edit_, body.c_str());
-        ApplyNativeTitleFromMarkdown(body);
-        loading_ = false;
-        dirty_ = false;
-        if (wysiwyg_) {
-          web_.SetMarkdown(body);
+  sync_cloud_busy_ = true;
+  // Only hwnd captured (no `this`); result marshalled via WM_APP+86.
+  std::thread([hwnd = hwnd_, links = std::move(links)]() {
+    auto* res = new SyncCloudResult();
+    res->list_ok = VaultHttpListNotes(&res->list);
+    if (res->list_ok) {
+      for (const auto& L : links) {
+        VaultHttpNote n;
+        if (VaultHttpGetNote(L.note_id, &n)) {
+          SyncCloudBody b;
+          b.path = L.path;
+          b.note_id = L.note_id;
+          b.title = n.title;
+          b.body = n.body.empty()
+                       ? (L"# " + (n.title.empty() ? std::wstring(L"未命名")
+                                                   : n.title) +
+                          L"\n\n")
+                       : n.body;
+          res->bodies.push_back(std::move(b));
         }
       }
     }
-  }
-  SaveNoteCloudSync(cloud_sync_);
-  RebuildSidebar();
-  if (status_) {
-    SetWindowTextW(
-        status_,
-        (L"已从云端同步 " + std::to_wstring(updated) + L" 个文件").c_str());
-  }
+    if (!PostMessageW(hwnd, WM_APP + 86, 0, reinterpret_cast<LPARAM>(res))) {
+      delete res;
+    }
+  }).detach();
 }
 
 void NotesWindow::OpenOnlineNoteInEditor(int note_id) {
@@ -11074,6 +11240,96 @@ LRESULT NotesWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
       pending_library_action_json_.clear();
       if (!json.empty()) {
         HandleLibraryRailAction(json);
+      }
+      return 0;
+    }
+    case WM_APP + 85: {
+      // Cloud list fetch done (EnsureLibraryListFetch). Apply on UI thread.
+      auto* res = reinterpret_cast<
+          std::pair<bool, std::vector<VaultHttpNote>>*>(lparam);
+      library_list_busy_ = false;
+      bool refreshed = false;
+      if (res) {
+        if (res->first) {
+          library_online_cache_.clear();
+          library_online_cache_.reserve(res->second.size());
+          for (const auto& n : res->second) {
+            LibraryOnlineItem it;
+            it.id = n.id;
+            it.title = n.title.empty() ? L"未命名" : n.title;
+            it.updated_at = n.updated_at;
+            library_online_cache_.push_back(std::move(it));
+          }
+          library_online_stale_ = false;
+          refreshed = true;
+        } else {
+          // Keep showing the stale cache; the next explicit action retries.
+          library_online_stale_ = true;
+        }
+        delete res;
+      }
+      if (library_list_refresh_pending_) {
+        library_list_refresh_pending_ = false;
+        EnsureLibraryListFetch();
+      }
+      if (refreshed) {
+        PushLibraryRailState(false);
+      }
+      return 0;
+    }
+    case WM_APP + 86: {
+      // 「同步」fetch done (SyncRefreshFromCloud). Apply on UI thread.
+      auto* res = reinterpret_cast<SyncCloudResult*>(lparam);
+      sync_cloud_busy_ = false;
+      if (!res) {
+        return 0;
+      }
+      if (!res->list_ok) {
+        library_online_stale_ = true;
+        MistAlert(hwnd_, L"同步", L"拉取云端列表失败。", MistMsgTone::Warn);
+        delete res;
+        return 0;
+      }
+      library_online_cache_.clear();
+      library_online_cache_.reserve(res->list.size());
+      for (const auto& n : res->list) {
+        LibraryOnlineItem it;
+        it.id = n.id;
+        it.title = n.title.empty() ? L"未命名" : n.title;
+        it.updated_at = n.updated_at;
+        library_online_cache_.push_back(std::move(it));
+      }
+      library_online_stale_ = false;
+      int updated = 0;
+      for (auto& b : res->bodies) {
+        // Edited since the fetch started — keep the user's version instead of
+        // clobbering it with the cloud copy (impossible in the old blocking
+        // flow, which froze the UI for the whole fetch).
+        if (_wcsicmp(path_.c_str(), b.path.c_str()) == 0 && dirty_) {
+          continue;
+        }
+        if (AtomicWriteUtf8File(b.path, NarrowUtf8(b.body), false)) {
+          online_body_cache_[b.note_id] = OnlineBodyCache{b.title, b.body};
+          ++updated;
+          if (_wcsicmp(path_.c_str(), b.path.c_str()) == 0) {
+            loading_ = true;
+            SetWindowTextW(edit_, b.body.c_str());
+            ApplyNativeTitleFromMarkdown(b.body);
+            loading_ = false;
+            dirty_ = false;
+            if (wysiwyg_) {
+              web_.SetMarkdown(b.body);
+            }
+          }
+        }
+      }
+      delete res;
+      SaveNoteCloudSync(cloud_sync_);
+      RebuildSidebar();
+      if (status_) {
+        SetWindowTextW(
+            status_,
+            (L"已从云端同步 " + std::to_wstring(updated) + L" 个文件").c_str());
       }
       return 0;
     }

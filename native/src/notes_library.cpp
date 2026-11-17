@@ -13,6 +13,7 @@
 #include <cstring>
 #include <cwctype>
 #include <fstream>
+#include <map>
 #include <mutex>
 #include <sstream>
 #include <string>
@@ -461,6 +462,75 @@ std::wstring PreviewOf(const std::wstring& line) {
   return p;
 }
 
+// Decoded full-text cache for SearchNotesLibrary. A search keystroke used to
+// re-open + re-decode + re-lowercase every note body on the UI thread; with
+// this cache the steady-state cost is one GetFileAttributesExW stat plus the
+// in-memory scan per file. Entries validate on mtime + size, bounds on entry
+// count and total bytes.
+struct NoteTextCacheEntry {
+  FILETIME mtime{};
+  unsigned long long size = 0;
+  std::wstring text;      // decoded original (previews)
+  std::wstring text_low;  // lowered copy, built lazily (case-insensitive)
+  bool has_low = false;
+};
+std::mutex g_notes_text_mutex;
+std::map<std::wstring, NoteTextCacheEntry> g_notes_text_cache;
+size_t g_notes_text_bytes = 0;
+constexpr size_t kNotesTextCacheMaxEntries = 1024;
+constexpr size_t kNotesTextCacheMaxBytes = 64u * 1024 * 1024;
+
+// Returns false when the file is unreadable, binary, empty or over the cap.
+// `text` holds the original, `hay` what to match against (== text when
+// case_sensitive).
+bool GetOrDecodeNoteText(const std::wstring& path, size_t max_file_bytes,
+                         bool case_sensitive, std::wstring* text,
+                         std::wstring* hay) {
+  WIN32_FILE_ATTRIBUTE_DATA fad{};
+  if (!GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &fad)) {
+    return false;
+  }
+  const unsigned long long size =
+      (static_cast<unsigned long long>(fad.nFileSizeHigh) << 32) |
+      fad.nFileSizeLow;
+  if (size == 0 || size > max_file_bytes) {
+    return false;
+  }
+  std::lock_guard<std::mutex> lock(g_notes_text_mutex);
+  if (g_notes_text_cache.size() > kNotesTextCacheMaxEntries ||
+      g_notes_text_bytes > kNotesTextCacheMaxBytes) {
+    g_notes_text_cache.clear();
+    g_notes_text_bytes = 0;
+  }
+  auto& e = g_notes_text_cache[path];
+  if (e.size != size ||
+      CompareFileTime(&fad.ftLastWriteTime, &e.mtime) != 0) {
+    g_notes_text_bytes -= e.text.size() * sizeof(wchar_t);
+    g_notes_text_bytes -= e.text_low.size() * sizeof(wchar_t);
+    e.text_low.clear();
+    e.has_low = false;
+    std::string data;
+    size_t got = 0;
+    if (!ReadFileBytes(path, &data, &got) || !DecodeBytes(data, &e.text) ||
+        HasNul(e.text)) {
+      g_notes_text_cache.erase(path);
+      return false;  // binary / undecodable / vanished
+    }
+    e.mtime = fad.ftLastWriteTime;
+    e.size = size;
+    g_notes_text_bytes += e.text.size() * sizeof(wchar_t);
+  }
+  if (!case_sensitive && !e.has_low) {
+    g_notes_text_bytes -= e.text_low.size() * sizeof(wchar_t);
+    e.text_low = WideLower(e.text);
+    e.has_low = true;
+    g_notes_text_bytes += e.text_low.size() * sizeof(wchar_t);
+  }
+  *text = e.text;
+  *hay = case_sensitive ? e.text : e.text_low;
+  return true;
+}
+
 }  // namespace
 
 std::vector<std::wstring> ListNoteFiles(const std::wstring& dir) {
@@ -472,6 +542,9 @@ void InvalidateNotesFileCache() {
   g_notes_files_valid = false;
   g_notes_files.clear();
   g_notes_dir_stamps.clear();
+  std::lock_guard<std::mutex> tlock(g_notes_text_mutex);
+  g_notes_text_cache.clear();
+  g_notes_text_bytes = 0;
 }
 
 std::wstring DocumentsDeskTidyNotesDir() {
@@ -526,27 +599,15 @@ std::vector<NoteSearchHit> SearchNotesLibrary(const std::wstring& dir,
         break;
       }
     }
-    size_t size = 0;
-    std::string data;
-    if (!ReadFileBytes(path, &data, &size)) {
-      continue;
+    // Steady state: one stat + in-memory scan per file. GetOrDecodeNoteText
+    // caches the decoded body (mtime+size validated); `text` keeps the
+    // original for the preview, `hay` is what we match against (== text when
+    // case_sensitive).
+    std::wstring text, hay;
+    if (!GetOrDecodeNoteText(path, static_cast<size_t>(max_file_bytes),
+                             case_sensitive, &text, &hay)) {
+      continue;  // binary / undecodable / empty / over cap
     }
-    if (size == 0 || size > static_cast<size_t>(max_file_bytes)) {
-      continue;
-    }
-    std::wstring text;
-    if (!DecodeBytes(data, &text) || HasNul(text)) {
-      continue;  // binary / undecodable
-    }
-    // Split lines (LF or CRLF). For case-insensitive search, lowercase the
-    // whole decoded text once (a single LCMapStringW) instead of allocating a
-    // lowered copy per line. `text` keeps the original for the preview; `hay`
-    // is what we match against (== text when case_sensitive).
-    std::wstring text_low;
-    if (!case_sensitive) {
-      text_low = WideLower(text);
-    }
-    const std::wstring& hay = case_sensitive ? text : text_low;
     size_t i = 0;  // offset into `text`
     size_t j = 0;  // offset into `hay` (== i when case_sensitive)
     int line_no = 0;

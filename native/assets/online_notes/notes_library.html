@@ -99,6 +99,7 @@
     query: '',
     active: '',
     logged_in: false,
+    local_matched: false,
     online: [],
     local: []
   };
@@ -120,6 +121,9 @@
   function matchTitle(it) {
     const q = (state.query || '').trim().toLowerCase();
     if (!q) return true;
+    // Local rows arrive already full-text matched by the host; skip the
+    // title-only second pass so body hits are not dropped here.
+    if (it.kind === 'local' && state.local_matched) return true;
     return String(it.title || '').toLowerCase().indexOf(q) >= 0;
   }
   function rowKind(it, fallback) {
@@ -204,6 +208,7 @@
     const meta = cloud ? (it.updated_at || '已同步') : (it.folder || '本地库');
     let data = 'data-kind="' + esc(kind) + '"';
     if (it.path) data += ' data-path="' + esc(it.path) + '"';
+    if (it.line != null && it.line >= 0) data += ' data-line="' + Number(it.line) + '"';
     if (it.id) data += ' data-id="' + esc(it.id) + '"';
     if (it.pinned) data += ' data-pinned="1"';
     if (it.locked) data += ' data-locked="1"';
@@ -219,6 +224,7 @@
       kind,
       path: el.dataset.path || '',
       id: el.dataset.id || 0,
+      line: (el.dataset.line != null && el.dataset.line !== '') ? Number(el.dataset.line) : -1,
       title: '',
       pinned: el.dataset.pinned === '1',
       locked: el.dataset.locked === '1'
@@ -227,7 +233,9 @@
       if (kind === 'online' && !it.path) {
         post({ type: 'action', id: 'open_online', note_id: Number(it.id) });
       } else if (it.path) {
-        post({ type: 'action', id: 'open_local', path: it.path });
+        const payload = { type: 'action', id: 'open_local', path: it.path };
+        if (it.line >= 0) payload.line = it.line;
+        post(payload);
       }
     };
     el.oncontextmenu = (e) => {
@@ -265,7 +273,10 @@
     }
     html += '<div class="sec local">本地笔记</div>';
     if (!local.length) {
-      html += '<div class="hint">暂无本地笔记，点侧栏 + 新建</div>';
+      html += '<div class="hint">' +
+        (state.local_matched
+          ? '没有匹配的本地笔记（搜索覆盖文件名与正文）'
+          : '暂无本地笔记，点侧栏 + 新建') + '</div>';
     } else {
       html += local.map((it) => rowHtml(it, 'local')).join('');
     }
@@ -294,6 +305,7 @@
     if (m.query != null) state.query = m.query || '';
     if (m.active != null) state.active = m.active || '';
     if (m.logged_in != null) state.logged_in = !!m.logged_in;
+    if (m.local_matched != null) state.local_matched = !!m.local_matched;
     if (Array.isArray(m.online)) state.online = m.online;
     if (Array.isArray(m.local)) state.local = m.local;
     window.__lib = state;

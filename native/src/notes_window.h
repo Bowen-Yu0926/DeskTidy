@@ -334,6 +334,9 @@ class NotesWindow {
   // refresh_online: hit network for cloud list (refresh / login / CRUD).
   // Otherwise reuse library_online_cache_ so tab switches stay snappy.
   void PushLibraryRailState(bool refresh_online = false);
+  // Async cloud list fetch (worker → WM_APP+85): a dead server (15s×3
+  // attempts + backoff) must never freeze typing on the UI thread.
+  void EnsureLibraryListFetch();
   void UpdateLibraryRailActiveOnly();
   void HandleLibraryRailAction(const std::wstring& json);
   // JSON queued from library WebView; run off WebMessageReceived (Mist freezes).
@@ -431,6 +434,15 @@ class NotesWindow {
   bool library_online_stale_ = true;
   std::map<int, OnlineBodyCache> online_body_cache_;
   NoteCloudSyncStore cloud_sync_;
+  // Cloud list / refresh fetches run on worker threads; WM_APP+85 (list) and
+  // WM_APP+86 (refresh) apply results back on the UI thread. The busy flags
+  // are only touched on the UI thread.
+  bool library_list_busy_ = false;
+  bool library_list_refresh_pending_ = false;
+  bool sync_cloud_busy_ = false;
+  // Last JSON pushed to the library rail — identical pushes skip EvalScript
+  // (and the page's full innerHTML rebuild) entirely.
+  std::wstring last_library_json_;
   // Tab switch: defer Toast SetMarkdown so chrome paints before JSON escape.
   std::wstring pending_tab_markdown_;
   bool has_pending_tab_markdown_ = false;
