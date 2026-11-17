@@ -62,7 +62,7 @@ std::wstring FindCliAction(LPWSTR cmd) {
       L"--organize",        L"--notes",          L"--notepad",
       L"--desknote",        L"--desk-note",      L"--search",
       L"--shot",            L"--todos",          L"--peek",
-      L"--new-fence",       L"--vault",          L"--show-window",
+      L"--new-fence",       L"--show-window",
       L"--quit-silent",     L"--quit",           L"--status"};
   for (const wchar_t* k : keys) {
     if (wcsstr(cmd, k)) {

@@ -254,16 +254,7 @@ class NotesWindow {
   // Coalesce rapid SwitchToTab disk writes (Notepad++ / VS Code style).
   void SchedulePersistTabs();
   void LoadTabSession();
-  // When DeskTidy vault is enabled: sync masked 账号库.md and keep a tab.
-  void EnsureVaultAccountsNote();
-  // Vault mirror: copy field by index or title (password auto-clears).
-  void CopyVaultField(int index, const std::wstring& field,
                       const std::wstring& title, const std::wstring& user);
-  void ClearVaultClipboardIfOurs();
-  bool TryCopyVaultPasswordAtCaret();
-  // HTML website-style vault list (real copy buttons) instead of Toast MD.
-  void ShowVaultAccountsHtmlView();
-  void LeaveVaultAccountsHtmlViewIfNeeded();
   // Same stem as window title / tab chip (title_hint → H1 → localized filename).
   // disk_peek: read first heading from disk when the path is not an open tab.
   std::wstring NoteDisplayName(const std::wstring& path,
@@ -495,8 +486,5 @@ class NotesWindow {
   bool layout_looks_md_ = false;
   bool layout_searching_ = false;
   // Vault password copy auto-clear (matches DeskTidy vault clipboard seconds).
-  UINT_PTR vault_clip_timer_ = 0;
-  std::wstring vault_clip_secret_;
-  bool vault_html_view_ = false;
   OnlineNotesWindow online_notes_;
 };

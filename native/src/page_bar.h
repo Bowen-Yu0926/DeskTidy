@@ -14,7 +14,6 @@ class StringFormat;
 
 // Right-edge page chrome (Python PageIndicatorWidget): either a mist float
 // card (peek/expand) or discrete bookmark tabs. Tools follow
-// float_bar_tool_flags; vault chip shows when account management is enabled.
 // When the pet hosts page chips, App hides this float entirely.
 class PageBar {
  public:
@@ -49,9 +48,9 @@ class PageBar {
   // float = mist card peek; tabs = discrete bookmark chips (always expanded).
   void SetChromeStyle(ChromeStyle style);
   ChromeStyle GetChromeStyle() const { return chrome_style_; }
-  // Python float_bar_tool_flags + optional vault chip when account is enabled.
+  // Python float_bar_tool_flags + optional note chip.
   void SetToolFlags(bool record, bool minutes, bool calculator, bool todo,
-                    bool vault = false, bool note = false);
+                    bool note = false);
   void SetFolders(const std::vector<FolderChip>& folders);
   void SetAnchorY(int y);  // work-area relative preferred; -1 = center
   int AnchorY() const { return anchor_y_; }
@@ -141,7 +140,6 @@ class PageBar {
   bool tool_minutes_ = false;
   bool tool_calculator_ = false;
   bool tool_todo_ = false;
-  bool tool_vault_ = false;
   bool tool_note_ = false;
   std::vector<FolderChip> folders_;
   int anchor_y_ = -1;  // -1 = vertical center

@@ -78,12 +78,6 @@ struct AppPrefs {
   long long update_notified_at = 0;
   // Desktop background cascade menu (Python desktop_right_click_menu).
   bool desktop_right_click_menu = true;
-  // Account vault (Python account_vault).
-  bool vault_enabled = false;
-  std::wstring vault_api_base = L"https://chromhome.kdns.fr/api/";
-  int vault_refresh_hours = 2;
-  // 0 = never clear; else seconds after password copy.
-  int vault_clipboard_clear_seconds = 30;
   // Settings → 常规 (Python MainWindow general prefs).
   bool close_to_tray = true;
   // One-shot "close vs minimize-to-tray" prompt (Python close_behavior_prompted).
@@ -97,9 +91,6 @@ struct AppPrefs {
   // Loose-float icon zoom, percent of the desktop grid (70–160). Separate from
   // per-fence zoom: the public strip is a different surface with its own size.
   int public_icon_zoom = 100;
-  // Desktop 「账」float position (-1 = default corner).
-  int vault_launcher_x = -1;
-  int vault_launcher_y = -1;
   // Right-edge page bar when pet does not host pages (Python show_page_indicator).
   bool show_page_indicator = true;
   // Edge page chrome: "float" = mist card peek; "tabs" = discrete bookmark chips.

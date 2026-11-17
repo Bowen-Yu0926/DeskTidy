@@ -14,7 +14,7 @@ void NotesWarmWebViewEnv();
 //   kViewer  — the offline markdown preview (read-only render + PDF export).
 class NotesWebView {
  public:
-  enum class Kind { kWysiwyg, kViewer, kVaultAccounts, kLibrary };
+  enum class Kind { kWysiwyg, kViewer, kLibrary };
 
   bool Create(HWND parent);
   void Destroy();
@@ -28,12 +28,9 @@ class NotesWebView {
   void Hide();
   void Resize();
   void SetKind(Kind kind) { kind_ = kind; }
-  // Navigate to vault_accounts.html and push masked entry JSON.
-  void ShowVaultAccounts(const std::wstring& entries_json);
   // Left-rail unified library (online + local), notes_library.html.
   void ShowLibrary(const std::wstring& state_json);
   void PushLibraryState(const std::wstring& state_json);
-  // Return to Toast WYSIWYG shell (after leaving the vault HTML view).
   void ShowWysiwygEditor();
   // Preview/editor chrome theme: "light" or "dark" (P2-30).
   void SetTheme(const std::wstring& theme) { theme_ = theme; }
@@ -90,29 +87,8 @@ class NotesWebView {
   // Explorer file drop onto the WebView surface (AllowExternalDrop → file://
   // NavigationStarting cancel). Opens note / inserts image in the host.
   std::function<void(const std::vector<std::wstring>&)> on_external_drop;
-  // Vault accounts note: copy a field (dblclick or [复制] link).
-  // index >= 0 → by entry index; else match title/user. field empty → pass.
-  std::function<void(int index, const std::wstring& field,
-                     const std::wstring& title, const std::wstring& user)>
-      on_vault_copy;
-  // Eye button: host looks up plaintext and calls PushVaultPassReveal.
-  std::function<void(int index)> on_vault_reveal;
-  // Create/edit save from vault HTML form.
-  std::function<void(int index, const std::wstring& title,
-                     const std::wstring& user, const std::wstring& pass,
-                     const std::wstring& url, const std::wstring& note)>
-      on_vault_save;
   // Unified library rail actions (JSON from notes_library.html).
   std::function<void(const std::wstring& json)> on_library_action;
-  // Edit dialog needs current fields (password omitted; empty = keep).
-  std::function<void(int index)> on_vault_edit_request;
-  void PushVaultPassReveal(int index, const std::wstring& pass);
-  void PushVaultEditForm(int index, const std::wstring& title,
-                         const std::wstring& user, const std::wstring& url,
-                         const std::wstring& note, bool has_pass);
-  void PushVaultSaveResult(bool ok, bool cloud_ok, bool cloud_attempted,
-                           const std::wstring& message,
-                           const std::wstring& entries_json);
 
  private:
   void NavigateHome();
@@ -144,9 +120,7 @@ class NotesWebView {
   std::wstring pending_base_;
   // Folder currently mapped to https://note.assets/ (empty = none).
   std::wstring asset_base_dir_;
-  std::wstring pending_vault_json_;
   std::wstring pending_library_json_;
-  void PushVaultAccountsData();
   void PushLibraryData();
   bool got_scroll_ = false;
   double scroll_ratio_ = 0.0;

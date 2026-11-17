@@ -184,7 +184,6 @@ std::vector<HotkeyDef> DefaultHotkeys() {
       // DeskNote / 记事本 — match docs + Python Ctrl+Shift+N.
       H("notes", "hk_notes", MOD_CONTROL | MOD_SHIFT, 'N'),
       H("todos", "hk_todos", 0, 0),
-      H("vault", "hk_vault", 0, 0),
   };
 }
 

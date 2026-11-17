@@ -348,26 +348,6 @@ AppPrefs LoadAppPrefsFromPath(const std::wstring& path) {
   // auto_snapshot_on_change removed — ignore if present in older prefs files.
   // Always on; settings toggle removed (parity: shell verbs stay registered).
   prefs.desktop_right_click_menu = true;
-  prefs.vault_enabled = ParseBoolField(json, "vault_enabled", false);
-  const std::string vault_api = ParseStringField(json, "vault_api_base");
-  if (!vault_api.empty()) {
-    prefs.vault_api_base = WidenUtf8(vault_api);
-  }
-  prefs.vault_refresh_hours = ParseIntField(json, "vault_refresh_hours", 2);
-  if (prefs.vault_refresh_hours < 0) {
-    prefs.vault_refresh_hours = 0;
-  }
-  if (prefs.vault_refresh_hours > 168) {
-    prefs.vault_refresh_hours = 168;
-  }
-  prefs.vault_clipboard_clear_seconds =
-      ParseIntField(json, "vault_clipboard_clear_seconds", 30);
-  if (prefs.vault_clipboard_clear_seconds < 0) {
-    prefs.vault_clipboard_clear_seconds = 0;
-  }
-  if (prefs.vault_clipboard_clear_seconds > 300) {
-    prefs.vault_clipboard_clear_seconds = 300;
-  }
   prefs.close_to_tray = ParseBoolField(json, "close_to_tray", true);
   prefs.close_behavior_prompted =
       ParseBoolField(json, "close_behavior_prompted", false);
@@ -381,8 +361,6 @@ AppPrefs LoadAppPrefsFromPath(const std::wstring& path) {
   prefs.public_icon_zoom =
       (std::min)(160, (std::max)(70,
                                  ParseIntField(json, "public_icon_zoom", 100)));
-  prefs.vault_launcher_x = ParseIntField(json, "vault_launcher_x", -1);
-  prefs.vault_launcher_y = ParseIntField(json, "vault_launcher_y", -1);
   prefs.show_page_indicator =
       ParseBoolField(json, "show_page_indicator", true);
   {
@@ -510,13 +488,6 @@ void SaveAppPrefsToPath(const AppPrefs& prefs, const std::wstring& path) {
       << "\",\n  \"update_notified_at\": " << prefs.update_notified_at
       << ",\n  \"desktop_right_click_menu\": "
       << (prefs.desktop_right_click_menu ? "true" : "false")
-      << ",\n  \"vault_enabled\": "
-      << (prefs.vault_enabled ? "true" : "false")
-      << ",\n  \"vault_api_base\": \""
-      << EscapeJson(NarrowUtf8(prefs.vault_api_base))
-      << "\",\n  \"vault_refresh_hours\": " << prefs.vault_refresh_hours
-      << ",\n  \"vault_clipboard_clear_seconds\": "
-      << prefs.vault_clipboard_clear_seconds
       << ",\n  \"close_to_tray\": "
       << (prefs.close_to_tray ? "true" : "false")
       << ",\n  \"close_behavior_prompted\": "
@@ -530,8 +501,6 @@ void SaveAppPrefsToPath(const AppPrefs& prefs, const std::wstring& path) {
       << (prefs.enable_public_desktop ? "true" : "false")
       << ",\n  \"public_desktop_pref_migrated_v1\": true"
       << ",\n  \"public_icon_zoom\": " << prefs.public_icon_zoom
-      << ",\n  \"vault_launcher_x\": " << prefs.vault_launcher_x
-      << ",\n  \"vault_launcher_y\": " << prefs.vault_launcher_y
       << ",\n  \"show_page_indicator\": "
       << (prefs.show_page_indicator ? "true" : "false")
       << ",\n  \"page_chrome_style\": \""

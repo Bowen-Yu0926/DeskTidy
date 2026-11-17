@@ -153,7 +153,7 @@ void DeleteFileBestEffort(const std::wstring& path) {
 }
 
 // Purge config / cache / snapshots / logs / webview2-* while preserving user
-// documents (笔记 / 录屏 / 纪要 / notes / todos / vault).
+// documents (笔记 / 录屏 / 纪要 / notes / todos).
 void CleanNativeDataDir() {
   const std::wstring base = NativeDataDir();
   // P2-2: portable mode uses `<exe>\data` (no DeskTidyNative in path).

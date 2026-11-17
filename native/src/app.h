@@ -19,8 +19,6 @@
 #include "settings_window.h"
 #include "todo_window.h"
 #include "update_check.h"
-#include "vault_launcher.h"
-#include "vault_window.h"
 
 #include <Windows.h>
 #include <ShlObj.h>
@@ -47,9 +45,7 @@ class App {
   void HandleSettingsClose();
   void OpenTodos();
   void OpenSearch();
-  void OpenVault();
   // After 账号浮窗 hides: cancel band-settle Raise and sink fences under apps.
-  void OnVaultHidden();
   void SeatAllFencesUnderApps();
   // Soft-park: SW_HIDE every fence that must not paint on this page (leaks of
   // IsWindowVisible off-page fences ghost under apps when DefView is covered).
@@ -96,9 +92,6 @@ class App {
   void ApplyGlobalThemeId(const std::string& theme_id);
   void ApplyThemeId(const std::string& theme_id);
   void ApplyUiThemeId(const std::string& ui_theme);
-  void SyncVaultSessionState();
-  void SyncVaultLauncher();
-  void RefreshVaultListForSettings();
   void SetFenceStyleAt(int index, const std::wstring& style_id);
   void SetAllFenceStyle(const std::wstring& style_id);
   void SetPageBarStyle(const std::wstring& style_id);
@@ -179,7 +172,6 @@ class App {
   void PushExtensionSettings();
   void PushHotkeyState();
   void ApplyUiLanguage();
-  void RestartVaultRefreshTimer();
   void ExportPrefs();
   void ImportPrefs();
   void ApplyLoadedGeneralPrefs();
@@ -213,7 +205,6 @@ class App {
   static LRESULT CALLBACK TrayWndProc(HWND, UINT, WPARAM, LPARAM);
   void CreateTrayIcon();
   void RemoveTrayIcon();
-  void DeferredOpenSettingsVaultSync();
   bool TryConsumeTrayOpen();
   bool SpawnFence(const FenceLayout& layout);
   void ApplyPageVisibility();
@@ -275,7 +266,7 @@ class App {
   // Keep the settle timer alive while the Win+D transition is still flipping
   // the band state, so the fixed 3-tick budget cannot be spent mid-animation.
   void ExtendBandSettleIfTransitioning();
-  // False while settings/vault/todos (owned modals) should keep desktop chrome still.
+  // False while settings/todos (owned modals) should keep desktop chrome still.
   bool DesktopChromeMayRestack() const;
   // True when current-page overlays are already attached + mapped (settle no-op).
   bool DesktopChromeHealthy() const;
@@ -287,7 +278,7 @@ class App {
   void StopDesktopShellNotify();
   void ScheduleDesktopContentRefresh();
   void OnDesktopContentRefresh();
-  // Worker threads (vault pull / organize) are joined with a bounded wait on
+  // Worker threads (organize / notes sync) are joined with a bounded wait on
   // shutdown instead of being detached (P1 exit race).
   void ReapFinishedWorkers();
   void JoinWorkers();
@@ -322,14 +313,12 @@ class App {
   // Last known Win+D / Show Desktop band (DefView TOPMOST). Re-seat only on
   // transition — Rainmeter CheckDesktopState, not every settle tick.
   bool show_desktop_seated_ = false;
-  // Tick until which ScheduleDesktopBandRestore is ignored (vault/settings dismiss).
+  // Tick until which ScheduleDesktopBandRestore is ignored (modal dismiss).
   ULONGLONG suppress_band_restore_until_ = 0;
   std::vector<std::unique_ptr<FenceWindow>> fences_;
   SettingsWindow settings_;
   TodoWindow todos_;
   SearchWindow search_;
-  VaultWindow vault_;
-  VaultLauncher vault_launcher_;
   DockWindow dock_;
   PetWindow pet_;
   PageBar page_bar_;
@@ -382,8 +371,6 @@ class App {
   // U7: per-page lock flags (index = page id). Consulted for fence create/move/
   // delete gating; page_bar lock marker mirrors it. Loaded from AppState.
   std::vector<bool> page_locked_;
-  std::vector<SettingsWindow::ExtState::VaultItem> vault_items_cache_;
-  std::wstring vault_list_status_;
   int current_page_ = 0;
   bool dock_visible_ = true;
   bool pet_visible_ = true;
@@ -408,8 +395,6 @@ class App {
   UINT watch_tick_ms_ = 2000;
   UINT_PTR update_timer_ = 0;
   int update_progress_last_pct_ = -1;
-  UINT_PTR vault_timer_ = 0;
-  UINT_PTR open_settings_vault_timer_ = 0;
   UINT_PTR display_change_timer_ = 0;
   // 0 idle; 1 add (single converge); 2 remove stage1; 3 remove stage2.
   int display_change_stage_ = 0;

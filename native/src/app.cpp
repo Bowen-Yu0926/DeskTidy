@@ -44,7 +44,6 @@
 #include "tools_misc.h"
 #include "ui_theme.h"
 #include "update_check.h"
-#include "vault_http.h"
 #include "rules_editor.h"
 
 #include <CommCtrl.h>
@@ -88,8 +87,6 @@ constexpr UINT kTimerBandSettle = 43;
 // permanently flapping band probe cannot spin the timer forever.
 constexpr ULONGLONG kBandSettleMaxMs = 1500;
 constexpr UINT kTimerUpdate = 44;
-constexpr UINT kTimerVault = 45;
-constexpr UINT kTimerOpenSettingsVault = 46;
 constexpr UINT kTimerOpenSettingsOrg = 47;
 constexpr UINT kTimerDisplayChange = 49;
 constexpr UINT kTimerIconsRefresh = 50;
@@ -124,7 +121,6 @@ constexpr UINT kTimerOverlayRefresh = 57;
 // After fence→desktop unpin: Present must run off the OLE stack (see Reveal).
 constexpr UINT kTimerRevealPublic = 58;
 constexpr UINT kTimerClipboard = 59;
-constexpr UINT kMsgVaultPullDone = WM_APP + 48;
 constexpr UINT kMsgOrganizeDone = WM_APP + 49;
 constexpr UINT kMsgDesktopBlankDown = WM_APP + 50;
 constexpr UINT kMsgDesktopPaste = WM_APP + 51;
@@ -265,8 +261,6 @@ DWORD LandPortalSourcesOnDesktop(
 App* g_app_for_hook = nullptr;
 HWND g_band_hwnd = nullptr;
 HHOOK g_kb_hook = nullptr;
-// Avoid overlapping WinHttp vault pulls from the periodic timer.
-bool g_vault_pull_busy = false;
 
 // P1-12: floating drop-hint window (layered, rounded, no-activate).
 constexpr wchar_t kPinHintClass[] = L"DeskTidyPinHint";
@@ -1044,7 +1038,7 @@ bool App::Init(HINSTANCE instance) {
   settings_.SetOnOrganizeReassign([this]() { OrganizeReassign(); });
   settings_.SetExtraHandlers(
       [this]() { SaveLayoutSnapshot(); },
-      [this]() { RestoreLayoutSnapshot(); }, [this]() { OpenVault(); },
+      [this]() { RestoreLayoutSnapshot(); }, []() {},
       [this]() { OpenMinutes(); },
       [this]() { PickAndSetWallpaper(settings_.Hwnd()); },
       [this]() { OpenLayoutEditor(); }, [this]() { OpenNotes(); },
@@ -1216,48 +1210,6 @@ bool App::Init(HINSTANCE instance) {
       SetPublicVisible(value);
     } else if (id == L"show_page_indicator") {
       prefs_.show_page_indicator = value;
-    } else if (id == L"vault_enabled") {
-      if (!value) {
-        prefs_.vault_enabled = false;
-        SyncVaultLauncher();
-      } else if (VaultHttpLoggedIn()) {
-        prefs_.vault_enabled = true;
-        SyncVaultLauncher();
-      } else {
-        // Enable requires cloud login first — keep off until login succeeds.
-        if (!VaultHttpHealth()) {
-          ShowToast(L"账号库服务器不可达，未启用");
-          prefs_.vault_enabled = false;
-          SaveAppPrefs(prefs_);
-          SyncVaultLauncher();
-          PushExtensionSettings();
-          SyncPageChrome();
-          return;
-        }
-        prefs_.vault_enabled = false;
-        SaveAppPrefs(prefs_);
-        PushExtensionSettings();
-        ShowToast(L"请先登录云端账号以启用账号管理");
-        vault_.SetOnLoginResult([this](bool ok) {
-          if (ok) {
-            prefs_.vault_enabled = true;
-            SaveAppPrefs(prefs_);
-            RestartVaultRefreshTimer();
-            SyncVaultLauncher();
-            SyncPageChrome();
-            PushExtensionSettings();
-            ShowToast(L"账号管理已启用");
-          } else {
-            prefs_.vault_enabled = false;
-            SaveAppPrefs(prefs_);
-            SyncVaultLauncher();
-            SyncPageChrome();
-            PushExtensionSettings();
-          }
-        });
-        vault_.CloudLogin();
-        return;
-      }
     } else {
       return;
     }
@@ -1385,54 +1337,6 @@ bool App::Init(HINSTANCE instance) {
       PushHotkeyState();
       PushExtensionSettings();
       return;
-    } else if (id == L"vault_copy_user") {
-      if (!value.empty() &&
-          ClipboardSetText(settings_.Hwnd(), value)) {
-        ShowToast(L"已复制用户名");
-      }
-      return;
-    } else if (id == L"vault_copy_user_idx") {
-      vault_.CopyUsernameAt(_wtoi(value.c_str()));
-      return;
-    } else if (id == L"vault_copy_pass") {
-      vault_.CopyPasswordAt(_wtoi(value.c_str()));
-      return;
-    } else if (id == L"vault_copy_url") {
-      vault_.CopyUrlAt(_wtoi(value.c_str()));
-      return;
-    } else if (id == L"vault_api_base") {
-      std::wstring api = value;
-      if (api.empty()) {
-        api = VaultHttpGetApiBase();
-      }
-      if (api.empty()) {
-        api = L"https://chromhome.kdns.fr/api/";
-      }
-      prefs_.vault_api_base = api;
-      VaultHttpSetApiBase(prefs_.vault_api_base);
-      SaveAppPrefs(prefs_);
-    } else if (id == L"vault_refresh_hours") {
-      int hours = value.empty() ? 2 : _wtoi(value.c_str());
-      if (hours < 0) {
-        hours = 0;
-      }
-      if (hours > 168) {
-        hours = 168;
-      }
-      prefs_.vault_refresh_hours = hours;
-      SaveAppPrefs(prefs_);
-      RestartVaultRefreshTimer();
-    } else if (id == L"vault_clipboard_clear_seconds") {
-      int secs = value.empty() ? 30 : _wtoi(value.c_str());
-      if (secs < 0) {
-        secs = 0;
-      }
-      if (secs > 300) {
-        secs = 300;
-      }
-      prefs_.vault_clipboard_clear_seconds = secs;
-      vault_.SetClipboardClearSeconds(prefs_.vault_clipboard_clear_seconds);
-      SaveAppPrefs(prefs_);
     } else if (id == L"page_chrome_style") {
       const std::string style = NarrowUtf8(value);
       prefs_.page_chrome_style =
@@ -1466,17 +1370,6 @@ bool App::Init(HINSTANCE instance) {
 
   todos_.Create(instance);
   search_.Create(instance);
-  vault_.Create(instance);
-  // WebView2 warm is deferred to kTimerWebViewWarm (a few seconds after boot)
-  // so the vault browser process does not delay the desktop fences' first paint.
-  vault_.SetOnHide([this]() { OnVaultHidden(); });
-  vault_launcher_.Create(instance);
-  vault_launcher_.SetOnActivate([this]() { OpenVault(); });
-  vault_launcher_.SetOnMoved([this](int x, int y) {
-    prefs_.vault_launcher_x = x;
-    prefs_.vault_launcher_y = y;
-    SaveAppPrefs(prefs_);
-  });
   dock_.Create(instance);
   pet_.Create(instance);
   pet_.SetOnTrash([this](const std::vector<std::wstring>& paths) -> bool {
@@ -1515,8 +1408,6 @@ bool App::Init(HINSTANCE instance) {
         return;
       }
       OpenTodos();
-    } else if (id == L"vault") {
-      OpenVault();
     }
   };
   pet_.SetOnTool(activate_float_tool);
@@ -1810,19 +1701,6 @@ bool App::Init(HINSTANCE instance) {
   desktop_watch_.Reset();
   StartDesktopShellNotify();
   SyncNativeShellVerbs(prefs_.desktop_right_click_menu);
-  if (!prefs_.vault_api_base.empty()) {
-    VaultHttpSetApiBase(prefs_.vault_api_base);
-  }
-  vault_.SetClipboardClearSeconds(prefs_.vault_clipboard_clear_seconds);
-  VaultHttpImportPythonSessionIfNeeded();
-  // Not logged in ⇒ treat account management as off (no chrome entry).
-  if (prefs_.vault_enabled && !VaultHttpLoggedIn()) {
-    prefs_.vault_enabled = false;
-    SaveAppPrefs(prefs_);
-  }
-  RestartVaultRefreshTimer();
-  vault_launcher_.SetPosition(prefs_.vault_launcher_x, prefs_.vault_launcher_y);
-  SyncVaultLauncher();
 
   // Win+D settle is driven by the keyboard hook. A tight restore timer
   // re-layered the fences and flashed the desktop.
@@ -1835,7 +1713,7 @@ bool App::Init(HINSTANCE instance) {
   // P2-1: low-frequency background trim (Python ~60s while tray/background).
   SetTimer(message_hwnd_, kTimerMemTrim, 60000, nullptr);
   // Defer WebView2 warm so boot paints fences before browser processes spin up
-  // (todo/search stay lazy; vault + settings warm a few seconds later).
+  // (todo/search stay lazy; settings warms a few seconds later).
   SetTimer(message_hwnd_, kTimerWebViewWarm, 3000, nullptr);
   // Hybrid-GPU (Optimus / AMD switchable) recovery: re-upload visible overlays
   // a few times after boot to cover slow DWM composition across common machines.
@@ -1882,11 +1760,6 @@ bool App::Init(HINSTANCE instance) {
                                prefs_.auto_organize_watch);
     settings_.SetPageNames(page_names_, false);
     settings_.SetCurrentPage(current_page_, false);
-    VaultHttpImportPythonSessionIfNeeded();
-    if (prefs_.vault_api_base.empty()) {
-      prefs_.vault_api_base = VaultHttpGetApiBase();
-    }
-    RefreshVaultListForSettings();
     PushExtensionSettings();
     PushHotkeyState();
   });
@@ -2230,8 +2103,6 @@ void App::DispatchHotkey(const std::string& id) {
     OpenSettings();
   } else if (id == "notes") {
     OpenNotes();
-  } else if (id == "vault") {
-    OpenVault();
   } else if (id == "todos") {
     if (!prefs_.todos_enabled) {
       ShowToast(L"桌面待办未启用 — 请在设置 → 扩展功能中打开");
@@ -2378,8 +2249,6 @@ void App::Shutdown() {
       KillTimer(message_hwnd_, kTimerWatch);
       KillTimer(message_hwnd_, kTimerBandSettle);
       KillTimer(message_hwnd_, kTimerUpdate);
-      KillTimer(message_hwnd_, kTimerVault);
-      KillTimer(message_hwnd_, kTimerOpenSettingsVault);
       KillTimer(message_hwnd_, kTimerOpenSettingsOrg);
       KillTimer(message_hwnd_, kTimerMemTrim);
       KillTimer(message_hwnd_, kTimerDisplayChange);
@@ -2392,8 +2261,6 @@ void App::Shutdown() {
       KillTimer(message_hwnd_, kTimerOverlayRefresh);
       KillTimer(message_hwnd_, kTimerRevealPublic);
       KillTimer(message_hwnd_, kTimerClipboard);
-      vault_timer_ = 0;
-      open_settings_vault_timer_ = 0;
       restore_timer_ = pet_timer_ = watch_timer_ = 0;
     }
   });
@@ -2458,10 +2325,9 @@ void App::Shutdown() {
   // 8) reap in-flight recording.
   RunShutdownStep("step 8 record reap", [this]() { ReapScreenRecordOnExit(); });
 
-  // 9) destroy WebView2 windows (settings/vault/todo/search).
+  // 9) destroy WebView2 windows (settings/todo/search).
   RunShutdownStep("step 9 webview", [this]() {
     settings_.Destroy();
-    vault_.Destroy();
     todos_.Destroy();
     search_.Destroy();
   });
@@ -2482,7 +2348,6 @@ void App::Shutdown() {
     public_host_.Destroy();
     dock_.Destroy();
     pet_.Destroy();
-    vault_launcher_.Destroy();
   });
 
   // 12) destroy pinned images.
@@ -3065,55 +2930,8 @@ void App::DispatchSettingsCommand(const std::wstring& id) {
     ExportPrefs();
   } else if (id == L"import_prefs") {
     ImportPrefs();
-  } else if (id == L"vault_login") {
-    vault_.SetOnLoginResult([this](bool /*ok*/) {
-      SyncVaultSessionState();
-      RefreshVaultListForSettings();
-      PushExtensionSettings();
-      SyncPageChrome();
-    });
-    vault_.CloudLogin();
-  } else if (id == L"vault_logout") {
-    VaultHttpLogout();
-    prefs_.vault_enabled = false;
-    SaveAppPrefs(prefs_);
-    SyncVaultLauncher();
-    SyncPageChrome();
-    ShowToast(L"已退出账号库登录");
-    SyncVaultSessionState();
-    RefreshVaultListForSettings();
-    PushExtensionSettings();
-  } else if (id == L"vault_refresh") {
-    VaultHttpImportPythonSessionIfNeeded();
-    // Same async pull as the periodic timer — never block settings/UI.
-    if (VaultHttpLoggedIn() && !g_vault_pull_busy && message_hwnd_) {
-      g_vault_pull_busy = true;
-      auto* remote =
-          new std::vector<VaultHttpCredential>(vault_.SnapshotCredentials());
-      HWND msg_hwnd = message_hwnd_;
-      ReapFinishedWorkers();
-      workers_.emplace_back([remote, msg_hwnd]() {
-        const bool ok = VaultHttpPullMerge(remote);
-        if (!PostMessageW(msg_hwnd, kMsgVaultPullDone, ok ? 1 : 0,
-                          reinterpret_cast<LPARAM>(remote))) {
-          delete remote;
-          g_vault_pull_busy = false;
-        }
-      });
-    } else {
-      RefreshVaultListForSettings();
-      PushExtensionSettings();
-    }
-  } else if (id == L"vault_export") {
-    vault_.ExportBackup();
-  } else if (id == L"vault_import") {
-    vault_.ImportBackup();
-    RefreshVaultListForSettings();
-    PushExtensionSettings();
-  } else if (id.rfind(L"vault_delete_item:", 0) == 0) {
-    vault_.DeleteAt(_wtoi(id.c_str() + 18));
-    RefreshVaultListForSettings();
-    PushExtensionSettings();
+
+
   }
 }
 
@@ -3184,8 +3002,6 @@ void App::HandleCliAction(const std::wstring& action) {
       settings_.Show();
       SetForegroundWindow(settings_.Hwnd());
     }
-  } else if (action == L"--vault") {
-    OpenVault();
   }
 }
 
@@ -3204,87 +3020,6 @@ void App::OpenSearch() {
   search_.SetOptions(opt);
   search_.Show();
 }
-void App::OpenVault() {
-  if (!prefs_.vault_enabled || !VaultHttpLoggedIn()) {
-    if (!MistConfirm(
-            settings_.Hwnd(), L"账号库",
-            L"账号管理未启用或未登录。\n\n是否现在登录并启用？\n"
-            L"（也可在设置 → 账号管理中操作）",
-            MistMsgTone::Info)) {
-      return;
-    }
-    if (!VaultHttpHealth()) {
-      ShowToast(L"账号库服务器不可达");
-      return;
-    }
-    if (!VaultHttpLoggedIn()) {
-      vault_.SetOnLoginResult([this](bool ok) {
-        if (!ok) {
-          prefs_.vault_enabled = false;
-          SaveAppPrefs(prefs_);
-          SyncVaultLauncher();
-          SyncPageChrome();
-          PushExtensionSettings();
-          return;
-        }
-        prefs_.vault_enabled = true;
-        SaveAppPrefs(prefs_);
-        RestartVaultRefreshTimer();
-        SyncVaultLauncher();
-        SyncPageChrome();
-        PushExtensionSettings();
-        OpenVault();
-      });
-      vault_.CloudLogin();
-      return;
-    }
-    prefs_.vault_enabled = true;
-    SaveAppPrefs(prefs_);
-    RestartVaultRefreshTimer();
-    SyncVaultLauncher();
-    PushExtensionSettings();
-    SyncPageChrome();
-  }
-  // Second click on the same entry closes (common float-panel toggle).
-  // Hide() → OnVaultHidden sinks fences (do not Raise on desktop FG).
-  if (vault_.Hwnd() && IsWindowVisible(vault_.Hwnd()) && !IsIconic(vault_.Hwnd())) {
-    vault_.Hide();
-    return;
-  }
-  if (message_hwnd_ && band_restore_left_ > 0) {
-    KillTimer(message_hwnd_, kTimerBandSettle);
-    band_restore_left_ = 0;
-  }
-  HWND anchor = nullptr;
-  const bool pet_hosts = pet_visible_ && pet_.ShowPageBubbles();
-  if (pet_hosts && pet_.Hwnd()) {
-    anchor = pet_.Hwnd();
-  } else if (page_bar_.Hwnd() && IsWindowVisible(page_bar_.Hwnd())) {
-    anchor = page_bar_.Hwnd();
-  }
-  vault_.PlaceBeside(anchor);
-  vault_.Show();
-  vault_.PlaceBeside(anchor);
-  SeatAllFencesUnderApps();
-  if (vault_.Hwnd()) {
-    SetWindowPos(vault_.Hwnd(), HWND_TOP, 0, 0, 0, 0,
-                 SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
-  }
-}
-
-void App::OnVaultHidden() {
-  // Hide returns FG to Progman/DefView → ForegroundWinEvent schedules band
-  // restore. RaiseOverlay there seats fences above open apps — sink instead
-  // (same contract as OpenVault / settings: modal chrome must not restack).
-  if (message_hwnd_ && band_restore_left_ > 0) {
-    KillTimer(message_hwnd_, kTimerBandSettle);
-    band_restore_left_ = 0;
-  }
-  // Cover the async kMsgBandRestore posted from the FG hook after Hide.
-  suppress_band_restore_until_ = GetTickCount64() + 900;
-  SeatAllFencesUnderApps();
-}
-
 void App::TogglePeek() {
   peek_active_ = !peek_active_;
   if (peek_active_) {
@@ -3762,22 +3497,6 @@ void App::ApplyUiLanguage() {
   PushExtensionSettings();
 }
 
-void App::RestartVaultRefreshTimer() {
-  if (message_hwnd_ && vault_timer_) {
-    KillTimer(message_hwnd_, kTimerVault);
-    vault_timer_ = 0;
-  }
-  if (!message_hwnd_ || prefs_.vault_refresh_hours <= 0) {
-    return;
-  }
-  // Win32 SetTimer max practical period; cap at ~24h then fire repeatedly.
-  UINT ms = static_cast<UINT>(prefs_.vault_refresh_hours) * 3600u * 1000u;
-  if (ms < 60000u) {
-    ms = 60000u;
-  }
-  vault_timer_ = SetTimer(message_hwnd_, kTimerVault, ms, nullptr);
-}
-
 void App::PushExtensionSettings() {
   SettingsWindow::ExtState ext;
   // Keep the pair aligned — settings UI exposes a single「启用会议纪要」toggle.
@@ -3854,27 +3573,6 @@ void App::PushExtensionSettings() {
   ext.enable_public_desktop = prefs_.enable_public_desktop;
   ext.show_page_indicator = prefs_.show_page_indicator;
   ext.page_chrome_style = prefs_.page_chrome_style == "tabs" ? "tabs" : "float";
-  ext.vault_enabled = prefs_.vault_enabled;
-  ext.vault_api_base = prefs_.vault_api_base.empty() ? VaultHttpGetApiBase()
-                                                     : prefs_.vault_api_base;
-  if (ext.vault_api_base.empty()) {
-    ext.vault_api_base = L"https://chromhome.kdns.fr/api/";
-  }
-  ext.vault_refresh_hours = prefs_.vault_refresh_hours > 0
-                                ? prefs_.vault_refresh_hours
-                                : 2;
-  ext.vault_clipboard_clear_seconds = prefs_.vault_clipboard_clear_seconds;
-  ext.vault_logged_in = VaultHttpLoggedIn();
-  {
-    const std::wstring login = VaultHttpSessionLogin();
-    if (ext.vault_logged_in && !login.empty()) {
-      ext.vault_session_label = L"已登录：" + login;
-    } else if (ext.vault_logged_in) {
-      ext.vault_session_label = L"已登录";
-    } else {
-      ext.vault_session_label = L"未登录 — 请先登录或注册账号";
-    }
-  }
   ext.lang = CurrentLang() ? CurrentLang() : "zh";
   ext.app_version = NativeProductVersion();
   ext.theme_id = prefs_.theme_id;
@@ -4024,8 +3722,6 @@ void App::PushExtensionSettings() {
     }
     ext.snapshots.push_back(std::move(card));
   }
-  ext.vault_items = vault_items_cache_;
-  ext.vault_list_status = vault_list_status_;
   // Keep settings WebView page list in sync with live layout (避免仍显示「第 N 页」).
   NormalizePageNames(&page_names_);
   settings_.SetPageNames(page_names_, false);
@@ -4033,44 +3729,6 @@ void App::PushExtensionSettings() {
   settings_.SetExtensionState(ext);
   settings_.ApplyUiThemeVars(UiThemeCssVars(ext.ui_theme));
   PushHotkeyState();
-}
-
-void App::SyncVaultLauncher() {
-  // Account entry lives on page chrome / pet — no standalone desktop buoy.
-  vault_launcher_.SetVisible(false);
-}
-
-void App::RefreshVaultListForSettings() {
-  vault_items_cache_.clear();
-  auto rows = vault_.ListRows();
-  // Use in-memory vault rows — ReloadFromDisk (DPAPI) only when empty.
-  if (rows.empty()) {
-    vault_.ReloadFromDisk();
-    rows = vault_.ListRows();
-  }
-  if (!VaultHttpLoggedIn() && rows.empty()) {
-    vault_list_status_ = L"登录后可在此新增、编辑、复制账号信息。";
-    return;
-  }
-  vault_items_cache_.reserve(rows.size());
-  for (const auto& r : rows) {
-    SettingsWindow::ExtState::VaultItem item;
-    item.id = r.index + 1;
-    item.index = r.index;
-    item.title = r.title;
-    item.username = r.username;
-    item.url = r.url;
-    item.note = r.note;
-    item.pass_len = r.pass_len;
-    vault_items_cache_.push_back(std::move(item));
-  }
-  if (VaultHttpLoggedIn()) {
-    vault_list_status_ = L"共 " + std::to_wstring(vault_items_cache_.size()) +
-                         L" 条 · 已同步";
-  } else {
-    vault_list_status_ = L"共 " + std::to_wstring(vault_items_cache_.size()) +
-                         L" 条 · 仅本地";
-  }
 }
 
 void App::SetFenceStyleAt(int index, const std::wstring& style_id) {
@@ -4169,10 +3827,6 @@ void App::SetFenceColorsAt(int index, bool enabled, const std::wstring& bg,
   }
 }
 
-void App::SyncVaultSessionState() {
-  // Session fields are pushed via PushExtensionSettings.
-}
-
 bool App::TryConsumeTrayOpen() {
   const DWORD now = GetTickCount();
   if (last_tray_open_tick_ != 0 &&
@@ -4181,31 +3835,6 @@ bool App::TryConsumeTrayOpen() {
   }
   last_tray_open_tick_ = now;
   return true;
-}
-
-void App::DeferredOpenSettingsVaultSync() {
-  open_settings_vault_timer_ = 0;
-  if (!settings_.IsOpen()) {
-    return;
-  }
-  // 后台打开：严格保持分区原样不动，绝不调用任何桌面重排函数
-  RefreshSettingsList();
-  settings_.SetToggles(dock_visible_, pet_visible_, IsNativeAutostartEnabled());
-  settings_.SetOrganizePrefs(prefs_.auto_organize_on_startup,
-                             prefs_.auto_organize_watch);
-  settings_.SetPageNames(page_names_, false);
-  settings_.SetCurrentPage(current_page_, false);
-  VaultHttpImportPythonSessionIfNeeded();
-  if (prefs_.vault_api_base.empty()) {
-    prefs_.vault_api_base = VaultHttpGetApiBase();
-  }
-  RefreshVaultListForSettings();
-  PushExtensionSettings();
-  PushHotkeyState();
-  // Desktop scan for 整理 page — second tick so first paint stays snappy.
-  if (message_hwnd_) {
-    SetTimer(message_hwnd_, kTimerOpenSettingsOrg, 80, nullptr);
-  }
 }
 
 void App::OpenSettings() {
@@ -4223,12 +3852,7 @@ void App::OpenSettings() {
     SetForegroundWindow(settings_.Hwnd());
   }
   if (message_hwnd_) {
-    if (open_settings_vault_timer_) {
-      KillTimer(message_hwnd_, kTimerOpenSettingsVault);
-    }
     KillTimer(message_hwnd_, kTimerOpenSettingsOrg);
-    open_settings_vault_timer_ =
-        SetTimer(message_hwnd_, kTimerOpenSettingsVault, 1, nullptr);
   }
 }
 
@@ -4719,11 +4343,6 @@ void App::ApplyLoadedGeneralPrefs() {
   // Public/loose visibility is derived in RefreshDesktopIcons (pin-only + floats).
   RefreshDesktopIcons();
   ApplyPageVisibility();
-  vault_.SetClipboardClearSeconds(prefs_.vault_clipboard_clear_seconds);
-  if (!prefs_.vault_api_base.empty()) {
-    VaultHttpSetApiBase(prefs_.vault_api_base);
-  }
-  RestartVaultRefreshTimer();
   public_host_.SetIconZoom(prefs_.public_icon_zoom);
   ApplyDockPrefs();
   SyncPageChrome();
@@ -4933,11 +4552,6 @@ void App::SeatAllFencesUnderApps() {
   // Do not sink notes into the desktop band — it is a normal app window.
   if (settings_.Hwnd() && settings_.IsOpen()) {
     SetWindowPos(settings_.Hwnd(), HWND_TOP, 0, 0, 0, 0,
-                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-  }
-  // Keep 账号浮窗 above the sunk desktop band while it is open.
-  if (vault_.Hwnd() && IsWindowVisible(vault_.Hwnd()) && !IsIconic(vault_.Hwnd())) {
-    SetWindowPos(vault_.Hwnd(), HWND_TOP, 0, 0, 0, 0,
                  SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
   }
 }
@@ -5237,11 +4851,8 @@ void App::SyncPageChrome() {
   const bool tool_calculator =
       prefs_.calculator_enabled && prefs_.calculator_on_bar;
   const bool tool_todo = prefs_.todos_enabled && prefs_.todos_on_bar;
-  const bool tool_vault = prefs_.vault_enabled && VaultHttpLoggedIn();
-  pet_.SetToolFlags(tool_record, tool_minutes, tool_calculator, tool_todo,
-                    tool_vault);
-  page_bar_.SetToolFlags(tool_record, tool_minutes, tool_calculator, tool_todo,
-                         tool_vault);
+  pet_.SetToolFlags(tool_record, tool_minutes, tool_calculator, tool_todo);
+  page_bar_.SetToolFlags(tool_record, tool_minutes, tool_calculator, tool_todo);
   page_bar_.SetChromeStyle(prefs_.page_chrome_style == "tabs"
                                ? PageBar::ChromeStyle::Tabs
                                : PageBar::ChromeStyle::Float);
@@ -5294,7 +4905,6 @@ void App::SyncPageChrome() {
   settings_.SetPageNames(page_names_, false);
   settings_.SetCurrentPage(current_page_, false);
   ApplyChromeTheme();
-  SyncVaultLauncher();
 }
 
 void App::AddPage() {
@@ -7880,9 +7490,6 @@ bool App::DesktopChromeMayRestack() const {
   if (settings_.IsOpen()) {
     return false;
   }
-  if (vault_.Hwnd() && IsWindowVisible(vault_.Hwnd())) {
-    return false;
-  }
   if (todos_.Hwnd() && IsWindowVisible(todos_.Hwnd())) {
     return false;
   }
@@ -7946,7 +7553,6 @@ bool App::DesktopChromeHealthy() const {
       !mapped_attached(public_host_.Hwnd())) {
     return false;
   }
-  // Intentionally ignore vault_launcher_: buoy Show/Place must not mark the
   // whole desktop chrome "unhealthy" and trigger a fence Raise over apps.
   return true;
 }
@@ -7956,7 +7562,7 @@ void App::RestoreDesktopChrome() {
   // Off-page fences that stay mapped under DefView ghost when an app is FG.
   HideOffPageFences();
 
-  // While settings/vault/todos is open, do NOT re-seat fences.
+  // While settings/todos is open, do NOT re-seat fences.
   if (session_locked_ || !DesktopChromeMayRestack()) {
     if (settings_.IsOpen() && settings_.Hwnd()) {
       SetWindowPos(settings_.Hwnd(), HWND_TOP, 0, 0, 0, 0,
@@ -8886,13 +8492,12 @@ LRESULT CALLBACK App::TrayWndProc(HWND hwnd, UINT msg, WPARAM wparam,
               probe_wv2(HKEY_LOCAL_MACHINE, kWv2Wow) ||
               probe_wv2(HKEY_LOCAL_MACHINE, kWv2) ||
               probe_wv2(HKEY_CURRENT_USER, kWv2);
-          LogLine(L"[compat] webview2_runtime=%s (settings/vault need it; "
+          LogLine(L"[compat] webview2_runtime=%s (settings need it; "
                   L"fences/dock/pet do not)",
                   present ? L"present" : L"missing");
         }
         // Deferred warm of the two most-used WebView2 panels; todo/search stay
         // lazy (created on first Show) to keep the boot path browser-free.
-        self->vault_.WarmWebView();
         self->settings_.WarmWebView();
         return 0;
       }
@@ -9061,31 +8666,6 @@ LRESULT CALLBACK App::TrayWndProc(HWND hwnd, UINT msg, WPARAM wparam,
         self->MaybeStartupUpdateCheck();
         return 0;
       }
-      if (wparam == kTimerVault) {
-        // Snapshot on UI thread; WinHttp on worker; apply back via kMsgVaultPullDone.
-        if (self->prefs_.vault_enabled && VaultHttpLoggedIn() &&
-            !g_vault_pull_busy && self->message_hwnd_) {
-          g_vault_pull_busy = true;
-          auto* remote =
-              new std::vector<VaultHttpCredential>(self->vault_.SnapshotCredentials());
-          HWND msg_hwnd = self->message_hwnd_;
-          self->ReapFinishedWorkers();
-          self->workers_.emplace_back([remote, msg_hwnd]() {
-            const bool ok = VaultHttpPullMerge(remote);
-            if (!PostMessageW(msg_hwnd, kMsgVaultPullDone, ok ? 1 : 0,
-                              reinterpret_cast<LPARAM>(remote))) {
-              delete remote;
-              g_vault_pull_busy = false;
-            }
-          });
-        }
-        return 0;
-      }
-      if (wparam == kTimerOpenSettingsVault) {
-        KillTimer(hwnd, kTimerOpenSettingsVault);
-        self->DeferredOpenSettingsVaultSync();
-        return 0;
-      }
       if (wparam == kTimerOpenSettingsOrg) {
         KillTimer(hwnd, kTimerOpenSettingsOrg);
         if (self->settings_.IsOpen()) {
@@ -9210,23 +8790,6 @@ LRESULT CALLBACK App::TrayWndProc(HWND hwnd, UINT msg, WPARAM wparam,
         return 0;
       }
       break;
-    case kMsgVaultPullDone: {
-      auto* remote =
-          reinterpret_cast<std::vector<VaultHttpCredential>*>(lparam);
-      g_vault_pull_busy = false;
-      if (remote) {
-        if (wparam) {
-          self->vault_.ApplyPulledCredentials(*remote);
-          self->RefreshVaultListForSettings();
-          if (self->settings_.IsOpen()) {
-            self->PushExtensionSettings();
-          }
-          ShowToast(L"账号库已后台同步");
-        }
-        delete remote;
-      }
-      return 0;
-    }
     case kMsgOrganizeDone:
       self->OnOrganizeDone(reinterpret_cast<OrganizeJobResult*>(lparam));
       return 0;
@@ -9289,9 +8852,6 @@ LRESULT CALLBACK App::TrayWndProc(HWND hwnd, UINT msg, WPARAM wparam,
         if (self->prefs_.calculator_enabled) {
           AppendMenuW(ext, MF_STRING, 32, Tr("calculator").c_str());
         }
-        if (self->prefs_.vault_enabled) {
-          AppendMenuW(ext, MF_STRING, 5, Tr("vault").c_str());
-        }
         AppendMenuW(ext, MF_STRING, 4, Tr("search").c_str());
         AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(ext),
                     L"扩展功能");
@@ -9326,9 +8886,6 @@ LRESULT CALLBACK App::TrayWndProc(HWND hwnd, UINT msg, WPARAM wparam,
             break;
           case 4:
             self->OpenSearch();
-            break;
-          case 5:
-            self->OpenVault();
             break;
           case 6:
             self->OpenMinutes();

@@ -107,10 +107,6 @@ class SettingsWindow {
     std::wstring filename_rules_text;
     bool check_update_on_startup = true;
     bool desktop_right_click_menu = true;
-    bool vault_enabled = false;
-    std::wstring vault_api_base;
-    int vault_refresh_hours = 2;
-    int vault_clipboard_clear_seconds = 30;
     bool close_to_tray = true;
   bool show_fences = true;
   bool double_click_hide = false;
@@ -123,8 +119,6 @@ class SettingsWindow {
     // Fence style preset (legacy field name theme_id in JSON).
     std::string theme_id = "navy";
     std::string ui_theme = "mist";
-    bool vault_logged_in = false;
-    std::wstring vault_session_label;
     struct ThemeOption {
       std::string id;
       std::wstring name;
@@ -195,17 +189,6 @@ class SettingsWindow {
       std::vector<SnapPreviewIcon> icons;
     };
     std::vector<SnapCard> snapshots;
-    struct VaultItem {
-      int id = 0;
-      int index = 0;
-      std::wstring title;
-      std::wstring username;
-      std::wstring url;
-      std::wstring note;
-      int pass_len = 0;
-    };
-    std::vector<VaultItem> vault_items;
-    std::wstring vault_list_status;
   };
   void SetExtensionState(const ExtState& ext);
   void SetOnExit(VoidFn fn) { on_exit_ = std::move(fn); }
@@ -284,7 +267,7 @@ class SettingsWindow {
   // Optional: recompute pins for every desktop item ("重新整理").
   void SetOnOrganizeReassign(VoidFn fn) { on_org_reassign_ = std::move(fn); }
   void SetExtraHandlers(VoidFn on_snap_save, VoidFn on_snap_manage,
-                        VoidFn on_vault, VoidFn on_minutes, VoidFn on_wallpaper,
+                        VoidFn on_minutes, VoidFn on_wallpaper,
                         VoidFn on_layout, VoidFn on_notes, VoidFn on_theme,
                         VoidFn on_hotkeys, VoidFn on_hotkey_help);
   // Any action id not handled above (todos, search, shot, …).
@@ -337,7 +320,6 @@ class SettingsWindow {
   VoidFn on_org_preview_;
   VoidFn on_snap_save_;
   VoidFn on_snap_manage_;
-  VoidFn on_vault_;
   VoidFn on_minutes_;
   VoidFn on_wallpaper_;
   VoidFn on_layout_;

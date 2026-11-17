@@ -455,7 +455,7 @@ void PageBar::RebuildSlots() {
       slots_.push_back(std::move(s));
     }
   }
-  // Python: record / minutes / calculator / todo (+ optional vault/note).
+  // Python: record / minutes / calculator / todo (+ optional note).
   auto add_tool = [&](bool on, const wchar_t* id, const wchar_t* label) {
     if (!on) {
       return;
@@ -471,7 +471,6 @@ void PageBar::RebuildSlots() {
   add_tool(tool_minutes_, L"minutes", Tr("tool_minutes").c_str());
   add_tool(tool_calculator_, L"calculator", Tr("tool_calculator").c_str());
   add_tool(tool_todo_, L"todo", Tr("tool_todo").c_str());
-  add_tool(tool_vault_, L"vault", L"账号");
 }
 
 void PageBar::DockToRightEdge(int preferred_y) {
@@ -569,12 +568,11 @@ void PageBar::SetPagesVisible(bool on) {
 }
 
 void PageBar::SetToolFlags(bool record, bool minutes, bool calculator,
-                           bool todo, bool vault, bool note) {
+                           bool todo, bool note) {
   tool_record_ = record;
   tool_minutes_ = minutes;
   tool_calculator_ = calculator;
   tool_todo_ = todo;
-  tool_vault_ = vault;
   tool_note_ = note;
   Relayout();
 }

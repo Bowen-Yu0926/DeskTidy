@@ -855,18 +855,6 @@ void MigratePythonPrefs(const std::string& json) {
     FindBool(todos, "enabled", &prefs.todos_enabled);
   }
 
-  const std::string vault = FindNestedObject(json, "account_vault");
-  if (!vault.empty()) {
-    FindBool(vault, "enabled", &prefs.vault_enabled);
-    std::string api;
-    if (FindString(vault, "api_base", &api) && !api.empty()) {
-      prefs.vault_api_base = WidenUtf8(api);
-    }
-    FindNumber(vault, "refresh_interval_hours", &prefs.vault_refresh_hours);
-    FindNumber(vault, "clipboard_clear_seconds",
-               &prefs.vault_clipboard_clear_seconds);
-  }
-
   const std::string dock = FindNestedObject(json, "dock");
   if (!dock.empty()) {
     FindBool(dock, "enabled", &prefs.dock_visible);

@@ -691,14 +691,6 @@ std::wstring SettingsWindow::BuildStateJson() const {
       ext_.page_chrome_style == "tabs" ? "tabs" : "float"));
   json += L"\",\"page_bar_style\":\"";
   json += JsonEscape(WidenUtf8(ext_.page_bar_style));
-  json += L"\",\"vault_enabled\":";
-  json += flag(ext_.vault_enabled);
-  json += L",\"vault_api_base\":\"";
-  json += JsonEscape(ext_.vault_api_base);
-  json += L"\",\"vault_refresh_hours\":";
-  json += std::to_wstring(ext_.vault_refresh_hours);
-  json += L",\"vault_clipboard_clear_seconds\":";
-  json += std::to_wstring(ext_.vault_clipboard_clear_seconds);
   json += L",\"lang\":\"";
   json += JsonEscape(WidenUtf8(ext_.lang.empty() ? "zh" : ext_.lang));
   json += L"\",\"app_version\":\"";
@@ -707,10 +699,6 @@ std::wstring SettingsWindow::BuildStateJson() const {
   json += JsonEscape(WidenUtf8(ext_.theme_id));
   json += L"\",\"ui_theme\":\"";
   json += JsonEscape(WidenUtf8(ext_.ui_theme));
-  json += L"\",\"vault_logged_in\":";
-  json += flag(ext_.vault_logged_in);
-  json += L",\"vault_session_label\":\"";
-  json += JsonEscape(ext_.vault_session_label);
   json += L"\",\"themes\":[";
   for (size_t i = 0; i < ext_.themes.size(); ++i) {
     if (i) {
@@ -880,30 +868,6 @@ std::wstring SettingsWindow::BuildStateJson() const {
     }
     json += L"]}";
   }
-  json += L"],\"vault_items\":[";
-  for (size_t i = 0; i < ext_.vault_items.size(); ++i) {
-    if (i) {
-      json += L',';
-    }
-    const auto& v = ext_.vault_items[i];
-    json += L"{\"id\":";
-    json += std::to_wstring(v.id);
-    json += L",\"index\":";
-    json += std::to_wstring(v.index);
-    json += L",\"title\":\"";
-    json += JsonEscape(v.title);
-    json += L"\",\"username\":\"";
-    json += JsonEscape(v.username);
-    json += L"\",\"url\":\"";
-    json += JsonEscape(v.url);
-    json += L"\",\"note\":\"";
-    json += JsonEscape(v.note);
-    json += L"\",\"pass_len\":";
-    json += std::to_wstring(v.pass_len);
-    json += L'}';
-  }
-  json += L"],\"vault_list_status\":\"";
-  json += JsonEscape(ext_.vault_list_status);
   json += L"\",\"hotkeys\":[";
   for (size_t i = 0; i < hotkey_rows_.size(); ++i) {
     if (i) {
@@ -1168,8 +1132,6 @@ void SettingsWindow::DispatchAction(const std::wstring& json) {
   } else if (id == L"snap_delete" && on_command_) {
     on_command_(L"snap_delete:" +
                 std::to_wstring(JsonIntField(json, L"index", 0)));
-  } else if (id == L"vault" && on_vault_) {
-    on_vault_();
   } else if (id == L"minutes" && on_minutes_) {
     on_minutes_();
   } else if (id == L"wallpaper" && on_wallpaper_) {
@@ -1258,20 +1220,6 @@ void SettingsWindow::DispatchAction(const std::wstring& json) {
   } else if (id == L"toggle_page_lock" && on_command_) {
     on_command_(L"toggle_page_lock:" +
                 std::to_wstring(JsonIntField(json, L"page", 0)));
-  } else if (id == L"vault_copy_user" && on_ext_field_) {
-    on_ext_field_(L"vault_copy_user", JsonStringField(json, L"value"));
-  } else if (id == L"vault_copy_user_idx" && on_ext_field_) {
-    on_ext_field_(L"vault_copy_user_idx",
-                  std::to_wstring(JsonIntField(json, L"index", -1)));
-  } else if (id == L"vault_copy_pass" && on_ext_field_) {
-    on_ext_field_(L"vault_copy_pass",
-                  std::to_wstring(JsonIntField(json, L"index", -1)));
-  } else if (id == L"vault_copy_url" && on_ext_field_) {
-    on_ext_field_(L"vault_copy_url",
-                  std::to_wstring(JsonIntField(json, L"index", -1)));
-  } else if (id == L"vault_delete_item" && on_command_) {
-    on_command_(L"vault_delete_item:" +
-                std::to_wstring(JsonIntField(json, L"index", -1)));
   } else if (id == L"fence_apply_all" && on_ext_field_) {
     // Reuse theme_id path → ApplyThemeId (all fences + default preset).
     const std::wstring style = JsonStringField(json, L"value");
@@ -1418,8 +1366,6 @@ bool SettingsWindow::ApplyExtToggleLocal(const std::wstring& id, bool value) {
     ext_.enable_public_desktop = value;
   } else if (id == L"show_page_indicator") {
     ext_.show_page_indicator = value;
-  } else if (id == L"vault_enabled") {
-    ext_.vault_enabled = value;
   } else {
     return false;
   }
@@ -1507,12 +1453,11 @@ void SettingsWindow::SetHandlers(VoidFn on_add, IndexFn on_remove, VoidFn on_sea
 }
 
 void SettingsWindow::SetExtraHandlers(
-    VoidFn on_snap_save, VoidFn on_snap_manage, VoidFn on_vault,
+    VoidFn on_snap_save, VoidFn on_snap_manage,
     VoidFn on_minutes, VoidFn on_wallpaper, VoidFn on_layout, VoidFn on_notes,
     VoidFn on_theme, VoidFn on_hotkeys, VoidFn on_hotkey_help) {
   on_snap_save_ = std::move(on_snap_save);
   on_snap_manage_ = std::move(on_snap_manage);
-  on_vault_ = std::move(on_vault);
   on_minutes_ = std::move(on_minutes);
   on_wallpaper_ = std::move(on_wallpaper);
   on_layout_ = std::move(on_layout);

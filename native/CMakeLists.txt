@@ -48,7 +48,6 @@ add_executable(desktidy_native WIN32
   src/float_placements.cpp
   src/todo_window.cpp
   src/search_window.cpp
-  src/vault_window.cpp
   src/notes_cloud_sync.cpp
   src/tools_misc.cpp
   src/tool_paths.cpp
@@ -74,7 +73,6 @@ add_executable(desktidy_native WIN32
   src/app_prefs.cpp
   src/ui_theme.cpp
   src/desktop_dblclick.cpp
-  src/vault_launcher.cpp
   src/screen_record.cpp
   src/ffmpeg_fetch.cpp
   src/fence_region_overlay.cpp
@@ -119,7 +117,6 @@ add_executable(deskNote WIN32
   src/tool_paths.cpp
   src/desktop_shell.cpp
   src/display_geom.cpp
-  src/vault_local.cpp
   src/vault_http.cpp
   src/vault_crypto.cpp
   src/online_notes_window.cpp
@@ -162,8 +159,6 @@ add_custom_command(TARGET deskNote POST_BUILD
           ${CMAKE_CURRENT_SOURCE_DIR}/assets/md_preview/wysiwyg_native.html
           $<TARGET_FILE_DIR:desktidy_native>/assets/md_preview/wysiwyg_native.html
   COMMAND ${CMAKE_COMMAND} -E copy_if_different
-          ${CMAKE_CURRENT_SOURCE_DIR}/assets/md_preview/vault_accounts.html
-          $<TARGET_FILE_DIR:desktidy_native>/assets/md_preview/vault_accounts.html
   COMMAND ${CMAKE_COMMAND} -E copy_if_different
           ${CMAKE_CURRENT_SOURCE_DIR}/assets/md_preview/vendor/toastui-editor.min.js
           $<TARGET_FILE_DIR:desktidy_native>/assets/md_preview/vendor/toastui-editor.min.js
@@ -218,8 +213,6 @@ add_custom_command(TARGET desktidy_native POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E make_directory
           $<TARGET_FILE_DIR:desktidy_native>/assets/settings
   COMMAND ${CMAKE_COMMAND} -E make_directory
-          $<TARGET_FILE_DIR:desktidy_native>/assets/vault
-  COMMAND ${CMAKE_COMMAND} -E make_directory
           $<TARGET_FILE_DIR:desktidy_native>/assets/dialogs
   COMMAND ${CMAKE_COMMAND} -E make_directory
           $<TARGET_FILE_DIR:desktidy_native>/assets/overlays
@@ -234,8 +227,6 @@ add_custom_command(TARGET desktidy_native POST_BUILD
           ${CMAKE_CURRENT_SOURCE_DIR}/assets/md_preview/wysiwyg_native.html
           $<TARGET_FILE_DIR:desktidy_native>/assets/md_preview/wysiwyg_native.html
   COMMAND ${CMAKE_COMMAND} -E copy_if_different
-          ${CMAKE_CURRENT_SOURCE_DIR}/assets/md_preview/vault_accounts.html
-          $<TARGET_FILE_DIR:desktidy_native>/assets/md_preview/vault_accounts.html
   COMMAND ${CMAKE_COMMAND} -E copy_if_different
           ${CMAKE_CURRENT_SOURCE_DIR}/assets/md_preview/vendor/toastui-editor.min.js
           $<TARGET_FILE_DIR:desktidy_native>/assets/md_preview/vendor/toastui-editor.min.js
@@ -267,9 +258,6 @@ add_custom_command(TARGET desktidy_native POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E copy_if_different
           ${CMAKE_CURRENT_SOURCE_DIR}/assets/settings/settings.html
           $<TARGET_FILE_DIR:desktidy_native>/assets/settings/settings.html
-  COMMAND ${CMAKE_COMMAND} -E copy_if_different
-          ${CMAKE_CURRENT_SOURCE_DIR}/assets/vault/vault.html
-          $<TARGET_FILE_DIR:desktidy_native>/assets/vault/vault.html
   COMMAND ${CMAKE_COMMAND} -E copy_if_different
           ${CMAKE_CURRENT_SOURCE_DIR}/assets/dialogs/whitelist.html
           $<TARGET_FILE_DIR:desktidy_native>/assets/dialogs/whitelist.html
