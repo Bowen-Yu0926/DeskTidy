@@ -56,6 +56,15 @@ LRESULT CALLBACK LowLevelMouseProc(int code, WPARAM wparam, LPARAM lparam) {
   if (code == HC_ACTION) {
     const auto* info = reinterpret_cast<MSLLHOOKSTRUCT*>(lparam);
     if (info) {
+      // Swallowed right-click on blank desktop: eat both DOWN and UP together
+      // so Explorer's underlying DefView does not receive a solitary DOWN without UP,
+      // which would leave DefView waiting for mouse capture release.
+      if (wparam == WM_RBUTTONDOWN && IsDesktopBlankPoint(info->pt.x, info->pt.y)) {
+        if (g_organized_blank_menu && g_blank_rclick_msg && g_notify &&
+            IsWindow(g_notify)) {
+          return 1;
+        }
+      }
       // Record desktop-background right-clicks (for shell-verb new-fence).
       if (wparam == WM_RBUTTONUP && IsDesktopBlankPoint(info->pt.x, info->pt.y)) {
         g_last_rclick = info->pt;

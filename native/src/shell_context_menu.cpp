@@ -324,20 +324,15 @@ int TrackCommon(HWND owner, POINT screen, IContextMenu* pcm, UINT cmf_flags,
   // add a taskbar entry or steal visible focus from the user. The standard
   // recipe (Raymond Chen) is SetForegroundWindow before, and a posted WM_NULL
   // after so the menu window can release the foreground cleanly.
-  HWND prev_fg = GetForegroundWindow();
-  SetForegroundWindow(track);
+  // Desktop overlay / toolwindow invariant: NEVER SetForegroundWindow on the
+  // 0x0 hidden host window. Doing so gives the system an invisible foreground,
+  // which steals input focus from all other applications and makes mouse clicks
+  // fail until another window is activated.
   const int cmd =
       TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, screen.x, screen.y,
                      0, track, nullptr);
-  // Required so the menu dismisses correctly next click, and so the foreground
-  // does not stay stuck on the invisible host.
+  ReleaseCapture();
   PostMessageW(track, WM_NULL, 0, 0);
-  if (prev_fg && IsWindow(prev_fg) && prev_fg != track) {
-    // Hand the foreground back when the menu was opened over a real window
-    // (e.g. a fence). Ignore failure: Windows only allows this for the process
-    // that owns the current foreground.
-    SetForegroundWindow(prev_fg);
-  }
   if (owner) {
     PostMessageW(owner, WM_NULL, 0, 0);
   }
@@ -437,10 +432,10 @@ int TrackFallbackDesktopMenu(HWND owner, POINT screen,
     DestroyMenu(menu);
     return 0;
   }
-  SetForegroundWindow(track);
   const int cmd =
       TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, screen.x, screen.y,
                      0, track, nullptr);
+  ReleaseCapture();
   PostMessageW(track, WM_NULL, 0, 0);
   if (owner) {
     PostMessageW(owner, WM_NULL, 0, 0);
@@ -685,6 +680,7 @@ std::string TrackMoveToPageThenFenceMenu(
   const int cmd =
       TrackPopupMenu(root, TPM_RETURNCMD | TPM_NONOTIFY, screen.x, screen.y, 0,
                      track, nullptr);
+  ReleaseCapture();
   DestroyMenu(root);
   if (cmd <= 0 || cmd >= static_cast<int>(cmd_ids.size())) {
     return {};
