@@ -49,6 +49,7 @@ add_executable(desktidy_native WIN32
   src/todo_window.cpp
   src/search_window.cpp
   src/vault_window.cpp
+  src/notes_cloud_sync.cpp
   src/tools_misc.cpp
   src/tool_paths.cpp
   src/capture_overlay.cpp
@@ -126,6 +127,7 @@ add_executable(deskNote WIN32
   ${ARGON2_SOURCES}
   src/log.cpp
   src/version.rc
+  src/toast.cpp
   src/desknote_icon.rc
 )
 

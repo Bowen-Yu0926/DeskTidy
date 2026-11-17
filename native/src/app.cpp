@@ -931,7 +931,7 @@ void App::WireFence(FenceWindow* fence) {
       [this](FenceWindow* f) { JoinFenceTabGroup(f); });
   fence->SetOnLeaveTabGroup(
       [this](FenceWindow* f) { LeaveFenceTabGroup(f); });
-  fence->SetPageLockedQuery([this](int page) {
+  fence->SetPageLockedQuery([this](int page) -> bool {
     // Same invariant as layout.cpp IsPageLocked: system pages 0/1 are locked.
     if (page == 0 || page == 1) {
       return true;
@@ -7264,7 +7264,7 @@ void App::SyncFenceTabGroups() {
     std::vector<FenceWindow::TabEntry> entries;
     entries.reserve(members.size());
     for (size_t k = 0; k < members.size(); ++k) {
-      FenceWindow* f = fences_[members[k]];
+      FenceWindow* f = fences_[members[k]].get();
       // Non-active members must not claim the active flag — reconcile here so a
       // stale layout.json cannot show two panels at once.
       const bool is_active = static_cast<int>(k) == active_pos;

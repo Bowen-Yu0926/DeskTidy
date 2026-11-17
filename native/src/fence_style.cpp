@@ -1,6 +1,7 @@
 #include "fence_style.h"
 
 #include <Windows.h>
+#include <objidl.h>
 #include <gdiplus.h>
 
 #include <algorithm>

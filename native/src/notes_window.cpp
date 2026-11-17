@@ -16,6 +16,7 @@
 #include "paths_util.h"
 #include "prompt_text.h"
 #include "tool_paths.h"
+#include "toast.h"
 #include "ui_theme.h"
 #include "vault_http.h"
 #include "vault_local.h"
