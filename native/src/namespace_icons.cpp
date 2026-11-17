@@ -536,7 +536,7 @@ int EnsureHostedSystemNamespaceIcons(PinMap* pins) {
   // Crash-safe: capture + persist the original visibility before first hide.
   PersistOriginalIconStateIfNeeded();
   const std::wstring dir = PublicSystemDir();
-// Returns the number of pin CHANGES (stale drops + new pins) so the caller
+  // Returns the number of pin CHANGES (stale drops + new pins) so the caller
   // knows whether the map needs persisting.
   int changed = 0;
   // Set only when a shortcut file was actually newly written — gates the

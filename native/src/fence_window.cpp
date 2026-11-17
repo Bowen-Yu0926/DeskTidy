@@ -87,7 +87,7 @@ constexpr int kExtFenceSortDate = 11;
 constexpr int kExtFenceSortSize = 12;
 constexpr int kExtFenceSortType = 13;
 constexpr int kExtFenceSortManual = 14;
-constexpr int kExtFenceSortCreated = 17;
+constexpr int kExtFenceSortCreated = 19;  // was 17, collided with kExtFencePortalRoot
 // Per-fence grid pitch presets (percent of the desktop's own cell metrics).
 constexpr int kExtFenceSpacingCompact = 91;
 constexpr int kExtFenceSpacingNormal = 92;
@@ -5302,7 +5302,8 @@ leaf_en(collapsed_ ? Tr("fence_expand") : Tr("fence_collapse"),
               kExtFenceCollapse, false, !position_locked_),
       leaf_en(L"离开自动折叠", kExtFenceAutoHide, auto_hide_,
               !position_locked_),
-      leaf(L"离开时淡化", kExtFenceFadeIdle, fade_on_idle_),
+      leaf_en(L"离开时淡化", kExtFenceFadeIdle, fade_on_idle_,
+              !position_locked_),
       leaf(Tr("fence_refresh"), kExtFenceRefresh),
       leaf(L"筛选图标…", kExtFenceFilter),
       leaf(Tr("fence_hide"), kExtFenceHide),
@@ -5451,7 +5452,9 @@ if (!position_locked_) {
         SetAutoHide(!auto_hide_);
       }
     } else if (rc == kExtFenceFadeIdle) {
-      SetFadeOnIdle(!fade_on_idle_);
+      if (!position_locked_) {
+        SetFadeOnIdle(!fade_on_idle_);
+      }
     } else if (rc == kExtFencePortalUp) {
       if (PortalGoUp() && on_refresh_) {
         on_refresh_(this);
