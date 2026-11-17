@@ -53,6 +53,19 @@ const toolbarConfig = {
   aiLabel: 'AI',
 }
 
+// Fixed top bar (DingTalk-doc style). Crepe ships English heading labels only.
+const topBarConfig = {
+  headingOptions: [
+    { label: '正文', level: null },
+    { label: '标题 1', level: 1 },
+    { label: '标题 2', level: 2 },
+    { label: '标题 3', level: 3 },
+    { label: '标题 4', level: 4 },
+    { label: '标题 5', level: 5 },
+    { label: '标题 6', level: 6 },
+  ],
+}
+
 const codeMirrorConfig = {
   searchPlaceholder: '搜索语言',
   noResultText: '无匹配',
@@ -101,9 +114,17 @@ export function createDeskNoteEditor(options) {
   const crepe = new Crepe({
     root,
     defaultValue: defaultValue || '',
+    // TopBar is opt-in in Crepe; Toolbar (the floating bubble over a
+    // selection) is on by default. DeskNote shows a fixed bar on top instead,
+    // matching DingTalk docs, so swap one for the other.
+    features: {
+      [Crepe.Feature.TopBar]: true,
+      [Crepe.Feature.Toolbar]: false,
+    },
     featureConfigs: {
       [Crepe.Feature.BlockEdit]: blockEditConfig,
       [Crepe.Feature.Toolbar]: toolbarConfig,
+      [Crepe.Feature.TopBar]: topBarConfig,
       [Crepe.Feature.CodeMirror]: codeMirrorConfig,
       [Crepe.Feature.Placeholder]: placeholderConfig,
       [Crepe.Feature.LinkTooltip]: linkTooltipConfig,

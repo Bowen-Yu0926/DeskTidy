@@ -6402,6 +6402,14 @@ void NotesWindow::SetNativeTitleText(const std::wstring& title) {
   title_applying_ = true;
   SetWindowTextW(title_edit_, title.c_str());
   title_applying_ = false;
+  // SetWindowTextW leaves the whole text selected when the EDIT holds focus,
+  // which paints a system-blue band under the title. Collapse to a caret.
+  if (GetFocus() == title_edit_) {
+    const int len = GetWindowTextLengthW(title_edit_);
+    SendMessageW(title_edit_, EM_SETSEL, len, len);
+  } else {
+    SendMessageW(title_edit_, EM_SETSEL, 0, 0);
+  }
 }
 
 void NotesWindow::ApplyNativeTitleFromMarkdown(const std::wstring& md) {
@@ -7979,8 +7987,8 @@ void NotesWindow::ShowFind(bool replace) {
     }
     return false;
   };
-  MistWebDialogRun(&dlg, replace ? L"替换" : L"查找", 480,
-                   replace ? 380 : 320);
+  MistWebDialogRun(&dlg, replace ? L"替换" : L"查找", 460,
+                   replace ? 330 : 280);
 }
 
 void NotesWindow::InsertTemplate() {

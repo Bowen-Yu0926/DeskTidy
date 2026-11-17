@@ -5,89 +5,178 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>查找</title>
 <style>
+  /* DingTalk online-doc find panel: flat white surface, hairline border,
+     no drop shadow stack, secondary buttons with one primary action. */
   :root {
-    --bg: #EEF1F6; --card: #FFFFFF; --border: #C9D2DE; --text: #1A2332;
-    --muted: #64748B; --accent: #1D4ED8; --accent-soft: #E0E7FF;
-    --primary: #2563eb; --primary-hover: #1d4ed8;
+    --card: #FFFFFF;
+    --border: #E5E6EB;
+    --border-strong: #D0D3D9;
+    --text: #1F2329;
+    --muted: #646A73;
+    --faint: #8F959E;
+    --hover: #F2F3F5;
+    --primary: #1F6BFF;
+    --primary-hover: #1A5FE0;
   }
   * { box-sizing: border-box; }
   html, body {
     margin: 0; height: 100%;
     font-family: "Microsoft YaHei", "微软雅黑", "Microsoft YaHei UI", "Segoe UI", sans-serif;
     background: transparent; color: var(--text); font-size: 13px;
+    -webkit-font-smoothing: antialiased;
   }
   #wrap {
-    height: 100%; display: flex; flex-direction: column; padding: 14px 16px 12px;
-    background: rgba(15, 23, 42, 0.22); border-radius: 16px;
+    height: 100%; padding: 10px;
+    display: flex; flex-direction: column;
   }
-  .title-row { display: flex; align-items: center; justify-content: space-between; margin: 0 0 12px; }
-  .title { font-size: 16px; font-weight: 800; margin: 0; }
+  #card {
+    flex: 1; min-height: 0;
+    display: flex; flex-direction: column;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px 14px;
+  }
+
+  .head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+  .title { margin: 0; font-size: 14px; font-weight: 600; color: var(--text); }
   #close {
-    width: 28px; height: 28px; border: none; background: transparent; color: var(--muted);
-    font-size: 18px; border-radius: 8px; cursor: pointer; line-height: 1;
+    width: 24px; height: 24px; border: none; background: transparent;
+    color: var(--faint); font-size: 16px; line-height: 1; cursor: pointer;
+    border-radius: 4px; padding: 0;
   }
-  #close:hover { background: var(--accent-soft); color: var(--accent); }
-  .card {
-    flex: 1; background: var(--card); border: 1px solid var(--border); border-radius: 14px;
-    border-left: 3px solid var(--accent); padding: 14px 16px;
-    box-shadow: 0 12px 28px rgba(26,35,50,0.12);
+  #close:hover { background: var(--hover); color: var(--text); }
+
+  /* Input row: search glyph inside, arrows on the right (DingTalk layout). */
+  .row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+  .box {
+    flex: 1; min-width: 0; position: relative;
+    display: flex; align-items: center;
+    height: 32px; padding: 0 8px 0 28px;
+    border: 1px solid var(--border); border-radius: 6px;
+    background: #fff;
   }
-  .field { margin-bottom: 10px; }
-  .field label { display: block; font-size: 12px; color: var(--muted); font-weight: 700; margin-bottom: 4px; }
-  .field input[type=text] {
-    width: 100%; height: 36px; padding: 0 10px; border: 1px solid var(--border);
-    border-radius: 10px; font: inherit;
+  .box:focus-within { border-color: var(--primary); }
+  .box svg {
+    position: absolute; left: 8px; top: 50%; transform: translateY(-50%);
+    width: 14px; height: 14px; color: var(--faint); pointer-events: none;
   }
-  .field input:focus { outline: 2px solid var(--accent-soft); border-color: var(--accent); }
-  .opts { display: flex; flex-wrap: wrap; gap: 12px 16px; margin: 12px 0 4px; color: var(--text); }
-  .opts label { display: flex; align-items: center; gap: 6px; cursor: pointer; font-size: 12px; }
-  #status { min-height: 18px; margin-top: 8px; color: var(--muted); font-size: 12px; }
-  .foot { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; margin-top: 12px; }
+  .box input {
+    flex: 1; min-width: 0; height: 100%;
+    border: none; outline: none; background: transparent;
+    font: inherit; color: var(--text); padding: 0;
+  }
+  .box input::placeholder { color: var(--faint); }
+
+  .nav { display: flex; gap: 2px; flex-shrink: 0; }
+  .icon-btn {
+    width: 28px; height: 32px; padding: 0;
+    display: flex; align-items: center; justify-content: center;
+    border: none; background: transparent; border-radius: 6px;
+    color: var(--muted); cursor: pointer;
+  }
+  .icon-btn:hover { background: var(--hover); color: var(--text); }
+  .icon-btn svg { width: 15px; height: 15px; }
+
+  .opts {
+    display: flex; flex-wrap: wrap; gap: 4px;
+    margin: 2px 0 0;
+  }
+  /* Option chips: a quiet toggle, not a checkbox row. */
+  .chip {
+    display: inline-flex; align-items: center;
+    height: 24px; padding: 0 8px;
+    border-radius: 4px; color: var(--muted);
+    font-size: 12px; line-height: 1; cursor: pointer;
+    user-select: none; white-space: nowrap;
+  }
+  .chip:hover { background: var(--hover); }
+  .chip input { position: absolute; opacity: 0; width: 0; height: 0; }
+  .chip.on { background: #E8F0FF; color: var(--primary); }
+
+  #status {
+    min-height: 16px; margin-top: 6px;
+    font-size: 12px; color: var(--faint);
+  }
+
+  .foot {
+    display: flex; flex-wrap: wrap; gap: 8px;
+    justify-content: flex-end; margin-top: auto; padding-top: 8px;
+  }
   .btn {
-    border: 1px solid var(--border); background: #fff; border-radius: 10px;
-    padding: 8px 12px; font: inherit; font-weight: 700; cursor: pointer;
+    height: 28px; padding: 0 12px;
+    border: 1px solid var(--border-strong); border-radius: 4px;
+    background: #fff; color: var(--text);
+    font: inherit; font-size: 12px; cursor: pointer;
   }
-  .btn:hover { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
-  .btn.primary { background: var(--primary); border-color: var(--primary); color: #fff; }
-  .btn.primary:hover { background: var(--primary-hover); color: #fff; }
-  #replace-field { display: none; }
-  body.replace #replace-field { display: block; }
+  .btn:hover { background: var(--hover); }
+  .btn.primary {
+    background: var(--primary); border-color: var(--primary); color: #fff;
+  }
+  .btn.primary:hover { background: var(--primary-hover); border-color: var(--primary-hover); }
+
+  #replace-row { display: none; }
+  body.replace #replace-row { display: flex; }
   body.replace #btn-replace, body.replace #btn-replace-all { display: inline-block; }
   #all-tabs-wrap { display: none; }
-  body.replace #all-tabs-wrap { display: flex; }
+  body.replace #all-tabs-wrap { display: inline-flex; }
   #btn-replace, #btn-replace-all { display: none; }
 </style>
 </head>
 <body>
 <div id="wrap">
-  <div class="title-row">
-    <h1 class="title" id="title">查找</h1>
-    <button id="close" type="button" aria-label="关闭">×</button>
-  </div>
-  <div class="card">
-    <div class="field">
-      <label>查找内容</label>
-      <input id="find" type="text" />
+  <div id="card">
+    <div class="head">
+      <h1 class="title" id="title">查找</h1>
+      <button id="close" type="button" aria-label="关闭">×</button>
     </div>
-    <div class="field" id="replace-field">
-      <label>替换为</label>
-      <input id="replace" type="text" />
+
+    <div class="row">
+      <label class="box">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
+          <circle cx="7" cy="7" r="4.5"></circle>
+          <path d="M10.5 10.5 14 14" stroke-linecap="round"></path>
+        </svg>
+        <input id="find" type="text" placeholder="查找内容" />
+      </label>
+      <div class="nav">
+        <button class="icon-btn" id="btn-prev" type="button" title="查找上一个">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6">
+            <path d="M4 10 8 6l4 4" stroke-linecap="round" stroke-linejoin="round"></path>
+          </svg>
+        </button>
+        <button class="icon-btn" id="btn-next" type="button" title="查找下一个">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6">
+            <path d="M4 6l4 4 4-4" stroke-linecap="round" stroke-linejoin="round"></path>
+          </svg>
+        </button>
+      </div>
     </div>
+
+    <div class="row" id="replace-row">
+      <label class="box">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
+          <path d="M3 5h8l-2-2M13 11H5l2 2" stroke-linecap="round" stroke-linejoin="round"></path>
+        </svg>
+        <input id="replace" type="text" placeholder="替换为" />
+      </label>
+    </div>
+
     <div class="opts">
-      <label><input type="checkbox" id="case" /> 区分大小写</label>
-      <label><input type="checkbox" id="word" /> 全字匹配</label>
-      <label><input type="checkbox" id="regex" /> 正则表达式</label>
-      <label><input type="checkbox" id="wrap" checked /> 循环查找</label>
-      <label id="all-tabs-wrap"><input type="checkbox" id="all_tabs" /> 所有页签（全部替换）</label>
+      <label class="chip" id="chip-case"><input type="checkbox" id="case" />区分大小写</label>
+      <label class="chip" id="chip-word"><input type="checkbox" id="word" />全字匹配</label>
+      <label class="chip" id="chip-regex"><input type="checkbox" id="regex" />正则</label>
+      <label class="chip on" id="chip-wrap"><input type="checkbox" id="wrap" checked />循环</label>
+      <label class="chip" id="all-tabs-wrap"><input type="checkbox" id="all_tabs" />所有页签</label>
     </div>
+
     <div id="status"></div>
-  </div>
-  <div class="foot">
-    <button class="btn" id="btn-prev">查找上一个</button>
-    <button class="btn primary" id="btn-next">查找下一个</button>
-    <button class="btn" id="btn-replace">替换</button>
-    <button class="btn" id="btn-replace-all">全部替换</button>
-    <button class="btn" id="btn-close">关闭</button>
+
+    <div class="foot">
+      <button class="btn" id="btn-replace">替换</button>
+      <button class="btn" id="btn-replace-all">全部替换</button>
+      <button class="btn primary" id="btn-next2">查找下一个</button>
+    </div>
   </div>
 </div>
 <script>
@@ -106,6 +195,24 @@
       all_tabs: document.getElementById('all_tabs').checked
     };
   }
+
+  // Chips mirror their checkbox so the toggle reads as pressed/unpressed.
+  var chipPairs = [
+    ['case', 'chip-case'], ['word', 'chip-word'], ['regex', 'chip-regex'],
+    ['wrap', 'chip-wrap'], ['all_tabs', 'all-tabs-wrap']
+  ];
+  function syncChips() {
+    chipPairs.forEach(function (p) {
+      var box = document.getElementById(p[0]);
+      var chip = document.getElementById(p[1]);
+      if (box && chip) chip.classList.toggle('on', box.checked);
+    });
+  }
+  chipPairs.forEach(function (p) {
+    var box = document.getElementById(p[0]);
+    if (box) box.addEventListener('change', syncChips);
+  });
+
   window.applyState = function(m) {
     if (!m || m.type !== 'state') return;
     if (m.replace_mode) document.body.classList.add('replace');
@@ -119,25 +226,28 @@
     document.getElementById('wrap').checked = m.wrap !== false;
     document.getElementById('all_tabs').checked = !!m.all_tabs;
     if (typeof m.status === 'string') document.getElementById('status').textContent = m.status;
-    setTimeout(() => { const el = document.getElementById('find'); el.focus(); el.select(); }, 40);
+    syncChips();
+    setTimeout(function () { var el = document.getElementById('find'); el.focus(); el.select(); }, 40);
   };
-  document.getElementById('btn-next').onclick = () => post(payload('find_next'));
-  document.getElementById('btn-prev').onclick = () => post(payload('find_prev'));
-  document.getElementById('btn-replace').onclick = () => post(payload('replace'));
-  document.getElementById('btn-replace-all').onclick = () => post(payload('replace_all'));
-  document.getElementById('btn-close').onclick = () => post({ type: 'action', id: 'close' });
-  document.getElementById('close').onclick = () => post({ type: 'action', id: 'close' });
-  document.getElementById('find').onkeydown = e => {
+
+  document.getElementById('btn-next').onclick = function () { post(payload('find_next')); };
+  document.getElementById('btn-next2').onclick = function () { post(payload('find_next')); };
+  document.getElementById('btn-prev').onclick = function () { post(payload('find_prev')); };
+  document.getElementById('btn-replace').onclick = function () { post(payload('replace')); };
+  document.getElementById('btn-replace-all').onclick = function () { post(payload('replace_all')); };
+  document.getElementById('close').onclick = function () { post({ type: 'action', id: 'close' }); };
+  document.getElementById('find').onkeydown = function (e) {
     if (e.key === 'Enter') post(payload(e.shiftKey ? 'find_prev' : 'find_next'));
     if (e.key === 'Escape') post({ type: 'action', id: 'close' });
   };
-  document.getElementById('replace').onkeydown = e => {
+  document.getElementById('replace').onkeydown = function (e) {
     if (e.key === 'Enter') post(payload('replace'));
     if (e.key === 'Escape') post({ type: 'action', id: 'close' });
   };
   try {
-    chrome.webview.addEventListener('message', ev => {
-      let m = ev.data; if (typeof m === 'string') { try { m = JSON.parse(m); } catch(e) { return; } }
+    chrome.webview.addEventListener('message', function (ev) {
+      var m = ev.data;
+      if (typeof m === 'string') { try { m = JSON.parse(m); } catch (e) { return; } }
       applyState(m);
     });
   } catch (e) {}

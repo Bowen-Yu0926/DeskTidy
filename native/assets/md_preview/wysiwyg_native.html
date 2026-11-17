@@ -50,32 +50,313 @@
       background: #2a2a2a;
     }
 
-    /* --- Crepe surface: reading width + desk-note typography ------------- */
+    /* --- Crepe surface: DingTalk-doc-like typography ---------------------- */
+    /* DingTalk online docs are sans-serif throughout, with tighter block
+       rhythm and a neutral grey palette. Crepe ships serif titles and very
+       loose spacing, so the tokens and the block metrics are overridden here
+       instead of restyling every component one by one. */
     #editor .milkdown {
-      height: 100%;
+      /* Grow with the document, not just the viewport: the sticky top bar can
+         only stay pinned inside a parent box taller than the scrollport. */
+      min-height: 100%;
       background: transparent;
+      --crepe-font-title: "Microsoft YaHei", "微软雅黑", "Microsoft YaHei UI",
+        "PingFang SC", "Helvetica Neue", Arial, sans-serif;
+      --crepe-font-default: "Microsoft YaHei", "微软雅黑", "Microsoft YaHei UI",
+        "PingFang SC", "Helvetica Neue", Arial, sans-serif;
+      --crepe-font-code: "Cascadia Mono", Consolas, "SFMono-Regular", Menlo,
+        monospace;
+      --crepe-color-on-background: #1f2329;
+      --crepe-color-on-surface: #1f2329;
+      --crepe-color-on-surface-variant: #646a73;
+      --crepe-color-primary: #1f2329;
+      --crepe-color-outline: #dee0e3;
+      --crepe-color-inline-area: #e4e6eb;
+      --crepe-color-surface: #f5f6f7;
+      --crepe-color-surface-low: #f2f3f5;
+      --crepe-color-hover: #f2f3f5;
+      --crepe-color-selected: #e4e6eb;
+      --crepe-color-inline-code: #d83931;
     }
+    /* --- Fixed top toolbar (DingTalk-doc style) ------------------------- */
+    /* Crepe's own top bar paints icons with --crepe-color-outline, which this
+       theme maps to a hairline grey; DingTalk uses mid-grey glyphs. */
+    #editor .milkdown-top-bar {
+      padding: 0 20px;
+      background: #fff;
+      border-bottom: 1px solid #e8eaed;
+      min-height: 46px;
+      z-index: 20;
+    }
+    #editor .milkdown-top-bar .top-bar-item svg {
+      color: #4e5969;
+      fill: #4e5969;
+    }
+    #editor .milkdown-top-bar .top-bar-item:hover svg,
+    #editor .milkdown-top-bar .top-bar-item.active svg {
+      color: #1f2329;
+      fill: #1f2329;
+    }
+    #editor .milkdown-top-bar .top-bar-heading-label {
+      color: #1f2329;
+    }
+    #editor .milkdown-top-bar .top-bar-chevron svg {
+      color: #8f959e;
+      stroke: #8f959e;
+    }
+    #editor .milkdown-top-bar .top-bar-divider {
+      background: #e8eaed;
+    }
+    body.theme-dark #editor .milkdown-top-bar {
+      background: #1e1e1e;
+      border-bottom-color: #333;
+    }
+    body.theme-dark #editor .milkdown-top-bar .top-bar-item svg {
+      color: #c4c8ce;
+      fill: #c4c8ce;
+    }
+    body.theme-dark #editor .milkdown-top-bar .top-bar-heading-label {
+      color: #e6e6e6;
+    }
+
     #editor .ProseMirror {
       box-sizing: border-box;
-      max-width: 860px;
-      margin: 0 auto;
+      /* Left-aligned, full column width (no reading-width centering). */
+      margin: 0;
       padding: 20px 32px 45vh;
       min-height: 100%;
       outline: none;
-      font-family: "Microsoft YaHei", "微软雅黑", "Microsoft YaHei UI", sans-serif;
-      font-size: 12pt;
+      font-family: var(--crepe-font-default);
+      font-size: 16px;
       line-height: 1.75;
-      color: #1a1f27;
+      color: #1f2329;
+      letter-spacing: 0.01em;
+      word-break: break-word;
     }
     body.theme-dark #editor .ProseMirror {
       color: #e6e6e6;
     }
+    /* Block rhythm: DingTalk keeps ~8px between blocks, not Crepe's 0.72em. */
     #editor .ProseMirror > * + * {
-      margin-top: 0.72em;
+      margin-top: 8px;
     }
+
+    /* --- Headings: sans-serif, bold, stepped sizes ----------------------- */
+    #editor .ProseMirror h1,
+    #editor .ProseMirror h2,
+    #editor .ProseMirror h3,
+    #editor .ProseMirror h4,
+    #editor .ProseMirror h5,
+    #editor .ProseMirror h6 {
+      font-family: var(--crepe-font-title);
+      font-weight: 600;
+      color: #1f2329;
+      padding: 0;
+      letter-spacing: 0;
+    }
+    body.theme-dark #editor .ProseMirror h1,
+    body.theme-dark #editor .ProseMirror h2,
+    body.theme-dark #editor .ProseMirror h3,
+    body.theme-dark #editor .ProseMirror h4,
+    body.theme-dark #editor .ProseMirror h5,
+    body.theme-dark #editor .ProseMirror h6 {
+      color: #e6e6e6;
+    }
+    #editor .ProseMirror h1 {
+      font-size: 28px;
+      line-height: 1.4;
+      margin-top: 24px;
+    }
+    #editor .ProseMirror h2 {
+      font-size: 23px;
+      line-height: 1.45;
+      margin-top: 22px;
+    }
+    #editor .ProseMirror h3 {
+      font-size: 19px;
+      line-height: 1.5;
+      margin-top: 20px;
+    }
+    #editor .ProseMirror h4 {
+      font-size: 17px;
+      line-height: 1.55;
+      margin-top: 18px;
+    }
+    #editor .ProseMirror h5 {
+      font-size: 16px;
+      line-height: 1.6;
+      margin-top: 16px;
+    }
+    #editor .ProseMirror h6 {
+      font-size: 15px;
+      line-height: 1.6;
+      margin-top: 16px;
+      color: #646a73;
+    }
+    /* No leading gap above the very first block (DingTalk flush start). */
+    #editor .ProseMirror > h1:first-child,
+    #editor .ProseMirror > h2:first-child,
+    #editor .ProseMirror > h3:first-child,
+    #editor .ProseMirror > h4:first-child,
+    #editor .ProseMirror > h5:first-child,
+    #editor .ProseMirror > h6:first-child,
+    #editor .ProseMirror > p:first-child {
+      margin-top: 0;
+    }
+
+    /* --- Paragraphs / lists --------------------------------------------- */
+    #editor .ProseMirror p {
+      margin: 0;
+      padding: 0;
+    }
+    #editor .ProseMirror ul,
+    #editor .ProseMirror ol {
+      padding-left: 26px;
+      margin: 0;
+    }
+    #editor .ProseMirror li {
+      margin: 2px 0;
+    }
+    #editor .ProseMirror li p {
+      margin: 0;
+    }
+    #editor .ProseMirror li > ul,
+    #editor .ProseMirror li > ol {
+      margin-top: 2px;
+    }
+    /* Task list: Crepe reserves a fixed 32px label row; match the 1.75 line
+       box so the checkbox sits on the first text line instead of above it. */
+    #editor .milkdown-list-item-block li .label-wrapper,
+    #editor .milkdown-list-item-block li .label-wrapper .label {
+      height: 28px;
+      padding: 0;
+      width: 22px;
+    }
+
+    /* --- Blockquote: soft grey panel with a light left rule ------------- */
+    #editor .ProseMirror blockquote {
+      position: relative;
+      margin: 10px 0;
+      padding: 10px 14px 10px 14px;
+      background: #f5f6f7;
+      border-radius: 4px;
+      color: #646a73;
+      box-sizing: border-box;
+    }
+    #editor .ProseMirror blockquote:before {
+      content: "";
+      position: absolute;
+      left: 0;
+      top: 0;
+      bottom: 0;
+      width: 3px;
+      background: #d0d3d9;
+      border-radius: 2px 0 0 2px;
+    }
+    #editor .ProseMirror blockquote > * + * {
+      margin-top: 6px;
+    }
+    body.theme-dark #editor .ProseMirror blockquote {
+      background: #262626;
+      color: #a8a8a8;
+    }
+    body.theme-dark #editor .ProseMirror blockquote:before {
+      background: #3a3a3a;
+    }
+
+    /* --- Inline code: light chip, DingTalk red ------------------------- */
+    #editor .ProseMirror code {
+      font-family: var(--crepe-font-code);
+      font-size: 0.92em;
+      padding: 1px 5px;
+      border-radius: 3px;
+      background: #f2f3f5;
+      color: #d83931;
+    }
+    body.theme-dark #editor .ProseMirror code {
+      background: #2a2a2a;
+      color: #ff8f85;
+    }
+
+    /* --- Fenced code block --------------------------------------------- */
+    #editor .milkdown-code-block {
+      margin: 12px 0;
+      border-radius: 6px;
+      background: #f7f8fa;
+      border: 1px solid #e5e6eb;
+      overflow: hidden;
+    }
+    #editor .milkdown-code-block .cm-editor {
+      font-family: var(--crepe-font-code);
+      font-size: 13px;
+      line-height: 1.65;
+      background: transparent;
+    }
+    #editor .milkdown-code-block .cm-editor .cm-scroller {
+      padding: 4px 0;
+    }
+    #editor .milkdown-code-block .cm-editor .cm-content {
+      padding: 8px 14px;
+    }
+    body.theme-dark #editor .milkdown-code-block {
+      background: #232323;
+      border-color: #333;
+    }
+
+    /* --- Tables: DingTalk grid ------------------------------------------ */
+    #editor .milkdown-table-block {
+      margin: 12px 0;
+    }
+    #editor .ProseMirror table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 14px;
+      table-layout: auto;
+    }
+    #editor .ProseMirror th,
+    #editor .ProseMirror td {
+      border: 1px solid #e5e6eb;
+      padding: 8px 12px;
+      text-align: left;
+      vertical-align: top;
+      line-height: 1.6;
+      min-width: 60px;
+    }
+    #editor .ProseMirror th {
+      background: #f5f6f7;
+      font-weight: 600;
+      color: #1f2329;
+    }
+    body.theme-dark #editor .ProseMirror th,
+    body.theme-dark #editor .ProseMirror td {
+      border-color: #3a3a3a;
+    }
+    body.theme-dark #editor .ProseMirror th {
+      background: #262626;
+      color: #e6e6e6;
+    }
+
+    /* --- Rules / links -------------------------------------------------- */
+    #editor .ProseMirror hr {
+      border: none;
+      border-top: 1px solid #e5e6eb;
+      margin: 20px 0;
+    }
+    #editor .ProseMirror a {
+      color: #3370ff;
+      text-decoration: none;
+    }
+    #editor .ProseMirror a:hover {
+      text-decoration: underline;
+    }
+    #editor .ProseMirror strong {
+      font-weight: 600;
+    }
+
     /* Images never overflow the column; Crepe sizes them by ratio. */
     #editor .milkdown-image-block {
       max-width: 100%;
+      margin: 12px 0;
     }
     #editor .milkdown-image-block .image-wrapper {
       max-width: 100%;
@@ -83,6 +364,7 @@
     #editor .milkdown-image-block img {
       max-width: 100%;
       height: auto;
+      border-radius: 4px;
     }
     /* Floating UI chrome (block handle / slash menu / toolbar) must sit above
        the editor surface, which owns the whole stage. */
