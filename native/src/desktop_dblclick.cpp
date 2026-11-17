@@ -56,32 +56,13 @@ LRESULT CALLBACK LowLevelMouseProc(int code, WPARAM wparam, LPARAM lparam) {
   if (code == HC_ACTION) {
     const auto* info = reinterpret_cast<MSLLHOOKSTRUCT*>(lparam);
     if (info) {
-      // Swallowed right-click on blank desktop: eat both DOWN and UP together
-      // so Explorer's underlying DefView does not receive a solitary DOWN without UP,
-      // which would leave DefView waiting for mouse capture release.
-      if (wparam == WM_RBUTTONDOWN && IsDesktopBlankPoint(info->pt.x, info->pt.y)) {
-        if (g_organized_blank_menu && g_blank_rclick_msg && g_notify &&
-            IsWindow(g_notify)) {
-          return 1;
-        }
-      }
-      // Record desktop-background right-clicks (for shell-verb new-fence).
+      // Record desktop-background right-clicks (for shell-verb new-fence position).
+      // Never swallow desktop right-clicks: let Windows Explorer host its full
+      // native desktop menu (View / Sort / Refresh / Display / Personalize / New)
+      // and manage its dismiss lifecycle naturally.
       if (wparam == WM_RBUTTONUP && IsDesktopBlankPoint(info->pt.x, info->pt.y)) {
         g_last_rclick = info->pt;
         g_last_rclick_tick = GetTickCount64();
-        // Organized: DefView listview is hidden — its Paste is a no-op / wrong
-        // seat. Host Desktop background menu (Fences / Ctrl+V path).
-        if (g_organized_blank_menu && g_blank_rclick_msg && g_notify &&
-            IsWindow(g_notify)) {
-          const DWORD now = GetTickCount();
-          if (now - g_last_blank_rclick_ms >= 200) {
-            g_last_blank_rclick_ms = now;
-            PostMessageW(g_notify, g_blank_rclick_msg, 0,
-                         MAKELPARAM(static_cast<WORD>(info->pt.x),
-                                    static_cast<WORD>(info->pt.y)));
-          }
-          return 1;
-        }
       }
       // Blank desktop (DefView / Progman). Also used when the transparent
       // listview sits above a fence: click never reaches the fence HWND, so
