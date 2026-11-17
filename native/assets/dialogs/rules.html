@@ -69,13 +69,15 @@
 <body>
 <div id="wrap">
   <h1 class="title">整理规则</h1>
-  <p class="hint">扩展名 / 通配 → 分区 id。保存后整理与监视立即生效。</p>
+  <p class="hint">扩展名 / 通配 → 分区 id。从上到下依次匹配，命中即止——越靠上优先级越高。保存后整理与监视立即生效。</p>
   <div class="panel">
     <div id="list"></div>
     <div class="side">
       <button class="btn" id="add">添加</button>
       <button class="btn" id="edit">编辑</button>
       <button class="btn danger" id="del">删除</button>
+      <button class="btn" id="up" title="上移：越靠上优先级越高">↑ 上移</button>
+      <button class="btn" id="down" title="下移：越靠下优先级越低">↓ 下移</button>
       <button class="btn" id="reset">恢复默认</button>
       <button class="btn" id="notepad">记事本…</button>
     </div>
@@ -89,7 +91,7 @@
   <div id="form">
     <h3 id="form-title">添加规则</h3>
     <div class="field">
-      <label>匹配模式（.pdf / kind:image / Invoice*）</label>
+      <label>匹配模式（.pdf / Invoice* / 报告）</label>
       <input id="f-pat" type="text" />
     </div>
     <div class="field">
@@ -127,7 +129,11 @@
         ${r.fence_title ? `<div class="meta">${esc(r.fence_title)}</div>` : ''}
       </div>`).join('');
     list.querySelectorAll('.item').forEach(el => {
-      el.onclick = () => { sel = +el.dataset.i; render(); };
+      el.onclick = () => {
+        sel = +el.dataset.i;
+        post({ type: 'action', id: 'select', index: sel });
+        render();
+      };
       el.ondblclick = () => openForm(true);
     });
   }
@@ -151,6 +157,8 @@
     if (!m || m.type !== 'state') return;
     items = Array.isArray(m.items) ? m.items.slice() : [];
     fences = Array.isArray(m.fences) ? m.fences.slice() : [];
+    // Backend owns the selection (it knows where a reordered row landed).
+    if (typeof m.sel === 'number') sel = m.sel;
     if (sel >= items.length) sel = items.length ? 0 : -1;
     render();
   };
@@ -159,6 +167,14 @@
   document.getElementById('del').onclick = () => {
     if (sel < 0) return;
     post({ type: 'action', id: 'del', index: sel });
+  };
+  document.getElementById('up').onclick = () => {
+    if (sel <= 0) return;
+    post({ type: 'action', id: 'up', index: sel });
+  };
+  document.getElementById('down').onclick = () => {
+    if (sel < 0 || sel >= items.length - 1) return;
+    post({ type: 'action', id: 'down', index: sel });
   };
   document.getElementById('reset').onclick = () => post({ type: 'action', id: 'reset' });
   document.getElementById('notepad').onclick = () => post({ type: 'action', id: 'notepad' });

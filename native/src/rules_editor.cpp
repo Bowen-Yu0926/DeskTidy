@@ -18,6 +18,9 @@ struct Ctx {
   std::vector<std::pair<std::wstring, std::string>> rows;
   std::vector<std::pair<std::string, std::wstring>> fences;
   bool saved = false;
+  // Selection is owned here so a reorder can report the row's new index in the
+  // state push — the page otherwise has to guess and races the async push.
+  int selected = -1;
 };
 
 void LoadRows(Ctx* ctx) {
@@ -25,13 +28,12 @@ void LoadRows(Ctx* ctx) {
   if (!ctx->rules) {
     return;
   }
+  // Keep the stored insertion order. RuleMap iteration order IS the match
+  // priority (first hit wins — see ResolveFenceId), so sorting here would
+  // silently re-prioritise the user's rules by alphabetical accident.
   for (const auto& kv : *ctx->rules) {
     ctx->rows.push_back({kv.first, kv.second});
   }
-  std::sort(ctx->rows.begin(), ctx->rows.end(),
-            [](const auto& a, const auto& b) {
-              return _wcsicmp(a.first.c_str(), b.first.c_str()) < 0;
-            });
 }
 
 void CommitRows(Ctx* ctx) {
@@ -71,7 +73,9 @@ std::wstring BuildState(Ctx* ctx) {
     json += MistJsonEscape(title);
     json += L"\"}";
   }
-  json += L"],\"fences\":[";
+  json += L"],\"sel\":";
+  json += std::to_wstring(ctx->selected);
+  json += L",\"fences\":[";
   for (size_t i = 0; i < ctx->fences.size(); ++i) {
     if (i) {
       json += L',';
@@ -126,6 +130,7 @@ bool EditRulesDialog(
                       MistMsgTone::Warn)) {
         *ctx.rules = DefaultRules();
         LoadRows(&ctx);
+        ctx.selected = ctx.rows.empty() ? -1 : 0;
         MistWebDialogPushState(&dlg);
       }
     }
@@ -153,6 +158,7 @@ bool EditRulesDialog(
       }
       if (!pattern.empty() && !fence.empty()) {
         ctx.rows.push_back({pattern, NarrowUtf8(fence)});
+        ctx.selected = static_cast<int>(ctx.rows.size()) - 1;
         MistWebDialogPushState(&dlg);
       }
       return false;
@@ -172,6 +178,7 @@ bool EditRulesDialog(
       if (index >= 0 && index < static_cast<int>(ctx.rows.size()) &&
           !pattern.empty() && !fence.empty()) {
         ctx.rows[static_cast<size_t>(index)] = {pattern, NarrowUtf8(fence)};
+        ctx.selected = index;  // editing keeps the row selected
         MistWebDialogPushState(&dlg);
       }
       return false;
@@ -180,7 +187,31 @@ bool EditRulesDialog(
       const int index = MistJsonIntField(json, L"index", -1);
       if (index >= 0 && index < static_cast<int>(ctx.rows.size())) {
         ctx.rows.erase(ctx.rows.begin() + index);
+        if (ctx.selected >= static_cast<int>(ctx.rows.size())) {
+          ctx.selected = static_cast<int>(ctx.rows.size()) - 1;
+        }
         MistWebDialogPushState(&dlg);
+      }
+      return false;
+    }
+    // Reorder: rows are stored in match-priority order (first hit wins), so
+    // up/down is the only way a user can express "this rule beats that one".
+    if (id == L"up" || id == L"down") {
+      const int index = MistJsonIntField(json, L"index", -1);
+      const int count = static_cast<int>(ctx.rows.size());
+      const int target = id == L"up" ? index - 1 : index + 1;
+      if (index >= 0 && index < count && target >= 0 && target < count) {
+        std::swap(ctx.rows[static_cast<size_t>(index)],
+                  ctx.rows[static_cast<size_t>(target)]);
+        ctx.selected = target;  // keep the moved row selected
+        MistWebDialogPushState(&dlg);
+      }
+      return false;
+    }
+    if (id == L"select") {
+      const int index = MistJsonIntField(json, L"index", -1);
+      if (index >= 0 && index < static_cast<int>(ctx.rows.size())) {
+        ctx.selected = index;
       }
       return false;
     }

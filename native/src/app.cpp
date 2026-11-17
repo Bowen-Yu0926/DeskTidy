@@ -923,6 +923,16 @@ void App::WireFence(FenceWindow* fence) {
     return out;
   });
   fence->SetPageNames(page_names_);
+  fence->SetPageLockedQuery([this](int page) {
+    // Same invariant as layout.cpp IsPageLocked: system pages 0/1 are locked.
+    if (page == 0 || page == 1) {
+      return true;
+    }
+    if (page < 0 || page >= static_cast<int>(page_locked_.size())) {
+      return false;
+    }
+    return page_locked_[static_cast<size_t>(page)];
+  });
 }
 
 bool App::SpawnFence(const FenceLayout& layout) {
@@ -1329,6 +1339,16 @@ bool App::Init(HINSTANCE instance) {
       return;
     } else if (id == L"ui_theme") {
       ApplyUiThemeId(NarrowUtf8(value));
+      return;
+    } else if (id == L"lang") {
+      // Explicit language choice from the settings dropdown. SetLanguage is
+      // idempotent, so no toggle-vs-set ambiguity (ToggleLanguage would flip
+      // back if the UI ever re-sent the current value).
+      const std::string lang = (value == L"en") ? "en" : "zh";
+      SetLanguage(lang.c_str());
+      ShowToast(lang == "en" ? L"Language: English" : L"语言：中文");
+      PushHotkeyState();
+      PushExtensionSettings();
       return;
     } else if (id == L"vault_copy_user") {
       if (!value.empty() &&
@@ -3273,6 +3293,9 @@ void App::SaveLayoutSnapshot() {
   AppState state;
   state.current_page = current_page_;
   state.page_names = page_names_;
+  // Page locks are part of "the layout" — without this the snapshot restored
+  // every user-locked page as unlocked.
+  state.page_locked = page_locked_;
   state.dock_visible = dock_visible_;
   state.pet_visible = pet_visible_;
   for (const auto& f : fences_) {
@@ -3297,14 +3320,18 @@ void App::RestoreLayoutSnapshot() {
   if (!ManageSnapshotsDialog(settings_.Hwnd(), &state, &applied_path)) {
     return;
   }
-  ReloadFencesFromState(state, /*heal_geometry=*/false);
+  // A snapshot carries its own Dock visibility — apply it, don't let the live
+  // preference silently win (that made "restore layout" not restore).
+  ReloadFencesFromState(state, /*heal_geometry=*/false,
+                        /*apply_dock_visibility=*/true);
   if (!applied_path.empty()) {
     RestoreSnapshotShellIcons(applied_path);
   }
   ShowToast(L"已恢复所选快照");
 }
 
-void App::ReloadFencesFromState(const AppState& state, bool heal_geometry) {
+void App::ReloadFencesFromState(const AppState& state, bool heal_geometry,
+                                bool apply_dock_visibility) {
   for (auto& f : fences_) {
     if (f) {
       f->Destroy();
@@ -3315,7 +3342,14 @@ void App::ReloadFencesFromState(const AppState& state, bool heal_geometry) {
   page_names_ = state.page_names;
   page_locked_ = state.page_locked;
   NormalizePageNames(&page_names_);
-  dock_visible_ = prefs_.dock_visible;
+  // Layout load / display-change keep the live Dock preference; a snapshot
+  // restore applies the Dock state captured in the snapshot. The single
+  // dock_.SetVisible() at the end of this function consumes the value.
+  if (apply_dock_visibility) {
+    dock_visible_ = state.dock_visible;
+  } else {
+    dock_visible_ = prefs_.dock_visible;
+  }
   pet_visible_ = state.pet_visible;
   // Snapshot / layout file may have rewritten pins.json — reload or the UI
   // keeps the pre-apply pin map and looks unchanged. Same for float seats.
@@ -5302,6 +5336,12 @@ void App::DeletePageAt(int page) {
     return;
   }
   if (page < 0 || page >= static_cast<int>(page_names_.size())) {
+    return;
+  }
+  // A locked page must not be deleted — otherwise the lock means nothing.
+  if (page < static_cast<int>(page_locked_.size()) &&
+      page_locked_[static_cast<size_t>(page)]) {
+    ShowToast(L"该页面已锁定，请先解锁再删除");
     return;
   }
   if (page_names_.size() <= 2) {

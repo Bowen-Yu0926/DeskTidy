@@ -113,18 +113,15 @@ python scripts\release.py --bump     :: same, bump patch first
 
 | Hotkey | Action |
 |--------|--------|
-| Ctrl+Shift+S | Settings |
-| Ctrl+Shift+N | Notes |
-| Ctrl+Shift+F | Toggle fences |
-| Ctrl+Space | Peek |
-| Ctrl+Alt+1/2 | Page |
-| Ctrl+Shift+1 | Region capture |
-| Ctrl+Shift+2 | Fullscreen capture |
-| Ctrl+Shift+R | Record toggle |
 | Ctrl+Shift+O | Virtual organize |
-| Ctrl+Shift+V | Vault |
-| Ctrl+Shift+T | Todos |
-| Ctrl+Alt+4 | Search |
+| Ctrl+Shift+H | Toggle desktop icons |
+| Ctrl+Space | Peek |
+| Ctrl+Shift+Right / Left | Next / previous page |
+| Ctrl+Alt+1 | Region capture |
+| Ctrl+Alt+3 | Record toggle |
+| Ctrl+Alt+4 | File search |
+| Ctrl+Alt+C | Calculator |
+| Ctrl+Shift+N | Notes |
 
 Config under `%LocalAppData%\DeskTidyNative\`: `layout.json`, `hotkeys.json`, `whitelist.json`, `wallpaper.json`, `minutes.json`, `todos.txt`, `app_prefs.json`, `snapshots\`.
 

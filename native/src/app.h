@@ -246,7 +246,8 @@ class App {
   void WireFence(FenceWindow* fence);
   // heal_geometry: true after display change; false when applying a snapshot
   // (keep exact fence sizes/positions from the saved layout).
-  void ReloadFencesFromState(const AppState& state, bool heal_geometry = true);
+  void ReloadFencesFromState(const AppState& state, bool heal_geometry = true,
+                             bool apply_dock_visibility = false);
   void HealLayoutsNow(bool toast);
   void OnDisplayTopologyMaybeChanged();
   void TogglePageLock(int page);

@@ -1,11 +1,8 @@
 #include "cli_ipc.h"
 
-#include <string>
+#include "instance_lock.h"
 
-namespace {
-// Mirrors instance_lock.cpp's single-instance mutex name (kept in sync).
-constexpr wchar_t kInstanceMutex[] = L"Local\\DeskTidyNativeSingleInstance";
-}  // namespace
+#include <string>
 
 bool ForwardCliToRunningInstance(const std::wstring& action) {
   HWND hwnd = FindWindowW(kNativeMsgWindowClass, L"DeskTidyNative");
@@ -22,7 +19,7 @@ bool ForwardCliToRunningInstance(const std::wstring& action) {
 }
 
 bool IsNativeInstanceRunning() {
-  HANDLE m = CreateMutexW(nullptr, FALSE, kInstanceMutex);
+  HANDLE m = CreateMutexW(nullptr, FALSE, kNativeInstanceMutexName);
   if (!m) {
     return false;
   }

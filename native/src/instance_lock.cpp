@@ -3,12 +3,12 @@
 namespace {
 HANDLE g_mutex = nullptr;
 // P2-8: same mutex as Python (`Local\DeskTidyMainInstance`) so the two
-// builds cannot both stay running.
-constexpr wchar_t kMutexName[] = L"Local\\DeskTidyMainInstance";
+// builds cannot both stay running. Name lives in instance_lock.h so probes
+// cannot drift from the owner.
 }  // namespace
 
 bool AcquireNativeInstanceLock() {
-  g_mutex = CreateMutexW(nullptr, TRUE, kMutexName);
+  g_mutex = CreateMutexW(nullptr, TRUE, kNativeInstanceMutexName);
   if (!g_mutex) {
     return false;
   }

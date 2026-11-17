@@ -264,6 +264,13 @@ class FenceWindow {
   void SetPageNames(std::vector<std::wstring> names) {
     page_names_ = std::move(names);
   }
+  // Page-lock oracle owned by App (page 0/1 are always locked). The fence needs
+  // it because 「所在页面」 membership changes happen inside this window's menus,
+  // and a locked page must not gain or lose fences.
+  using PageLockedFn = std::function<bool(int page)>;
+  void SetPageLockedQuery(PageLockedFn fn) {
+    page_locked_query_ = std::move(fn);
+  }
   void CopySelection();
   void CutSelection();
   void DeleteSelection(bool permanent = false);
@@ -505,6 +512,7 @@ class FenceWindow {
   // H6: resolved icon grid metrics (replaces fixed 96/102/40).
   IconGridMetrics grid_metrics_{};
   std::vector<std::wstring> page_names_;
+  PageLockedFn page_locked_query_;
   bool rubber_ = false;
   bool rubber_additive_ = false;
   POINT rubber_a_{};

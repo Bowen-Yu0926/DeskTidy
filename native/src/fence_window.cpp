@@ -520,6 +520,12 @@ void FenceWindow::TogglePageMembership(int page) {
   if (page < 0) {
     return;
   }
+  // A locked page must not gain or lose fences — same invariant App enforces
+  // for create/delete/move of whole fences.
+  if (page_locked_query_ && page_locked_query_(page)) {
+    ShowToast(L"该页面已锁定，无法变更分区归属");
+    return;
+  }
   if (OnPage(page)) {
     if (pages_.size() <= 1) {
       return;  // keep at least one page
