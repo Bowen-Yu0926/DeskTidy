@@ -58,6 +58,7 @@ bool EndsWithIgnoreCase(const std::wstring& s, const wchar_t* suffix) {
 constexpr ULONGLONG kScanCacheTtlMs = 2500;
 std::mutex g_scan_mu;
 ULONGLONG g_scan_tick = 0;
+bool g_scan_valid = false;
 std::vector<DesktopItem> g_scan_cache;
 
 std::wstring ScanDedupKey(const std::wstring& path);
@@ -152,6 +153,31 @@ std::wstring ScanDedupKey(const std::wstring& path) {
 }
 
 std::wstring KnownFolder(REFKNOWNFOLDERID id) {
+  if (IsEqualGUID(id, FOLDERID_Desktop)) {
+    static const std::wstring s_user_desktop = []() {
+      PWSTR p = nullptr;
+      if (FAILED(SHGetKnownFolderPath(FOLDERID_Desktop, 0, nullptr, &p)) || !p) {
+        return std::wstring{};
+      }
+      std::wstring out = p;
+      CoTaskMemFree(p);
+      return out;
+    }();
+    return s_user_desktop;
+  }
+  if (IsEqualGUID(id, FOLDERID_PublicDesktop)) {
+    static const std::wstring s_pub_desktop = []() {
+      PWSTR p = nullptr;
+      if (FAILED(SHGetKnownFolderPath(FOLDERID_PublicDesktop, 0, nullptr, &p)) ||
+          !p) {
+        return std::wstring{};
+      }
+      std::wstring out = p;
+      CoTaskMemFree(p);
+      return out;
+    }();
+    return s_pub_desktop;
+  }
   PWSTR p = nullptr;
   if (FAILED(SHGetKnownFolderPath(id, 0, nullptr, &p)) || !p) {
     return {};
@@ -306,7 +332,7 @@ std::vector<DesktopItem> ScanDesktopItems() {
   {
     // Fast path: warm cache hit returns a copy, never the shared vector.
     std::lock_guard<std::mutex> lk(g_scan_mu);
-    if (!g_scan_cache.empty() && now - g_scan_tick < kScanCacheTtlMs) {
+    if (g_scan_valid && now - g_scan_tick < kScanCacheTtlMs) {
       return g_scan_cache;
     }
   }
@@ -340,6 +366,7 @@ std::vector<DesktopItem> ScanDesktopItems() {
     std::lock_guard<std::mutex> lk(g_scan_mu);
     g_scan_cache = unique;
     g_scan_tick = now;
+    g_scan_valid = true;
   }
   return unique;
 }
@@ -348,6 +375,7 @@ void InvalidateDesktopScanCache() {
   std::lock_guard<std::mutex> lk(g_scan_mu);
   g_scan_cache.clear();
   g_scan_tick = 0;
+  g_scan_valid = false;
   // Do NOT clear g_master_icon_cache here — icons are keyed by path@bucket and
   // stay valid when the file list changes (copy/paste/delete). Clearing it made
   // every refresh reload all icons (hundreds of ms of ShellItemImageFactory).

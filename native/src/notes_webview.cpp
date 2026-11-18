@@ -234,7 +234,7 @@ double JsonDoubleField(const std::wstring& json, const wchar_t* key,
   if (p == std::wstring::npos) {
     return fallback;
   }
-  p = json.find(L':', p);
+  p = json.find(L':', p + needle.size());
   if (p == std::wstring::npos) {
     return fallback;
   }
@@ -467,8 +467,10 @@ bool NotesWebView::Create(HWND parent) {
                                     args->put_Handled(TRUE);
                                     ICoreWebView2* w =
                                         static_cast<ICoreWebView2*>(webview_);
+                                    bool release_w = false;
                                     if (!w && ctrl) {
                                       ctrl->get_CoreWebView2(&w);
+                                      release_w = (w != nullptr);
                                     }
                                     if (w) {
                                       w->ExecuteScript(
@@ -476,6 +478,9 @@ bool NotesWebView::Create(HWND parent) {
                                           L"window.__desknoteSoftBreak()}"
                                           L"catch(e){}",
                                           nullptr);
+                                    }
+                                    if (release_w) {
+                                      w->Release();
                                     }
                                     return S_OK;
                                   }
@@ -691,7 +696,7 @@ std::wstring JsonEscapeW(const std::wstring& pass) {
         esc += L"\\t";
         break;
       default:
-        if (c < 0x20) {
+        if (c < 0x20 || c == 0x2028 || c == 0x2029) {
           wchar_t buf[8];
           swprintf_s(buf, L"\\u%04x", static_cast<unsigned>(c));
           esc += buf;
@@ -1001,6 +1006,25 @@ void NotesWebView::Hide() {
   }
 }
 
+void NotesWebView::FocusEditor() {
+  if (!host_ || !IsWindow(host_) || !IsWindowVisible(host_)) {
+    return;
+  }
+  SetFocus(host_);
+  if (controller_) {
+    static_cast<ICoreWebView2Controller*>(controller_)
+        ->MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC);
+  }
+  auto* web = static_cast<ICoreWebView2*>(webview_);
+  if (web && ready_ && kind_ == Kind::kWysiwyg) {
+    web->ExecuteScript(
+        L"try{if(window.__desknoteFocusEditor)window.__desknoteFocusEditor();"
+        L"else{var e=document.querySelector('.ProseMirror');"
+        L"if(e&&document.activeElement!==e)e.focus({preventScroll:true});}}catch(ex){}",
+        nullptr);
+  }
+}
+
 void NotesWebView::Resize() {
   // Only sync WebView2 bounds to the host HWND. Parent layout (tabs / sidebar /
   // editor rect) owns host_ geometry via MoveWindow — never fill the whole
@@ -1280,6 +1304,12 @@ std::wstring JsonUnquote(const std::wstring& s) {
           break;
         case L't':
           v.push_back(L'\t');
+          break;
+        case L'b':
+          v.push_back(L'\b');
+          break;
+        case L'f':
+          v.push_back(L'\f');
           break;
         case L'u':
           if (i + 4 < s.size() - 1) {

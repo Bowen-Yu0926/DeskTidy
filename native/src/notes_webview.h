@@ -27,6 +27,8 @@ class NotesWebView {
   void Show();
   void Hide();
   void Resize();
+  // Move Win32 + WebView2 controller + ProseMirror DOM focus to the editor.
+  void FocusEditor();
   void SetKind(Kind kind) { kind_ = kind; }
   // Left-rail unified library (online + local), notes_library.html.
   void ShowLibrary(const std::wstring& state_json);

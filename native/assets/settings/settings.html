@@ -1793,20 +1793,6 @@
           post({ type: 'action', id: 'fence_toggle_visible', index: i });
         });
       }
-      const lockBtn = el.querySelector('[data-fc-lock]');
-      if (lockBtn) {
-        lockBtn.addEventListener('click', (e) => {
-          e.stopPropagation();
-          post({ type: 'action', id: 'fence_toggle_lock', index: i });
-        });
-      }
-      const clockBtn = el.querySelector('[data-fc-clock]');
-      if (clockBtn) {
-        clockBtn.addEventListener('click', (e) => {
-          e.stopPropagation();
-          post({ type: 'action', id: 'fence_toggle_content_lock', index: i });
-        });
-      }
       const linesSel = el.querySelector('[data-fc-lines]');
       if (linesSel) {
         linesSel.addEventListener('change', (e) => {

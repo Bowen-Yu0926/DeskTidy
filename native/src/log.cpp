@@ -22,6 +22,7 @@ constexpr LONGLONG kMaxLogBytes = 2LL * 1024 * 1024;
 CRITICAL_SECTION g_lock;
 bool g_inited = false;
 std::wstring g_log_path;
+std::wstring g_hist_path;
 
 // Guard against recursive crashes inside a handler (the handler must never
 // fault again and re-enter itself).
@@ -69,43 +70,36 @@ void CrashWrite(const wchar_t* message) {
   CloseHandle(h);
 }
 
-// Core append: thread-safe, rotates when oversized, flushes after every line.
+// Core append: thread-safe, rotates when oversized, flushes at ~2 Hz.
 void WriteCore(const char* utf8, size_t len) {
   if (!g_inited) {
     return;
   }
   EnterCriticalSection(&g_lock);
 
-  const std::wstring hist_path = LogDirPath() + L"\\" + kLogHistName;
-
-  // Rotation check happens before append.
   bool fresh = false;
-  HANDLE probe =
-      CreateFileW(g_log_path.c_str(), FILE_APPEND_DATA, FILE_SHARE_READ, nullptr,
-                  OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-  if (probe != INVALID_HANDLE_VALUE) {
-    LARGE_INTEGER size{};
-    if (GetFileSizeEx(probe, &size)) {
-      fresh = size.QuadPart == 0;
-      if (size.QuadPart > kMaxLogBytes) {
-        CloseHandle(probe);
-        probe = INVALID_HANDLE_VALUE;
-        MoveFileExW(g_log_path.c_str(), hist_path.c_str(),
-                    MOVEFILE_REPLACE_EXISTING);
-        fresh = true;
-      }
-    }
-    if (probe != INVALID_HANDLE_VALUE) {
-      CloseHandle(probe);
-    }
-  }
-
   HANDLE h =
       CreateFileW(g_log_path.c_str(), FILE_APPEND_DATA, FILE_SHARE_READ, nullptr,
                   OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
   if (h == INVALID_HANDLE_VALUE) {
     LeaveCriticalSection(&g_lock);
     return;
+  }
+  LARGE_INTEGER size{};
+  if (GetFileSizeEx(h, &size)) {
+    fresh = size.QuadPart == 0;
+    if (size.QuadPart > kMaxLogBytes) {
+      CloseHandle(h);
+      MoveFileExW(g_log_path.c_str(), g_hist_path.c_str(),
+                  MOVEFILE_REPLACE_EXISTING);
+      h = CreateFileW(g_log_path.c_str(), FILE_APPEND_DATA, FILE_SHARE_READ,
+                      nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+      if (h == INVALID_HANDLE_VALUE) {
+        LeaveCriticalSection(&g_lock);
+        return;
+      }
+      fresh = true;
+    }
   }
 
   DWORD written = 0;
@@ -190,6 +184,7 @@ void LogInit() {
   InitializeCriticalSection(&g_lock);
   const std::wstring dir = LogDirPath();
   g_log_path = dir + L"\\" + kLogName;
+  g_hist_path = dir + L"\\" + kLogHistName;
   g_inited = true;
 }
 

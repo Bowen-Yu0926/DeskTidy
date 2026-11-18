@@ -145,6 +145,10 @@ class NotesWindow {
   void ToggleToast();
   void ToggleWysiwyg();
   void SyncFromWysiwyg();
+  // Notepad++-style focus forwarding: restore keyboard focus and caret to the
+  // active editor (WebView2 ProseMirror or RichEdit) on window activation,
+  // tab switch, or initial content ready.
+  void FocusActiveEditor(bool force = false);
   void SetFontSize(int pt);
   void SetFontFace(const std::wstring& face);
   void EnsureFontControls();

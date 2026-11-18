@@ -613,6 +613,52 @@
       height: 13px;
       display: block;
     }
+    /* Block widget top-right delete button (code block / table / quote / divider / image upload placeholder). */
+    #editor .milkdown-code-block .tools {
+      padding-right: 34px;
+    }
+    #dsk-block-del {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 24px;
+      height: 24px;
+      border-radius: 6px;
+      border: 1px solid rgba(15, 23, 42, 0.10);
+      background: rgba(255, 255, 255, 0.94);
+      color: #64748b;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 0;
+      cursor: pointer;
+      z-index: 29;
+      box-shadow: 0 2px 6px rgba(15, 23, 42, 0.10);
+      transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease, transform 0.1s ease;
+    }
+    html.dark #dsk-block-del {
+      background: rgba(30, 35, 44, 0.94);
+      border-color: rgba(255, 255, 255, 0.12);
+      color: #94a3b8;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+    }
+    #dsk-block-del:hover {
+      background: #fee2e2;
+      border-color: #fecaca;
+      color: #dc2626;
+      transform: scale(1.04);
+    }
+    html.dark #dsk-block-del:hover {
+      background: rgba(220, 38, 38, 0.22);
+      border-color: rgba(248, 113, 113, 0.45);
+      color: #f87171;
+    }
+    #dsk-block-del svg {
+      width: 14px;
+      height: 14px;
+      display: block;
+      pointer-events: none;
+    }
     /* Floating UI chrome (block handle / slash menu / toolbar) must sit above
        the editor surface, which owns the whole stage. */
     .milkdown-block-handle,
@@ -805,6 +851,29 @@
   function focusBody() {
     try { if (editorApi) editorApi.focus(); } catch (e) {}
   }
+
+  // Notepad++-style focus restoration when switching from another app/window/tab:
+  // restore keyboard focus to ProseMirror without resetting selection or scrolling,
+  // unless an input/textarea inside a widget (e.g. code language filter, link edit)
+  // already owns focus.
+  window.__desknoteFocusEditor = function () {
+    try {
+      var ae = document.activeElement;
+      if (ae && (ae.tagName === "INPUT" || ae.tagName === "TEXTAREA" || ae.tagName === "SELECT")) {
+        return;
+      }
+      if (ae && ae.closest && ae.closest(".cm-editor")) {
+        return;
+      }
+      var pm = document.querySelector("#editor .ProseMirror");
+      if (pm && ae !== pm) {
+        try { pm.focus({ preventScroll: true }); } catch (_) { pm.focus(); }
+      }
+      if (editorApi && editorApi.focus) {
+        editorApi.focus();
+      }
+    } catch (e) {}
+  };
 
   // ---------------------------------------------------------------------
   // Boot
@@ -1289,6 +1358,172 @@
   }
 
   // ---------------------------------------------------------------------
+  // Block widget top-right delete icon (code block, table, blockquote,
+  // divider, empty image upload placeholder)
+  // ---------------------------------------------------------------------
+  var blockDelBtn = null;
+  var blockDelTarget = null;
+  var blockDelHideTimer = null;
+
+  function ensureBlockDelBtn() {
+    if (blockDelBtn) return blockDelBtn;
+    var btn = document.createElement("button");
+    btn.id = "dsk-block-del";
+    btn.type = "button";
+    btn.title = "删除此控件";
+    btn.setAttribute("aria-label", "删除此控件");
+    btn.innerHTML =
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
+      '<polyline points="3 6 5 6 21 6"/>' +
+      '<path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/>' +
+      '<path d="M10 11v6"/><path d="M14 11v6"/>' +
+      '<path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/>' +
+      "</svg>";
+    btn.addEventListener("mouseenter", function () {
+      if (blockDelHideTimer) {
+        clearTimeout(blockDelHideTimer);
+        blockDelHideTimer = null;
+      }
+    });
+    btn.addEventListener("mouseleave", function () {
+      scheduleHideBlockDel();
+    });
+    btn.addEventListener("mousedown", function (e) {
+      e.preventDefault();
+      e.stopPropagation();
+    });
+    btn.addEventListener("click", function (e) {
+      e.preventDefault();
+      e.stopPropagation();
+      var target = blockDelTarget;
+      hideBlockDel();
+      if (!target || !editorApi || !editorApi.deleteBlock) return;
+      if (editorApi.deleteBlock(target)) {
+        mdDirty = true;
+        signalDirty();
+        scheduleChangePost();
+      }
+    });
+    document.body.appendChild(btn);
+    blockDelBtn = btn;
+    return btn;
+  }
+
+  function findDeletableBlock(node) {
+    if (!node || node === document.body || node === document.documentElement) return null;
+    var el = node.nodeType === 1 ? node : node.parentElement;
+    if (!el || !el.closest) return null;
+    if (el.closest("#dsk-block-del") && blockDelTarget) return blockDelTarget;
+    var root = document.getElementById("editor");
+    if (!root || !root.contains(el)) return null;
+    var cb = el.closest(".milkdown-code-block");
+    if (cb && root.contains(cb)) return cb;
+    var tb = el.closest(".milkdown-table-block");
+    if (tb && root.contains(tb)) return tb;
+    var imgBlk = el.closest(".milkdown-image-block, .milkdown-image-inline");
+    if (imgBlk && root.contains(imgBlk)) {
+      var imgEdit = imgBlk.querySelector(".image-edit");
+      if (imgEdit && getComputedStyle(imgEdit).display !== "none") {
+        return imgBlk;
+      }
+    }
+    var bq = el.closest("#editor .ProseMirror blockquote");
+    if (bq && root.contains(bq)) return bq;
+    var hr = el.closest("#editor .ProseMirror hr");
+    if (hr && root.contains(hr)) return hr;
+    return null;
+  }
+
+  function positionBlockDel() {
+    if (!blockDelBtn || !blockDelTarget || !document.body.contains(blockDelTarget)) {
+      hideBlockDel();
+      return;
+    }
+    var r = blockDelTarget.getBoundingClientRect();
+    if (r.width <= 0 && r.height <= 0) {
+      hideBlockDel();
+      return;
+    }
+    var top = r.top + 6;
+    var left = r.right - 30;
+    if (blockDelTarget.tagName === "HR") {
+      top = r.top - 12;
+      left = r.right - 26;
+    } else if (blockDelTarget.classList && blockDelTarget.classList.contains("milkdown-table-block")) {
+      var tbl = blockDelTarget.querySelector("table");
+      if (tbl) {
+        var tr = tbl.getBoundingClientRect();
+        if (tr.width > 0) {
+          top = tr.top + 4;
+          left = tr.right - 28;
+        }
+      }
+    }
+    if (top < 6) top = 6;
+    if (left > window.innerWidth - 30) left = window.innerWidth - 30;
+    blockDelBtn.style.top = Math.round(top) + "px";
+    blockDelBtn.style.left = Math.round(left) + "px";
+    blockDelBtn.style.display = "flex";
+  }
+
+  function showBlockDel(target) {
+    if (blockDelHideTimer) {
+      clearTimeout(blockDelHideTimer);
+      blockDelHideTimer = null;
+    }
+    ensureBlockDelBtn();
+    blockDelTarget = target;
+    positionBlockDel();
+  }
+
+  function hideBlockDel() {
+    if (blockDelHideTimer) {
+      clearTimeout(blockDelHideTimer);
+      blockDelHideTimer = null;
+    }
+    blockDelTarget = null;
+    if (blockDelBtn) {
+      blockDelBtn.style.display = "none";
+    }
+  }
+
+  function scheduleHideBlockDel() {
+    if (blockDelHideTimer) clearTimeout(blockDelHideTimer);
+    blockDelHideTimer = setTimeout(function () {
+      blockDelHideTimer = null;
+      hideBlockDel();
+    }, 160);
+  }
+
+  function bindBlockDeleteChrome() {
+    document.addEventListener("mousemove", function (e) {
+      var blk = findDeletableBlock(e.target);
+      if (blk) {
+        showBlockDel(blk);
+      } else if (blockDelTarget) {
+        // Also keep visible if mouse is near the top-right corner of the active block
+        var r = blockDelTarget.getBoundingClientRect();
+        if (
+          e.clientX >= r.left - 8 &&
+          e.clientX <= r.right + 16 &&
+          e.clientY >= r.top - 16 &&
+          e.clientY <= r.bottom + 8
+        ) {
+          positionBlockDel();
+          return;
+        }
+        scheduleHideBlockDel();
+      }
+    }, true);
+    window.addEventListener("scroll", function () {
+      if (blockDelTarget) positionBlockDel();
+    }, true);
+    window.addEventListener("resize", function () {
+      if (blockDelTarget) positionBlockDel();
+    });
+  }
+
+  // ---------------------------------------------------------------------
   // WebView2 message bridge (protocol unchanged from the Toast shell)
   // ---------------------------------------------------------------------
   if (window.chrome && chrome.webview) {
@@ -1364,6 +1599,7 @@
   function ready() {
     bindSoftBreakKeys();
     bindImageChrome();
+    bindBlockDeleteChrome();
     ensureBundleLoaded();
     post({ type: "ready" });
     setTimeout(function () {

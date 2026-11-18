@@ -797,10 +797,21 @@ bool ExtractObject(const std::string& json, const char* key, std::string* out) {
     return false;
   }
   int depth = 0;
+  bool in_str = false;
   size_t i = pos;
   for (; i < json.size(); ++i) {
     const char c = json[i];
-    if (c == '{') {
+    if (in_str) {
+      if (c == '\\' && i + 1 < json.size()) {
+        ++i;
+      } else if (c == '"') {
+        in_str = false;
+      }
+      continue;
+    }
+    if (c == '"') {
+      in_str = true;
+    } else if (c == '{') {
       ++depth;
     } else if (c == '}') {
       --depth;
@@ -881,7 +892,25 @@ FilenameRulesMap ParseStrListObject(const std::string& obj) {
     if (lb == std::string::npos) {
       break;
     }
-    const size_t rb = obj.find(']', lb);
+    size_t rb = std::string::npos;
+    bool in_str = false;
+    for (size_t k = lb + 1; k < obj.size(); ++k) {
+      const char c = obj[k];
+      if (in_str) {
+        if (c == '\\' && k + 1 < obj.size()) {
+          ++k;
+        } else if (c == '"') {
+          in_str = false;
+        }
+        continue;
+      }
+      if (c == '"') {
+        in_str = true;
+      } else if (c == ']') {
+        rb = k;
+        break;
+      }
+    }
     if (rb == std::string::npos) {
       break;
     }

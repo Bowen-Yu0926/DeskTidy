@@ -81,6 +81,42 @@ bool FindStringField(const std::string& obj, const char* key, std::string* out) 
         v.push_back('\r');
       } else if (e == 't') {
         v.push_back('\t');
+      } else if (e == 'b') {
+        v.push_back('\b');
+      } else if (e == 'f') {
+        v.push_back('\f');
+      } else if (e == 'u' && p + 4 <= obj.size()) {
+        unsigned code = 0;
+        bool ok = true;
+        for (int k = 0; k < 4; ++k) {
+          const char hc = obj[p + k];
+          code <<= 4;
+          if (hc >= '0' && hc <= '9') {
+            code |= static_cast<unsigned>(hc - '0');
+          } else if (hc >= 'a' && hc <= 'f') {
+            code |= static_cast<unsigned>(hc - 'a' + 10);
+          } else if (hc >= 'A' && hc <= 'F') {
+            code |= static_cast<unsigned>(hc - 'A' + 10);
+          } else {
+            ok = false;
+            break;
+          }
+        }
+        if (ok) {
+          p += 4;
+          if (code < 0x80) {
+            v.push_back(static_cast<char>(code));
+          } else if (code < 0x800) {
+            v.push_back(static_cast<char>(0xC0 | (code >> 6)));
+            v.push_back(static_cast<char>(0x80 | (code & 0x3F)));
+          } else {
+            v.push_back(static_cast<char>(0xE0 | (code >> 12)));
+            v.push_back(static_cast<char>(0x80 | ((code >> 6) & 0x3F)));
+            v.push_back(static_cast<char>(0x80 | (code & 0x3F)));
+          }
+        } else {
+          v.push_back('u');
+        }
       } else {
         v.push_back(e);
       }
@@ -1121,20 +1157,32 @@ bool VaultHttpPushAllZk(const std::vector<VaultHttpCredential>& entries,
   VaultClient client(s.api_base);
   client.SetToken(s.token);
   bool any_ok = true;
+  std::vector<VaultHttpCredential> remote;
+  bool have_remote = false;
+  {
+    HttpResponse list_resp;
+    if (RequestRetry(&client, L"GET", L"credentials", nullptr, true,
+                     &list_resp) &&
+        JsonOkTrue(list_resp.body)) {
+      remote = ParseCredentialItems(list_resp.body);
+      for (auto& r : remote) {
+        if (r.enc_ver == 1) {
+          r.username = VaultDecryptField(r.username, key);
+        }
+      }
+      have_remote = true;
+    }
+  }
   for (const auto& e : entries) {
     if (e.title.empty() && e.username.empty()) {
       continue;
     }
     int existing_id = 0;
-    HttpResponse list_resp;
-    if (client.Request(L"GET", L"credentials", nullptr, true, &list_resp) &&
-        JsonOkTrue(list_resp.body)) {
-      for (const auto& r : ParseCredentialItems(list_resp.body)) {
-        if (_wcsicmp(r.title.c_str(), e.title.c_str()) == 0 &&
-            _wcsicmp(r.username.c_str(), e.username.c_str()) == 0) {
-          existing_id = r.id;
-          break;
-        }
+    for (const auto& r : remote) {
+      if (_wcsicmp(r.title.c_str(), e.title.c_str()) == 0 &&
+          _wcsicmp(r.username.c_str(), e.username.c_str()) == 0) {
+        existing_id = r.id;
+        break;
       }
     }
     const std::string payload = MakeCredBodyZk(
@@ -1154,18 +1202,8 @@ bool VaultHttpPushAllZk(const std::vector<VaultHttpCredential>& entries,
       any_ok = false;
     }
   }
-  // Delete remote rows absent from local (decrypt remote usernames to match).
-  // 内联复用同一 client，避免每条 DELETE 的 LoadSession + 新建 client/session。
-  std::vector<VaultHttpCredential> remote;
-  HttpResponse list_resp;
-  if (RequestRetry(&client, L"GET", L"credentials", nullptr, true, &list_resp) &&
-      JsonOkTrue(list_resp.body)) {
-    remote = ParseCredentialItems(list_resp.body);
-    for (auto& r : remote) {
-      if (r.enc_ver == 1) {
-        r.username = VaultDecryptField(r.username, key);
-      }
-    }
+  // Delete remote rows absent from local (reuse pre-fetched decrypted list).
+  if (have_remote) {
     for (const auto& r : remote) {
       bool found = false;
       for (const auto& e : entries) {
@@ -1357,6 +1395,12 @@ int VaultHttpMigrateLegacyToE2e(const std::vector<BYTE>& key) {
   if (!VaultHttpListCredentialsEx(&remote)) {
     return 0;
   }
+  Session s = LoadSession();
+  if (s.token.empty()) {
+    return 0;
+  }
+  VaultClient client(s.api_base);
+  client.SetToken(s.token);
   int migrated = 0;
   for (const auto& r : remote) {
     if (r.enc_ver != 0) {
@@ -1365,9 +1409,6 @@ int VaultHttpMigrateLegacyToE2e(const std::vector<BYTE>& key) {
     const std::string payload = MakeCredBodyZk(
         r.title, r.username, r.password, r.url, r.note, r.pinned, r.sort_order,
         key);
-    Session s = LoadSession();
-    VaultClient client(s.api_base);
-    client.SetToken(s.token);
     HttpResponse resp;
     const std::wstring path =
         L"credentials/" + std::to_wstring(r.id);
@@ -1419,13 +1460,25 @@ std::vector<VaultHttpNote> ParseNoteItems(const std::string& json) {
     if (pos >= json.size() || json[pos] == ']') {
       break;
     }
-    // Brace-balanced object (list rows have no body, so nested braces are rare).
+    // Quote-aware brace-balanced object scan.
     int depth = 0;
+    bool in_str = false;
     size_t start = pos;
     for (; pos < json.size(); ++pos) {
-      if (json[pos] == '{') {
+      const char c = json[pos];
+      if (in_str) {
+        if (c == '\\' && pos + 1 < json.size()) {
+          ++pos;
+        } else if (c == '"') {
+          in_str = false;
+        }
+        continue;
+      }
+      if (c == '"') {
+        in_str = true;
+      } else if (c == '{') {
         ++depth;
-      } else if (json[pos] == '}') {
+      } else if (c == '}') {
         --depth;
         if (depth == 0) {
           out.push_back(ParseNoteObj(json.substr(start, pos - start + 1)));

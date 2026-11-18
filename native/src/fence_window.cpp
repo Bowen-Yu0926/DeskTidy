@@ -1811,6 +1811,8 @@ void FenceWindow::Destroy() {
   if (GetFenceKeyTarget() == hwnd_) {
     ClearFenceKeyTarget();
   }
+  FinishInlineRename(false);
+  CloseFilterEdit();
   ClearIcons();
   ReleaseFonts();
   ReleaseLayerBuffer();
@@ -1886,6 +1888,9 @@ bool FenceWindow::TitleLabelRect(RECT* out) const {
 
 bool FenceWindow::CaptionFitsLabel(const std::wstring& text,
                                    const RECT& label) const {
+  if (!show_labels_) {
+    return false;
+  }
   if (text.empty() || !hwnd_) {
     return true;
   }
@@ -1898,21 +1903,27 @@ bool FenceWindow::CaptionFitsLabel(const std::wstring& text,
     return true;
   }
   const int font_px = S(hwnd_, 11);
-  HFONT font = CreateFontW(-font_px, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
-                           DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
-                           CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
-                           DEFAULT_PITCH | FF_DONTCARE, L"Microsoft YaHei UI");
-  HGDIOBJ old = font ? SelectObject(hdc, font) : nullptr;
+  static int s_cached_px = 0;
+  static HFONT s_cached_font = nullptr;
+  if (s_cached_px != font_px || !s_cached_font) {
+    if (s_cached_font) {
+      DeleteObject(s_cached_font);
+    }
+    s_cached_font = CreateFontW(
+        -font_px, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+        OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+        DEFAULT_PITCH | FF_DONTCARE, L"Microsoft YaHei UI");
+    s_cached_px = font_px;
+  }
+  HGDIOBJ old = s_cached_font ? SelectObject(hdc, s_cached_font) : nullptr;
   SIZE sz{};
   GetTextExtentPoint32W(hdc, text.c_str(), static_cast<int>(text.size()), &sz);
   if (old) {
     SelectObject(hdc, old);
   }
-  if (font) {
-    DeleteObject(font);
-  }
   ReleaseDC(hwnd_, hdc);
-  return sz.cx <= box_w;
+  const int lines = (view_mode_ == "list") ? 1 : (std::max)(1, label_lines_);
+  return sz.cx <= box_w * lines;
 }
 
 void FenceWindow::UpdateHoverTip(int index) {
@@ -2747,8 +2758,13 @@ void FenceWindow::ClampScroll() {
   if (!ResolveLayerSize(&w, &h)) {
     return;
   }
+  const int pad = S(hwnd_, kPad0);
+  const int footer_h =
+      (!collapsed_ && (w - pad * 2) >= S(hwnd_, 180) && !cells_.empty())
+          ? S(hwnd_, 24)
+          : 0;
   const int view =
-      (std::max)(0, h - S(hwnd_, kHeaderH0) - S(hwnd_, kPad0));
+      (std::max)(0, h - S(hwnd_, kHeaderH0) - pad - footer_h);
   ClampScrollForView(view);
 }
 
@@ -2912,8 +2928,14 @@ bool FenceWindow::ScrollbarVisible() const {
   }
   RECT rc{};
   GetClientRect(hwnd_, &rc);
+  const int pad = S(hwnd_, kPad0);
+  const int footer_h =
+      (!collapsed_ && (rc.right - rc.left - pad * 2) >= S(hwnd_, 180) &&
+       !cells_.empty())
+          ? S(hwnd_, 24)
+          : 0;
   const int view = (std::max)(
-      0, static_cast<int>(rc.bottom) - S(hwnd_, kHeaderH0) - S(hwnd_, kPad0));
+      0, static_cast<int>(rc.bottom) - S(hwnd_, kHeaderH0) - pad - footer_h);
   return content_h_ > view && view > 0;
 }
 
@@ -2924,6 +2946,7 @@ int FenceWindow::HitTestScrollbar(int x, int y) const {
   RECT rc{};
   GetClientRect(hwnd_, &rc);
   const int header = S(hwnd_, kHeaderH0);
+  const int pad = S(hwnd_, kPad0);
   // Keep scrollbar clear of the east resize strip ([rc.right - kEdge, rc.right))
   const int edge = kEdge;
   if (x < rc.right - edge - 7 || x >= rc.right - edge) {
@@ -2934,8 +2957,13 @@ int FenceWindow::HitTestScrollbar(int x, int y) const {
   if (y < track_top || y > track_top + track_h) {
     return 0;
   }
-  const int view = (std::max)(
-      0, static_cast<int>(rc.bottom) - header - S(hwnd_, kPad0));
+  const int footer_h =
+      (!collapsed_ && (rc.right - rc.left - pad * 2) >= S(hwnd_, 180) &&
+       !cells_.empty())
+          ? S(hwnd_, 24)
+          : 0;
+  const int view =
+      (std::max)(0, static_cast<int>(rc.bottom) - header - pad - footer_h);
   const int thumb_h =
       (std::max)(16, track_h * view / (std::max)(1, content_h_));
   const int max_scroll = (std::max)(1, content_h_ - view);
@@ -2949,8 +2977,14 @@ int FenceWindow::HitTestScrollbar(int x, int y) const {
 void FenceWindow::ScrollbarPage(int dir) {
   RECT rc{};
   GetClientRect(hwnd_, &rc);
+  const int pad = S(hwnd_, kPad0);
+  const int footer_h =
+      (!collapsed_ && (rc.right - rc.left - pad * 2) >= S(hwnd_, 180) &&
+       !cells_.empty())
+          ? S(hwnd_, 24)
+          : 0;
   const int view = (std::max)(
-      0, static_cast<int>(rc.bottom) - S(hwnd_, kHeaderH0) - S(hwnd_, kPad0));
+      0, static_cast<int>(rc.bottom) - S(hwnd_, kHeaderH0) - pad - footer_h);
   scroll_y_ += dir * view;
   ClampScroll();
   LayoutCells();
@@ -4091,9 +4125,22 @@ bool FenceWindow::IsRecycleBinIconAt(int x, int y) const {
   if (over < 0 || over >= static_cast<int>(cells_.size())) {
     return false;
   }
-  const std::wstring clsid =
-      GetLnkNamespaceClsid(cells_[static_cast<size_t>(over)].item.path);
-  return clsid == L"{645FF040-5081-101B-9F08-00AA002F954E}";
+  const std::wstring& path = cells_[static_cast<size_t>(over)].item.path;
+  if (path.empty()) {
+    return false;
+  }
+  static std::wstring s_last_path;
+  static ULONGLONG s_last_tick = 0;
+  static bool s_last_recycle = false;
+  const ULONGLONG now = GetTickCount64();
+  if (s_last_path == path && now - s_last_tick < 1500) {
+    return s_last_recycle;
+  }
+  s_last_path = path;
+  s_last_tick = now;
+  const std::wstring clsid = GetLnkNamespaceClsid(path);
+  s_last_recycle = (clsid == L"{645FF040-5081-101B-9F08-00AA002F954E}");
+  return s_last_recycle;
 }
 
 std::wstring FenceWindow::DirectoryIconAt(int x, int y) const {
@@ -4108,11 +4155,19 @@ std::wstring FenceWindow::DirectoryIconAt(int x, int y) const {
   if (path.empty()) {
     return L"";
   }
-  const DWORD attr = GetFileAttributesW(path.c_str());
-  if (attr == INVALID_FILE_ATTRIBUTES || !(attr & FILE_ATTRIBUTE_DIRECTORY)) {
-    return L"";
+  static std::wstring s_last_dir_path;
+  static ULONGLONG s_last_dir_tick = 0;
+  static bool s_last_is_dir = false;
+  const ULONGLONG now = GetTickCount64();
+  if (s_last_dir_path == path && now - s_last_dir_tick < 1500) {
+    return s_last_is_dir ? path : L"";
   }
-  return path;
+  s_last_dir_path = path;
+  s_last_dir_tick = now;
+  const DWORD attr = GetFileAttributesW(path.c_str());
+  s_last_is_dir =
+      (attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_DIRECTORY));
+  return s_last_is_dir ? path : L"";
 }
 
 DWORD FenceWindow::ImportPathsIntoDirectory(
@@ -5229,8 +5284,7 @@ void FenceWindow::BeginInlineRename() {
   }
   SelectOnly(index);
   if (rename_edit_) {
-    DestroyWindow(rename_edit_);
-    rename_edit_ = nullptr;
+    FinishInlineRename(false);
   }
   rename_index_ = index;
   RECT label{};
@@ -5279,8 +5333,7 @@ void FenceWindow::BeginTitleInlineRename() {
     return;
   }
   if (rename_edit_) {
-    DestroyWindow(rename_edit_);
-    rename_edit_ = nullptr;
+    FinishInlineRename(false);
   }
   // -2 = title rename (distinct from icon cell index).
   rename_index_ = -2;
@@ -6149,8 +6202,14 @@ LRESULT FenceWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
         RECT rc{};
         GetClientRect(hwnd_, &rc);
         const int header = S(hwnd_, kHeaderH0);
-        const int view = (std::max)(0, static_cast<int>(rc.bottom) - header -
-                                           S(hwnd_, kPad0));
+        const int pad = S(hwnd_, kPad0);
+        const int footer_h =
+            (!collapsed_ && (rc.right - rc.left - pad * 2) >= S(hwnd_, 180) &&
+             !cells_.empty())
+                ? S(hwnd_, 24)
+                : 0;
+        const int view = (std::max)(
+            0, static_cast<int>(rc.bottom) - header - pad - footer_h);
         const int track_top = header + 2;
         const int track_h =
             (std::max)(8, static_cast<int>(rc.bottom) - track_top - 4);
@@ -6376,8 +6435,14 @@ LRESULT FenceWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
         GetClientRect(hwnd_, &rc);
         const int dy = pt.y - thumb_start_y_;
         const int header = S(hwnd_, kHeaderH0);
-        const int view = (std::max)(0, static_cast<int>(rc.bottom) - header -
-                                           S(hwnd_, kPad0));
+        const int pad = S(hwnd_, kPad0);
+        const int footer_h =
+            (!collapsed_ && (rc.right - rc.left - pad * 2) >= S(hwnd_, 180) &&
+             !cells_.empty())
+                ? S(hwnd_, 24)
+                : 0;
+        const int view = (std::max)(
+            0, static_cast<int>(rc.bottom) - header - pad - footer_h);
         const int track_top = header + 2;
         const int track_h =
             (std::max)(8, static_cast<int>(rc.bottom) - track_top - 4);
@@ -6758,6 +6823,7 @@ if (wparam == kTimerDragScroll) {
       tip_index_ = -1;
       // A popup EDIT outlives its owner's HWND: destroy it here or it floats
       // over the desktop after the fence is removed.
+      FinishInlineRename(false);
       CloseFilterEdit();
       ClearIcons();
       if (drop_target_) {
@@ -6976,7 +7042,13 @@ void FenceWindow::Paint(HDC hdc) {
     return;
   }
 
-  const int view = (std::max)(0, static_cast<int>(rc.bottom) - header - pad);
+  const int footer_reserve =
+      (!collapsed_ && (rc.right - rc.left - pad * 2) >= S(hwnd_, 180) &&
+       !cells_.empty())
+          ? S(hwnd_, 24)
+          : 0;
+  const int view =
+      (std::max)(0, static_cast<int>(rc.bottom) - header - pad - footer_reserve);
   // Modern 360-style ultra-thin pill scrollbar (no background track)
   if (content_h_ > view && view > 0) {
     const int track_top = header + 4;
@@ -7004,10 +7076,6 @@ void FenceWindow::Paint(HDC hdc) {
     g.FillPath(&pill_br, &pill_path);
   }
 
-  const int footer_reserve =
-      (!collapsed_ && (rc.right - rc.left) >= S(hwnd_, 180) && !cells_.empty())
-          ? S(hwnd_, 24)
-          : 0;
   const int clip_bottom = (std::max)(header, static_cast<int>(rc.bottom) - footer_reserve);
   g.SetClip(Gdiplus::Rect(rc.left, header, rc.right - rc.left,
                           clip_bottom - header));
@@ -7071,29 +7139,25 @@ void FenceWindow::Paint(HDC hdc) {
   chrome_hover_pen.SetLineJoin(Gdiplus::LineJoinRound);
 
   // Selected-caption ink height cache. MeasureString with an 8-line box used to
-  // run for every selected cell on every Present. Keyed by (index, name, label
-  // width, font px) so a re-layout / DPI change / rename re-measures; the whole
-  // table drops when the cell count changes (cells_ was rebuilt).
+  // run for every selected cell on every Present. Keyed by (hwnd, index, name,
+  // label width, font px) so multiple fences do not thrash a shared static cache.
   struct SelInkKey {
+    HWND hwnd;
     size_t index;
     std::wstring name;
     int label_w;
     int font_px;
   };
   static std::vector<std::pair<SelInkKey, int>> sel_ink_cache;
-  static size_t sel_ink_cells_size = 0;
   if (sel_ink_cache.capacity() == 0) {
     sel_ink_cache.reserve(64);
-  }
-  if (sel_ink_cells_size != cells_.size()) {
-    sel_ink_cells_size = cells_.size();
-    sel_ink_cache.clear();
   }
   auto cached_sel_ink = [&](size_t idx, const std::wstring& name, int lw,
                             int fpx, Gdiplus::Graphics& gfx) -> int {
     for (const auto& e : sel_ink_cache) {
-      if (e.first.index == idx && e.first.label_w == lw &&
-          e.first.font_px == fpx && e.first.name == name) {
+      if (e.first.hwnd == hwnd_ && e.first.index == idx &&
+          e.first.label_w == lw && e.first.font_px == fpx &&
+          e.first.name == name) {
         return e.second;
       }
     }
@@ -7107,7 +7171,7 @@ void FenceWindow::Paint(HDC hdc) {
     if (sel_ink_cache.size() >= 128) {
       sel_ink_cache.clear();
     }
-    sel_ink_cache.push_back({SelInkKey{idx, name, lw, fpx}, h});
+    sel_ink_cache.push_back({SelInkKey{hwnd_, idx, name, lw, fpx}, h});
     return h;
   };
 
@@ -7390,7 +7454,7 @@ void FenceWindow::Paint(HDC hdc) {
   }
 
   // F5: bottom count / zoom hint band (hidden when narrow or collapsed).
-  if (!collapsed_ && rc.right >= S(hwnd_, 180)) {
+  if (!collapsed_ && (rc.right - rc.left - pad * 2) >= S(hwnd_, 180)) {
     const int footer_h = S(hwnd_, 20);
     const int fy = rc.bottom - footer_h - S(hwnd_, 4);
     std::wstring footer;

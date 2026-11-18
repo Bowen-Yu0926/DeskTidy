@@ -192,6 +192,36 @@ bool ParseJsonStringAt(const std::string& body, size_t* q, std::string* out) {
   return true;
 }
 
+// Extract the next flat JSON object "{...}" starting at or after *pos,
+// ignoring '{' and '}' inside string literals and resetting on outer '{'.
+bool NextFlatJsonObject(const std::string& json, size_t* pos,
+                        std::string* out) {
+  size_t obj_start = std::string::npos;
+  bool in_str = false;
+  for (size_t i = *pos; i < json.size(); ++i) {
+    const char c = json[i];
+    if (in_str) {
+      if (c == '\\' && i + 1 < json.size()) {
+        ++i;
+      } else if (c == '"') {
+        in_str = false;
+      }
+      continue;
+    }
+    if (c == '"') {
+      in_str = true;
+    } else if (c == '{') {
+      obj_start = i;
+    } else if (c == '}' && obj_start != std::string::npos) {
+      *out = json.substr(obj_start, i - obj_start + 1);
+      *pos = i + 1;
+      return true;
+    }
+  }
+  *pos = json.size();
+  return false;
+}
+
 // Extract a JSON array of strings, e.g. "organize_kinds":["icon","file"].
 bool FindStringArray(const std::string& body, const char* key,
                      std::vector<std::string>* out) {
@@ -472,18 +502,8 @@ AppState LoadAppStateFromPath(const std::wstring& path, bool inject_defaults) {
   }
 
   size_t pos = 0;
-  while (true) {
-    const size_t start = json.find('{', pos);
-    if (start == std::string::npos) {
-      break;
-    }
-    const size_t end = json.find('}', start);
-    if (end == std::string::npos) {
-      break;
-    }
-    const std::string obj = json.substr(start, end - start + 1);
-    pos = end + 1;
-
+  std::string obj;
+  while (NextFlatJsonObject(json, &pos, &obj)) {
     std::string id;
     std::string title;
     int x = 0, y = 0, w = 0, h = 0, page = 0;
@@ -692,17 +712,7 @@ AppState LoadAppStateFromPath(const std::wstring& path, bool inject_defaults) {
   };
   std::vector<ProfileRow> profiles;
   pos = 0;
-  while (true) {
-    const size_t start = json.find('{', pos);
-    if (start == std::string::npos) {
-      break;
-    }
-    const size_t end = json.find('}', start);
-    if (end == std::string::npos) {
-      break;
-    }
-    const std::string obj = json.substr(start, end - start + 1);
-    pos = end + 1;
+  while (NextFlatJsonObject(json, &pos, &obj)) {
     ProfileRow row;
     if (!FindString(obj, "fp", &row.fp) || row.fp.empty()) {
       continue;
@@ -731,17 +741,7 @@ AppState LoadAppStateFromPath(const std::wstring& path, bool inject_defaults) {
   };
   std::vector<PageGeoRow> page_rows;
   pos = 0;
-  while (true) {
-    const size_t start = json.find('{', pos);
-    if (start == std::string::npos) {
-      break;
-    }
-    const size_t end = json.find('}', start);
-    if (end == std::string::npos) {
-      break;
-    }
-    const std::string obj = json.substr(start, end - start + 1);
-    pos = end + 1;
+  while (NextFlatJsonObject(json, &pos, &obj)) {
     if (obj.find("\"pg\"") == std::string::npos) {
       continue;
     }
@@ -946,17 +946,8 @@ bool SaveAppState(const AppState& state) {
   }
 
   size_t pos = 0;
-  while (!previous.empty()) {
-    const size_t start = previous.find('{', pos);
-    if (start == std::string::npos) {
-      break;
-    }
-    const size_t end = previous.find('}', start);
-    if (end == std::string::npos) {
-      break;
-    }
-    const std::string obj = previous.substr(start, end - start + 1);
-    pos = end + 1;
+  std::string obj;
+  while (!previous.empty() && NextFlatJsonObject(previous, &pos, &obj)) {
     std::string fp, id;
     // U3: drop transient / stale fingerprints (Python purge_transient_display_profiles)
     // so plug/unplug intermediates never survive as donor profiles.
@@ -1140,12 +1131,12 @@ bool SaveAppState(const AppState& state) {
   out << "\n  ]\n}\n";
   const std::string json = out.str();
 
-  // U2: atomic write — temp + flush, preserve a single .bak of the previous good
-  // file, then atomic replace (same policy as app_prefs).
+  // U2: atomic write — write temp file, preserve a single .bak of the previous
+  // good file, then atomic replace (avoid double synchronous hardware flush on
+  // the UI thread during interactive drag/resize).
   const std::wstring tmp = path + L".tmp";
   HANDLE h = CreateFileW(tmp.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
-                         FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH,
-                         nullptr);
+                         FILE_ATTRIBUTE_NORMAL, nullptr);
   if (h == INVALID_HANDLE_VALUE) {
     LogLine(L"[layout] save failed: cannot create temp file %s", tmp.c_str());
     return false;
@@ -1153,7 +1144,6 @@ bool SaveAppState(const AppState& state) {
   DWORD written = 0;
   const BOOL ok = WriteFile(h, json.data(), static_cast<DWORD>(json.size()),
                             &written, nullptr);
-  FlushFileBuffers(h);
   CloseHandle(h);
   if (!ok || written != json.size()) {
     DeleteFileW(tmp.c_str());
@@ -1175,8 +1165,7 @@ bool SaveAppState(const AppState& state) {
       LogLine(L"[layout] quarantined oversized before save → %s", bad.c_str());
     }
   }
-  if (!MoveFileExW(tmp.c_str(), path.c_str(),
-                   MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+  if (!MoveFileExW(tmp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING)) {
     DeleteFileW(tmp.c_str());
     LogLine(L"[layout] save failed: MoveFileExW replace");
     return false;

@@ -106,11 +106,11 @@ std::wstring NotesActionFromCmd(const std::wstring& cmd) {
 }
 
 // Parse "--x N"/"--y N" (with optional '=' and sign) from the command line.
-int CoordFromCmd(const std::wstring& cmd, const wchar_t* flag) {
+bool CoordFromCmd(const std::wstring& cmd, const wchar_t* flag, int* out) {
   const std::wstring f = flag;
   size_t p = cmd.find(f);
   if (p == std::wstring::npos) {
-    return -1;
+    return false;
   }
   p += f.size();
   while (p < cmd.size() && (cmd[p] == L' ' || cmd[p] == L'=')) {
@@ -122,20 +122,25 @@ int CoordFromCmd(const std::wstring& cmd, const wchar_t* flag) {
     sign = -1;
     ++p;
   }
+  if (p >= cmd.size() || !iswdigit(cmd[p])) {
+    return false;
+  }
   while (p < cmd.size() && iswdigit(cmd[p])) {
     v = v * 10 + (cmd[p] - L'0');
     ++p;
   }
-  return sign * v;
+  *out = sign * v;
+  return true;
 }
 
 // Encode optional x/y coordinates onto "--new-fence" as ":x:y" so the running
-// instance can place the fence at the shell-verb click point.
+// instance can place the fence at the shell-verb click point (supports negative
+// coordinates on secondary monitors).
 std::wstring WithFenceCoords(const std::wstring& action,
                              const std::wstring& cmd) {
-  const int x = CoordFromCmd(cmd, L"--x");
-  const int y = CoordFromCmd(cmd, L"--y");
-  if (x >= 0 && y >= 0) {
+  int x = 0;
+  int y = 0;
+  if (CoordFromCmd(cmd, L"--x", &x) && CoordFromCmd(cmd, L"--y", &y)) {
     return action + L":" + std::to_wstring(x) + L":" + std::to_wstring(y);
   }
   return action;

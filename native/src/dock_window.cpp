@@ -175,12 +175,7 @@ bool DockWindow::Create(HINSTANCE instance) {
 }
 
 void DockWindow::Destroy() {
-  if (rename_edit_) {
-    HWND edit = rename_edit_;
-    rename_edit_ = nullptr;
-    rename_index_ = -1;
-    DestroyWindow(edit);
-  }
+  FinishInlineRename(false);
   for (auto& s : slots_) {
     if (s.icon) {
       DestroyIcon(s.icon);
@@ -517,8 +512,7 @@ void DockWindow::BeginInlineRename(int index) {
     return;
   }
   if (rename_edit_) {
-    DestroyWindow(rename_edit_);
-    rename_edit_ = nullptr;
+    FinishInlineRename(false);
   }
   rename_index_ = index;
   const RECT& b = slots_[static_cast<size_t>(index)].bounds;
@@ -732,6 +726,7 @@ LRESULT DockWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
       return 0;
     }
     case WM_DESTROY:
+      FinishInlineRename(false);
       tip_ = nullptr;
       hwnd_ = nullptr;
       return 0;

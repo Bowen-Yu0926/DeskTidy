@@ -225,9 +225,7 @@ int RestoreShellIconPositions(const std::vector<ShellIconPos>& icons) {
       if (_wcsicmp(icon.name.c_str(), name.c_str()) != 0) {
         continue;
       }
-      const LPARAM packed =
-          (static_cast<LPARAM>(static_cast<UINT>(icon.y)) << 16) |
-          (static_cast<UINT>(icon.x) & 0xFFFF);
+      const LPARAM packed = MAKELPARAM(icon.x, icon.y);
       SendMessageTimeoutW(lv, kLvmSetItemPosition, i, packed, SMTO_ABORTIFHUNG,
                           80, nullptr);
       ++restored;
@@ -253,7 +251,16 @@ bool SaveShellIconsSidecar(const std::wstring& snapshot_json_path,
   }
   out << "{\n  \"icons\": [\n";
   for (size_t i = 0; i < icons.size(); ++i) {
-    out << "    {\"name\":\"" << NarrowUtf8(icons[i].name)
+    const std::string raw = NarrowUtf8(icons[i].name);
+    std::string esc;
+    esc.reserve(raw.size() + 4);
+    for (char c : raw) {
+      if (c == '\\' || c == '"') {
+        esc.push_back('\\');
+      }
+      esc.push_back(c);
+    }
+    out << "    {\"name\":\"" << esc
         << "\",\"x\":" << icons[i].x << ",\"y\":" << icons[i].y << "}";
     if (i + 1 < icons.size()) {
       out << ",";
@@ -290,8 +297,17 @@ std::vector<ShellIconPos> LoadShellIconsSidecar(
   const std::sregex_iterator end;
   for (; it != end; ++it) {
     const std::smatch& m = *it;
+    const std::string raw_name = m[1].str();
+    std::string unescaped;
+    unescaped.reserve(raw_name.size());
+    for (size_t j = 0; j < raw_name.size(); ++j) {
+      if (raw_name[j] == '\\' && j + 1 < raw_name.size()) {
+        ++j;
+      }
+      unescaped.push_back(raw_name[j]);
+    }
     ShellIconPos icon;
-    icon.name = WidenUtf8(m[1].str());
+    icon.name = WidenUtf8(unescaped);
     icon.x = atoi(m[2].str().c_str());
     icon.y = atoi(m[3].str().c_str());
     if (icon.name.empty()) {

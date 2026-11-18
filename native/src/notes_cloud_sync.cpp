@@ -156,6 +156,42 @@ std::wstring JsonStringAfter(const std::string& json, size_t from,
         v.push_back('\r');
       } else if (e == 't') {
         v.push_back('\t');
+      } else if (e == 'b') {
+        v.push_back('\b');
+      } else if (e == 'f') {
+        v.push_back('\f');
+      } else if (e == 'u' && p + 4 <= json.size()) {
+        unsigned code = 0;
+        bool ok = true;
+        for (int k = 0; k < 4; ++k) {
+          const char hc = json[p + k];
+          code <<= 4;
+          if (hc >= '0' && hc <= '9') {
+            code |= static_cast<unsigned>(hc - '0');
+          } else if (hc >= 'a' && hc <= 'f') {
+            code |= static_cast<unsigned>(hc - 'a' + 10);
+          } else if (hc >= 'A' && hc <= 'F') {
+            code |= static_cast<unsigned>(hc - 'A' + 10);
+          } else {
+            ok = false;
+            break;
+          }
+        }
+        if (ok) {
+          p += 4;
+          if (code < 0x80) {
+            v.push_back(static_cast<char>(code));
+          } else if (code < 0x800) {
+            v.push_back(static_cast<char>(0xC0 | (code >> 6)));
+            v.push_back(static_cast<char>(0x80 | (code & 0x3F)));
+          } else {
+            v.push_back(static_cast<char>(0xE0 | (code >> 12)));
+            v.push_back(static_cast<char>(0x80 | ((code >> 6) & 0x3F)));
+            v.push_back(static_cast<char>(0x80 | (code & 0x3F)));
+          }
+        } else {
+          v.push_back('u');
+        }
       } else {
         v.push_back(e);
       }
@@ -182,27 +218,47 @@ NoteCloudSyncStore LoadNoteCloudSync() {
   if (!ReadFileUtf8(StorePath(), &json) || json.empty()) {
     return store;
   }
+  auto find_unquoted = [&](char target, size_t start, size_t limit) -> size_t {
+    bool in_str = false;
+    for (size_t i = start; i < limit && i < json.size(); ++i) {
+      const char c = json[i];
+      if (in_str) {
+        if (c == '\\' && i + 1 < json.size()) {
+          ++i;
+        } else if (c == '"') {
+          in_str = false;
+        }
+      } else {
+        if (c == '"') {
+          in_str = true;
+        } else if (c == target) {
+          return i;
+        }
+      }
+    }
+    return std::string::npos;
+  };
   auto parse_objects = [&](const char* section_key, bool links_section) {
     const std::string key = std::string("\"") + section_key + "\"";
     size_t sec = json.find(key);
     if (sec == std::string::npos) {
       return;
     }
-    size_t arr = json.find('[', sec);
+    size_t arr = find_unquoted('[', sec + key.size(), json.size());
     if (arr == std::string::npos) {
       return;
     }
     size_t pos = arr + 1;
-    const size_t arr_end = json.find(']', pos);
+    const size_t arr_end = find_unquoted(']', pos, json.size());
     if (arr_end == std::string::npos) {
       return;
     }
     while (pos < arr_end) {
-      const size_t obj = json.find('{', pos);
+      const size_t obj = find_unquoted('{', pos, arr_end);
       if (obj == std::string::npos || obj >= arr_end) {
         break;
       }
-      const size_t end = json.find('}', obj);
+      const size_t end = find_unquoted('}', obj + 1, arr_end);
       if (end == std::string::npos || end > arr_end) {
         break;
       }

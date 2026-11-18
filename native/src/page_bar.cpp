@@ -1104,13 +1104,21 @@ void PageBar::Paint(HDC) {
         const float rad = (std::min)(9.f * font_scale_, bh * 0.42f);
         Gdiplus::Color fill_c;
         if (on) {
-          fill_c = Gdiplus::Color(255, MixChannel(232, ar, 0.22f),
-                                  MixChannel(236, ag, 0.22f),
-                                  MixChannel(245, ab, 0.22f));
+          fill_c = is_light
+                       ? Gdiplus::Color(255, MixChannel(232, ar, 0.22f),
+                                        MixChannel(236, ag, 0.22f),
+                                        MixChannel(245, ab, 0.22f))
+                       : Gdiplus::Color(235, MixChannel(30, ar, 0.28f),
+                                        MixChannel(41, ag, 0.28f),
+                                        MixChannel(59, ab, 0.28f));
         } else if (hover) {
-          fill_c = Gdiplus::Color(255, MixChannel(241, ar, 0.10f),
-                                  MixChannel(244, ag, 0.10f),
-                                  MixChannel(250, ab, 0.10f));
+          fill_c = is_light
+                       ? Gdiplus::Color(255, MixChannel(241, ar, 0.10f),
+                                        MixChannel(244, ag, 0.10f),
+                                        MixChannel(250, ab, 0.10f))
+                       : Gdiplus::Color(210, MixChannel(30, ar, 0.14f),
+                                        MixChannel(41, ag, 0.14f),
+                                        MixChannel(59, ab, 0.14f));
         } else {
           fill_c = Gdiplus::Color(0, 0, 0, 0);
         }
@@ -1141,8 +1149,10 @@ void PageBar::Paint(HDC) {
         const float text_w =
             bw - side * 2.f - rail_reserve - lock_reserve;
         const Gdiplus::Color ink_c =
-            utility ? Gdiplus::Color(220, 71, 85, 105)
-                    : Gdiplus::Color(255, 26, 35, 50);
+            is_light ? (utility ? Gdiplus::Color(220, 71, 85, 105)
+                                : Gdiplus::Color(255, 26, 35, 50))
+                     : (utility ? Gdiplus::Color(210, 148, 163, 184)
+                                : Gdiplus::Color(245, 241, 245, 249));
         Gdiplus::SolidBrush ink(ink_c);
         const Gdiplus::Font& font =
             on ? *font_on_ : (utility ? *font_util_ : *font_page_);
@@ -1154,7 +1164,9 @@ void PageBar::Paint(HDC) {
           const float lw = std::round(5.5f * font_scale_);
           const float lx = cx + bw - std::round(12.f * font_scale_);
           const float ly = cy + std::round((bh - 8.5f * font_scale_) * 0.5f);
-          const Gdiplus::Color lock_c(180, 71, 85, 105);
+          const Gdiplus::Color lock_c =
+              is_light ? Gdiplus::Color(180, 71, 85, 105)
+                       : Gdiplus::Color(190, 148, 163, 184);
           Gdiplus::Pen shackle(lock_c, (std::max)(1.f, font_scale_));
           g.DrawArc(&shackle,
                     Gdiplus::RectF(lx + font_scale_, ly, lw - 2.f * font_scale_,

@@ -520,7 +520,75 @@ export function createDeskNoteEditor(options) {
       if (!isReady) return
       crepe.editor.action((ctx) => {
         const view = ctx.get(editorViewCtx)
+        if (view && view.dom && document.activeElement !== view.dom) {
+          try {
+            view.dom.focus({ preventScroll: true })
+          } catch (_) {
+            view.dom.focus()
+          }
+        }
+        if (view && !view.hasFocus()) {
+          view.focus()
+        }
+      })
+    },
+    deleteBlock(domEl) {
+      if (!isReady || !domEl) return false
+      return crepe.editor.action((ctx) => {
+        const view = ctx.get(editorViewCtx)
+        const BLOCK_NAMES = {
+          code_block: true,
+          fence: true,
+          table: true,
+          blockquote: true,
+          hr: true,
+          thematic_break: true,
+          'image-block': true,
+          image: true,
+          math_inline: true,
+          math_block: true,
+        }
+        let foundFrom = -1
+        let foundTo = -1
+        view.state.doc.descendants((node, pos) => {
+          if (foundFrom >= 0) return false
+          if (BLOCK_NAMES[node.type.name]) {
+            const nd = view.nodeDOM(pos)
+            if (
+              nd &&
+              (nd === domEl ||
+                (nd.contains && nd.contains(domEl)) ||
+                (domEl.contains && domEl.contains(nd)))
+            ) {
+              foundFrom = pos
+              foundTo = pos + node.nodeSize
+              return false
+            }
+          }
+          return true
+        })
+        if (foundFrom < 0) {
+          try {
+            const raw = view.posAtDOM(domEl, 0)
+            const $pos = view.state.doc.resolve(
+              Math.max(0, Math.min(view.state.doc.content.size, raw)),
+            )
+            for (let d = $pos.depth; d >= 1; d--) {
+              const n = $pos.node(d)
+              if (BLOCK_NAMES[n.type.name]) {
+                foundFrom = $pos.before(d)
+                foundTo = $pos.after(d)
+                break
+              }
+            }
+          } catch (_) {}
+        }
+        if (foundFrom < 0 || foundTo <= foundFrom) return false
+        view.dispatch(
+          view.state.tr.delete(foundFrom, foundTo).scrollIntoView(),
+        )
         view.focus()
+        return true
       })
     },
     placeCaretAfterImage(el, before) {

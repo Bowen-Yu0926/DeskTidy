@@ -256,20 +256,36 @@ std::wstring CanonicalVerb(IContextMenu* pcm, UINT offset) {
   return L"";
 }
 
+std::wstring EscapeMenuLabel(const std::wstring& s) {
+  std::wstring out;
+  out.reserve(s.size() + 4);
+  for (wchar_t c : s) {
+    if (c == L'&') {
+      out.push_back(L'&');
+    }
+    out.push_back(c);
+  }
+  return out;
+}
+
 bool AppendShellExtras(HMENU menu, const std::vector<ShellMenuExtra>& extras) {
   bool any = false;
   for (const auto& ex : extras) {
     if (ex.label.empty()) {
       continue;
     }
+    const std::wstring esc = EscapeMenuLabel(ex.label);
     if (!ex.children.empty()) {
       HMENU sub = CreatePopupMenu();
       if (!sub) {
         continue;
       }
-      AppendShellExtras(sub, ex.children);
-      AppendMenuW(menu, MF_POPUP | (ex.enabled ? 0 : MF_GRAYED),
-                  reinterpret_cast<UINT_PTR>(sub), ex.label.c_str());
+      if (!AppendShellExtras(sub, ex.children) ||
+          !AppendMenuW(menu, MF_POPUP | (ex.enabled ? 0 : MF_GRAYED),
+                       reinterpret_cast<UINT_PTR>(sub), esc.c_str())) {
+        DestroyMenu(sub);
+        continue;
+      }
       any = true;
       continue;
     }
@@ -284,7 +300,7 @@ bool AppendShellExtras(HMENU menu, const std::vector<ShellMenuExtra>& extras) {
     if (ex.checked) {
       flags |= MF_CHECKED;
     }
-    AppendMenuW(menu, flags, static_cast<UINT>(ex.id), ex.label.c_str());
+    AppendMenuW(menu, flags, static_cast<UINT>(ex.id), esc.c_str());
     any = true;
   }
   return any;
@@ -297,15 +313,20 @@ void PrependShellExtras(HMENU menu, const std::vector<ShellMenuExtra>& extras) {
     if (ex.label.empty()) {
       continue;
     }
+    const std::wstring esc = EscapeMenuLabel(ex.label);
     if (!ex.children.empty()) {
       HMENU sub = CreatePopupMenu();
       if (!sub) {
         continue;
       }
-      AppendShellExtras(sub, ex.children);
-      InsertMenuW(menu, pos++,
-                  MF_BYPOSITION | MF_POPUP | (ex.enabled ? 0 : MF_GRAYED),
-                  reinterpret_cast<UINT_PTR>(sub), ex.label.c_str());
+      if (!AppendShellExtras(sub, ex.children) ||
+          !InsertMenuW(menu, pos,
+                       MF_BYPOSITION | MF_POPUP | (ex.enabled ? 0 : MF_GRAYED),
+                       reinterpret_cast<UINT_PTR>(sub), esc.c_str())) {
+        DestroyMenu(sub);
+        continue;
+      }
+      ++pos;
       continue;
     }
     if (ex.id < static_cast<int>(kCustomIdFirst) ||
@@ -319,7 +340,7 @@ void PrependShellExtras(HMENU menu, const std::vector<ShellMenuExtra>& extras) {
     if (ex.checked) {
       flags |= MF_CHECKED;
     }
-    InsertMenuW(menu, pos++, flags, static_cast<UINT>(ex.id), ex.label.c_str());
+    InsertMenuW(menu, pos++, flags, static_cast<UINT>(ex.id), esc.c_str());
   }
   if (pos > 0 && had_existing) {
     InsertMenuW(menu, pos, MF_BYPOSITION | MF_SEPARATOR, 0, nullptr);
@@ -764,16 +785,19 @@ std::string TrackMoveToPageThenFenceMenu(
         break;
       }
       cmd_ids.push_back(f.id);
-      const std::wstring label =
-          f.title.empty() ? std::wstring(L"(未命名)") : f.title;
+      const std::wstring label = EscapeMenuLabel(
+          f.title.empty() ? std::wstring(L"(未命名)") : f.title);
       AppendMenuW(sub, MF_STRING, id, label.c_str());
       ++added;
     }
     if (added == 0) {
       AppendMenuW(sub, MF_STRING | MF_GRAYED, 0, L"该页无分区");
     }
-    AppendMenuW(root, MF_POPUP, reinterpret_cast<UINT_PTR>(sub),
-                names[pi].c_str());
+    const std::wstring page_label = EscapeMenuLabel(names[pi]);
+    if (!AppendMenuW(root, MF_POPUP, reinterpret_cast<UINT_PTR>(sub),
+                     page_label.c_str())) {
+      DestroyMenu(sub);
+    }
   }
 
   // Same rule as TrackCommon: never put the foreground on the hidden host.

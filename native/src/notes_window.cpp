@@ -184,7 +184,7 @@ std::wstring JsonEscLib(const std::wstring& s) {
       o += L"\\r";
     } else if (c == L'\t') {
       o += L"\\t";
-    } else if (c < 0x20) {
+    } else if (c < 0x20 || c == 0x2028 || c == 0x2029) {
       wchar_t buf[8];
       swprintf_s(buf, L"\\u%04x", static_cast<unsigned>(c));
       o += buf;
@@ -227,6 +227,33 @@ std::wstring LibJsonString(const std::wstring& json, const wchar_t* key) {
         v.push_back(L'\r');
       } else if (e == L't') {
         v.push_back(L'\t');
+      } else if (e == L'b') {
+        v.push_back(L'\b');
+      } else if (e == L'f') {
+        v.push_back(L'\f');
+      } else if (e == L'u' && p + 4 <= json.size()) {
+        unsigned code = 0;
+        bool ok = true;
+        for (int k = 0; k < 4; ++k) {
+          const wchar_t hc = json[p + k];
+          code <<= 4;
+          if (hc >= L'0' && hc <= L'9') {
+            code |= static_cast<unsigned>(hc - L'0');
+          } else if (hc >= L'a' && hc <= L'f') {
+            code |= static_cast<unsigned>(hc - L'a' + 10);
+          } else if (hc >= L'A' && hc <= L'F') {
+            code |= static_cast<unsigned>(hc - L'A' + 10);
+          } else {
+            ok = false;
+            break;
+          }
+        }
+        if (ok) {
+          p += 4;
+          v.push_back(static_cast<wchar_t>(code));
+        } else {
+          v.push_back(L'u');
+        }
       } else {
         v.push_back(e);
       }
@@ -784,12 +811,24 @@ HBITMAP ClipboardBitmap(HWND owner) {
       const BYTE* dib = static_cast<const BYTE*>(GlobalLock(h));
       if (dib) {
         const auto* bih = reinterpret_cast<const BITMAPINFOHEADER*>(dib);
-        void* bits = const_cast<BYTE*>(dib + bih->biSize +
-                                       bih->biClrUsed * 4);
-        BITMAPINFO bmi{};
-        memcpy(&bmi.bmiHeader, bih, sizeof(BITMAPINFOHEADER));
+        DWORD extra = 0;
+        if (bih->biSize == sizeof(BITMAPINFOHEADER)) {
+          if (bih->biCompression == BI_BITFIELDS) {
+            extra += 12;
+          } else if (bih->biCompression == 6 /* BI_ALPHABITFIELDS */) {
+            extra += 16;
+          }
+        }
+        if (bih->biClrUsed > 0) {
+          extra += bih->biClrUsed * 4;
+        } else if (bih->biBitCount > 0 && bih->biBitCount <= 8) {
+          extra += (1u << bih->biBitCount) * 4;
+        }
+        void* bits = const_cast<BYTE*>(dib + bih->biSize + extra);
         HDC dc = GetDC(nullptr);
-        out = CreateDIBitmap(dc, bih, CBM_INIT, bits, &bmi, DIB_RGB_COLORS);
+        out = CreateDIBitmap(dc, bih, CBM_INIT, bits,
+                             reinterpret_cast<const BITMAPINFO*>(dib),
+                             DIB_RGB_COLORS);
         ReleaseDC(nullptr, dc);
         GlobalUnlock(h);
       }
@@ -1185,6 +1224,7 @@ bool NotesWindow::Create(HINSTANCE instance) {
     ApplyWysiwygVisibility();
     LayoutClient();
     PushEditorFontToWeb();
+    FocusActiveEditor(false);
   };
   web_.on_find = [this](bool replace) { ShowFind(replace); };
   web_.on_find_again = [this](bool down) { FindAgain(down); };
@@ -2058,28 +2098,31 @@ void NotesWindow::InsertImageFromFile() {
     MistAlert(hwnd_, L"插入图片", L"请先打开或保存一个 Markdown（.md）文档。");
     return;
   }
-  wchar_t file[MAX_PATH] = {};
+  std::vector<wchar_t> file(32768, L'\0');
   OPENFILENAMEW ofn{};
   ofn.lStructSize = sizeof(ofn);
   ofn.hwndOwner = hwnd_;
   ofn.lpstrFilter =
       L"图片\0*.png;*.jpg;*.jpeg;*.gif;*.webp;*.bmp;*.svg\0所有文件\0*.*\0";
-  ofn.lpstrFile = file;
-  ofn.nMaxFile = MAX_PATH;
+  ofn.lpstrFile = file.data();
+  ofn.nMaxFile = static_cast<DWORD>(file.size());
   ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_ALLOWMULTISELECT |
               OFN_EXPLORER;
   if (!GetOpenFileNameW(&ofn)) {
     return;
   }
   std::vector<std::wstring> paths;
-  if (ofn.nFileOffset > 0 && file[ofn.nFileOffset - 1] == L'\0') {
-    // Multi-select: directory + null-separated names (need larger buffer for
-    // many files; single path still works via the else branch for typical use).
-    const std::wstring dir = file;
-    // With default MAX_PATH buffer, multi-select is best-effort for one file.
-    paths.push_back(dir + L"\\" + (file + ofn.nFileOffset));
+  const wchar_t* p = file.data();
+  const std::wstring first(p);
+  p += first.size() + 1;
+  if (*p == L'\0') {
+    paths.push_back(first);
   } else {
-    paths.push_back(file);
+    while (*p != L'\0') {
+      std::wstring name(p);
+      p += name.size() + 1;
+      paths.push_back(first + L"\\" + name);
+    }
   }
   int n = 0;
   for (const auto& p : paths) {
@@ -2197,14 +2240,11 @@ void NotesWindow::CopyPathToClipboard(const std::wstring& path) {
 
 void NotesWindow::PersistViewSettings() {
   const std::wstring file = JoinPath(NativeDataDir(), L"notes_ui.json");
-  std::ofstream out(file, std::ios::binary);
-  if (!out) {
-    return;
-  }
   const char* face_json = "Microsoft YaHei";
   if (_wcsicmp(font_face_.c_str(), L"SimSun") == 0) {
     face_json = "SimSun";
   }
+  std::ostringstream out;
   out << "{\n"
       << "  \"sidebar\": " << (sidebar_visible_ ? "true" : "false") << ",\n"
       << "  \"outline\": " << (outline_ ? "true" : "false") << ",\n"
@@ -2216,6 +2256,7 @@ void NotesWindow::PersistViewSettings() {
       << "  \"font_pt\": " << font_pt_ << ",\n"
       << "  \"font_face\": \"" << face_json << "\"\n"
       << "}\n";
+  AtomicWriteUtf8File(file, out.str());
 }
 
 void NotesWindow::LoadViewSettings() {
@@ -3851,6 +3892,7 @@ void NotesWindow::SwitchToTab(int index, bool save_current) {
   if (!PathLooksMarkdown()) {
     LayoutClient();
   }
+  FocusActiveEditor(true);
 }
 
 std::wstring NotesWindow::MakeNewNotePath() {
@@ -5851,6 +5893,7 @@ void NotesWindow::ExportWithPandoc() {
                       SW_SHOWNORMAL);
       }
     }
+    DeleteFileW(src.c_str());
     return;
   }
   WaitForSingleObject(pi.hProcess, 60000);
@@ -5858,6 +5901,7 @@ void NotesWindow::ExportWithPandoc() {
   GetExitCodeProcess(pi.hProcess, &exit);
   CloseHandle(pi.hThread);
   CloseHandle(pi.hProcess);
+  DeleteFileW(src.c_str());
 
   const DWORD attr = GetFileAttributesW(dst.c_str());
   if (exit != 0 || attr == INVALID_FILE_ATTRIBUTES ||
@@ -6213,6 +6257,39 @@ void NotesWindow::ApplyWysiwygVisibility() {
   // Caller owns LayoutClient (SwitchToTab / EnsureMarkdownEditor layout once).
 }
 
+void NotesWindow::FocusActiveEditor(bool force) {
+  if (!hwnd_ || !IsWindow(hwnd_) || !IsWindowVisible(hwnd_) ||
+      IsIconic(hwnd_)) {
+    return;
+  }
+  if (!force) {
+    const HWND cur = GetFocus();
+    if (cur && cur != hwnd_ && cur != tabs_ && cur != status_ &&
+        cur != mode_strip_) {
+      if (cur == title_edit_ || cur == sidebar_search_ ||
+          cur == font_face_combo_ || cur == font_size_combo_ ||
+          cur == outline_list_ ||
+          (cur == sidebar_ && IsWindowVisible(sidebar_)) ||
+          (cur == sidebar_results_ && IsWindowVisible(sidebar_results_)) ||
+          (font_face_combo_ && IsChild(font_face_combo_, cur)) ||
+          (font_size_combo_ && IsChild(font_size_combo_, cur)) ||
+          (library_web_.Host() &&
+           (cur == library_web_.Host() || IsChild(library_web_.Host(), cur)))) {
+        return;
+      }
+    }
+  }
+  const bool want_wysiwyg =
+      wysiwyg_ && web_.Available() && PathLooksMarkdown() && !toast_;
+  if (want_wysiwyg && web_.ContentReady()) {
+    web_.FocusEditor();
+  } else if (edit_ && IsWindow(edit_) && IsWindowVisible(edit_)) {
+    SetFocus(edit_);
+  } else if (want_wysiwyg) {
+    web_.FocusEditor();
+  }
+}
+
 void NotesWindow::EnsureTitleEdit() {
   if (title_edit_ || !hwnd_) {
     return;
@@ -6408,6 +6485,10 @@ void NotesWindow::PushNativeTitleToWeb() {
       js += c;
     } else if (c == L'\n' || c == L'\r') {
       js += L' ';
+    } else if (c < 0x20 || c == 0x2028 || c == 0x2029) {
+      wchar_t buf[8];
+      swprintf_s(buf, L"\\u%04x", static_cast<unsigned>(c));
+      js += buf;
     } else {
       js += c;
     }
@@ -7831,9 +7912,7 @@ int NotesWindow::RunReplaceAllTabs(bool match_case, bool whole) {
     if (!EncodeTextFileBytes(wide, enc, &bytes)) {
       continue;
     }
-    std::ofstream out(path, std::ios::binary);
-    if (out) {
-      out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+    if (AtomicWriteUtf8File(path, bytes, false)) {
       total += n;
     }
   }
@@ -8014,6 +8093,7 @@ void NotesWindow::Present() {
   LayoutClient();
   EnsureMarkdownEditor(true);
   UpdateWindow(hwnd_);
+  FocusActiveEditor(true);
 }
 
 bool NotesWindow::ConfirmSaveCurrent() {
@@ -8179,11 +8259,21 @@ void NotesWindow::EnsureLibraryCloudLogin() {
 
 void NotesWindow::LoadAndSweepCloudSync() {
   cloud_sync_ = LoadNoteCloudSync();
-  const int n = NoteCloudSweepPendingDeletes(&cloud_sync_);
-  SaveNoteCloudSync(cloud_sync_);
-  if (n > 0 && status_) {
-    SetWindowTextW(status_,
-                   (L"已清理 " + std::to_wstring(n) + L" 条到期云笔记").c_str());
+  const long long now = NoteCloudUnixNow();
+  bool has_due = false;
+  for (const auto& d : cloud_sync_.pending_deletes) {
+    if (d.note_id > 0 && d.delete_after > 0 && now >= d.delete_after) {
+      has_due = true;
+      break;
+    }
+  }
+  if (has_due) {
+    std::thread([]() {
+      NoteCloudSyncStore bg = LoadNoteCloudSync();
+      if (NoteCloudSweepPendingDeletes(&bg) > 0) {
+        SaveNoteCloudSync(bg);
+      }
+    }).detach();
   }
 }
 
@@ -10188,6 +10278,8 @@ LRESULT CALLBACK NotesWindow::TabsProc(HWND hwnd, UINT msg, WPARAM wparam,
         }
         if (hit != self->tab_index_) {
           self->SwitchToTab(hit, true);
+        } else {
+          self->FocusActiveEditor(true);
         }
       }
       self->tab_drag_from_ = hit;
@@ -11312,6 +11404,15 @@ LRESULT NotesWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
       SetBkColor(hdc, rail_bg_);
       return reinterpret_cast<LRESULT>(rail_brush_ ? rail_brush_ : bg_brush_);
     }
+    case WM_ACTIVATE:
+      if (LOWORD(wparam) != WA_INACTIVE && !IsIconic(hwnd_)) {
+        FocusActiveEditor(false);
+        return 0;
+      }
+      break;
+    case WM_SETFOCUS:
+      FocusActiveEditor(false);
+      return 0;
     case WM_SIZE:
       LayoutClient();
       return 0;

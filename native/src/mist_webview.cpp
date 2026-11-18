@@ -450,7 +450,7 @@ int MistJsonIntField(const std::wstring& json, const wchar_t* key, int fallback)
   if (p == std::wstring::npos) {
     return fallback;
   }
-  p = json.find(L':', p);
+  p = json.find(L':', p + needle.size());
   if (p == std::wstring::npos) {
     return fallback;
   }
@@ -492,12 +492,12 @@ void MistWebDialogPostJson(MistWebDialog* dlg, const std::wstring& json) {
     return;
   }
   auto* web = static_cast<ICoreWebView2*>(dlg->webview);
-  web->PostWebMessageAsString(json.c_str());
   std::wstring script =
       L"(function(){try{var m=" + json +
-      L";if(typeof window.applyState==='function'){window.applyState(m);}"
-      L"if(m&&m.type==='dir_picked'&&document.getElementById('dir')){"
+      L";if(m&&m.type==='dir_picked'){"
+      L"if(document.getElementById('dir')){"
       L"document.getElementById('dir').value=m.path||'';}"
+      L"}else if(typeof window.applyState==='function'){window.applyState(m);}"
       L"}catch(e){}})();";
   web->ExecuteScript(script.c_str(), nullptr);
 }

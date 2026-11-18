@@ -104,7 +104,11 @@ std::wstring JsonStringField(const std::wstring& json, const wchar_t* key) {
   if (p == std::wstring::npos) {
     return {};
   }
-  p = json.find(L'"', json.find(L':', p) + 1);
+  p = json.find(L':', p + needle.size());
+  if (p == std::wstring::npos) {
+    return {};
+  }
+  p = json.find(L'"', p + 1);
   if (p == std::wstring::npos) {
     return {};
   }
@@ -113,6 +117,56 @@ std::wstring JsonStringField(const std::wstring& json, const wchar_t* key) {
   while (p < json.size() && json[p] != L'"') {
     if (json[p] == L'\\' && p + 1 < json.size()) {
       ++p;
+      const wchar_t e = json[p++];
+      switch (e) {
+        case L'n':
+          v.push_back(L'\n');
+          break;
+        case L'r':
+          v.push_back(L'\r');
+          break;
+        case L't':
+          v.push_back(L'\t');
+          break;
+        case L'b':
+          v.push_back(L'\b');
+          break;
+        case L'f':
+          v.push_back(L'\f');
+          break;
+        case L'u':
+          if (p + 4 <= json.size()) {
+            unsigned code = 0;
+            bool ok = true;
+            for (int k = 0; k < 4; ++k) {
+              const wchar_t hc = json[p + k];
+              code <<= 4;
+              if (hc >= L'0' && hc <= L'9') {
+                code |= static_cast<unsigned>(hc - L'0');
+              } else if (hc >= L'a' && hc <= L'f') {
+                code |= static_cast<unsigned>(hc - L'a' + 10);
+              } else if (hc >= L'A' && hc <= L'F') {
+                code |= static_cast<unsigned>(hc - L'A' + 10);
+              } else {
+                ok = false;
+                break;
+              }
+            }
+            if (ok) {
+              v.push_back(static_cast<wchar_t>(code));
+              p += 4;
+            } else {
+              v.push_back(L'u');
+            }
+          } else {
+            v.push_back(L'u');
+          }
+          break;
+        default:
+          v.push_back(e);
+          break;
+      }
+      continue;
     }
     v.push_back(json[p++]);
   }
@@ -994,17 +1048,6 @@ void SettingsWindow::OnWebMessage(const std::wstring& json) {
     const bool value = JsonBoolField(json, L"value", false);
     // Keep ext_ in sync before App callbacks trigger SyncPageChrome/PushState.
     ApplyExtToggleLocal(id, value);
-    {
-      const std::wstring log =
-          JoinPath(NativeDataDir(), L"last_toggle.txt");
-      std::ofstream out(log, std::ios::binary | std::ios::trunc);
-      if (out) {
-        const std::string line =
-            NarrowUtf8(L"id=" + id + L" value=" +
-                       (value ? L"true" : L"false") + L"\n");
-        out.write(line.data(), static_cast<std::streamsize>(line.size()));
-      }
-    }
     if (id == L"dock" && on_dock_) {
       dock_on_ = value;
       on_dock_(value);
