@@ -1745,12 +1745,6 @@
         '<button type="button" class="icon-btn' + (isVisible ? '' : ' on') +
         '" data-fc-vis title="' + (isVisible ? '隐藏分区' : '显示分区') + '">' +
         (isVisible ? ICO.eye : ICO.eyeOff) + '</button>' +
-        '<button type="button" class="icon-btn' + (c.position_locked ? ' on' : '') +
-        '" data-fc-lock title="' + (c.position_locked ? '解锁位置' : '锁定位置') + '">' +
-        (c.position_locked ? ICO.lock : ICO.unlock) + '</button>' +
-        '<button type="button" class="icon-btn' + (c.content_locked ? ' on' : '') +
-        '" data-fc-clock title="' + (c.content_locked ? '解锁内容' : '锁定内容') + '">' +
-        ICO.lock + '</button>' +
         '<button type="button" class="icon-btn" data-fc-edit title="编辑">' + ICO.edit + '</button>' +
         '<button type="button" class="icon-btn danger" data-fc-del title="' +
         (isSystem ? '系统分区不可删除' : '删除') + '"' +
@@ -1759,7 +1753,6 @@
       const kindsEl = el.querySelector('.ft-kinds');
       if (kindsEl) {
         kindsEl.textContent = kindsLabel(c.organize_kinds) +
-          (c.position_locked ? ' · 位置已锁' : '') +
           (isVisible ? '' : ' · 已隐藏');
       }
       el.addEventListener('click', (ev) => {

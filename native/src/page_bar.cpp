@@ -30,17 +30,17 @@ constexpr int kFloatPadY = 10;
 constexpr int kFloatCardMargin = 6;
 constexpr int kSepGap = 10;  // page block ↔ tool block (float only)
 // Tabs (discrete bookmark chips) @ 96 DPI — Python PageIndicatorWidget.
-constexpr int kTabsChipW = 86;
-constexpr int kTabsChipH = 34;
+constexpr int kTabsChipW = 92;
+constexpr int kTabsChipH = 32;
 constexpr int kTabsSlot = 38;
 constexpr int kTabsPadX = 14;  // Reserve room for active tab pop-out animation
-constexpr int kTabsPadY = 6;
+constexpr int kTabsPadY = 8;
 constexpr int kEdgeMargin = 0;
 constexpr int kDragThreshold = 6;
 // Collapsed: thin card nose; hover / click slides the full float out.
 constexpr int kPeekW = 16;
-constexpr int kTabsPeekW = 32;       // Tabs mode collapsed peek width @ 96 DPI
-constexpr int kTabsPopMargin = 14;   // Active tab extra pop-out distance on expand
+constexpr int kTabsPeekW = 28;       // Tabs mode collapsed peek width @ 96 DPI
+constexpr int kTabsPopMargin = 10;   // Active tab extra pop-out distance on expand
 constexpr UINT_PTR kTimerExpand = 77;
 constexpr UINT_PTR kTimerCollapseDelay = 78;
 constexpr UINT kExpandTickMs = 16;
@@ -951,7 +951,7 @@ void PageBar::EnsureFonts() {
   const float em_util = std::round(12.f * font_scale_);
   font_on_ = new Gdiplus::Font(font_family_, em_on, Gdiplus::FontStyleBold,
                                Gdiplus::UnitPixel);
-  font_page_ = new Gdiplus::Font(font_family_, em_page, Gdiplus::FontStyleBold,
+  font_page_ = new Gdiplus::Font(font_family_, em_page, Gdiplus::FontStyleRegular,
                                  Gdiplus::UnitPixel);
   font_util_ = new Gdiplus::Font(font_family_, em_util,
                                  Gdiplus::FontStyleRegular,
@@ -1166,151 +1166,179 @@ void PageBar::Paint(HDC) {
                                          4.8f * font_scale_));
         }
       } else {
-        // Discrete bookmark tabs (flush right edge) - Modern Frosted Acrylic with Active Pop-out
+        // Discrete bookmark tabs (flush right edge) — Clean Frosted Pill Tabs
         const float pop_max = static_cast<float>(Scaled(kTabsPopMargin, font_scale_));
         const float e = EaseOutCubic(expand_t_);
-        // Active tab pops out leftwards smoothly on expand; hover also pops slightly
-        const float pop = on ? (pop_max * (0.32f + 0.68f * e))
-                             : (hover ? (std::min)(pop_max * 0.42f, 5.f * font_scale_ * e) : 0.f);
+        const float pop = on ? (pop_max * (0.35f + 0.65f * e))
+                             : (hover ? (std::min)(pop_max * 0.40f, 4.5f * font_scale_ * e) : 0.f);
         const float tab_cx = static_cast<float>(card_m + pad_x) - pop;
         const float tab_cy = static_cast<float>(SlotTop(i) + (slot_h_ - chip_h_) / 2);
         const float tab_bw = static_cast<float>(chip_w_) + pop;
         const float tab_bh = static_cast<float>(chip_h_);
+        const float rad = (std::min)(10.f * font_scale_, tab_bh * 0.46f);
 
-        Gdiplus::Color top;
-        Gdiplus::Color bottom;
-        if (is_light) {
-          if (on) {
-            top = Gdiplus::Color(245, 255, 255, 255);
-            bottom = Gdiplus::Color(255, 235, 240, 250);
-          } else if (hover) {
-            top = Gdiplus::Color(230, 248, 250, 254);
-            bottom = Gdiplus::Color(240, 225, 232, 245);
-          } else {
-            top = Gdiplus::Color(210, 240, 243, 248);
-            bottom = Gdiplus::Color(220, 220, 226, 236);
+        auto make_tab_path = [](Gdiplus::GraphicsPath* p, float x, float y,
+                                float rw, float rh, float r, bool close_right) {
+          p->Reset();
+          const float d = r * 2.f;
+          p->AddLine(x + rw, y, x + r, y);
+          p->AddArc(x, y, d, d, 270.f, -90.f);
+          p->AddLine(x, y + r, x, y + rh - r);
+          p->AddArc(x, y + rh - d, d, d, 180.f, -90.f);
+          p->AddLine(x + r, y + rh, x + rw, y + rh);
+          if (close_right) {
+            p->CloseFigure();
           }
-        } else {
-          auto clamp_b = [](int v) -> BYTE { return static_cast<BYTE>((std::max)(0, (std::min)(255, v))); };
-          if (on) {
-            top = Gdiplus::Color(245, clamp_b(br + 22), clamp_b(bg + 22), clamp_b(bb + 26));
-            bottom = Gdiplus::Color(255, clamp_b(br + 6), clamp_b(bg + 6), clamp_b(bb + 10));
-          } else if (hover) {
-            top = Gdiplus::Color(225, clamp_b(br + 14), clamp_b(bg + 14), clamp_b(bb + 18));
-            bottom = Gdiplus::Color(235, static_cast<BYTE>(br), static_cast<BYTE>(bg), static_cast<BYTE>(bb));
-          } else {
-            top = Gdiplus::Color(195, static_cast<BYTE>(br), static_cast<BYTE>(bg), static_cast<BYTE>(bb));
-            bottom = Gdiplus::Color(215, clamp_b(br - 8), clamp_b(bg - 8), clamp_b(bb - 8));
-          }
-        }
-        Gdiplus::LinearGradientBrush body(
-            Gdiplus::PointF(tab_cx, tab_cy), Gdiplus::PointF(tab_cx, tab_cy + tab_bh), top,
-            bottom);
-        const float rad = (std::min)(11.f * font_scale_, tab_bh * 0.44f);
-        Gdiplus::GraphicsPath path;
-        path.AddArc(tab_cx, tab_cy, rad * 2, rad * 2, 180, 90);
-        path.AddLine(tab_cx + rad, tab_cy, tab_cx + tab_bw, tab_cy);
-        path.AddLine(tab_cx + tab_bw, tab_cy, tab_cx + tab_bw, tab_cy + tab_bh);
-        path.AddLine(tab_cx + tab_bw, tab_cy + tab_bh, tab_cx + rad, tab_cy + tab_bh);
-        path.AddArc(tab_cx, tab_cy + tab_bh - rad * 2, rad * 2, rad * 2, 90, 90);
-        path.CloseFigure();
+        };
 
-        // Subtle ambient shadow
-        {
+        // Multi-layer soft ambient drop shadow (eliminates hard dark rim)
+        for (int layer = 2; layer >= 1; --layer) {
+          const float ox = static_cast<float>(layer) * 0.9f * font_scale_;
+          const float oy = static_cast<float>(layer) * 1.1f * font_scale_;
           Gdiplus::GraphicsPath shadow;
-          shadow.AddArc(tab_cx - 1.5f, tab_cy + 1.5f, rad * 2, rad * 2, 180, 90);
-          shadow.AddLine(tab_cx + rad - 1.5f, tab_cy + 1.5f, tab_cx + tab_bw, tab_cy + 1.5f);
-          shadow.AddLine(tab_cx + tab_bw, tab_cy + 1.5f, tab_cx + tab_bw, tab_cy + tab_bh + 2.f);
-          shadow.AddLine(tab_cx + tab_bw, tab_cy + tab_bh + 2.f, tab_cx + rad - 1.5f, tab_cy + tab_bh + 2.f);
-          shadow.AddArc(tab_cx - 1.5f, tab_cy + tab_bh - rad * 2 + 2.f, rad * 2, rad * 2, 90, 90);
-          shadow.CloseFigure();
-          Gdiplus::SolidBrush shade(Gdiplus::Color(on ? 65 : 40, 0, 0, 0));
+          make_tab_path(&shadow, tab_cx - ox * 0.6f, tab_cy + oy,
+                        tab_bw + ox * 0.6f, tab_bh, rad + ox * 0.2f, true);
+          const BYTE sa = static_cast<BYTE>((on ? 14 : 9) * (3 - layer));
+          Gdiplus::SolidBrush shade(Gdiplus::Color(sa, 15, 23, 42));
           g.FillPath(&shade, &shadow);
         }
 
+        Gdiplus::GraphicsPath path;
+        make_tab_path(&path, tab_cx, tab_cy, tab_bw, tab_bh, rad, true);
+
+        Gdiplus::Color top;
+        Gdiplus::Color bottom;
+        auto clamp_b = [](int v) -> BYTE {
+          return static_cast<BYTE>((std::max)(0, (std::min)(255, v)));
+        };
+        if (is_light) {
+          if (on) {
+            top = Gdiplus::Color(252, 255, 255, 255);
+            bottom = Gdiplus::Color(250, MixChannel(248, ar, 0.08f),
+                                    MixChannel(250, ag, 0.08f),
+                                    MixChannel(254, ab, 0.10f));
+          } else if (hover) {
+            top = Gdiplus::Color(242, 255, 255, 255);
+            bottom = Gdiplus::Color(238, 246, 249, 254);
+          } else {
+            top = Gdiplus::Color(218, 250, 251, 254);
+            bottom = Gdiplus::Color(212, 241, 245, 250);
+          }
+        } else {
+          if (on) {
+            top = Gdiplus::Color(246, MixChannel(clamp_b(br + 26), ar, 0.18f),
+                                 MixChannel(clamp_b(bg + 26), ag, 0.18f),
+                                 MixChannel(clamp_b(bb + 30), ab, 0.18f));
+            bottom = Gdiplus::Color(244, MixChannel(clamp_b(br + 12), ar, 0.12f),
+                                    MixChannel(clamp_b(bg + 12), ag, 0.12f),
+                                    MixChannel(clamp_b(bb + 16), ab, 0.12f));
+          } else if (hover) {
+            top = Gdiplus::Color(228, clamp_b(br + 16), clamp_b(bg + 16), clamp_b(bb + 20));
+            bottom = Gdiplus::Color(224, clamp_b(br + 6), clamp_b(bg + 6), clamp_b(bb + 10));
+          } else {
+            top = Gdiplus::Color(198, clamp_b(br + 4), clamp_b(bg + 4), clamp_b(bb + 6));
+            bottom = Gdiplus::Color(192, clamp_b(br - 4), clamp_b(bg - 4), clamp_b(bb - 2));
+          }
+        }
+        Gdiplus::LinearGradientBrush body(
+            Gdiplus::PointF(tab_cx, tab_cy),
+            Gdiplus::PointF(tab_cx, tab_cy + tab_bh), top, bottom);
         g.FillPath(&body, &path);
 
-        // Accent wash overlay for active tab
+        // Open-right border path (no vertical seam along the screen edge)
+        Gdiplus::GraphicsPath border_path;
+        make_tab_path(&border_path, tab_cx, tab_cy, tab_bw, tab_bh, rad, false);
         if (on) {
-          Gdiplus::SolidBrush tint(Gdiplus::Color(static_cast<BYTE>(40 + 35 * e), ar, ag, ab));
-          g.FillPath(&tint, &path);
-        }
-
-        // 1px subtle border rim (enhanced accent rim for active pop-out)
-        if (on) {
-          Gdiplus::Pen rim(Gdiplus::Color(static_cast<BYTE>(160 + 60 * e), ar, ag, ab), 1.3f);
-          g.DrawPath(&rim, &path);
+          Gdiplus::Pen rim(
+              Gdiplus::Color(is_light ? 135 : 165, ar, ag, ab), 1.1f);
+          g.DrawPath(&rim, &border_path);
         } else if (hover) {
-          Gdiplus::Pen rim(Gdiplus::Color(120, ar, ag, ab), 1.0f);
-          g.DrawPath(&rim, &path);
+          Gdiplus::Pen rim(
+              is_light ? Gdiplus::Color(95, ar, ag, ab)
+                       : Gdiplus::Color(90, 255, 255, 255),
+              1.0f);
+          g.DrawPath(&rim, &border_path);
         } else {
-          Gdiplus::Pen rim(Gdiplus::Color(55, 255, 255, 255), 0.85f);
-          g.DrawPath(&rim, &path);
+          Gdiplus::Pen rim(
+              is_light ? Gdiplus::Color(36, 15, 23, 42)
+                       : Gdiplus::Color(38, 255, 255, 255),
+              1.0f);
+          g.DrawPath(&rim, &border_path);
         }
 
-        // Top specular highlight line
-        {
-          Gdiplus::GraphicsPath spec;
-          spec.AddArc(tab_cx + 1.f, tab_cy + 1.f, rad * 2 - 2.f, rad * 2 - 2.f, 180, 90);
-          spec.AddLine(tab_cx + rad, tab_cy + 1.f, tab_cx + tab_bw, tab_cy + 1.f);
-          Gdiplus::Pen spec_pen(Gdiplus::Color(on ? 120 : (hover ? 80 : 45), 255, 255, 255), 1.0f);
-          g.DrawPath(&spec_pen, &spec);
-        }
-
-        // Glowing active rail
+        // Crisp rounded pill indicator on the left of the active tab
         if (on) {
-          const float rail_h = (std::max)(12.f, tab_bh - 14.f);
-          const float rail_x = tab_cx + 4.8f;
-          const float rail_y = tab_cy + (tab_bh - rail_h) * 0.5f;
-          // Outer bloom
-          Gdiplus::Pen glow(Gdiplus::Color(static_cast<BYTE>(80 + 50 * e), ar, ag, ab), 4.2f);
-          glow.SetLineCap(Gdiplus::LineCapRound, Gdiplus::LineCapRound, Gdiplus::DashCapRound);
-          g.DrawLine(&glow, rail_x, rail_y + 1.5f, rail_x, rail_y + rail_h - 1.5f);
-          // Inner core
-          Gdiplus::SolidBrush rail(Gdiplus::Color(255, ar, ag, ab));
-          g.FillRectangle(&rail, rail_x - 1.2f, rail_y, 2.4f, rail_h);
+          const float pill_w = (std::max)(2.5f, std::round(3.f * font_scale_));
+          const float pill_h = (std::max)(10.f, std::round(14.f * font_scale_));
+          const float pill_x = tab_cx + std::round(6.5f * font_scale_);
+          const float pill_y = tab_cy + (tab_bh - pill_h) * 0.5f;
+          Gdiplus::GraphicsPath pill;
+          add_round_rect(&pill, pill_x, pill_y, pill_w, pill_h, pill_w * 0.5f);
+          Gdiplus::SolidBrush pill_brush(Gdiplus::Color(245, ar, ag, ab));
+          g.FillPath(&pill_brush, &pill);
         }
 
-        // Center label in the tab body; leave room for active rail + lock.
-        const float rail_reserve = on ? 10.f : 0.f;
-        const float lock_reserve = locked ? 14.f : 0.f;
-        const float side = 6.f;
+        // Center label in the tab body; show subtle lock icon only on hover or when plenty of space
+        const bool show_lock = locked && expand_t_ > 0.45f && (hover || on);
+        const float rail_reserve = on ? std::round(11.f * font_scale_) : 0.f;
+        const float lock_reserve = show_lock ? std::round(13.f * font_scale_) : 0.f;
+        const float side = std::round(7.f * font_scale_);
         const float text_x = tab_cx + side + rail_reserve;
         const float text_w = tab_bw - side * 2.f - rail_reserve - lock_reserve;
 
-        // Smooth text fade-in as the bar slides open (clean peek state without cut letters)
-        const float text_fade = (std::min)(1.f, (std::max)(0.f, (expand_t_ - 0.20f) / 0.65f));
+        const float text_fade = (std::min)(1.f, (std::max)(0.f, (expand_t_ - 0.18f) / 0.62f));
         if (text_w > 8.f && text_fade > 0.05f) {
-          const BYTE sa = static_cast<BYTE>(140.f * text_fade);
-          Gdiplus::SolidBrush shadow_ink(Gdiplus::Color(sa, 0, 0, 0));
-          const Gdiplus::Font& font = utility ? *font_util_ : *font_page_;
-          g.DrawString(s.label.c_str(), -1, &font,
-                       Gdiplus::RectF(text_x, tab_cy + 1.f, text_w, tab_bh), fmt_, &shadow_ink);
+          const Gdiplus::Font& font =
+              on ? *font_on_ : (utility ? *font_util_ : *font_page_);
           const BYTE ink_a = static_cast<BYTE>(255.f * text_fade);
-          Gdiplus::SolidBrush ink(
-              is_light
-                  ? (on ? Gdiplus::Color(ink_a, 24, 40, 68)
-                        : Gdiplus::Color(ink_a, 51, 65, 85))
-                  : (on ? Gdiplus::Color(ink_a, 255, 255, 255)
-                        : (hover ? Gdiplus::Color(ink_a, 240, 245, 255)
-                                 : (utility ? Gdiplus::Color(static_cast<BYTE>(200.f * text_fade), 160, 180, 205)
-                                            : Gdiplus::Color(static_cast<BYTE>(220.f * text_fade), 210, 222, 240)))));
+          Gdiplus::Color ink_c;
+          if (is_light) {
+            if (on) {
+              ink_c = Gdiplus::Color(ink_a, MixChannel(15, ar, 0.55f),
+                                     MixChannel(23, ag, 0.55f),
+                                     MixChannel(42, ab, 0.55f));
+            } else if (hover) {
+              ink_c = Gdiplus::Color(ink_a, 15, 23, 42);
+            } else if (utility) {
+              ink_c = Gdiplus::Color(static_cast<BYTE>(215.f * text_fade), 71, 85, 105);
+            } else {
+              ink_c = Gdiplus::Color(static_cast<BYTE>(235.f * text_fade), 45, 55, 72);
+            }
+          } else {
+            if (on) {
+              ink_c = Gdiplus::Color(ink_a, 255, 255, 255);
+            } else if (hover) {
+              ink_c = Gdiplus::Color(ink_a, 241, 245, 249);
+            } else if (utility) {
+              ink_c = Gdiplus::Color(static_cast<BYTE>(200.f * text_fade), 165, 180, 202);
+            } else {
+              ink_c = Gdiplus::Color(static_cast<BYTE>(225.f * text_fade), 214, 224, 238);
+            }
+          }
+          Gdiplus::SolidBrush ink(ink_c);
           g.DrawString(s.label.c_str(), -1, &font,
                        Gdiplus::RectF(text_x, tab_cy, text_w, tab_bh), fmt_, &ink);
         }
 
-        if (locked && expand_t_ > 0.35f) {
-          const float lw = 6.f;
-          const float lx = tab_cx + tab_bw - 11.f;
-          const float ly = tab_cy + (tab_bh - 9.f) * 0.5f;
-          const Gdiplus::Color lock_c(on ? Gdiplus::Color(255, ar, ag, ab)
-                                         : Gdiplus::Color(180, 180, 200, 225));
-          Gdiplus::Pen shackle(lock_c, 1.f);
-          g.DrawArc(&shackle, Gdiplus::RectF(lx + 1.f, ly, lw - 2.f, 3.4f),
+        if (show_lock) {
+          const float lw = std::round(6.f * font_scale_);
+          const float lh = std::round(4.6f * font_scale_);
+          const float lx = tab_cx + tab_bw - std::round(12.f * font_scale_);
+          const float ly = tab_cy + (tab_bh - (lh + 3.2f * font_scale_)) * 0.5f;
+          const Gdiplus::Color lock_c =
+              on ? Gdiplus::Color(200, ar, ag, ab)
+                 : (is_light ? Gdiplus::Color(150, 100, 116, 139)
+                             : Gdiplus::Color(160, 165, 180, 202));
+          Gdiplus::Pen shackle(lock_c, (std::max)(1.f, 1.1f * font_scale_));
+          g.DrawArc(&shackle,
+                    Gdiplus::RectF(lx + 1.f * font_scale_, ly,
+                                   lw - 2.f * font_scale_, 3.6f * font_scale_),
                     180.f, 180.f);
+          Gdiplus::GraphicsPath body_p;
+          add_round_rect(&body_p, lx, ly + 2.8f * font_scale_, lw, lh,
+                         1.2f * font_scale_);
           Gdiplus::SolidBrush lock_body(lock_c);
-          g.FillRectangle(&lock_body,
-                          Gdiplus::RectF(lx, ly + 2.8f, lw, 5.2f));
+          g.FillPath(&lock_body, &body_p);
         }
       }
     }

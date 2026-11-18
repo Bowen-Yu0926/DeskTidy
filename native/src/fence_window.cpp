@@ -1505,8 +1505,8 @@ bool FenceWindow::Create(HINSTANCE instance, const FenceLayout& layout) {
   portal_path_ = layout.portal_path;
   collapsed_ = layout.collapsed;
   auto_hide_ = layout.auto_hide;
-  position_locked_ = layout.position_locked;
-  content_locked_ = layout.content_locked;
+  position_locked_ = false;
+  content_locked_ = false;
   label_lines_ = (std::min)(3, (std::max)(1, layout.label_lines));
   cell_scale_ = (std::min)(150, (std::max)(85, layout.cell_scale));
   fade_on_idle_ = layout.fade_on_idle;
@@ -3683,9 +3683,9 @@ void FenceWindow::HeaderBtnRects(RECT* collapse, RECT* lock, RECT* dissolve,
     out->bottom = header - 2;
     right = out->left - gap;
   };
-  // Right → left: collapse, lock, dissolve (delete).
+  // Right → left: collapse, dissolve (delete).
   place(collapse, collapsible_);
-  place(lock, true);
+  place(lock, false);
   place(dissolve, !IsSystemFence());
   // Fences Folder Portal: up chevron on the left when drilled below root.
   if (portal_up && PortalCanGoUp()) {
@@ -5497,7 +5497,7 @@ void FenceWindow::ShowFenceMenu(POINT screen) {
   };
   std::vector<ShellMenuExtra> extras{
       leaf(Tr("fence_rename"), kExtFenceRename),
-leaf_en(collapsed_ ? Tr("fence_expand") : Tr("fence_collapse"),
+      leaf_en(collapsed_ ? Tr("fence_expand") : Tr("fence_collapse"),
               kExtFenceCollapse, false, !position_locked_),
       leaf_en(L"离开自动折叠", kExtFenceAutoHide, auto_hide_,
               !position_locked_),
@@ -5506,11 +5506,6 @@ leaf_en(collapsed_ ? Tr("fence_expand") : Tr("fence_collapse"),
       leaf(Tr("fence_refresh"), kExtFenceRefresh),
       leaf(L"筛选图标…", kExtFenceFilter),
       leaf(Tr("fence_hide"), kExtFenceHide),
-      leaf(position_locked_ ? Tr("fence_unlock") : Tr("fence_lock"),
-           kExtFenceLock),
-      leaf(content_locked_ ? Tr("fence_unlock_content")
-                           : Tr("fence_lock_content"),
-           kExtFenceLockContent),
       leaf(Tr("fence_dissolve"), kExtFenceDissolve),
       leaf(portal_path_.empty() ? L"设为门户文件夹…" : L"更换门户文件夹…",
            kExtFencePortalSet),
@@ -5763,9 +5758,6 @@ if (!position_locked_) {
                          : Tr("fence_collapse").c_str());
   AppendMenuW(menu,
               MF_STRING | (auto_hide_ ? MF_CHECKED : 0), 16, L"离开自动折叠");
-  AppendMenuW(menu, MF_STRING, 12,
-              position_locked_ ? Tr("fence_unlock").c_str()
-                               : Tr("fence_lock").c_str());
   AppendMenuW(menu, MF_STRING, 13, Tr("fence_paste").c_str());
   AppendMenuW(menu, MF_STRING, 14,
               portal_path_.empty() ? L"设为门户文件夹…" : L"更换门户文件夹…");

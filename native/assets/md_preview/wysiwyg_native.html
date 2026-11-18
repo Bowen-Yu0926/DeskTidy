@@ -273,33 +273,33 @@
     }
     /* Task list: Crepe reserves a fixed 32px label row; match the 1.75 line
        box so the checkbox sits on the first text line instead of above it.
-       List markers / numbers / bullets use a deep blue theme. */
+       List markers / numbers / bullets match the body font color. */
     #editor .milkdown-list-item-block li .label-wrapper,
     #editor .milkdown-list-item-block li .label-wrapper .label {
       height: 28px;
       padding: 0;
       width: 24px;
-      color: #1f6bff !important;
+      color: inherit !important;
       font-weight: 600;
     }
     #editor .milkdown-list-item-block li .label-wrapper svg {
-      color: #1f6bff !important;
-      fill: #1f6bff !important;
+      color: currentColor !important;
+      fill: currentColor !important;
     }
     #editor .ProseMirror li::marker {
-      color: #1f6bff;
+      color: inherit;
       font-weight: 600;
     }
     body.theme-dark #editor .milkdown-list-item-block li .label-wrapper,
     body.theme-dark #editor .milkdown-list-item-block li .label-wrapper .label {
-      color: #5b9bff !important;
+      color: inherit !important;
     }
     body.theme-dark #editor .milkdown-list-item-block li .label-wrapper svg {
-      color: #5b9bff !important;
-      fill: #5b9bff !important;
+      color: currentColor !important;
+      fill: currentColor !important;
     }
     body.theme-dark #editor .ProseMirror li::marker {
-      color: #5b9bff;
+      color: inherit;
     }
 
     /* --- Blockquote: soft grey panel with a light left rule ------------- */

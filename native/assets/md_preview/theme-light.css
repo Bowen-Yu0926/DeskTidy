@@ -32,10 +32,10 @@ html, body {
   list-style: disc;
 }
 .markdown-body ul > li::marker {
-  color: #4b5563;
+  color: inherit;
 }
 .markdown-body ol > li::marker {
-  color: #4b5563;
+  color: inherit;
 }
 .markdown-body h2 { font-size: 1.4em; }
 .markdown-body h3 { font-size: 1.2em; }

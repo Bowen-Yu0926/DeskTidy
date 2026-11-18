@@ -37,18 +37,35 @@ IContextMenu2* g_pcm2 = nullptr;
 IContextMenu3* g_pcm3 = nullptr;
 HWND g_host = nullptr;
 bool g_host_class = false;
+HMENU g_desktidy_sub = nullptr;
+const std::vector<ShellMenuExtra>* g_pending_extras = nullptr;
+bool g_desktidy_extras_injected = false;
+
+bool AppendShellExtras(HMENU menu, const std::vector<ShellMenuExtra>& extras);
+void PrependShellExtras(HMENU menu, const std::vector<ShellMenuExtra>& extras);
 
 LRESULT CALLBACK MenuHostProc(HWND hwnd, UINT msg, WPARAM wparam,
                               LPARAM lparam) {
+  LRESULT lr = 0;
+  bool handled = false;
   if (g_pcm3) {
-    LRESULT lr = 0;
     if (SUCCEEDED(g_pcm3->HandleMenuMsg2(msg, wparam, lparam, &lr))) {
-      return lr;
+      handled = true;
     }
   } else if (g_pcm2) {
     if (SUCCEEDED(g_pcm2->HandleMenuMsg(msg, wparam, lparam))) {
-      return 0;
+      handled = true;
     }
+  }
+  if (msg == WM_INITMENUPOPUP && g_desktidy_sub &&
+      reinterpret_cast<HMENU>(wparam) == g_desktidy_sub &&
+      !g_desktidy_extras_injected && g_pending_extras &&
+      !g_pending_extras->empty()) {
+    g_desktidy_extras_injected = true;
+    PrependShellExtras(g_desktidy_sub, *g_pending_extras);
+  }
+  if (handled) {
+    return lr;
   }
   return DefWindowProcW(hwnd, msg, wparam, lparam);
 }
@@ -273,6 +290,65 @@ bool AppendShellExtras(HMENU menu, const std::vector<ShellMenuExtra>& extras) {
   return any;
 }
 
+void PrependShellExtras(HMENU menu, const std::vector<ShellMenuExtra>& extras) {
+  const bool had_existing = GetMenuItemCount(menu) > 0;
+  UINT pos = 0;
+  for (const auto& ex : extras) {
+    if (ex.label.empty()) {
+      continue;
+    }
+    if (!ex.children.empty()) {
+      HMENU sub = CreatePopupMenu();
+      if (!sub) {
+        continue;
+      }
+      AppendShellExtras(sub, ex.children);
+      InsertMenuW(menu, pos++,
+                  MF_BYPOSITION | MF_POPUP | (ex.enabled ? 0 : MF_GRAYED),
+                  reinterpret_cast<UINT_PTR>(sub), ex.label.c_str());
+      continue;
+    }
+    if (ex.id < static_cast<int>(kCustomIdFirst) ||
+        ex.id > static_cast<int>(kCustomIdLast)) {
+      continue;
+    }
+    UINT flags = MF_BYPOSITION | MF_STRING;
+    if (!ex.enabled) {
+      flags |= MF_GRAYED;
+    }
+    if (ex.checked) {
+      flags |= MF_CHECKED;
+    }
+    InsertMenuW(menu, pos++, flags, static_cast<UINT>(ex.id), ex.label.c_str());
+  }
+  if (pos > 0 && had_existing) {
+    InsertMenuW(menu, pos, MF_BYPOSITION | MF_SEPARATOR, 0, nullptr);
+  }
+}
+
+HMENU FindDeskTidySubmenu(HMENU menu) {
+  const int count = GetMenuItemCount(menu);
+  for (int i = 0; i < count; ++i) {
+    HMENU sub = GetSubMenu(menu, i);
+    if (!sub) {
+      continue;
+    }
+    wchar_t buf[256] = {};
+    if (GetMenuStringW(menu, static_cast<UINT>(i), buf, 255, MF_BYPOSITION) > 0) {
+      std::wstring clean;
+      for (wchar_t c : std::wstring(buf)) {
+        if (c != L'&') {
+          clean.push_back(c);
+        }
+      }
+      if (_wcsicmp(clean.c_str(), L"DeskTidy") == 0) {
+        return sub;
+      }
+    }
+  }
+  return nullptr;
+}
+
 int TrackCommon(HWND owner, POINT screen, IContextMenu* pcm, UINT cmf_flags,
                 bool can_rename, const std::vector<ShellMenuExtra>& extras,
                 const ShellVerbFn& on_verb,
@@ -283,19 +359,34 @@ int TrackCommon(HWND owner, POINT screen, IContextMenu* pcm, UINT cmf_flags,
     return -1;
   }
 
-  // DeskTidy extras at the top (ids 1..99 + cascading children), then shell.
-  if (AppendShellExtras(menu, extras)) {
-    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-  }
-
   if (GetAsyncKeyState(VK_SHIFT) & 0x8000) {
     cmf_flags |= CMF_EXTENDEDVERBS;
   }
 
-  if (FAILED(pcm->QueryContextMenu(menu, GetMenuItemCount(menu), kShellIdFirst,
-                                   kShellIdLast, cmf_flags))) {
+  if (FAILED(pcm->QueryContextMenu(menu, 0, kShellIdFirst, kShellIdLast,
+                                   cmf_flags))) {
     DestroyMenu(menu);
     return -1;
+  }
+
+  // Group all DeskTidy extras inside the "DeskTidy" submenu so the root menu
+  // stays clean and all DeskTidy options live under one place.
+  g_desktidy_sub = FindDeskTidySubmenu(menu);
+  g_pending_extras = &extras;
+  g_desktidy_extras_injected = false;
+  if (!g_desktidy_sub && !extras.empty()) {
+    HMENU sub = CreatePopupMenu();
+    if (sub && AppendShellExtras(sub, extras)) {
+      const bool had_shell = GetMenuItemCount(menu) > 0;
+      InsertMenuW(menu, 0, MF_BYPOSITION | MF_POPUP,
+                  reinterpret_cast<UINT_PTR>(sub), L"DeskTidy");
+      if (had_shell) {
+        InsertMenuW(menu, 1, MF_BYPOSITION | MF_SEPARATOR, 0, nullptr);
+      }
+      g_desktidy_extras_injected = true;
+    } else if (sub) {
+      DestroyMenu(sub);
+    }
   }
 
   pcm->QueryInterface(IID_IContextMenu2, reinterpret_cast<void**>(&g_pcm2));
@@ -303,6 +394,9 @@ int TrackCommon(HWND owner, POINT screen, IContextMenu* pcm, UINT cmf_flags,
 
   HWND track = g_host ? g_host : owner;
   if (!track) {
+    g_desktidy_sub = nullptr;
+    g_pending_extras = nullptr;
+    g_desktidy_extras_injected = false;
     DestroyMenu(menu);
     if (g_pcm3) {
       g_pcm3->Release();
@@ -390,6 +484,9 @@ int TrackCommon(HWND owner, POINT screen, IContextMenu* pcm, UINT cmf_flags,
     g_pcm2->Release();
     g_pcm2 = nullptr;
   }
+  g_desktidy_sub = nullptr;
+  g_pending_extras = nullptr;
+  g_desktidy_extras_injected = false;
   DestroyMenu(menu);
   return result;
 }
