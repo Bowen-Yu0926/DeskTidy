@@ -770,17 +770,42 @@ void DockWindow::Paint(HDC hdc) {
     g.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHalf);
     Gdiplus::GraphicsPath path;
     AddRoundRect(&path, w, h, radius);
-    // Python default: rgba(22,27,34,0.85) + blue border.
-    Gdiplus::SolidBrush fill(Gdiplus::Color(fill_alpha_, 22, 27, 34));
-    Gdiplus::Pen edge(Gdiplus::Color(100, 88, 166, 255), 1.0f);
+    const BYTE top_a = static_cast<BYTE>((std::min)(255, static_cast<int>(fill_alpha_) + 8));
+    const BYTE bot_a = fill_alpha_;
+    Gdiplus::LinearGradientBrush fill(
+        Gdiplus::Point(0, 0), Gdiplus::Point(0, h),
+        Gdiplus::Color(top_a, 28, 35, 48),
+        Gdiplus::Color(bot_a, 17, 22, 31));
     g.FillPath(&fill, &path);
+
+    // Subtle top specular highlight line
+    Gdiplus::Pen spec_pen(Gdiplus::Color(55, 255, 255, 255), 1.0f);
+    if (w > radius * 2 + 4) {
+      g.DrawLine(&spec_pen, radius, 1, w - radius, 1);
+    }
+    Gdiplus::Pen edge(Gdiplus::Color(115, 88, 166, 255), 1.0f);
     g.DrawPath(&edge, &path);
+
     for (size_t i = 0; i < slots_.size(); ++i) {
       if (static_cast<int>(i) == hover_index_) {
         const auto& s = slots_[i];
-        Gdiplus::SolidBrush glow_br(Gdiplus::Color(90, 120, 170, 255));
-        g.FillRectangle(&glow_br, s.bounds.left - glow, s.bounds.top - glow,
-                        btn, btn);
+        const int hx = s.bounds.left - glow;
+        const int hy = s.bounds.top - glow;
+        const int hr = (std::max)(6, radius / 2);
+        const int hrr = hr * 2;
+        Gdiplus::GraphicsPath hpath;
+        hpath.AddArc(hx, hy, hrr, hrr, 180, 90);
+        hpath.AddArc(hx + btn - hrr, hy, hrr, hrr, 270, 90);
+        hpath.AddArc(hx + btn - hrr, hy + btn - hrr, hrr, hrr, 0, 90);
+        hpath.AddArc(hx, hy + btn - hrr, hrr, hrr, 90, 90);
+        hpath.CloseFigure();
+        Gdiplus::LinearGradientBrush glow_br(
+            Gdiplus::Point(hx, hy), Gdiplus::Point(hx, hy + btn),
+            Gdiplus::Color(95, 110, 175, 255),
+            Gdiplus::Color(55, 70, 130, 235));
+        g.FillPath(&glow_br, &hpath);
+        Gdiplus::Pen hrim(Gdiplus::Color(110, 140, 195, 255), 1.0f);
+        g.DrawPath(&hrim, &hpath);
       }
     }
   }

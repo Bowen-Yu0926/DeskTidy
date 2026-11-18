@@ -2533,9 +2533,12 @@ void FenceWindow::TabStripRects(std::vector<RECT>* out) const {
     return;
   }
   const int n = static_cast<int>(tab_entries_.size());
-  // Equal-width tabs; each tab is at least a few characters wide.
-  int tab_w = avail / n;
-  tab_w = (std::max)(S(hwnd_, 36), tab_w);
+  const int gap = S(hwnd_, 4);
+  const int total_gaps = (n > 1) ? (n - 1) * gap : 0;
+  // Cap tab width so 2-3 tabs stay compact pill tabs instead of stretching
+  // across the entire fence width; leaves header blank space for dragging.
+  int tab_w = (avail - total_gaps) / n;
+  tab_w = (std::min)(S(hwnd_, 132), (std::max)(S(hwnd_, 44), tab_w));
   int x = left_start;
   for (int i = 0; i < n; ++i) {
     RECT r{x, S(hwnd_, 3), x + tab_w, header - S(hwnd_, 3)};
@@ -2546,7 +2549,7 @@ void FenceWindow::TabStripRects(std::vector<RECT>* out) const {
       break;
     }
     out->push_back(r);
-    x = r.right + S(hwnd_, 2);
+    x = r.right + gap;
     if (x >= right_limit) {
       break;
     }
@@ -6134,6 +6137,11 @@ LRESULT FenceWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
         POINT pt{};
         GetCursorPos(&pt);
         ScreenToClient(hwnd_, &pt);
+        if (HitTestHeaderBtn(pt.x, pt.y) != HeaderBtn::None ||
+            HitTestTab(pt.x, pt.y) >= 0) {
+          SetCursor(LoadCursor(nullptr, IDC_HAND));
+          return TRUE;
+        }
         // Icons own the cursor over resize strips (Python fence_widget parity).
         if (HitTestIcon(pt.x, pt.y) < 0) {
           const Edge e = HitTestEdge(pt.x, pt.y);
@@ -6182,6 +6190,7 @@ LRESULT FenceWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
           rubber_ = false;
           icon_press_ = false;
           SetCapture(hwnd_);
+          PresentLayered();
           return 0;
         }
       }
@@ -6480,10 +6489,34 @@ LRESULT FenceWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
         return 0;
       }
       if (!dragging_ || !(wparam & MK_LBUTTON)) {
-        const int hit =
-            HitTestIcon(GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam));
+        const int mx = GET_X_LPARAM(lparam);
+        const int my = GET_Y_LPARAM(lparam);
+        const HeaderBtn hb = HitTestHeaderBtn(mx, my);
+        const int th = (hb == HeaderBtn::None) ? HitTestTab(mx, my) : -1;
+        const bool sb_h =
+            (hb == HeaderBtn::None && th < 0 && HitTestScrollbar(mx, my) > 0);
+        if (hb != header_hover_ || th != tab_hover_ ||
+            sb_h != scrollbar_hover_) {
+          header_hover_ = hb;
+          tab_hover_ = th;
+          scrollbar_hover_ = sb_h;
+          hover_present_pending_ = true;
+          if (hwnd_) {
+            SetTimer(hwnd_, kTimerHoverFlush, kHoverRepaintThrottleMs, nullptr);
+          }
+        }
+        const int hit = HitTestIcon(mx, my);
         if (hit != tip_index_) {
           UpdateHoverTip(hit);
+        } else if (hover_present_pending_ && hwnd_) {
+          const DWORD now = GetTickCount();
+          if (last_hover_present_ms_ == 0 ||
+              now - last_hover_present_ms_ >=
+                  static_cast<DWORD>(kHoverRepaintThrottleMs)) {
+            hover_present_pending_ = false;
+            last_hover_present_ms_ = now;
+            PresentLayered();
+          }
         } else if (hit >= 0 && tip_) {
           POINT pt{};
           GetCursorPos(&pt);
@@ -6508,6 +6541,16 @@ LRESULT FenceWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
       return 0;
     }
     case WM_MOUSELEAVE:
+      if (header_hover_ != HeaderBtn::None || tab_hover_ >= 0 ||
+          scrollbar_hover_) {
+        header_hover_ = HeaderBtn::None;
+        tab_hover_ = -1;
+        scrollbar_hover_ = false;
+        hover_present_pending_ = true;
+        if (hwnd_) {
+          SetTimer(hwnd_, kTimerHoverFlush, kHoverRepaintThrottleMs, nullptr);
+        }
+      }
       UpdateHoverTip(-1);
       if (fade_on_idle_) {
         SetTimer(hwnd_, kTimerIdleFade, kIdleFadeIntervalMs, nullptr);
@@ -6573,7 +6616,9 @@ if (wparam == kTimerDragScroll) {
       if (header_press_ != HeaderBtn::None) {
         const HeaderBtn pressed = header_press_;
         header_press_ = HeaderBtn::None;
-        if (HitTestHeaderBtn(x, y) == pressed && !dragging_ && !rubber_ &&
+        header_hover_ = HitTestHeaderBtn(x, y);
+        PresentLayered();
+        if (header_hover_ == pressed && !dragging_ && !rubber_ &&
             !icon_dragging_ && !thumb_dragging_ && !resizing_) {
           ActivateHeaderBtn(pressed);
         }
@@ -6581,6 +6626,8 @@ if (wparam == kTimerDragScroll) {
       }
       if (thumb_dragging_) {
         thumb_dragging_ = false;
+        scrollbar_hover_ = HitTestScrollbar(x, y) > 0;
+        PresentLayered();
         return 0;
       }
       if (icon_dragging_) {
@@ -6956,16 +7003,22 @@ void FenceWindow::Paint(HDC hdc) {
     return (std::max)(title_left, leftmost - 6);
   }();
   if (show_title_) {
+    const BYTE ar = GetRValue(accent_);
+    const BYTE ag = GetGValue(accent_);
+    const BYTE ab = GetBValue(accent_);
     if (tab_entries_.size() >= 2) {
-      // Tabbed fence: the title slot becomes a tab strip. Only the active tab
-      // gets a raised chip so the group reads as one panel with several
-      // compartments rather than N stacked title bars.
+      // Tabbed fence: modern segmented pill tabs with active accent bar & hover.
       std::vector<RECT> tabs;
       TabStripRects(&tabs);
-      const int tab_px = S(hwnd_, 12);
+      Gdiplus::StringFormat tf;
+      tf.SetAlignment(Gdiplus::StringAlignmentCenter);
+      tf.SetLineAlignment(Gdiplus::StringAlignmentCenter);
+      tf.SetTrimming(Gdiplus::StringTrimmingEllipsisCharacter);
+      tf.SetFormatFlags(Gdiplus::StringFormatFlagsNoWrap);
       for (size_t i = 0; i < tabs.size() && i < tab_entries_.size(); ++i) {
         const RECT& r = tabs[i];
         const bool on = tab_entries_[i].active;
+        const bool hov = (!on && tab_hover_ == static_cast<int>(i));
         Gdiplus::GraphicsPath path;
         const float rad = S(hwnd_, 7) * 1.0f;
         Gdiplus::RectF rf(static_cast<Gdiplus::REAL>(r.left),
@@ -6978,19 +7031,54 @@ void FenceWindow::Paint(HDC hdc) {
                     90.f);
         path.AddArc(rf.X, rf.GetBottom() - rad, rad, rad, 90.f, 90.f);
         path.CloseFigure();
-        Gdiplus::SolidBrush chip(
-            on ? Gdiplus::Color(light_panel_ ? 235 : 120, 255, 255, 255)
-               : (light_panel_ ? Gdiplus::Color(28, 15, 23, 42)
-                               : Gdiplus::Color(40, 255, 255, 255)));
-        g.FillPath(&chip, &path);
-        Gdiplus::StringFormat tf;
-        tf.SetAlignment(Gdiplus::StringAlignmentCenter);
-        tf.SetLineAlignment(Gdiplus::StringAlignmentCenter);
-        tf.SetTrimming(Gdiplus::StringTrimmingEllipsisCharacter);
-        tf.SetFormatFlags(Gdiplus::StringFormatFlagsNoWrap);
+        if (on) {
+          Gdiplus::Color c_top = light_panel_
+              ? Gdiplus::Color(240, 255, 255, 255)
+              : Gdiplus::Color(115,
+                               static_cast<BYTE>((ar * 2 + 255 * 3) / 5),
+                               static_cast<BYTE>((ag * 2 + 255 * 3) / 5),
+                               static_cast<BYTE>((ab * 2 + 255 * 3) / 5));
+          Gdiplus::Color c_bot = light_panel_
+              ? Gdiplus::Color(215, 248, 250, 252)
+              : Gdiplus::Color(75, ar, ag, ab);
+          Gdiplus::LinearGradientBrush chip(
+              Gdiplus::PointF(rf.X, rf.Y),
+              Gdiplus::PointF(rf.X, rf.GetBottom()), c_top, c_bot);
+          g.FillPath(&chip, &path);
+          Gdiplus::Pen rim(
+              light_panel_ ? Gdiplus::Color(90, ar, ag, ab)
+                           : Gdiplus::Color(140,
+                                            static_cast<BYTE>((ar + 255) / 2),
+                                            static_cast<BYTE>((ag + 255) / 2),
+                                            static_cast<BYTE>((ab + 255) / 2)),
+              1.0f);
+          g.DrawPath(&rim, &path);
+          // Bottom luminous accent bar inside active tab
+          const float bar_w = (std::max)(12.f, rf.Width * 0.36f);
+          const float bar_x = rf.X + (rf.Width - bar_w) * 0.5f;
+          const float bar_y = rf.GetBottom() - 2.5f;
+          Gdiplus::Pen bar_pen(Gdiplus::Color(235, ar, ag, ab), 2.0f);
+          bar_pen.SetStartCap(Gdiplus::LineCapRound);
+          bar_pen.SetEndCap(Gdiplus::LineCapRound);
+          g.DrawLine(&bar_pen, bar_x, bar_y, bar_x + bar_w, bar_y);
+        } else {
+          Gdiplus::SolidBrush chip(
+              hov ? (light_panel_ ? Gdiplus::Color(52, 15, 23, 42)
+                                  : Gdiplus::Color(68, 255, 255, 255))
+                  : (light_panel_ ? Gdiplus::Color(22, 15, 23, 42)
+                                  : Gdiplus::Color(28, 255, 255, 255)));
+          g.FillPath(&chip, &path);
+          if (hov) {
+            Gdiplus::Pen hpen(
+                light_panel_ ? Gdiplus::Color(40, 15, 23, 42)
+                             : Gdiplus::Color(65, 255, 255, 255),
+                1.0f);
+            g.DrawPath(&hpen, &path);
+          }
+        }
         Gdiplus::SolidBrush ink(
-            Gdiplus::Color(on ? 255 : 168, GetRValue(title_color_),
-                           GetGValue(title_color_),
+            Gdiplus::Color(on ? 255 : (hov ? 230 : 172),
+                           GetRValue(title_color_), GetGValue(title_color_),
                            GetBValue(title_color_)));
         g.DrawString(tab_entries_[i].label.c_str(), -1, title_font_, rf, &tf,
                      &ink);
@@ -7013,35 +7101,87 @@ void FenceWindow::Paint(HDC hdc) {
                    &shadow_br);
       g.DrawString(caption.c_str(), -1, title_font_, title_box, &title_fmt,
                    &title_brush);
+      // When collapsed, show a subtle item-count pill badge next to header buttons
+      if (collapsed_) {
+        int filled = 0;
+        for (const auto& c : cells_) {
+          if (!c.item.path.empty()) {
+            ++filled;
+          }
+        }
+        if (filled > 0 && chrome_right - title_left > S(hwnd_, 96)) {
+          const std::wstring cnt_str = std::to_wstring(filled);
+          const float bh = static_cast<float>(S(hwnd_, 16));
+          const float bw =
+              static_cast<float>(S(hwnd_, filled >= 10 ? 24 : 18));
+          const float bx = static_cast<float>(chrome_right) - bw - S(hwnd_, 2);
+          const float by = (header - bh) * 0.5f;
+          Gdiplus::GraphicsPath bp;
+          bp.AddArc(bx, by, bh, bh, 90.f, 180.f);
+          bp.AddArc(bx + bw - bh, by, bh, bh, 270.f, 180.f);
+          bp.CloseFigure();
+          Gdiplus::SolidBrush bfill(
+              light_panel_ ? Gdiplus::Color(36, ar, ag, ab)
+                           : Gdiplus::Color(64, ar, ag, ab));
+          g.FillPath(&bfill, &bp);
+          Gdiplus::StringFormat bfmt;
+          bfmt.SetAlignment(Gdiplus::StringAlignmentCenter);
+          bfmt.SetLineAlignment(Gdiplus::StringAlignmentCenter);
+          Gdiplus::RectF brf(bx, by, bw, bh);
+          g.DrawString(cnt_str.c_str(), -1, footer_font_, brf, &bfmt,
+                       &title_brush);
+        }
+      }
     }
   }
   // Title-bar icons only (no text): collapse · lock · delete. Edit stays in settings.
   {
-    Gdiplus::Pen pen(Gdiplus::Color(255, GetRValue(title_color_),
-                                    GetGValue(title_color_),
-                                    GetBValue(title_color_)),
-                     1.6f);
-    pen.SetLineCap(Gdiplus::LineCapRound, Gdiplus::LineCapRound,
-                   Gdiplus::DashCapRound);
     auto mid = [](const RECT& r) {
       return Gdiplus::PointF(
           (r.left + r.right) * 0.5f, (r.top + r.bottom) * 0.5f);
     };
-    auto draw_btn_backing = [&](const RECT& r) {
-      if (r.right > r.left) {
-        const auto c = mid(r);
-        const float br = (std::min)(11.0f, (r.bottom - r.top) * 0.44f);
+    auto draw_btn_backing = [&](const RECT& r, HeaderBtn kind) {
+      if (r.right <= r.left) {
+        return;
+      }
+      const bool hov = (header_hover_ == kind);
+      const bool prs = (header_press_ == kind);
+      const auto c = mid(r);
+      const float br = (std::min)(static_cast<float>(S(hwnd_, 11)),
+                                  (r.bottom - r.top) * 0.45f);
+      if (kind == HeaderBtn::Dissolve && (hov || prs)) {
+        Gdiplus::SolidBrush danger_bg(
+            Gdiplus::Color(prs ? 195 : 145, 239, 68, 68));
+        g.FillEllipse(&danger_bg, c.X - br, c.Y - br, br * 2.0f, br * 2.0f);
+      } else {
+        const BYTE alpha = prs ? (light_panel_ ? 55 : 78)
+                               : (hov ? (light_panel_ ? 36 : 52)
+                                      : (light_panel_ ? 14 : 20));
         Gdiplus::SolidBrush chip_bg(Gdiplus::Color(
-            light_panel_ ? 16 : 24, 255, 255, 255));
+            alpha, light_panel_ && (hov || prs) ? 15 : 255,
+            light_panel_ && (hov || prs) ? 23 : 255,
+            light_panel_ && (hov || prs) ? 42 : 255));
         g.FillEllipse(&chip_bg, c.X - br, c.Y - br, br * 2.0f, br * 2.0f);
       }
     };
-    draw_btn_backing(portal_up_rc);
-    draw_btn_backing(collapse_rc);
-    draw_btn_backing(lock_rc);
-    draw_btn_backing(dissolve_rc);
+    draw_btn_backing(portal_up_rc, HeaderBtn::PortalUp);
+    draw_btn_backing(collapse_rc, HeaderBtn::Collapse);
+    draw_btn_backing(lock_rc, HeaderBtn::Lock);
+    draw_btn_backing(dissolve_rc, HeaderBtn::Dissolve);
+
+    auto icon_color = [&](HeaderBtn kind) -> Gdiplus::Color {
+      const bool hov = (header_hover_ == kind || header_press_ == kind);
+      if (kind == HeaderBtn::Dissolve && hov) {
+        return Gdiplus::Color(255, 255, 245, 245);
+      }
+      return Gdiplus::Color(hov ? 255 : 205, GetRValue(title_color_),
+                            GetGValue(title_color_), GetBValue(title_color_));
+    };
     // Portal up (Fences Folder Portal — left of title when drilled in).
     if (portal_up_rc.right > portal_up_rc.left) {
+      Gdiplus::Pen pen(icon_color(HeaderBtn::PortalUp), 1.6f);
+      pen.SetLineCap(Gdiplus::LineCapRound, Gdiplus::LineCapRound,
+                     Gdiplus::DashCapRound);
       const auto c = mid(portal_up_rc);
       const float s = 4.5f;
       g.DrawLine(&pen, c.X - s, c.Y + s * 0.2f, c.X, c.Y - s * 0.6f);
@@ -7049,6 +7189,9 @@ void FenceWindow::Paint(HDC hdc) {
     }
     // Collapse chevron
     if (collapse_rc.right > collapse_rc.left) {
+      Gdiplus::Pen pen(icon_color(HeaderBtn::Collapse), 1.6f);
+      pen.SetLineCap(Gdiplus::LineCapRound, Gdiplus::LineCapRound,
+                     Gdiplus::DashCapRound);
       const auto c = mid(collapse_rc);
       const float s = 4.5f;
       if (collapsed_) {
@@ -7059,10 +7202,11 @@ void FenceWindow::Paint(HDC hdc) {
         g.DrawLine(&pen, c.X, c.Y - s * 0.5f, c.X + s, c.Y + s * 0.4f);
       }
     }
-    // Lock / unlock padlock. Two independent locks share this glyph:
-    //   position lock → closed shackle
-    //   content lock  → filled body (set + order frozen)
+    // Lock / unlock padlock.
     if (lock_rc.right > lock_rc.left) {
+      Gdiplus::Pen pen(icon_color(HeaderBtn::Lock), 1.6f);
+      pen.SetLineCap(Gdiplus::LineCapRound, Gdiplus::LineCapRound,
+                     Gdiplus::DashCapRound);
       const auto c = mid(lock_rc);
       const float bw = 7.f, bh = 6.f;
       Gdiplus::RectF body(c.X - bw * 0.5f, c.Y - 0.5f, bw, bh);
@@ -7071,17 +7215,14 @@ void FenceWindow::Paint(HDC hdc) {
       } else {
         g.DrawRectangle(&pen, body);
       }
-      // Shackle
       Gdiplus::REAL sh_top = c.Y - 6.5f;
       Gdiplus::REAL sh_bot = c.Y - 0.5f;
       if (position_locked_ || content_locked_) {
         g.DrawArc(&pen, c.X - 3.2f, sh_top, 6.4f, 7.f, 200.f, 140.f);
       } else {
-        // Open shackle — arc shifted right
         g.DrawArc(&pen, c.X - 1.2f, sh_top, 6.4f, 7.f, 200.f, 140.f);
         g.DrawLine(&pen, c.X + 5.f, sh_bot - 1.f, c.X + 5.f, sh_top + 2.f);
       }
-      // Keyhole (inverted when the body is filled, to stay visible)
       if (content_locked_) {
         Gdiplus::SolidBrush knock(Gdiplus::Color(
             light_panel_ ? 40 : 200, 0, 0, 0));
@@ -7093,6 +7234,11 @@ void FenceWindow::Paint(HDC hdc) {
     }
     // Delete = X
     if (dissolve_rc.right > dissolve_rc.left) {
+      const bool hov = (header_hover_ == HeaderBtn::Dissolve ||
+                        header_press_ == HeaderBtn::Dissolve);
+      Gdiplus::Pen pen(icon_color(HeaderBtn::Dissolve), hov ? 1.7f : 1.6f);
+      pen.SetLineCap(Gdiplus::LineCapRound, Gdiplus::LineCapRound,
+                     Gdiplus::DashCapRound);
       const auto c = mid(dissolve_rc);
       const float s = 4.2f;
       g.DrawLine(&pen, c.X - s, c.Y - s, c.X + s, c.Y + s);
@@ -7110,30 +7256,50 @@ void FenceWindow::Paint(HDC hdc) {
           : 0;
   const int view =
       (std::max)(0, static_cast<int>(rc.bottom) - header - pad - footer_reserve);
-  // Modern 360-style ultra-thin pill scrollbar (no background track)
+  // Modern pill scrollbar with DPI scaling and hover/drag expansion
   if (content_h_ > view && view > 0) {
-    const int track_top = header + 4;
-    const int track_h = (std::max)(8, static_cast<int>(rc.bottom) - track_top - 6);
+    const int track_top = header + S(hwnd_, 4);
+    const int track_h =
+        (std::max)(S(hwnd_, 8), static_cast<int>(rc.bottom) - track_top - S(hwnd_, 6));
     const int thumb_h =
-        (std::max)(22, track_h * view / (std::max)(1, content_h_));
+        (std::max)(S(hwnd_, 24), track_h * view / (std::max)(1, content_h_));
     const int max_scroll = (std::max)(1, content_h_ - view);
     int thumb_y = track_top + (track_h - thumb_h) * scroll_y_ / max_scroll;
     if (thumb_y + thumb_h > track_top + track_h) {
       thumb_y = track_top + track_h - thumb_h;
     }
-    const float pill_x = static_cast<float>(rc.right - kEdge - 5);
-    const float pill_w = 3.2f;
+    const bool sb_active = scrollbar_hover_ || thumb_dragging_;
+    const float pill_w =
+        static_cast<float>(S(hwnd_, sb_active ? 6 : 4));
+    const float pill_x =
+        static_cast<float>(rc.right - kEdge - S(hwnd_, 3)) - pill_w;
     const float pill_y = static_cast<float>(thumb_y);
     const float pill_h = static_cast<float>(thumb_h);
 
+    if (sb_active) {
+      Gdiplus::GraphicsPath track_path;
+      const float tr_h = static_cast<float>(track_h);
+      const float tr_y = static_cast<float>(track_top);
+      track_path.AddArc(pill_x, tr_y, pill_w, pill_w, 180.f, 180.f);
+      track_path.AddArc(pill_x, tr_y + tr_h - pill_w, pill_w, pill_w, 0.f, 180.f);
+      track_path.CloseFigure();
+      Gdiplus::SolidBrush track_br(
+          light_panel_ ? Gdiplus::Color(22, 15, 23, 42)
+                       : Gdiplus::Color(26, 255, 255, 255));
+      g.FillPath(&track_br, &track_path);
+    }
+
     Gdiplus::GraphicsPath pill_path;
-    pill_path.AddArc(pill_x, pill_y, pill_w, pill_w, 180, 180);
-    pill_path.AddArc(pill_x, pill_y + pill_h - pill_w, pill_w, pill_w, 0, 180);
+    pill_path.AddArc(pill_x, pill_y, pill_w, pill_w, 180.f, 180.f);
+    pill_path.AddArc(pill_x, pill_y + pill_h - pill_w, pill_w, pill_w, 0.f, 180.f);
     pill_path.CloseFigure();
 
+    const BYTE sb_alpha = thumb_dragging_
+                              ? (light_panel_ ? 185 : 210)
+                              : (scrollbar_hover_ ? (light_panel_ ? 145 : 175)
+                                                  : (light_panel_ ? 95 : 125));
     Gdiplus::SolidBrush pill_br(Gdiplus::Color(
-        light_panel_ ? 95 : 125,
-        GetRValue(accent_), GetGValue(accent_), GetBValue(accent_)));
+        sb_alpha, GetRValue(accent_), GetGValue(accent_), GetBValue(accent_)));
     g.FillPath(&pill_br, &pill_path);
   }
 
@@ -7523,14 +7689,22 @@ void FenceWindow::Paint(HDC hdc) {
       footer = L"图标大小 " + std::to_wstring(icon_zoom_percent_) + L"%";
     } else {
       int filled = 0;
-      for (const auto& c : cells_) {
-        if (!c.item.path.empty()) {
+      int sel_cnt = 0;
+      for (size_t i = 0; i < cells_.size(); ++i) {
+        if (!cells_[i].item.path.empty()) {
           ++filled;
+          if (i < selected_.size() && selected_[i] != 0) {
+            ++sel_cnt;
+          }
         }
       }
-      const int count = (std::min)(filled, 60);
-      if (count > 0) {
-        footer = L"共 " + std::to_wstring(count) + L" 项";
+      if (filled > 0) {
+        if (sel_cnt > 0) {
+          footer = L"已选 " + std::to_wstring(sel_cnt) + L" / 共 " +
+                   std::to_wstring(filled) + L" 项";
+        } else {
+          footer = L"共 " + std::to_wstring(filled) + L" 项";
+        }
       }
     }
     if (!footer.empty()) {

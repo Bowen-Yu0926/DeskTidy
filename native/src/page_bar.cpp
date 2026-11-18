@@ -405,15 +405,12 @@ int PageBar::FirstUtilityIndex() const {
 }
 
 int PageBar::SeparatorGap() const {
-  if (!IsFloatStyle()) {
-    return 0;
-  }
   const int util = FirstUtilityIndex();
   // Only when both a page block and a tool/folder block are present.
   if (util <= 0) {
     return 0;
   }
-  return Scaled(kSepGap, font_scale_);
+  return Scaled(IsFloatStyle() ? kSepGap : 8, font_scale_);
 }
 
 int PageBar::SlotTop(int index) const {
@@ -1096,14 +1093,114 @@ void PageBar::Paint(HDC) {
       }
 
       const int first_util = FirstUtilityIndex();
-      if (first_util > 0 && expand_t_ > 0.4f) {
+      if (first_util > 0 && expand_t_ > 0.35f) {
         const float dy =
             static_cast<float>(SlotTop(first_util)) - SeparatorGap() * 0.5f;
-        Gdiplus::Pen sep(Gdiplus::Color(55, 148, 163, 184), 1.f);
-        g.DrawLine(&sep, card_x + pad_x * 0.6f, dy,
-                   card_x + card_w - pad_x * 0.6f, dy);
+        Gdiplus::Pen sep(
+            is_light ? Gdiplus::Color(48, 100, 116, 139)
+                     : Gdiplus::Color(55, 148, 163, 184),
+            1.f);
+        g.DrawLine(&sep, card_x + pad_x * 0.7f, dy,
+                   card_x + card_w - pad_x * 0.7f, dy);
       }
     }
+
+    auto draw_slot_icon = [&](const Slot& s, float ix, float iy, float isz,
+                              const Gdiplus::Color& ic, bool active_slot) {
+      const float sw = (std::max)(1.15f, 1.25f * font_scale_);
+      Gdiplus::Pen pen(ic, sw);
+      pen.SetLineJoin(Gdiplus::LineJoinRound);
+      pen.SetStartCap(Gdiplus::LineCapRound);
+      pen.SetEndCap(Gdiplus::LineCapRound);
+      Gdiplus::SolidBrush fill_b(ic);
+
+      if (s.kind == SlotKind::Page) {
+        // Layered page glyph with subtle accent fill when active
+        const float r = 2.2f * font_scale_;
+        Gdiplus::GraphicsPath p;
+        add_round_rect(&p, ix + 0.8f * font_scale_, iy + 0.8f * font_scale_,
+                       isz - 1.6f * font_scale_, isz - 1.6f * font_scale_, r);
+        if (active_slot) {
+          Gdiplus::SolidBrush soft_b(
+              Gdiplus::Color(static_cast<BYTE>(ic.GetA() / 5), ic.GetR(),
+                             ic.GetG(), ic.GetB()));
+          g.FillPath(&soft_b, &p);
+        }
+        g.DrawPath(&pen, &p);
+        const float mid_y = iy + isz * 0.38f;
+        g.DrawLine(&pen, ix + 1.2f * font_scale_, mid_y,
+                   ix + isz - 1.2f * font_scale_, mid_y);
+      } else if (s.kind == SlotKind::Folder) {
+        // Folder tab + body outline
+        const float x0 = ix + 0.5f * font_scale_;
+        const float y0 = iy + 1.8f * font_scale_;
+        const float fw = isz - 1.0f * font_scale_;
+        const float fh = isz - 3.0f * font_scale_;
+        Gdiplus::GraphicsPath fp;
+        fp.AddLine(x0, y0 + 1.8f * font_scale_, x0, y0 + fh);
+        fp.AddLine(x0, y0 + fh, x0 + fw, y0 + fh);
+        fp.AddLine(x0 + fw, y0 + fh, x0 + fw, y0 + 1.8f * font_scale_);
+        fp.AddLine(x0 + fw, y0 + 1.8f * font_scale_, x0 + fw * 0.48f,
+                   y0 + 1.8f * font_scale_);
+        fp.AddLine(x0 + fw * 0.48f, y0 + 1.8f * font_scale_, x0 + fw * 0.36f,
+                   y0);
+        fp.AddLine(x0 + fw * 0.36f, y0, x0, y0);
+        fp.CloseFigure();
+        g.DrawPath(&pen, &fp);
+      } else if (s.tool_id == L"todo") {
+        // Rounded checkbox with check mark
+        Gdiplus::GraphicsPath box;
+        add_round_rect(&box, ix + 0.8f * font_scale_, iy + 0.8f * font_scale_,
+                       isz - 1.6f * font_scale_, isz - 1.6f * font_scale_,
+                       2.2f * font_scale_);
+        g.DrawPath(&pen, &box);
+        Gdiplus::PointF pts[3] = {
+            {ix + isz * 0.27f, iy + isz * 0.52f},
+            {ix + isz * 0.45f, iy + isz * 0.70f},
+            {ix + isz * 0.74f, iy + isz * 0.33f},
+        };
+        g.DrawLines(&pen, pts, 3);
+      } else if (s.tool_id == L"calculator") {
+        Gdiplus::GraphicsPath box;
+        add_round_rect(&box, ix + 1.0f * font_scale_, iy + 0.6f * font_scale_,
+                       isz - 2.0f * font_scale_, isz - 1.2f * font_scale_,
+                       2.0f * font_scale_);
+        g.DrawPath(&pen, &box);
+        g.DrawLine(&pen, ix + 2.6f * font_scale_, iy + isz * 0.38f,
+                   ix + isz - 2.6f * font_scale_, iy + isz * 0.38f);
+        const float dot = (std::max)(1.3f, 1.4f * font_scale_);
+        g.FillEllipse(&fill_b, ix + isz * 0.30f, iy + isz * 0.55f, dot, dot);
+        g.FillEllipse(&fill_b, ix + isz * 0.60f, iy + isz * 0.55f, dot, dot);
+        g.FillEllipse(&fill_b, ix + isz * 0.30f, iy + isz * 0.75f, dot, dot);
+        g.FillEllipse(&fill_b, ix + isz * 0.60f, iy + isz * 0.75f, dot, dot);
+      } else if (s.tool_id == L"record") {
+        // Microphone capsule + stand
+        Gdiplus::GraphicsPath cap;
+        const float mw = isz * 0.42f;
+        const float mh = isz * 0.56f;
+        const float mx = ix + (isz - mw) * 0.5f;
+        const float my = iy + 0.6f * font_scale_;
+        add_round_rect(&cap, mx, my, mw, mh, mw * 0.5f);
+        g.DrawPath(&pen, &cap);
+        g.DrawArc(&pen,
+                  Gdiplus::RectF(ix + isz * 0.18f, iy + isz * 0.25f,
+                                 isz * 0.64f, isz * 0.54f),
+                  0.f, 180.f);
+        g.DrawLine(&pen, ix + isz * 0.5f, iy + isz * 0.79f, ix + isz * 0.5f,
+                   iy + isz - 0.6f * font_scale_);
+      } else {
+        // Note / Minutes: document card with two ruled lines
+        Gdiplus::GraphicsPath doc;
+        add_round_rect(&doc, ix + 1.0f * font_scale_, iy + 0.6f * font_scale_,
+                       isz - 2.0f * font_scale_, isz - 1.2f * font_scale_,
+                       2.0f * font_scale_);
+        g.DrawPath(&pen, &doc);
+        g.DrawLine(&pen, ix + 2.8f * font_scale_, iy + isz * 0.38f,
+                   ix + isz - 2.8f * font_scale_, iy + isz * 0.38f);
+        g.DrawLine(&pen, ix + 2.8f * font_scale_, iy + isz * 0.64f,
+                   ix + isz * 0.65f, iy + isz * 0.64f);
+      }
+    };
 
     for (int i = 0; i < static_cast<int>(slots_.size()); ++i) {
       const Slot& s = slots_[static_cast<size_t>(i)];
@@ -1121,24 +1218,42 @@ void PageBar::Paint(HDC) {
       const float bh = static_cast<float>(chip_h_);
 
       if (float_style) {
-        const float rad = (std::min)(9.f * font_scale_, bh * 0.42f);
+        // Collapsed peek dots along the left nose so current page & total pages are always clear
+        if (expand_t_ < 0.38f && s.kind == SlotKind::Page) {
+          const float peek_alpha = (1.f - expand_t_ / 0.38f);
+          const float dot_w = (std::max)(3.f, 3.2f * font_scale_);
+          const float dot_h = on ? (std::max)(10.f, 12.f * font_scale_)
+                                 : (std::max)(3.5f, 4.f * font_scale_);
+          const float dot_x = static_cast<float>(card_m) + 5.5f * font_scale_;
+          const float dot_y = cy + (bh - dot_h) * 0.5f;
+          Gdiplus::GraphicsPath dp;
+          add_round_rect(&dp, dot_x, dot_y, dot_w, dot_h, dot_w * 0.5f);
+          const BYTE da = static_cast<BYTE>((on ? 245.f : 115.f) * peek_alpha);
+          Gdiplus::SolidBrush db(
+              on ? Gdiplus::Color(da, ar, ag, ab)
+                 : (is_light ? Gdiplus::Color(da, 100, 116, 139)
+                             : Gdiplus::Color(da, 148, 163, 184)));
+          g.FillPath(&db, &dp);
+        }
+
+        const float rad = (std::min)(9.5f * font_scale_, bh * 0.44f);
         Gdiplus::Color fill_c;
         if (on) {
           fill_c = is_light
-                       ? Gdiplus::Color(255, MixChannel(232, ar, 0.22f),
-                                        MixChannel(236, ag, 0.22f),
-                                        MixChannel(245, ab, 0.22f))
-                       : Gdiplus::Color(235, MixChannel(30, ar, 0.28f),
+                       ? Gdiplus::Color(255, MixChannel(236, ar, 0.20f),
+                                        MixChannel(240, ag, 0.20f),
+                                        MixChannel(248, ab, 0.22f))
+                       : Gdiplus::Color(240, MixChannel(30, ar, 0.28f),
                                         MixChannel(41, ag, 0.28f),
                                         MixChannel(59, ab, 0.28f));
         } else if (hover) {
           fill_c = is_light
-                       ? Gdiplus::Color(255, MixChannel(241, ar, 0.10f),
-                                        MixChannel(244, ag, 0.10f),
-                                        MixChannel(250, ab, 0.10f))
-                       : Gdiplus::Color(210, MixChannel(30, ar, 0.14f),
-                                        MixChannel(41, ag, 0.14f),
-                                        MixChannel(59, ab, 0.14f));
+                       ? Gdiplus::Color(255, MixChannel(243, ar, 0.10f),
+                                        MixChannel(246, ag, 0.10f),
+                                        MixChannel(252, ab, 0.12f))
+                       : Gdiplus::Color(215, MixChannel(30, ar, 0.15f),
+                                        MixChannel(41, ag, 0.15f),
+                                        MixChannel(59, ab, 0.15f));
         } else {
           fill_c = Gdiplus::Color(0, 0, 0, 0);
         }
@@ -1149,34 +1264,48 @@ void PageBar::Paint(HDC) {
           g.FillPath(&body, &row);
         }
         if (on || hover) {
-          Gdiplus::Pen rim(Gdiplus::Color(on ? 110 : 55, ar, ag, ab), 1.f);
+          Gdiplus::Pen rim(Gdiplus::Color(on ? 125 : 65, ar, ag, ab), 1.f);
           g.DrawPath(&rim, &row);
         }
         if (on) {
-          const float rail_w = (std::max)(2.f, 3.f * font_scale_);
-          Gdiplus::SolidBrush rail(Gdiplus::Color(230, ar, ag, ab));
-          g.FillRectangle(&rail,
-                          Gdiplus::RectF(cx + 2.f * font_scale_,
-                                         cy + 5.f * font_scale_, rail_w,
-                                         bh - 10.f * font_scale_));
+          const float rail_w = (std::max)(2.5f, std::round(3.f * font_scale_));
+          const float rail_h = (std::max)(10.f, std::round(14.f * font_scale_));
+          Gdiplus::GraphicsPath rail_p;
+          add_round_rect(&rail_p, cx + 3.5f * font_scale_,
+                         cy + (bh - rail_h) * 0.5f, rail_w, rail_h,
+                         rail_w * 0.5f);
+          Gdiplus::SolidBrush rail(Gdiplus::Color(240, ar, ag, ab));
+          g.FillPath(&rail, &rail_p);
         }
+        const float icon_sz = std::round(11.f * font_scale_);
         const float rail_reserve =
-            on ? std::round(10.f * font_scale_) : 0.f;
+            on ? std::round(9.f * font_scale_) : std::round(6.f * font_scale_);
+        const float icon_x = cx + rail_reserve;
+        const float icon_y = cy + (bh - icon_sz) * 0.5f;
         const float lock_reserve =
             locked ? std::round(14.f * font_scale_) : 0.f;
-        const float side = std::round(8.f * font_scale_);
-        const float text_x = cx + side + rail_reserve;
+        const float side = std::round(6.f * font_scale_);
+        const float text_x = icon_x + icon_sz + std::round(5.f * font_scale_);
         const float text_w =
-            bw - side * 2.f - rail_reserve - lock_reserve;
+            (cx + bw) - text_x - side - lock_reserve;
         const Gdiplus::Color ink_c =
-            is_light ? (utility ? Gdiplus::Color(220, 71, 85, 105)
-                                : Gdiplus::Color(255, 26, 35, 50))
-                     : (utility ? Gdiplus::Color(210, 148, 163, 184)
-                                : Gdiplus::Color(245, 241, 245, 249));
+            is_light ? (on ? Gdiplus::Color(255, MixChannel(15, ar, 0.55f),
+                                            MixChannel(23, ag, 0.55f),
+                                            MixChannel(42, ab, 0.55f))
+                           : (utility ? Gdiplus::Color(220, 71, 85, 105)
+                                      : Gdiplus::Color(255, 26, 35, 50)))
+                     : (on ? Gdiplus::Color(255, 255, 255, 255)
+                           : (utility ? Gdiplus::Color(210, 148, 163, 184)
+                                      : Gdiplus::Color(245, 241, 245, 249)));
+        const Gdiplus::Color icon_c =
+            on ? Gdiplus::Color(245, ar, ag, ab)
+               : Gdiplus::Color(static_cast<BYTE>(ink_c.GetA() * 0.82f),
+                                ink_c.GetR(), ink_c.GetG(), ink_c.GetB());
         Gdiplus::SolidBrush ink(ink_c);
         const Gdiplus::Font& font =
             on ? *font_on_ : (utility ? *font_util_ : *font_page_);
-        if (expand_t_ > 0.35f && text_w > 8.f) {
+        if (expand_t_ > 0.32f && text_w > 8.f) {
+          draw_slot_icon(s, icon_x, icon_y, icon_sz, icon_c, on);
           g.DrawString(s.label.c_str(), -1, &font,
                        Gdiplus::RectF(text_x, cy, text_w, bh), fmt_, &ink);
         }
@@ -1201,8 +1330,8 @@ void PageBar::Paint(HDC) {
         // Discrete bookmark tabs (flush right edge) — Clean Frosted Pill Tabs
         const float pop_max = static_cast<float>(Scaled(kTabsPopMargin, font_scale_));
         const float e = EaseOutCubic(expand_t_);
-        const float pop = on ? (pop_max * (0.35f + 0.65f * e))
-                             : (hover ? (std::min)(pop_max * 0.40f, 4.5f * font_scale_ * e) : 0.f);
+        const float pop = on ? (pop_max * (0.38f + 0.62f * e))
+                             : (hover ? (std::min)(pop_max * 0.45f, 5.f * font_scale_ * e) : 0.f);
         const float tab_cx = static_cast<float>(card_m + pad_x) - pop;
         const float tab_cy = static_cast<float>(SlotTop(i) + (slot_h_ - chip_h_) / 2);
         const float tab_bw = static_cast<float>(chip_w_) + pop;
@@ -1230,7 +1359,7 @@ void PageBar::Paint(HDC) {
           Gdiplus::GraphicsPath shadow;
           make_tab_path(&shadow, tab_cx - ox * 0.6f, tab_cy + oy,
                         tab_bw + ox * 0.6f, tab_bh, rad + ox * 0.2f, true);
-          const BYTE sa = static_cast<BYTE>((on ? 14 : 9) * (3 - layer));
+          const BYTE sa = static_cast<BYTE>((on ? 15 : 9) * (3 - layer));
           Gdiplus::SolidBrush shade(Gdiplus::Color(sa, 15, 23, 42));
           g.FillPath(&shade, &shadow);
         }
@@ -1245,31 +1374,31 @@ void PageBar::Paint(HDC) {
         };
         if (is_light) {
           if (on) {
-            top = Gdiplus::Color(252, 255, 255, 255);
-            bottom = Gdiplus::Color(250, MixChannel(248, ar, 0.08f),
-                                    MixChannel(250, ag, 0.08f),
-                                    MixChannel(254, ab, 0.10f));
+            top = Gdiplus::Color(254, 255, 255, 255);
+            bottom = Gdiplus::Color(252, MixChannel(245, ar, 0.12f),
+                                    MixChannel(248, ag, 0.12f),
+                                    MixChannel(254, ab, 0.14f));
           } else if (hover) {
-            top = Gdiplus::Color(242, 255, 255, 255);
-            bottom = Gdiplus::Color(238, 246, 249, 254);
+            top = Gdiplus::Color(245, 255, 255, 255);
+            bottom = Gdiplus::Color(240, 246, 249, 254);
           } else {
-            top = Gdiplus::Color(218, 250, 251, 254);
-            bottom = Gdiplus::Color(212, 241, 245, 250);
+            top = Gdiplus::Color(222, 250, 251, 254);
+            bottom = Gdiplus::Color(216, 241, 245, 250);
           }
         } else {
           if (on) {
-            top = Gdiplus::Color(246, MixChannel(clamp_b(br + 26), ar, 0.18f),
-                                 MixChannel(clamp_b(bg + 26), ag, 0.18f),
-                                 MixChannel(clamp_b(bb + 30), ab, 0.18f));
-            bottom = Gdiplus::Color(244, MixChannel(clamp_b(br + 12), ar, 0.12f),
-                                    MixChannel(clamp_b(bg + 12), ag, 0.12f),
-                                    MixChannel(clamp_b(bb + 16), ab, 0.12f));
+            top = Gdiplus::Color(248, MixChannel(clamp_b(br + 28), ar, 0.22f),
+                                 MixChannel(clamp_b(bg + 28), ag, 0.22f),
+                                 MixChannel(clamp_b(bb + 32), ab, 0.22f));
+            bottom = Gdiplus::Color(245, MixChannel(clamp_b(br + 14), ar, 0.14f),
+                                    MixChannel(clamp_b(bg + 14), ag, 0.14f),
+                                    MixChannel(clamp_b(bb + 18), ab, 0.14f));
           } else if (hover) {
-            top = Gdiplus::Color(228, clamp_b(br + 16), clamp_b(bg + 16), clamp_b(bb + 20));
-            bottom = Gdiplus::Color(224, clamp_b(br + 6), clamp_b(bg + 6), clamp_b(bb + 10));
+            top = Gdiplus::Color(232, clamp_b(br + 18), clamp_b(bg + 18), clamp_b(bb + 22));
+            bottom = Gdiplus::Color(226, clamp_b(br + 8), clamp_b(bg + 8), clamp_b(bb + 12));
           } else {
-            top = Gdiplus::Color(198, clamp_b(br + 4), clamp_b(bg + 4), clamp_b(bb + 6));
-            bottom = Gdiplus::Color(192, clamp_b(br - 4), clamp_b(bg - 4), clamp_b(bb - 2));
+            top = Gdiplus::Color(204, clamp_b(br + 6), clamp_b(bg + 6), clamp_b(bb + 8));
+            bottom = Gdiplus::Color(196, clamp_b(br - 2), clamp_b(bg - 2), clamp_b(bb));
           }
         }
         Gdiplus::LinearGradientBrush body(
@@ -1282,18 +1411,18 @@ void PageBar::Paint(HDC) {
         make_tab_path(&border_path, tab_cx, tab_cy, tab_bw, tab_bh, rad, false);
         if (on) {
           Gdiplus::Pen rim(
-              Gdiplus::Color(is_light ? 135 : 165, ar, ag, ab), 1.1f);
+              Gdiplus::Color(is_light ? 150 : 180, ar, ag, ab), 1.15f);
           g.DrawPath(&rim, &border_path);
         } else if (hover) {
           Gdiplus::Pen rim(
-              is_light ? Gdiplus::Color(95, ar, ag, ab)
-                       : Gdiplus::Color(90, 255, 255, 255),
+              is_light ? Gdiplus::Color(105, ar, ag, ab)
+                       : Gdiplus::Color(100, 255, 255, 255),
               1.0f);
           g.DrawPath(&rim, &border_path);
         } else {
           Gdiplus::Pen rim(
-              is_light ? Gdiplus::Color(36, 15, 23, 42)
-                       : Gdiplus::Color(38, 255, 255, 255),
+              is_light ? Gdiplus::Color(40, 15, 23, 42)
+                       : Gdiplus::Color(42, 255, 255, 255),
               1.0f);
           g.DrawPath(&rim, &border_path);
         }
@@ -1302,21 +1431,56 @@ void PageBar::Paint(HDC) {
         if (on) {
           const float pill_w = (std::max)(2.5f, std::round(3.f * font_scale_));
           const float pill_h = (std::max)(10.f, std::round(14.f * font_scale_));
-          const float pill_x = tab_cx + std::round(6.5f * font_scale_);
+          const float pill_x = tab_cx + std::round(5.5f * font_scale_);
           const float pill_y = tab_cy + (tab_bh - pill_h) * 0.5f;
           Gdiplus::GraphicsPath pill;
           add_round_rect(&pill, pill_x, pill_y, pill_w, pill_h, pill_w * 0.5f);
-          Gdiplus::SolidBrush pill_brush(Gdiplus::Color(245, ar, ag, ab));
+          Gdiplus::SolidBrush pill_brush(Gdiplus::Color(250, ar, ag, ab));
           g.FillPath(&pill_brush, &pill);
         }
 
-        // Center label in the tab body; show subtle lock icon only on hover or when plenty of space
+        // Collapsed peek badge: show page index number or utility mini-icon in the exposed peek tab
+        const float peek_fade =
+            (std::min)(1.f, (std::max)(0.f, (0.32f - expand_t_) / 0.26f));
+        if (peek_fade > 0.05f) {
+          const BYTE pa = static_cast<BYTE>((on ? 245.f : 175.f) * peek_fade);
+          const Gdiplus::Color peek_c =
+              on ? Gdiplus::Color(pa, ar, ag, ab)
+                 : (is_light ? Gdiplus::Color(pa, 51, 65, 85)
+                             : Gdiplus::Color(pa, 203, 213, 225));
+          const float peek_zone_x =
+              tab_cx + (on ? std::round(9.f * font_scale_)
+                           : std::round(4.f * font_scale_));
+          const float peek_zone_w = std::round(14.f * font_scale_);
+          if (s.kind == SlotKind::Page) {
+            const std::wstring num = std::to_wstring(s.page_index + 1);
+            Gdiplus::StringFormat cfmt;
+            cfmt.SetAlignment(Gdiplus::StringAlignmentCenter);
+            cfmt.SetLineAlignment(Gdiplus::StringAlignmentCenter);
+            cfmt.SetFormatFlags(Gdiplus::StringFormatFlagsNoWrap);
+            Gdiplus::SolidBrush pb(peek_c);
+            const Gdiplus::Font& pfont = on ? *font_on_ : *font_util_;
+            g.DrawString(num.c_str(), -1, &pfont,
+                         Gdiplus::RectF(peek_zone_x, tab_cy, peek_zone_w, tab_bh),
+                         &cfmt, &pb);
+          } else {
+            const float isz = std::round(10.f * font_scale_);
+            draw_slot_icon(s, peek_zone_x + (peek_zone_w - isz) * 0.5f,
+                           tab_cy + (tab_bh - isz) * 0.5f, isz, peek_c, on);
+          }
+        }
+
+        // Expanded state: mini-icon + label + optional lock
         const bool show_lock = locked && expand_t_ > 0.45f && (hover || on);
-        const float rail_reserve = on ? std::round(11.f * font_scale_) : 0.f;
+        const float icon_sz = std::round(10.5f * font_scale_);
+        const float rail_reserve =
+            on ? std::round(11.f * font_scale_) : std::round(7.f * font_scale_);
+        const float icon_x = tab_cx + rail_reserve;
+        const float icon_y = tab_cy + (tab_bh - icon_sz) * 0.5f;
         const float lock_reserve = show_lock ? std::round(13.f * font_scale_) : 0.f;
-        const float side = std::round(7.f * font_scale_);
-        const float text_x = tab_cx + side + rail_reserve;
-        const float text_w = tab_bw - side * 2.f - rail_reserve - lock_reserve;
+        const float side = std::round(6.f * font_scale_);
+        const float text_x = icon_x + icon_sz + std::round(4.5f * font_scale_);
+        const float text_w = (tab_cx + tab_bw) - text_x - side - lock_reserve;
 
         const float text_fade = (std::min)(1.f, (std::max)(0.f, (expand_t_ - 0.18f) / 0.62f));
         if (text_w > 8.f && text_fade > 0.05f) {
@@ -1347,6 +1511,11 @@ void PageBar::Paint(HDC) {
               ink_c = Gdiplus::Color(static_cast<BYTE>(225.f * text_fade), 214, 224, 238);
             }
           }
+          const Gdiplus::Color icon_c =
+              on ? Gdiplus::Color(ink_a, ar, ag, ab)
+                 : Gdiplus::Color(static_cast<BYTE>(ink_c.GetA() * 0.85f),
+                                  ink_c.GetR(), ink_c.GetG(), ink_c.GetB());
+          draw_slot_icon(s, icon_x, icon_y, icon_sz, icon_c, on);
           Gdiplus::SolidBrush ink(ink_c);
           g.DrawString(s.label.c_str(), -1, &font,
                        Gdiplus::RectF(text_x, tab_cy, text_w, tab_bh), fmt_, &ink);

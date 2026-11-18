@@ -545,6 +545,9 @@ class FenceWindow {
   bool position_locked_ = false;
   bool content_locked_ = false;
   HeaderBtn header_press_ = HeaderBtn::None;
+  HeaderBtn header_hover_ = HeaderBtn::None;
+  int tab_hover_ = -1;
+  bool scrollbar_hover_ = false;
   int expanded_h_ = 360;
   std::string sort_by_ = "name";
   // Tabbed-fence state (see layout.h FenceLayout::tab_group).
