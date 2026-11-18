@@ -53,7 +53,11 @@ int ParseIntField(const std::string& json, const char* key, int fallback) {
       !(json[p] == '-' || (json[p] >= '0' && json[p] <= '9'))) {
     return fallback;
   }
-  return std::stoi(json.substr(p));
+  try {
+    return std::stoi(json.substr(p));
+  } catch (...) {
+    return fallback;
+  }
 }
 
 long long ParseInt64Field(const std::string& json, const char* key,
@@ -88,7 +92,11 @@ std::string ParseStringField(const std::string& json, const char* key) {
   if (p == std::string::npos) {
     return {};
   }
-  p = json.find('"', json.find(':', p) + 1);
+  const size_t colon = json.find(':', p + needle.size());
+  if (colon == std::string::npos) {
+    return {};
+  }
+  p = json.find('"', colon + 1);
   if (p == std::string::npos) {
     return {};
   }

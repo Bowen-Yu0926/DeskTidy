@@ -552,6 +552,9 @@ void PetWindow::TryLoadSprite() {
     HBITMAP hb = nullptr;
     scaled.GetHBITMAP(Gdiplus::Color(0, 0, 0, 0), &hb);
     if (hb) {
+      if (sprite_) {
+        DeleteObject(sprite_);
+      }
       sprite_ = hb;
     }
     break;
@@ -2029,30 +2032,30 @@ void PetWindow::PushDragSample(POINT screen) {
 
 void PetWindow::ShowContextMenu(POINT screen) {
   HMENU menu = CreatePopupMenu();
-  HMENU poses = CreatePopupMenu();
-  for (size_t i = 0; i < pose_names_.size(); ++i) {
-    const UINT flags =
-        MF_STRING | (pose_ == pose_names_[i] ? MF_CHECKED : 0);
-    AppendMenuW(poses, flags, static_cast<UINT>(100 + i),
-                pose_names_[i].c_str());
-  }
   if (!pose_names_.empty()) {
+    HMENU poses = CreatePopupMenu();
+    for (size_t i = 0; i < pose_names_.size(); ++i) {
+      const UINT flags =
+          MF_STRING | (pose_ == pose_names_[i] ? MF_CHECKED : 0);
+      AppendMenuW(poses, flags, static_cast<UINT>(100 + i),
+                  pose_names_[i].c_str());
+    }
     AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(poses), L"姿态");
   }
-  HMENU chars = CreatePopupMenu();
   auto get_char_display_name = [](const std::wstring& id) -> std::wstring {
     if (id == L"hoodie") return L"卫衣少年";
     if (id == L"voyage") return L"出海少女";
     if (id == L"xianjian") return L"白衣剑仙";
     return id;
   };
-  for (size_t i = 0; i < character_ids_.size(); ++i) {
-    const UINT flags =
-        MF_STRING | (character_ == character_ids_[i] ? MF_CHECKED : 0);
-    const std::wstring label = get_char_display_name(character_ids_[i]);
-    AppendMenuW(chars, flags, static_cast<UINT>(200 + i), label.c_str());
-  }
   if (!character_ids_.empty()) {
+    HMENU chars = CreatePopupMenu();
+    for (size_t i = 0; i < character_ids_.size(); ++i) {
+      const UINT flags =
+          MF_STRING | (character_ == character_ids_[i] ? MF_CHECKED : 0);
+      const std::wstring label = get_char_display_name(character_ids_[i]);
+      AppendMenuW(chars, flags, static_cast<UINT>(200 + i), label.c_str());
+    }
     AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(chars), L"角色");
   }
   AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
@@ -3187,6 +3190,10 @@ void PetWindow::Destroy() {
   if (sprite_) {
     DeleteObject(sprite_);
     sprite_ = nullptr;
+  }
+  if (mask_rgn_) {
+    DeleteObject(mask_rgn_);
+    mask_rgn_ = nullptr;
   }
   ClearFrames();
   ReleasePresentBuffer();

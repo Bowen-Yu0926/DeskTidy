@@ -245,21 +245,10 @@ bool SaveShellIconsSidecar(const std::wstring& snapshot_json_path,
   } else {
     path += L".icons.json";
   }
-  std::ofstream out(path, std::ios::binary);
-  if (!out) {
-    return false;
-  }
+  std::ostringstream out;
   out << "{\n  \"icons\": [\n";
   for (size_t i = 0; i < icons.size(); ++i) {
-    const std::string raw = NarrowUtf8(icons[i].name);
-    std::string esc;
-    esc.reserve(raw.size() + 4);
-    for (char c : raw) {
-      if (c == '\\' || c == '"') {
-        esc.push_back('\\');
-      }
-      esc.push_back(c);
-    }
+    const std::string esc = EscapeJsonUtf8(NarrowUtf8(icons[i].name));
     out << "    {\"name\":\"" << esc
         << "\",\"x\":" << icons[i].x << ",\"y\":" << icons[i].y << "}";
     if (i + 1 < icons.size()) {
@@ -268,7 +257,7 @@ bool SaveShellIconsSidecar(const std::wstring& snapshot_json_path,
     out << "\n";
   }
   out << "  ]\n}\n";
-  return true;
+  return AtomicWriteUtf8File(path, out.str());
 }
 
 std::vector<ShellIconPos> LoadShellIconsSidecar(
@@ -303,8 +292,28 @@ std::vector<ShellIconPos> LoadShellIconsSidecar(
     for (size_t j = 0; j < raw_name.size(); ++j) {
       if (raw_name[j] == '\\' && j + 1 < raw_name.size()) {
         ++j;
+        switch (raw_name[j]) {
+          case 'n':
+            unescaped.push_back('\n');
+            break;
+          case 'r':
+            unescaped.push_back('\r');
+            break;
+          case 't':
+            unescaped.push_back('\t');
+            break;
+          case '"':
+          case '\\':
+          case '/':
+            unescaped.push_back(raw_name[j]);
+            break;
+          default:
+            unescaped.push_back(raw_name[j]);
+            break;
+        }
+      } else {
+        unescaped.push_back(raw_name[j]);
       }
-      unescaped.push_back(raw_name[j]);
     }
     ShellIconPos icon;
     icon.name = WidenUtf8(unescaped);

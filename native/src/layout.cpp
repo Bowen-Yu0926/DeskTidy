@@ -151,12 +151,14 @@ bool FindNumber(const std::string& body, const char* key, int* out) {
   if (p >= body.size() || body[p] < '0' || body[p] > '9') {
     return false;
   }
-  int v = 0;
+  int64_t v = 0;
   while (p < body.size() && body[p] >= '0' && body[p] <= '9') {
-    v = v * 10 + (body[p] - '0');
+    if (v <= 0x7FFFFFFFLL) {
+      v = v * 10 + (body[p] - '0');
+    }
     ++p;
   }
-  *out = v * sign;
+  *out = static_cast<int>(v * sign);
   return true;
 }
 
@@ -902,18 +904,15 @@ AppState LoadAppStateFromPath(const std::wstring& path, bool inject_defaults) {
         if (a == std::string::npos) {
           break;
         }
-        size_t b = a + 1;
+        size_t b = a;
         std::string name;
-        while (b < arr.size() && arr[b] != '"') {
-          if (arr[b] == '\\' && b + 1 < arr.size()) {
-            ++b;
-          }
-          name.push_back(arr[b++]);
+        if (!ParseJsonStringAt(arr, &b, &name)) {
+          break;
         }
         if (!name.empty()) {
           state.page_names.push_back(Widen(name));
         }
-        q = b + 1;
+        q = b;
       }
     }
   }

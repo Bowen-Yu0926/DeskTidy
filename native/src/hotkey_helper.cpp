@@ -26,8 +26,10 @@ namespace {
 constexpr const char* kShowDesktop = "show_desktop";
 constexpr DWORD kPingIntervalMs = 5000;
 constexpr int kPingFailLimit = 3;
+constexpr UINT kMsgRelayAction = WM_APP + 50;
 
 HHOOK g_hook = nullptr;
+DWORD g_main_tid = 0;
 int g_port = 0;
 struct Chord {
   UINT mods = 0;
@@ -136,14 +138,20 @@ LRESULT CALLBACK HelperKbProc(int code, WPARAM wparam, LPARAM lparam) {
       const UINT vk = kb->vkCode;
       const UINT mods = CurrentMods();
       // Win+D: always passthrough; relay show_desktop only when FG elevated.
+      // Check chord match BEFORE calling ForegroundElevated() so ordinary
+      // keystrokes do not pay OpenProcess + OpenProcessToken syscalls, and
+      // post to the main thread instead of blocking WH_KEYBOARD_LL on TCP.
       if ((mods & MOD_WIN) && vk == 'D') {
-        if (ForegroundElevated()) {
-          Relay(kShowDesktop);
+        if (ForegroundElevated() && g_main_tid != 0) {
+          PostThreadMessageW(g_main_tid, kMsgRelayAction, 1, 0);
         }
-      } else if (ForegroundElevated()) {
-        for (const auto& c : g_chords) {
-          if (c.vk == vk && c.mods == mods) {
-            Relay(c.action);
+      } else {
+        for (size_t i = 0; i < g_chords.size(); ++i) {
+          if (g_chords[i].vk == vk && g_chords[i].mods == mods) {
+            if (ForegroundElevated() && g_main_tid != 0) {
+              PostThreadMessageW(g_main_tid, kMsgRelayAction, 2,
+                                 static_cast<LPARAM>(i));
+            }
             break;
           }
         }
@@ -233,24 +241,13 @@ void ApplyMapping(const std::unordered_map<std::string, std::string>& map) {
 }
 
 void PollFkeys() {
-  if (!ForegroundElevated()) {
-    for (auto& kv : g_fkey_prev) {
-      kv.second = false;
-    }
-    // Still track state so edge detect works after FG becomes elevated.
-    for (const auto& kv : g_fkeys) {
-      const bool down = (GetAsyncKeyState(kv.second) & 0x8000) != 0;
-      g_fkey_prev[kv.first] = down;
-    }
-    return;
-  }
   for (const auto& kv : g_fkeys) {
     const bool down = (GetAsyncKeyState(kv.second) & 0x8000) != 0;
     const bool was = g_fkey_prev[kv.first];
-    if (down && !was) {
+    g_fkey_prev[kv.first] = down;
+    if (down && !was && ForegroundElevated()) {
       Relay(kv.first);
     }
-    g_fkey_prev[kv.first] = down;
   }
 }
 
@@ -322,6 +319,7 @@ int RunHotkeyHelper(int port, const std::wstring& mapping_path) {
     return 3;
   }
   g_port = port;
+  g_main_tid = GetCurrentThreadId();
   std::unordered_map<std::string, std::string> map;
   if (!LoadMappingFile(mapping_path, &map)) {
     WSACleanup();
@@ -348,6 +346,17 @@ int RunHotkeyHelper(int port, const std::wstring& mapping_path) {
         g_hook = nullptr;
         WSACleanup();
         return 0;
+      }
+      if (msg.message == kMsgRelayAction) {
+        if (msg.wParam == 1) {
+          Relay(kShowDesktop);
+        } else if (msg.wParam == 2) {
+          const size_t idx = static_cast<size_t>(msg.lParam);
+          if (idx < g_chords.size()) {
+            Relay(g_chords[idx].action);
+          }
+        }
+        continue;
       }
       TranslateMessage(&msg);
       DispatchMessageW(&msg);

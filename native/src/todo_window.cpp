@@ -132,23 +132,42 @@ std::string UnescapeJsonString(const std::string& s) {
       case 'r': out.push_back('\r'); ++i; break;
       case 't': out.push_back('\t'); ++i; break;
       case 'u': {
-        if (i + 5 < s.size()) {
-          unsigned cp = 0;
+        auto parse_hex4 = [&](size_t pos, unsigned* out_cp) -> bool {
+          if (pos + 4 > s.size()) return false;
+          unsigned v = 0;
           for (int k = 0; k < 4; ++k) {
-            const char h = s[i + 2 + k];
-            cp <<= 4;
-            if (h >= '0' && h <= '9') cp |= static_cast<unsigned>(h - '0');
-            else if (h >= 'a' && h <= 'f') cp |= static_cast<unsigned>(h - 'a' + 10);
-            else if (h >= 'A' && h <= 'F') cp |= static_cast<unsigned>(h - 'A' + 10);
-            else { cp = 0; break; }
+            const char h = s[pos + k];
+            v <<= 4;
+            if (h >= '0' && h <= '9') v |= static_cast<unsigned>(h - '0');
+            else if (h >= 'a' && h <= 'f') v |= static_cast<unsigned>(h - 'a' + 10);
+            else if (h >= 'A' && h <= 'F') v |= static_cast<unsigned>(h - 'A' + 10);
+            else return false;
+          }
+          *out_cp = v;
+          return true;
+        };
+        unsigned cp = 0;
+        if (parse_hex4(i + 2, &cp)) {
+          if (cp >= 0xD800 && cp <= 0xDBFF && i + 11 < s.size() &&
+              s[i + 6] == '\\' && s[i + 7] == 'u') {
+            unsigned low = 0;
+            if (parse_hex4(i + 8, &low) && low >= 0xDC00 && low <= 0xDFFF) {
+              cp = 0x10000u + (((cp - 0xD800u) << 10) | (low - 0xDC00u));
+              i += 6;
+            }
           }
           if (cp < 0x80) {
             out.push_back(static_cast<char>(cp));
           } else if (cp < 0x800) {
             out.push_back(static_cast<char>(0xC0 | (cp >> 6)));
             out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
-          } else {
+          } else if (cp < 0x10000) {
             out.push_back(static_cast<char>(0xE0 | (cp >> 12)));
+            out.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+            out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+          } else {
+            out.push_back(static_cast<char>(0xF0 | (cp >> 18)));
+            out.push_back(static_cast<char>(0x80 | ((cp >> 12) & 0x3F)));
             out.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
             out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
           }
@@ -234,7 +253,17 @@ std::vector<std::string> ParseJsonObjectPairs(const std::string& s,
 
 void SplitRawPair(const std::string& raw, std::string* key,
                   std::string* value) {
+  if (raw.empty() || raw[0] != '"') {
+    key->clear();
+    value->clear();
+    return;
+  }
   const size_t key_end = SkipJsonString(raw, 0);
+  if (key_end == std::string::npos || key_end < 2) {
+    key->clear();
+    value->clear();
+    return;
+  }
   size_t colon = key_end;
   while (colon < raw.size() &&
          (raw[colon] == ' ' || raw[colon] == '\t' || raw[colon] == '\r' ||
@@ -545,13 +574,15 @@ bool TodoWindow::CreateWebView() {
     RegisterClassExW(&wc);
     host_reg = true;
   }
-  RECT rc{};
-  GetClientRect(hwnd_, &rc);
-  host_ = CreateWindowExW(0, kHostClass, L"", WS_CHILD | WS_VISIBLE, 0, 0,
-                          rc.right, rc.bottom, hwnd_, nullptr,
-                          GetModuleHandleW(nullptr), nullptr);
-  if (!host_) {
-    return false;
+  if (!host_ || !IsWindow(host_)) {
+    RECT rc{};
+    GetClientRect(hwnd_, &rc);
+    host_ = CreateWindowExW(0, kHostClass, L"", WS_CHILD | WS_VISIBLE, 0, 0,
+                            rc.right, rc.bottom, hwnd_, nullptr,
+                            GetModuleHandleW(nullptr), nullptr);
+    if (!host_) {
+      return false;
+    }
   }
   const std::wstring user_data = JoinPath(NativeDataDir(), L"webview2-todo");
   CreateDirectoryW(user_data.c_str(), nullptr);
@@ -559,7 +590,8 @@ bool TodoWindow::CreateWebView() {
       nullptr, user_data.c_str(), nullptr,
       Callback<ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler>(
           [this](HRESULT result, ICoreWebView2Environment* env) -> HRESULT {
-            if (FAILED(result) || !env || !host_) {
+            if (FAILED(result) || !env || !hwnd_ || !host_ ||
+                !IsWindow(host_)) {
               return S_OK;
             }
             env->CreateCoreWebView2Controller(
@@ -571,11 +603,17 @@ bool TodoWindow::CreateWebView() {
                       if (FAILED(result2) || !controller) {
                         return S_OK;
                       }
+                      if (!hwnd_ || !host_ || !IsWindow(host_)) {
+                        controller->Close();
+                        return S_OK;
+                      }
                       controller_ = controller;
                       controller->AddRef();
                       ICoreWebView2* web = nullptr;
-                      controller->get_CoreWebView2(&web);
-                      if (!web) {
+                      if (FAILED(controller->get_CoreWebView2(&web)) || !web) {
+                        controller->Close();
+                        controller->Release();
+                        controller_ = nullptr;
                         return S_OK;
                       }
                       webview_ = web;
@@ -844,13 +882,27 @@ void TodoWindow::PersistGeo() {
   }
   RECT rc{};
   GetWindowRect(hwnd_, &rc);
-  std::ofstream out(TodosGeoPath(), std::ios::binary);
-  if (!out) {
-    return;
+  const std::wstring path = TodosGeoPath();
+  const std::wstring tmp = path + L".tmp";
+  {
+    std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
+    if (!out) {
+      return;
+    }
+    out << "{\n  \"x\":" << rc.left << ",\n  \"y\":" << rc.top
+        << ",\n  \"w\":" << (rc.right - rc.left) << ",\n  \"h\":"
+        << (rc.bottom - rc.top) << "\n}\n";
+    out.flush();
+    if (!out.good()) {
+      out.close();
+      DeleteFileW(tmp.c_str());
+      return;
+    }
   }
-  out << "{\n  \"x\":" << rc.left << ",\n  \"y\":" << rc.top
-      << ",\n  \"w\":" << (rc.right - rc.left) << ",\n  \"h\":"
-      << (rc.bottom - rc.top) << "\n}\n";
+  if (!MoveFileExW(tmp.c_str(), path.c_str(),
+                   MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+    DeleteFileW(tmp.c_str());
+  }
 }
 
 void TodoWindow::Load() {

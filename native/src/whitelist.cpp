@@ -7,6 +7,7 @@
 #include <Windows.h>
 
 #include <fstream>
+#include <mutex>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -218,9 +219,11 @@ std::wstring BuildState(Ctx* ctx) {
 
 std::vector<std::wstring> LoadWhitelist() {
   // Short cache: icon RMB used to re-read+parse JSON every click.
+  static std::mutex s_cache_mu;
   static std::vector<std::wstring> cached;
   static FILETIME cached_write{};
   static bool have_cache = false;
+  std::lock_guard<std::mutex> lock(s_cache_mu);
   const std::wstring path = WhitelistFile();
   WIN32_FILE_ATTRIBUTE_DATA fad{};
   FILETIME write{};
@@ -245,7 +248,8 @@ std::vector<std::wstring> LoadWhitelist() {
   std::ostringstream ss;
   ss << in.rdbuf();
   const std::string json = ss.str();
-  size_t pos = 0;
+  const size_t bracket = json.find('[');
+  size_t pos = (bracket == std::string::npos) ? json.size() : bracket + 1;
   while (true) {
     const size_t q1 = json.find('"', pos);
     if (q1 == std::string::npos) {
@@ -256,17 +260,29 @@ std::vector<std::wstring> LoadWhitelist() {
     while (q2 < json.size() && json[q2] != '"') {
       if (json[q2] == '\\' && q2 + 1 < json.size()) {
         ++q2;
+        switch (json[q2]) {
+          case 'n':
+            val.push_back('\n');
+            break;
+          case 'r':
+            val.push_back('\r');
+            break;
+          case 't':
+            val.push_back('\t');
+            break;
+          default:
+            val.push_back(json[q2]);
+            break;
+        }
+        ++q2;
+      } else {
+        val.push_back(json[q2++]);
       }
-      val.push_back(json[q2++]);
     }
     if (q2 >= json.size()) {
       break;
     }
     pos = q2 + 1;
-    // Skip object keys: native "names" and Python "organize_whitelist".
-    if (val == "names" || val == "organize_whitelist") {
-      continue;
-    }
     if (!val.empty()) {
       out.push_back(WidenUtf8(val));
     }

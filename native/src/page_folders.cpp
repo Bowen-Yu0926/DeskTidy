@@ -23,12 +23,33 @@ std::wstring CfgPath() {
 std::vector<PageFolderItem> ParsePageFoldersJson(const std::string& json) {
   std::vector<PageFolderItem> out;
   size_t pos = 0;
+  const size_t arr = json.find('[');
+  if (arr != std::string::npos) {
+    pos = arr + 1;
+  }
   while (true) {
     const size_t start = json.find('{', pos);
     if (start == std::string::npos) {
       break;
     }
-    const size_t end = json.find('}', start);
+    size_t end = std::string::npos;
+    bool in_str = false;
+    for (size_t i = start + 1; i < json.size(); ++i) {
+      if (in_str) {
+        if (json[i] == '\\' && i + 1 < json.size()) {
+          ++i;
+        } else if (json[i] == '"') {
+          in_str = false;
+        }
+      } else {
+        if (json[i] == '"') {
+          in_str = true;
+        } else if (json[i] == '}') {
+          end = i;
+          break;
+        }
+      }
+    }
     if (end == std::string::npos) {
       break;
     }
@@ -40,7 +61,11 @@ std::vector<PageFolderItem> ParsePageFoldersJson(const std::string& json) {
       if (p == std::string::npos) {
         return {};
       }
-      p = obj.find('"', obj.find(':', p) + 1);
+      const size_t colon = obj.find(':', p + needle.size());
+      if (colon == std::string::npos) {
+        return {};
+      }
+      p = obj.find('"', colon + 1);
       if (p == std::string::npos) {
         return {};
       }
@@ -49,6 +74,22 @@ std::vector<PageFolderItem> ParsePageFoldersJson(const std::string& json) {
       while (p < obj.size() && obj[p] != '"') {
         if (obj[p] == '\\' && p + 1 < obj.size()) {
           ++p;
+          switch (obj[p]) {
+            case 'n':
+              v.push_back('\n');
+              break;
+            case 'r':
+              v.push_back('\r');
+              break;
+            case 't':
+              v.push_back('\t');
+              break;
+            default:
+              v.push_back(obj[p]);
+              break;
+          }
+          ++p;
+          continue;
         }
         v.push_back(obj[p++]);
       }

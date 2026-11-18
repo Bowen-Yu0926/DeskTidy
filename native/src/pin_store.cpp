@@ -5,6 +5,7 @@
 #include <Windows.h>
 #include <ShlObj.h>
 
+#include <cstdio>
 #include <fstream>
 #include <sstream>
 
@@ -39,7 +40,7 @@ std::wstring Widen(const std::string& s) {
 std::string EscapeJson(const std::string& s) {
   std::string out;
   out.reserve(s.size() + 8);
-  for (char c : s) {
+  for (unsigned char c : s) {
     switch (c) {
       case '\\':
         out += "\\\\";
@@ -47,12 +48,96 @@ std::string EscapeJson(const std::string& s) {
       case '"':
         out += "\\\"";
         break;
+      case '\n':
+        out += "\\n";
+        break;
+      case '\r':
+        out += "\\r";
+        break;
+      case '\t':
+        out += "\\t";
+        break;
+      case '\b':
+        out += "\\b";
+        break;
+      case '\f':
+        out += "\\f";
+        break;
       default:
-        out.push_back(c);
+        if (c >= 0x20) {
+          out.push_back(static_cast<char>(c));
+        } else {
+          char hex[8];
+          snprintf(hex, sizeof(hex), "\\u%04x", static_cast<unsigned int>(c));
+          out += hex;
+        }
         break;
     }
   }
   return out;
+}
+
+bool ReadJsonQuoted(const std::string& s, size_t* pos, std::string* out) {
+  if (*pos >= s.size() || s[*pos] != '"') {
+    return false;
+  }
+  ++(*pos);
+  out->clear();
+  while (*pos < s.size() && s[*pos] != '"') {
+    if (s[*pos] == '\\' && *pos + 1 < s.size()) {
+      ++(*pos);
+      const char esc = s[*pos];
+      switch (esc) {
+        case 'n': out->push_back('\n'); ++(*pos); break;
+        case 'r': out->push_back('\r'); ++(*pos); break;
+        case 't': out->push_back('\t'); ++(*pos); break;
+        case 'b': out->push_back('\b'); ++(*pos); break;
+        case 'f': out->push_back('\f'); ++(*pos); break;
+        case 'u': {
+          if (*pos + 4 < s.size()) {
+            unsigned cp = 0;
+            bool ok = true;
+            for (int k = 1; k <= 4; ++k) {
+              const char h = s[*pos + k];
+              cp <<= 4;
+              if (h >= '0' && h <= '9') cp |= static_cast<unsigned>(h - '0');
+              else if (h >= 'a' && h <= 'f') cp |= static_cast<unsigned>(h - 'a' + 10);
+              else if (h >= 'A' && h <= 'F') cp |= static_cast<unsigned>(h - 'A' + 10);
+              else { ok = false; break; }
+            }
+            if (ok) {
+              if (cp < 0x80) {
+                out->push_back(static_cast<char>(cp));
+              } else if (cp < 0x800) {
+                out->push_back(static_cast<char>(0xC0 | (cp >> 6)));
+                out->push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+              } else {
+                out->push_back(static_cast<char>(0xE0 | (cp >> 12)));
+                out->push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+                out->push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+              }
+              *pos += 5;
+              break;
+            }
+          }
+          out->push_back('u');
+          ++(*pos);
+          break;
+        }
+        default:
+          out->push_back(esc);
+          ++(*pos);
+          break;
+      }
+    } else {
+      out->push_back(s[(*pos)++]);
+    }
+  }
+  if (*pos >= s.size() || s[*pos] != '"') {
+    return false;
+  }
+  ++(*pos);
+  return true;
 }
 
 }  // namespace
@@ -110,23 +195,10 @@ PinMap ParsePinsJson(const std::string& json) {
     if (pos >= json.size() || json[pos] == '}') {
       break;
     }
-    if (json[pos] != '"') {
-      break;
-    }
-    ++pos;
     std::string path;
-    while (pos < json.size() && json[pos] != '"') {
-      if (json[pos] == '\\' && pos + 1 < json.size()) {
-        ++pos;
-        path.push_back(json[pos++]);
-      } else {
-        path.push_back(json[pos++]);
-      }
-    }
-    if (pos >= json.size()) {
+    if (!ReadJsonQuoted(json, &pos, &path)) {
       break;
     }
-    ++pos;  // closing "
     pos = json.find(':', pos);
     if (pos == std::string::npos) {
       break;
@@ -135,21 +207,12 @@ PinMap ParsePinsJson(const std::string& json) {
     if (pos == std::string::npos) {
       break;
     }
-    ++pos;
     std::string fence;
-    while (pos < json.size() && json[pos] != '"') {
-      if (json[pos] == '\\' && pos + 1 < json.size()) {
-        ++pos;
-        fence.push_back(json[pos++]);
-      } else {
-        fence.push_back(json[pos++]);
-      }
+    if (!ReadJsonQuoted(json, &pos, &fence)) {
+      break;
     }
     if (!path.empty() && !fence.empty()) {
       pins[NormalizePinKey(Widen(path))] = fence;
-    }
-    if (pos < json.size() && json[pos] == '"') {
-      ++pos;
     }
   }
   return pins;

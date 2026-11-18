@@ -1079,21 +1079,23 @@ bool NotesWindow::Create(HINSTANCE instance) {
     if (!btn) {
       return;
     }
-    SetWindowSubclass(
-        btn,
-        [](HWND hwnd, UINT msg, WPARAM wp, LPARAM lp, UINT_PTR, DWORD_PTR)
-            -> LRESULT {
-          if (msg == WM_MOUSEMOVE) {
-            TRACKMOUSEEVENT tme{sizeof(tme), TME_LEAVE, hwnd, 0};
-            TrackMouseEvent(&tme);
-            InvalidateRect(hwnd, nullptr, FALSE);
-          } else if (msg == WM_MOUSELEAVE || msg == WM_LBUTTONDOWN ||
-                     msg == WM_LBUTTONUP) {
-            InvalidateRect(hwnd, nullptr, FALSE);
-          }
-          return DefSubclassProc(hwnd, msg, wp, lp);
-        },
-        1, 0);
+    struct BtnSubclass {
+      static LRESULT CALLBACK Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
+                                   UINT_PTR id, DWORD_PTR) {
+        if (msg == WM_NCDESTROY) {
+          RemoveWindowSubclass(hwnd, &BtnSubclass::Proc, id);
+        } else if (msg == WM_MOUSEMOVE) {
+          TRACKMOUSEEVENT tme{sizeof(tme), TME_LEAVE, hwnd, 0};
+          TrackMouseEvent(&tme);
+          InvalidateRect(hwnd, nullptr, FALSE);
+        } else if (msg == WM_MOUSELEAVE || msg == WM_LBUTTONDOWN ||
+                   msg == WM_LBUTTONUP) {
+          InvalidateRect(hwnd, nullptr, FALSE);
+        }
+        return DefSubclassProc(hwnd, msg, wp, lp);
+      }
+    };
+    SetWindowSubclass(btn, &BtnSubclass::Proc, 1, 0);
   };
   hook_btn(sidebar_new_);
   hook_btn(sidebar_refresh_);
@@ -2107,7 +2109,7 @@ void NotesWindow::InsertImageFromFile() {
   ofn.lpstrFile = file.data();
   ofn.nMaxFile = static_cast<DWORD>(file.size());
   ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_ALLOWMULTISELECT |
-              OFN_EXPLORER;
+              OFN_EXPLORER | OFN_NOCHANGEDIR;
   if (!GetOpenFileNameW(&ofn)) {
     return;
   }
@@ -2125,8 +2127,8 @@ void NotesWindow::InsertImageFromFile() {
     }
   }
   int n = 0;
-  for (const auto& p : paths) {
-    if (InsertImageFile(p)) {
+  for (const auto& img_path : paths) {
+    if (InsertImageFile(img_path)) {
       ++n;
     }
   }
@@ -4268,14 +4270,15 @@ void NotifyShellFileRenamed(const std::wstring& old_path,
   if (old_path.empty() || new_path.empty()) {
     return;
   }
-  // Flush so an already-open Explorer window drops the stale "untitled.md" row.
-  SHChangeNotify(SHCNE_RENAMEITEM, SHCNF_PATHW | SHCNF_FLUSH, old_path.c_str(),
-                 new_path.c_str());
+  // Flush asynchronously so an already-open Explorer window drops the stale
+  // "untitled.md" row without blocking the UI thread.
+  SHChangeNotify(SHCNE_RENAMEITEM, SHCNF_PATHW | SHCNF_FLUSHNOWAIT,
+                 old_path.c_str(), new_path.c_str());
   const size_t slash = new_path.find_last_of(L"\\/");
   if (slash != std::wstring::npos && slash > 0) {
     const std::wstring dir = new_path.substr(0, slash);
-    SHChangeNotify(SHCNE_UPDATEDIR, SHCNF_PATHW | SHCNF_FLUSH, dir.c_str(),
-                   nullptr);
+    SHChangeNotify(SHCNE_UPDATEDIR, SHCNF_PATHW | SHCNF_FLUSHNOWAIT,
+                   dir.c_str(), nullptr);
   }
 }
 
@@ -5796,7 +5799,7 @@ void NotesWindow::ExportHtml() {
   ofn.lpstrFilter = L"HTML\0*.html\0";
   ofn.lpstrFile = file;
   ofn.nMaxFile = MAX_PATH;
-  ofn.Flags = OFN_OVERWRITEPROMPT;
+  ofn.Flags = OFN_OVERWRITEPROMPT | OFN_NOCHANGEDIR;
   ofn.lpstrDefExt = L"html";
   if (!GetSaveFileNameW(&ofn)) {
     return;
@@ -5821,7 +5824,7 @@ void NotesWindow::ExportMarkdown() {
   ofn.lpstrFilter = L"Markdown\0*.md\0";
   ofn.lpstrFile = file;
   ofn.nMaxFile = MAX_PATH;
-  ofn.Flags = OFN_OVERWRITEPROMPT;
+  ofn.Flags = OFN_OVERWRITEPROMPT | OFN_NOCHANGEDIR;
   ofn.lpstrDefExt = L"md";
   if (!GetSaveFileNameW(&ofn)) {
     return;
@@ -5841,7 +5844,7 @@ void NotesWindow::ExportWithPandoc() {
   ofn.lpstrFilter = L"Word 文档\0*.docx\0Markdown\0*.md\0";
   ofn.lpstrFile = file;
   ofn.nMaxFile = MAX_PATH;
-  ofn.Flags = OFN_OVERWRITEPROMPT;
+  ofn.Flags = OFN_OVERWRITEPROMPT | OFN_NOCHANGEDIR;
   ofn.lpstrDefExt = L"docx";
   if (!GetSaveFileNameW(&ofn)) {
     return;
@@ -5896,9 +5899,14 @@ void NotesWindow::ExportWithPandoc() {
     DeleteFileW(src.c_str());
     return;
   }
-  WaitForSingleObject(pi.hProcess, 60000);
+  const DWORD wait_rc = WaitForSingleObject(pi.hProcess, 60000);
   DWORD exit = 1;
-  GetExitCodeProcess(pi.hProcess, &exit);
+  if (wait_rc == WAIT_TIMEOUT) {
+    TerminateProcess(pi.hProcess, 1);
+    WaitForSingleObject(pi.hProcess, 2000);
+  } else {
+    GetExitCodeProcess(pi.hProcess, &exit);
+  }
   CloseHandle(pi.hThread);
   CloseHandle(pi.hProcess);
   DeleteFileW(src.c_str());
@@ -6622,7 +6630,7 @@ void NotesWindow::ExportPdf() {
   ofn.lpstrFilter = L"PDF\0*.pdf\0";
   ofn.lpstrFile = file;
   ofn.nMaxFile = MAX_PATH;
-  ofn.Flags = OFN_OVERWRITEPROMPT;
+  ofn.Flags = OFN_OVERWRITEPROMPT | OFN_NOCHANGEDIR;
   ofn.lpstrDefExt = L"pdf";
   if (!GetSaveFileNameW(&ofn)) {
     return;
@@ -6737,7 +6745,7 @@ void NotesWindow::SaveAs() {
   ofn.lpstrFile = file;
   ofn.nMaxFile = MAX_PATH;
   ofn.lpstrFilter = L"Text\0*.txt;*.md\0All\0*.*\0";
-  ofn.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST;
+  ofn.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
   if (!GetSaveFileNameW(&ofn)) {
     return;
   }
@@ -8096,7 +8104,7 @@ void NotesWindow::OpenFileDialog() {
   ofn.lpstrFile = buf.data();
   ofn.nMaxFile = static_cast<DWORD>(kCap);
   ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_ALLOWMULTISELECT |
-              OFN_EXPLORER;
+              OFN_EXPLORER | OFN_NOCHANGEDIR;
   if (!GetOpenFileNameW(&ofn)) {
     return;
   }

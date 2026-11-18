@@ -209,33 +209,35 @@ std::wstring Extension(const std::wstring& base) {
 }
 
 // Case-insensitive glob supporting '*' and '?' (Python fnmatch.fnmatchcase).
-bool GlobMatch(const std::wstring& n, const std::wstring& p, size_t ni, size_t pi) {
-  while (pi < p.size()) {
-    if (p[pi] == L'*') {
+// Linear-time O(N*M) iterative star-backtracking (no exponential recursion).
+bool GlobMatch(const std::wstring& n, const std::wstring& p, size_t ni = 0,
+               size_t pi = 0) {
+  size_t star_pi = std::wstring::npos;
+  size_t match_ni = 0;
+  while (ni < n.size()) {
+    if (pi < p.size() && (p[pi] == L'?' || p[pi] == n[ni])) {
+      ++ni;
+      ++pi;
+    } else if (pi < p.size() && p[pi] == L'*') {
       while (pi < p.size() && p[pi] == L'*') {
         ++pi;
       }
       if (pi == p.size()) {
         return true;
       }
-      for (size_t k = ni; k <= n.size(); ++k) {
-        if (GlobMatch(n, p, k, pi)) {
-          return true;
-        }
-      }
-      return false;
-    }
-    if (ni >= n.size()) {
-      return false;
-    }
-    if (p[pi] == L'?' || p[pi] == n[ni]) {
-      ++ni;
-      ++pi;
+      star_pi = pi;
+      match_ni = ni;
+    } else if (star_pi != std::wstring::npos) {
+      pi = star_pi;
+      ni = ++match_ni;
     } else {
       return false;
     }
   }
-  return ni == n.size();
+  while (pi < p.size() && p[pi] == L'*') {
+    ++pi;
+  }
+  return pi == p.size();
 }
 
 }  // namespace

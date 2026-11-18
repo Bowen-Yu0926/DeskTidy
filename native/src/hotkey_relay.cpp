@@ -227,20 +227,12 @@ bool HotkeyRelay::WriteMapping(const std::vector<HotkeyDef>& keys) {
     if (GetTempFileNameW(tmp, L"dthk", 0, file) == 0) {
       return false;
     }
-    mapping_path_ = file;
-    // Prefer .json suffix for readability.
-    const std::wstring json_path = mapping_path_ + L".json";
-    MoveFileExW(mapping_path_.c_str(), json_path.c_str(),
-                MOVEFILE_REPLACE_EXISTING);
-    mapping_path_ = json_path;
+    // Remove the empty placeholder created by GetTempFileNameW and use .json.
+    DeleteFileW(file);
+    mapping_path_ = std::wstring(file) + L".json";
   }
   const std::string body = MappingJson(keys);
-  std::ofstream out(mapping_path_, std::ios::binary | std::ios::trunc);
-  if (!out) {
-    return false;
-  }
-  out.write(body.data(), static_cast<std::streamsize>(body.size()));
-  return static_cast<bool>(out);
+  return AtomicWriteUtf8File(mapping_path_, body, false);
 }
 
 bool HotkeyRelay::LaunchHelper() {
@@ -274,9 +266,13 @@ bool HotkeyRelay::LaunchHelper() {
 
 void HotkeyRelay::ServeLoop() {
   while (InterlockedCompareExchange(&stop_, 0, 0) == 0) {
+    const SOCKET s = sock_;
+    if (s == INVALID_SOCKET) {
+      break;
+    }
     fd_set rd{};
     FD_ZERO(&rd);
-    FD_SET(sock_, &rd);
+    FD_SET(s, &rd);
     timeval tv{};
     tv.tv_sec = 0;
     tv.tv_usec = 500000;
@@ -284,10 +280,14 @@ void HotkeyRelay::ServeLoop() {
     if (sel <= 0) {
       continue;
     }
-    SOCKET client = accept(sock_, nullptr, nullptr);
+    SOCKET client = accept(s, nullptr, nullptr);
     if (client == INVALID_SOCKET) {
       break;
     }
+    DWORD rcv_timeout = 200;
+    setsockopt(client, SOL_SOCKET, SO_RCVTIMEO,
+               reinterpret_cast<const char*>(&rcv_timeout),
+               sizeof(rcv_timeout));
     char buf[256]{};
     const int n = recv(client, buf, sizeof(buf) - 1, 0);
     closesocket(client);

@@ -7,6 +7,7 @@
 #include <ShlObj.h>
 
 #include <algorithm>
+#include <cstdio>
 #include <fstream>
 #include <sstream>
 #include <vector>
@@ -98,90 +99,150 @@ std::wstring BaseNameOf(const std::wstring& path) {
   return path.substr(slash + 1);
 }
 
+bool ReadQuoted(const std::string& s, size_t* pos, std::string* out) {
+  if (*pos >= s.size() || s[*pos] != '"') {
+    return false;
+  }
+  ++(*pos);
+  out->clear();
+  while (*pos < s.size() && s[*pos] != '"') {
+    if (s[*pos] == '\\' && *pos + 1 < s.size()) {
+      ++(*pos);
+      const char esc = s[*pos];
+      switch (esc) {
+        case 'n': out->push_back('\n'); ++(*pos); break;
+        case 'r': out->push_back('\r'); ++(*pos); break;
+        case 't': out->push_back('\t'); ++(*pos); break;
+        case 'b': out->push_back('\b'); ++(*pos); break;
+        case 'f': out->push_back('\f'); ++(*pos); break;
+        case 'u': {
+          if (*pos + 4 < s.size()) {
+            unsigned cp = 0;
+            bool ok = true;
+            for (int k = 1; k <= 4; ++k) {
+              const char h = s[*pos + k];
+              cp <<= 4;
+              if (h >= '0' && h <= '9') cp |= static_cast<unsigned>(h - '0');
+              else if (h >= 'a' && h <= 'f') cp |= static_cast<unsigned>(h - 'a' + 10);
+              else if (h >= 'A' && h <= 'F') cp |= static_cast<unsigned>(h - 'A' + 10);
+              else { ok = false; break; }
+            }
+            if (ok) {
+              if (cp < 0x80) {
+                out->push_back(static_cast<char>(cp));
+              } else if (cp < 0x800) {
+                out->push_back(static_cast<char>(0xC0 | (cp >> 6)));
+                out->push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+              } else {
+                out->push_back(static_cast<char>(0xE0 | (cp >> 12)));
+                out->push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+                out->push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+              }
+              *pos += 5;
+              break;
+            }
+          }
+          out->push_back('u');
+          ++(*pos);
+          break;
+        }
+        default:
+          out->push_back(esc);
+          ++(*pos);
+          break;
+      }
+    } else {
+      out->push_back(s[(*pos)++]);
+    }
+  }
+  if (*pos >= s.size() || s[*pos] != '"') {
+    return false;
+  }
+  ++(*pos);
+  return true;
+}
+
 // ---------------------------------------------------------------------------
 // Case-sensitive fnmatch (Python fnmatch.fnmatchcase). Supports *, ? and [...]
 // classes incl. ranges (a-z) and negation ([!...]). Callers pre-fold both
 // strings so matching is case-insensitive without per-char locale surprises.
+// Iterative O(N*M) star-backtracking avoids exponential recursion on multi-'*'.
 // ---------------------------------------------------------------------------
 bool FnmatchImpl(const wchar_t* t, const wchar_t* p) {
-  while (*p) {
+  const wchar_t* star_p = nullptr;
+  const wchar_t* star_t = nullptr;
+  while (*t) {
     if (*p == L'*') {
-      do {
+      while (*p == L'*') {
         ++p;
-      } while (*p == L'*');
+      }
       if (!*p) {
         return true;
       }
-      while (*t) {
-        if (FnmatchImpl(t, p)) {
-          return true;
-        }
-        ++t;
-      }
-      return FnmatchImpl(t, p);
+      star_p = p;
+      star_t = t;
+      continue;
     }
     if (*p == L'?') {
-      if (!*t) {
-        return false;
-      }
       ++t;
       ++p;
       continue;
     }
     if (*p == L'[') {
-      if (!*t) {
-        return false;
-      }
-      ++p;
+      const wchar_t* q = p + 1;
       bool negate = false;
-      if (*p == L'!' || *p == L'^') {
+      if (*q == L'!' || *q == L'^') {
         negate = true;
-        ++p;
+        ++q;
       }
       bool matched = false;
       const wchar_t c = *t;
       // A leading ']' is a literal.
-      if (*p == L']') {
+      if (*q == L']') {
         if (c == L']') {
           matched = true;
         }
-        ++p;
+        ++q;
       }
-      while (*p && *p != L']') {
-        if (p[1] == L'-' && p[2] && p[2] != L']') {
-          const wchar_t lo = *p;
-          const wchar_t hi = p[2];
+      while (*q && *q != L']') {
+        if (q[1] == L'-' && q[2] && q[2] != L']') {
+          const wchar_t lo = *q;
+          const wchar_t hi = q[2];
           if (c >= lo && c <= hi) {
             matched = true;
           }
-          p += 3;
+          q += 3;
         } else {
-          if (*p == c) {
+          if (*q == c) {
             matched = true;
           }
-          ++p;
+          ++q;
         }
       }
-      if (*p != L']') {
+      if (*q != L']') {
         return false;  // unterminated class
       }
-      ++p;  // past ']'
-      if (matched == negate) {
-        return false;
+      if (matched != negate) {
+        p = q + 1;
+        ++t;
+        continue;
       }
+    } else if (*p == *t) {
       ++t;
+      ++p;
       continue;
     }
-    if (!*t) {
-      return false;
+    if (star_p) {
+      p = star_p;
+      t = ++star_t;
+      continue;
     }
-    if (*t != *p) {
-      return false;
-    }
-    ++t;
+    return false;
+  }
+  while (*p == L'*') {
     ++p;
   }
-  return *t == 0;
+  return *p == 0;
 }
 
 bool FnmatchFolded(const std::wstring& text, const std::wstring& pattern) {
@@ -539,13 +600,10 @@ int MigrateDocumentRulesLocked(RuleMap* rules) {
 }  // namespace
 
 RuleMap LoadRules() {
-  std::ifstream in(RuleFilePath());
-  if (!in) {
+  std::string json;
+  if (!ReadUtf8FileWithBak(RuleFilePath(), &json)) {
     return DefaultRules();
   }
-  std::ostringstream ss;
-  ss << in.rdbuf();
-  const std::string json = ss.str();
   RuleMap rules;
   size_t pos = json.find("\"rules\"");
   if (pos == std::string::npos) {
@@ -565,21 +623,10 @@ RuleMap LoadRules() {
     if (pos >= json.size() || json[pos] == '}') {
       break;
     }
-    if (json[pos] != '"') {
-      break;
-    }
-    ++pos;
     std::string key;
-    while (pos < json.size() && json[pos] != '"') {
-      if (json[pos] == '\\' && pos + 1 < json.size()) {
-        ++pos;
-      }
-      key.push_back(json[pos++]);
-    }
-    if (pos >= json.size()) {
+    if (!ReadQuoted(json, &pos, &key)) {
       break;
     }
-    ++pos;
     pos = json.find(':', pos);
     if (pos == std::string::npos) {
       break;
@@ -588,19 +635,12 @@ RuleMap LoadRules() {
     if (pos == std::string::npos) {
       break;
     }
-    ++pos;
     std::string val;
-    while (pos < json.size() && json[pos] != '"') {
-      if (json[pos] == '\\' && pos + 1 < json.size()) {
-        ++pos;
-      }
-      val.push_back(json[pos++]);
+    if (!ReadQuoted(json, &pos, &val)) {
+      break;
     }
     if (!key.empty() && !val.empty()) {
       InsertNormalizedRule(&rules, Widen(key), val);
-    }
-    if (pos < json.size() && json[pos] == '"') {
-      ++pos;
     }
   }
   if (rules.empty()) {
@@ -869,13 +909,10 @@ CategoryFenceMap ParseStrStrObject(const std::string& obj) {
     if (kq == std::string::npos) {
       break;
     }
-    size_t i = kq + 1;
+    size_t i = kq;
     std::string key;
-    while (i < obj.size() && obj[i] != '"') {
-      if (obj[i] == '\\' && i + 1 < obj.size()) {
-        ++i;
-      }
-      key.push_back(obj[i++]);
+    if (!ReadQuoted(obj, &i, &key)) {
+      break;
     }
     const size_t colon = obj.find(':', i);
     if (colon == std::string::npos) {
@@ -885,18 +922,15 @@ CategoryFenceMap ParseStrStrObject(const std::string& obj) {
     if (vq == std::string::npos) {
       break;
     }
-    i = vq + 1;
+    i = vq;
     std::string val;
-    while (i < obj.size() && obj[i] != '"') {
-      if (obj[i] == '\\' && i + 1 < obj.size()) {
-        ++i;
-      }
-      val.push_back(obj[i++]);
+    if (!ReadQuoted(obj, &i, &val)) {
+      break;
     }
     if (!key.empty() && !val.empty()) {
       out[key] = val;
     }
-    pos = i + 1;
+    pos = i;
   }
   return out;
 }
@@ -909,13 +943,10 @@ FilenameRulesMap ParseStrListObject(const std::string& obj) {
     if (kq == std::string::npos) {
       break;
     }
-    size_t i = kq + 1;
+    size_t i = kq;
     std::string key;
-    while (i < obj.size() && obj[i] != '"') {
-      if (obj[i] == '\\' && i + 1 < obj.size()) {
-        ++i;
-      }
-      key.push_back(obj[i++]);
+    if (!ReadQuoted(obj, &i, &key)) {
+      break;
     }
     const size_t colon = obj.find(':', i);
     if (colon == std::string::npos) {
@@ -955,18 +986,15 @@ FilenameRulesMap ParseStrListObject(const std::string& obj) {
       if (a == std::string::npos) {
         break;
       }
-      size_t j = a + 1;
+      size_t j = a;
       std::string val;
-      while (j < arr.size() && arr[j] != '"') {
-        if (arr[j] == '\\' && j + 1 < arr.size()) {
-          ++j;
-        }
-        val.push_back(arr[j++]);
+      if (!ReadQuoted(arr, &j, &val)) {
+        break;
       }
       if (!val.empty()) {
         pats.push_back(Widen(val));
       }
-      q = j + 1;
+      q = j;
     }
     if (!key.empty()) {
       out[key] = pats;
@@ -1012,13 +1040,10 @@ void LoadCategories(CategoryFenceMap* fence_map,
                     FilenameRulesMap* filename_rules) {
   fence_map->clear();
   filename_rules->clear();
-  std::ifstream in(CategoryFilePath());
-  if (!in) {
+  std::string json;
+  if (!ReadUtf8FileWithBak(CategoryFilePath(), &json)) {
     return;
   }
-  std::ostringstream ss;
-  ss << in.rdbuf();
-  const std::string json = ss.str();
   std::string obj;
   if (ExtractObject(json, "category_fence_map", &obj)) {
     *fence_map = ParseStrStrObject(obj);

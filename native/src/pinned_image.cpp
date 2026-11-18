@@ -71,6 +71,7 @@ PinnedImage::~PinnedImage() {
 }
 
 bool PinnedImage::Create(HINSTANCE instance, const std::wstring& path) {
+  Destroy();
   RegisterPinClass(instance);
   path_ = path;
 
@@ -86,6 +87,10 @@ bool PinnedImage::Create(HINSTANCE instance, const std::wstring& path) {
   bmp_ = hbmp;
 
   if (!bmp_ || orig_w_ <= 0 || orig_h_ <= 0) {
+    if (bmp_) {
+      DeleteObject(bmp_);
+      bmp_ = nullptr;
+    }
     return false;
   }
 
@@ -113,6 +118,8 @@ bool PinnedImage::Create(HINSTANCE instance, const std::wstring& path) {
       WS_POPUP, (sw - init_w) / 2 + stagger, (sh - init_h) / 3 + stagger,
       init_w, init_h, nullptr, nullptr, instance, this);
   if (!hwnd_) {
+    DeleteObject(bmp_);
+    bmp_ = nullptr;
     return false;
   }
   ApplyAlpha();
@@ -122,6 +129,7 @@ bool PinnedImage::Create(HINSTANCE instance, const std::wstring& path) {
 
 bool PinnedImage::CreateFromHBitmap(HINSTANCE instance, HBITMAP hbmp,
                                      const std::wstring& cache_path) {
+  Destroy();
   RegisterPinClass(instance);
   path_ = cache_path;
 
@@ -133,7 +141,7 @@ bool PinnedImage::CreateFromHBitmap(HINSTANCE instance, HBITMAP hbmp,
 
   orig_w_ = bm.bmWidth;
   orig_h_ = bm.bmHeight;
-  bmp_ = static_cast<HBITMAP>(CopyImage(hbmp, IMAGE_BITMAP, 0, 0, LR_COPYRETURNORG));
+  bmp_ = static_cast<HBITMAP>(CopyImage(hbmp, IMAGE_BITMAP, 0, 0, LR_CREATEDIBSECTION));
   if (!bmp_) return false;
 
   zoom_ = 1.0f;
@@ -159,6 +167,8 @@ bool PinnedImage::CreateFromHBitmap(HINSTANCE instance, HBITMAP hbmp,
       WS_POPUP, (sw - init_w) / 2 + stagger, (sh - init_h) / 3 + stagger,
       init_w, init_h, nullptr, nullptr, instance, this);
   if (!hwnd_) {
+    DeleteObject(bmp_);
+    bmp_ = nullptr;
     return false;
   }
   ApplyAlpha();
@@ -277,9 +287,11 @@ void PinnedImage::SaveAs() {
 void PinnedImage::CopyToClipboard() {
   if (!bmp_ || !OpenClipboard(hwnd_)) return;
   EmptyClipboard();
-  HBITMAP copy = static_cast<HBITMAP>(CopyImage(bmp_, IMAGE_BITMAP, 0, 0, LR_COPYRETURNORG));
+  HBITMAP copy = static_cast<HBITMAP>(CopyImage(bmp_, IMAGE_BITMAP, 0, 0, LR_CREATEDIBSECTION));
   if (copy) {
-    SetClipboardData(CF_BITMAP, copy);
+    if (!SetClipboardData(CF_BITMAP, copy)) {
+      DeleteObject(copy);
+    }
   }
   CloseClipboard();
 }
@@ -412,6 +424,9 @@ LRESULT PinnedImage::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
     case WM_LBUTTONUP:
       dragging_ = false;
       ReleaseCapture();
+      return 0;
+    case WM_CAPTURECHANGED:
+      dragging_ = false;
       return 0;
     case WM_LBUTTONDBLCLK: {
       dragging_ = false;

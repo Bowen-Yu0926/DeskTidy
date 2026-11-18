@@ -294,6 +294,7 @@ class SettingsWindow {
   void* webview_ = nullptr;
   bool web_ready_ = false;
   bool web_available_ = false;
+  bool web_creating_ = false;
   bool push_pending_ = false;
   bool ready_handling_ = false;
   // Actions that may open MistWebDialog / MessageBox — never run inside

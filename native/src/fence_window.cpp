@@ -760,9 +760,9 @@ void FenceWindow::PresentLayered() {
     const BYTE g_val = GetGValue(bg_);
     const BYTE b_val = GetBValue(bg_);
     const BYTE top_a = static_cast<BYTE>((std::min)(255, static_cast<int>(a) + 10));
-    const BYTE top_r = static_cast<BYTE>((std::min)(255, static_cast<int>(r_val) + (light_panel_ ? -3 : 8)));
-    const BYTE top_g = static_cast<BYTE>((std::min)(255, static_cast<int>(g_val) + (light_panel_ ? -3 : 8)));
-    const BYTE top_b = static_cast<BYTE>((std::min)(255, static_cast<int>(b_val) + (light_panel_ ? -3 : 12)));
+    const BYTE top_r = static_cast<BYTE>((std::max)(0, (std::min)(255, static_cast<int>(r_val) + (light_panel_ ? -3 : 8))));
+    const BYTE top_g = static_cast<BYTE>((std::max)(0, (std::min)(255, static_cast<int>(g_val) + (light_panel_ ? -3 : 8))));
+    const BYTE top_b = static_cast<BYTE>((std::max)(0, (std::min)(255, static_cast<int>(b_val) + (light_panel_ ? -3 : 12))));
     Gdiplus::LinearGradientBrush fill(
         Gdiplus::Point(0, 0), Gdiplus::Point(0, rh),
         Gdiplus::Color(top_a, top_r, top_g, top_b),
@@ -923,18 +923,10 @@ void FenceWindow::SetStyleId(const std::string& style_id) {
   opacity_override_ = -1;
   radius_override_ = -1;
   ApplyStyle();
-  if (hwnd_ && IsWindowVisible(hwnd_)) {
-    PresentLayered();
-  }
 }
 
 void FenceWindow::RefreshStyleFromPreset() {
   ApplyStyle();
-  if (hwnd_ && IsWindowVisible(hwnd_)) {
-    PresentLayered();
-  } else {
-    layer_dirty_ = true;
-  }
 }
 
 void FenceWindow::SetOpacity(int opacity) {
@@ -951,9 +943,6 @@ void FenceWindow::SetRadius(int radius) {
   // cannot be rounded into a circle.
   radius_override_ = radius < 0 ? -1 : (std::min)(40, radius);
   ApplyStyle();
-  if (hwnd_ && IsWindowVisible(hwnd_)) {
-    PresentLayered();
-  }
 }
 
 void FenceWindow::SetCustomColors(bool enabled, COLORREF bg, COLORREF accent) {
@@ -965,9 +954,6 @@ void FenceWindow::SetCustomColors(bool enabled, COLORREF bg, COLORREF accent) {
     accent_ = accent;
   }
   ApplyStyle();
-  if (hwnd_ && IsWindowVisible(hwnd_)) {
-    PresentLayered();
-  }
 }
 
 int FenceWindow::IconSizePx() const {
@@ -2545,7 +2531,7 @@ void FenceWindow::TabStripRects(std::vector<RECT>* out) const {
     if (r.right > right_limit) {
       r.right = right_limit;
     }
-    if (r.right <= r.left) {
+    if (r.right - r.left < S(hwnd_, 24)) {
       break;
     }
     out->push_back(r);
@@ -2966,11 +2952,13 @@ int FenceWindow::HitTestScrollbar(int x, int y) const {
   const int pad = S(hwnd_, kPad0);
   // Keep scrollbar clear of the east resize strip ([rc.right - kEdge, rc.right))
   const int edge = kEdge;
-  if (x < rc.right - edge - 7 || x >= rc.right - edge) {
+  const int hit_w = S(hwnd_, 12);
+  if (x < rc.right - edge - hit_w || x >= rc.right - edge) {
     return 0;
   }
-  const int track_top = header + 2;
-  const int track_h = (std::max)(8, static_cast<int>(rc.bottom) - track_top - 4);
+  const int track_top = header + S(hwnd_, 4);
+  const int track_h =
+      (std::max)(S(hwnd_, 8), static_cast<int>(rc.bottom) - track_top - S(hwnd_, 6));
   if (y < track_top || y > track_top + track_h) {
     return 0;
   }
@@ -2982,9 +2970,10 @@ int FenceWindow::HitTestScrollbar(int x, int y) const {
   const int view =
       (std::max)(0, static_cast<int>(rc.bottom) - header - pad - footer_h);
   const int thumb_h =
-      (std::max)(16, track_h * view / (std::max)(1, content_h_));
+      (std::max)(S(hwnd_, 24), track_h * view / (std::max)(1, content_h_));
+  const int travel = (std::max)(1, track_h - thumb_h);
   const int max_scroll = (std::max)(1, content_h_ - view);
-  const int thumb_y = track_top + (track_h - thumb_h) * scroll_y_ / max_scroll;
+  const int thumb_y = track_top + travel * scroll_y_ / max_scroll;
   if (y >= thumb_y && y <= thumb_y + thumb_h) {
     return 1;  // thumb
   }
@@ -3237,7 +3226,6 @@ void FenceWindow::TypeAheadFindNext() {
       if (matches(static_cast<size_t>(i))) {
         SelectOnly(i);
         EnsureCellVisible(i);
-        PresentLayered();
         return;
       }
     }
@@ -4490,8 +4478,10 @@ void FenceWindow::SelectOnly(int index) {
     selection_anchor_ = index;
     selection_focus_ = index;
   }
-  if (hwnd_) {
+  if (hwnd_ && IsWindowVisible(hwnd_) && !IsIconic(hwnd_)) {
     PresentLayered();
+  } else {
+    layer_dirty_ = true;
   }
 }
 
@@ -5422,7 +5412,6 @@ void FenceWindow::FinishInlineRename(bool commit) {
     if (on_rename_) {
       on_rename_(this);
     }
-    PresentLayered();
     return;
   }
   if (!commit || index < 0 || index >= static_cast<int>(cells_.size())) {
@@ -6242,13 +6231,14 @@ LRESULT FenceWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
                 : 0;
         const int view = (std::max)(
             0, static_cast<int>(rc.bottom) - header - pad - footer_h);
-        const int track_top = header + 2;
+        const int track_top = header + S(hwnd_, 4);
         const int track_h =
-            (std::max)(8, static_cast<int>(rc.bottom) - track_top - 4);
+            (std::max)(S(hwnd_, 8), static_cast<int>(rc.bottom) - track_top - S(hwnd_, 6));
         const int thumb_h =
-            (std::max)(16, track_h * view / (std::max)(1, content_h_));
+            (std::max)(S(hwnd_, 24), track_h * view / (std::max)(1, content_h_));
+        const int travel = (std::max)(1, track_h - thumb_h);
         const int max_scroll = (std::max)(1, content_h_ - view);
-        int thumb_y = track_top + (track_h - thumb_h) * scroll_y_ / max_scroll;
+        int thumb_y = track_top + travel * scroll_y_ / max_scroll;
         ScrollbarPage(press_client_.y < thumb_y ? -1 : 1);
         return 0;
       }
@@ -6475,14 +6465,14 @@ LRESULT FenceWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
                 : 0;
         const int view = (std::max)(
             0, static_cast<int>(rc.bottom) - header - pad - footer_h);
-        const int track_top = header + 2;
+        const int track_top = header + S(hwnd_, 4);
         const int track_h =
-            (std::max)(8, static_cast<int>(rc.bottom) - track_top - 4);
+            (std::max)(S(hwnd_, 8), static_cast<int>(rc.bottom) - track_top - S(hwnd_, 6));
         const int thumb_h =
-            (std::max)(16, track_h * view / (std::max)(1, content_h_));
+            (std::max)(S(hwnd_, 24), track_h * view / (std::max)(1, content_h_));
         const int max_scroll = (std::max)(1, content_h_ - view);
-        const int track_span = (std::max)(1, track_h - thumb_h);
-        scroll_y_ = thumb_start_scroll_ + dy * max_scroll / track_span;
+        const int travel = (std::max)(1, track_h - thumb_h);
+        scroll_y_ = thumb_start_scroll_ + dy * max_scroll / travel;
         ClampScroll();
         LayoutCells();
         PresentLayered();
@@ -7019,12 +7009,16 @@ void FenceWindow::Paint(HDC hdc) {
         const RECT& r = tabs[i];
         const bool on = tab_entries_[i].active;
         const bool hov = (!on && tab_hover_ == static_cast<int>(i));
-        Gdiplus::GraphicsPath path;
-        const float rad = S(hwnd_, 7) * 1.0f;
         Gdiplus::RectF rf(static_cast<Gdiplus::REAL>(r.left),
                           static_cast<Gdiplus::REAL>(r.top),
                           static_cast<Gdiplus::REAL>(r.right - r.left),
                           static_cast<Gdiplus::REAL>(r.bottom - r.top));
+        if (rf.Width < 2.f || rf.Height < 2.f) {
+          continue;
+        }
+        Gdiplus::GraphicsPath path;
+        const float rad = (std::min)({static_cast<float>(S(hwnd_, 7)),
+                                      rf.Width * 0.5f, rf.Height * 0.5f});
         path.AddArc(rf.X, rf.Y, rad, rad, 180.f, 90.f);
         path.AddArc(rf.GetRight() - rad, rf.Y, rad, rad, 270.f, 90.f);
         path.AddArc(rf.GetRight() - rad, rf.GetBottom() - rad, rad, rad, 0.f,
@@ -7263,8 +7257,9 @@ void FenceWindow::Paint(HDC hdc) {
         (std::max)(S(hwnd_, 8), static_cast<int>(rc.bottom) - track_top - S(hwnd_, 6));
     const int thumb_h =
         (std::max)(S(hwnd_, 24), track_h * view / (std::max)(1, content_h_));
+    const int travel = (std::max)(1, track_h - thumb_h);
     const int max_scroll = (std::max)(1, content_h_ - view);
-    int thumb_y = track_top + (track_h - thumb_h) * scroll_y_ / max_scroll;
+    int thumb_y = track_top + travel * scroll_y_ / max_scroll;
     if (thumb_y + thumb_h > track_top + track_h) {
       thumb_y = track_top + track_h - thumb_h;
     }

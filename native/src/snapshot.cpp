@@ -268,7 +268,10 @@ std::wstring SanitizeName(const std::wstring& name) {
 // Resolve the final .json path for a snapshot name, appending _2, _3, … when
 // a file with the sanitized name already exists (dedup, never overwrites).
 std::wstring ResolveSnapshotPath(const std::wstring& name) {
-  const std::wstring safe = SanitizeName(name);
+  std::wstring safe = SanitizeName(name);
+  if (safe.empty()) {
+    safe = L"snapshot";
+  }
   std::wstring path = JoinPath(SnapshotDir(), safe + L".json");
   int i = 2;
   while (GetFileAttributesW(path.c_str()) != INVALID_FILE_ATTRIBUTES) {
@@ -364,12 +367,28 @@ bool LoadPinsFromPath(const std::wstring& path, PinMap* pins) {
       break;
     }
     ++pos;
-    std::string path;
+    std::string item_path;
     while (pos < json.size() && json[pos] != '"') {
       if (json[pos] == '\\' && pos + 1 < json.size()) {
         ++pos;
+        switch (json[pos]) {
+          case 'n':
+            item_path.push_back('\n');
+            break;
+          case 'r':
+            item_path.push_back('\r');
+            break;
+          case 't':
+            item_path.push_back('\t');
+            break;
+          default:
+            item_path.push_back(json[pos]);
+            break;
+        }
+        ++pos;
+        continue;
       }
-      path.push_back(json[pos++]);
+      item_path.push_back(json[pos++]);
     }
     if (pos >= json.size()) {
       break;
@@ -391,8 +410,8 @@ bool LoadPinsFromPath(const std::wstring& path, PinMap* pins) {
       }
       fence.push_back(json[pos++]);
     }
-    if (!path.empty() && !fence.empty()) {
-      (*pins)[NormalizePinKey(Widen(path))] = fence;
+    if (!item_path.empty() && !fence.empty()) {
+      (*pins)[NormalizePinKey(Widen(item_path))] = fence;
     }
     if (pos < json.size() && json[pos] == '"') {
       ++pos;
@@ -567,7 +586,6 @@ SnapshotCardData BuildSnapshotCard(const SnapshotInfo& info,
   const AppState st = LoadAppStateFromPath(info.path, false);
   PinMap pins;
   LoadPinsFromPath(PinsSidecarPath(info.path), &pins);
-  card.meta = SnapshotBrief(info.path);
   card.focus_page = st.current_page;
   InferWorkSizeFromFingerprint(st.last_display_fingerprint, &card.work_w,
                                &card.work_h);
@@ -943,6 +961,10 @@ bool RenameSnapshot(const std::wstring& path, const std::wstring& new_name) {
   MoveFileW(IconsSidecarPath(path).c_str(), IconsSidecarPath(target).c_str());
   MoveFileW(PinsSidecarPath(path).c_str(), PinsSidecarPath(target).c_str());
   MoveFileW(FloatsSidecarPath(path).c_str(), FloatsSidecarPath(target).c_str());
+  {
+    std::lock_guard<std::mutex> lock(g_snapshot_card_mutex);
+    g_snapshot_card_cache.erase(path);
+  }
   return true;
 }
 
@@ -953,5 +975,9 @@ bool DeleteSnapshot(const std::wstring& path) {
   DeleteFileW(IconsSidecarPath(path).c_str());
   DeleteFileW(PinsSidecarPath(path).c_str());
   DeleteFileW(FloatsSidecarPath(path).c_str());
+  {
+    std::lock_guard<std::mutex> lock(g_snapshot_card_mutex);
+    g_snapshot_card_cache.erase(path);
+  }
   return true;
 }

@@ -34,7 +34,11 @@ std::wstring ReadFolderCfg() {
   if (p == std::string::npos) {
     return {};
   }
-  size_t q = json.find('"', json.find(':', p) + 1);
+  const size_t colon = json.find(':', p + 8);
+  if (colon == std::string::npos) {
+    return {};
+  }
+  size_t q = json.find('"', colon + 1);
   if (q == std::string::npos) {
     return {};
   }
@@ -43,6 +47,22 @@ std::wstring ReadFolderCfg() {
   while (q < json.size() && json[q] != '"') {
     if (json[q] == '\\' && q + 1 < json.size()) {
       ++q;
+      switch (json[q]) {
+        case 'n':
+          val.push_back('\n');
+          break;
+        case 'r':
+          val.push_back('\r');
+          break;
+        case 't':
+          val.push_back('\t');
+          break;
+        default:
+          val.push_back(json[q]);
+          break;
+      }
+      ++q;
+      continue;
     }
     val.push_back(json[q++]);
   }
@@ -50,19 +70,9 @@ std::wstring ReadFolderCfg() {
 }
 
 void WriteFolderCfg(const std::wstring& folder) {
-  std::ofstream out(CfgPath(), std::ios::binary);
-  if (!out) {
-    return;
-  }
-  std::string s = NarrowUtf8(folder);
-  std::string esc;
-  for (char c : s) {
-    if (c == '\\' || c == '"') {
-      esc.push_back('\\');
-    }
-    esc.push_back(c);
-  }
-  out << "{\n  \"folder\":\"" << esc << "\"\n}\n";
+  const std::string esc = EscapeJsonUtf8(NarrowUtf8(folder));
+  const std::string body = "{\n  \"folder\":\"" + esc + "\"\n}\n";
+  AtomicWriteUtf8File(CfgPath(), body);
 }
 
 int NextSerial(const std::wstring& folder, int year, int month, int day) {
@@ -175,12 +185,7 @@ bool WriteStoredZip(
   Put32(out, cd_start);
   Put16(out, 0);                         // comment len
 
-  std::ofstream f(path, std::ios::binary);
-  if (!f) {
-    return false;
-  }
-  f.write(out.data(), static_cast<std::streamsize>(out.size()));
-  return static_cast<bool>(f);
+  return AtomicWriteUtf8File(path, out);
 }
 
 std::string XmlEscape(const std::string& s) {

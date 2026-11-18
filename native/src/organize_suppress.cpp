@@ -1,9 +1,10 @@
 #include "organize_suppress.h"
 
+#include "paths_util.h"
+
 #include <Windows.h>
 
 #include <algorithm>
-#include <cctype>
 #include <mutex>
 #include <string>
 #include <unordered_map>
@@ -27,22 +28,13 @@ std::string NormKey(const std::wstring& path) {
   if (s.empty()) {
     return {};
   }
-  std::string out;
-  out.reserve(s.size());
-  for (wchar_t c : s) {
-    if (c >= 0 && c < 128) {
-      out.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
-    } else {
-      // Keep wide as UTF-8-ish surrogate: store low bytes casefolded when ASCII.
-      char buf[8];
-      const int n = WideCharToMultiByte(CP_UTF8, 0, &c, 1, buf, 8, nullptr, nullptr);
-      for (int k = 0; k < n; ++k) {
-        out.push_back(static_cast<char>(
-            std::tolower(static_cast<unsigned char>(buf[k]))));
-      }
+  for (wchar_t& c : s) {
+    if (c == L'/') {
+      c = L'\\';
     }
   }
-  return out;
+  CharLowerBuffW(&s[0], static_cast<DWORD>(s.size()));
+  return NarrowUtf8(s);
 }
 
 void SweepLocked(ULONGLONG now) {

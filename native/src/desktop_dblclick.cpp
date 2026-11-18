@@ -110,17 +110,27 @@ LRESULT CALLBACK LowLevelMouseProc(int code, WPARAM wparam, LPARAM lparam) {
       // frozen. Threshold + throttle keep the hook cheap.
       if (g_rubber_dragging && g_notify && IsWindow(g_notify)) {
         if (wparam == WM_MOUSEMOVE && g_rubber_move_msg) {
-          if (!g_rubber_moved &&
-              (abs(info->pt.x - g_rubber_origin.x) >= kRubberThreshold ||
-               abs(info->pt.y - g_rubber_origin.y) >= kRubberThreshold)) {
-            g_rubber_moved = true;
-          }
-          const DWORD now = GetTickCount();
-          if (g_rubber_moved && now - g_last_rubber_move_ms >= 16) {
-            g_last_rubber_move_ms = now;
-            PostMessageW(g_notify, g_rubber_move_msg, 0,
-                         MAKELPARAM(static_cast<WORD>(info->pt.x),
-                                    static_cast<WORD>(info->pt.y)));
+          if ((GetAsyncKeyState(VK_LBUTTON) & 0x8000) == 0) {
+            g_rubber_dragging = false;
+            g_rubber_moved = false;
+            if (g_rubber_up_msg) {
+              PostMessageW(g_notify, g_rubber_up_msg, 0,
+                           MAKELPARAM(static_cast<WORD>(info->pt.x),
+                                      static_cast<WORD>(info->pt.y)));
+            }
+          } else {
+            if (!g_rubber_moved &&
+                (abs(info->pt.x - g_rubber_origin.x) >= kRubberThreshold ||
+                 abs(info->pt.y - g_rubber_origin.y) >= kRubberThreshold)) {
+              g_rubber_moved = true;
+            }
+            const DWORD now = GetTickCount();
+            if (g_rubber_moved && now - g_last_rubber_move_ms >= 16) {
+              g_last_rubber_move_ms = now;
+              PostMessageW(g_notify, g_rubber_move_msg, 0,
+                           MAKELPARAM(static_cast<WORD>(info->pt.x),
+                                      static_cast<WORD>(info->pt.y)));
+            }
           }
         } else if (wparam == WM_LBUTTONUP && g_rubber_up_msg) {
           g_rubber_dragging = false;
@@ -285,6 +295,7 @@ void StopDesktopDblClickMonitor() {
   g_rubber_moved = false;
   g_rubber_origin = {-1, -1};
   g_last_rubber_move_ms = 0;
+  g_last_rclick_tick = 0;
   g_organized_blank_menu = false;
 }
 
@@ -293,7 +304,7 @@ void SetDesktopOrganizedBlankMenu(bool organized) {
 }
 
 bool GetLastDesktopRightClick(POINT* out, ULONGLONG* tick_ms) {
-  if (g_last_rclick.x < 0 || g_last_rclick.y < 0) {
+  if (g_last_rclick_tick == 0) {
     return false;
   }
   if (out) {

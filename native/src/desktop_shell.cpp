@@ -764,17 +764,14 @@ bool HasVisibleFullscreenCover() {
 }
 
 void InvalidateFullscreenCoverCache() {
-  // A minimize request (Win+D over a borderless game) is asynchronous: the
-  // window keeps answering "visible, not iconic" for a few frames while the
-  // animation runs. The 400ms cache then reports a cover that is on its way
-  // out, which sinks the overlays instead of lifting them. Callers that just
-  // issued the minimize drop the cache and mark the window as dismissing so
-  // the re-enumeration does not simply find it again.
+  const HWND prev = g_cover_cache;
   g_cover_valid = false;
-  g_cover_cache = nullptr;
   g_cover_tick = 0;
-  g_cover_dismissing = FindFullscreenCoverWindow();
-  g_cover_dismiss_tick = GetTickCount64();
+  g_cover_cache = nullptr;
+  if (prev && IsWindow(prev)) {
+    g_cover_dismissing = prev;
+    g_cover_dismiss_tick = GetTickCount64();
+  }
 }
 
 bool IsCoverBeingDismissed() {

@@ -229,6 +229,7 @@ void PageBar::ApplyEdgeX() {
 
 void PageBar::SetExpandTarget(float target) {
   target = (std::max)(0.f, (std::min)(1.f, target));
+  const bool same_target = std::fabs(expand_target_ - target) < 0.001f;
   expand_target_ = target;
   if (!hwnd_) {
     expand_t_ = target;
@@ -238,11 +239,15 @@ void PageBar::SetExpandTarget(float target) {
     KillTimer(hwnd_, kTimerCollapseDelay);
   }
   if (std::fabs(expand_t_ - expand_target_) < 0.001f) {
-    expand_t_ = expand_target_;
-    ApplyEdgeX();
+    if (!same_target) {
+      expand_t_ = expand_target_;
+      ApplyEdgeX();
+    }
     return;
   }
-  SetTimer(hwnd_, kTimerExpand, kExpandTickMs, nullptr);
+  if (!same_target) {
+    SetTimer(hwnd_, kTimerExpand, kExpandTickMs, nullptr);
+  }
 }
 
 void PageBar::TickExpandAnim() {
@@ -633,14 +638,24 @@ void PageBar::AttachToDesktopLayer() {
 }
 
 int PageBar::HitTest(int x, int y) const {
-  const int full_w = CardMargin() + PadX() * 2 + chip_w_;
+  const int card_m = CardMargin();
+  const int pad_x = PadX();
+  const int full_w = card_m + pad_x * 2 + chip_w_;
   if (x < 0 || x >= full_w) {
     return -1;
   }
   for (int i = 0; i < static_cast<int>(slots_.size()); ++i) {
     const int top = SlotTop(i) + (slot_h_ - chip_h_) / 2;
     if (y >= top && y < top + chip_h_) {
-      return i;
+      int min_x = card_m;
+      if (chrome_style_ == ChromeStyle::Tabs) {
+        const int pop = Scaled(kTabsPopMargin, font_scale_);
+        min_x = (std::max)(0, card_m + pad_x - pop);
+      }
+      if (x >= min_x) {
+        return i;
+      }
+      return -1;
     }
   }
   return -1;
@@ -897,19 +912,19 @@ LRESULT PageBar::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
     case WM_LBUTTONUP: {
       const int x = GET_X_LPARAM(lparam);
       const int y = GET_Y_LPARAM(lparam);
+      const bool was_dragging = dragging_;
+      const bool was_moved = drag_moved_;
+      dragging_ = false;
+      drag_moved_ = false;
       ReleaseCapture();
-      if (dragging_ && drag_moved_) {
+      if (was_dragging && was_moved) {
         RECT rc{};
         GetWindowRect(hwnd_, &rc);
         DockToRightEdge(rc.top);
-        dragging_ = false;
-        drag_moved_ = false;
         AttachToDesktopLayer();
         SetTimer(hwnd_, kTimerCollapseDelay, kCollapseDelayMs, nullptr);
         return 0;
       }
-      dragging_ = false;
-      drag_moved_ = false;
       const int hit = HitTest(x, y);
       ActivateSlot(hit);
       return 0;
@@ -1202,6 +1217,11 @@ void PageBar::Paint(HDC) {
       }
     };
 
+    Gdiplus::StringFormat cfmt;
+    cfmt.SetAlignment(Gdiplus::StringAlignmentCenter);
+    cfmt.SetLineAlignment(Gdiplus::StringAlignmentCenter);
+    cfmt.SetFormatFlags(Gdiplus::StringFormatFlagsNoWrap);
+
     for (int i = 0; i < static_cast<int>(slots_.size()); ++i) {
       const Slot& s = slots_[static_cast<size_t>(i)];
       const bool on = s.kind == SlotKind::Page && s.page_index == page_;
@@ -1454,10 +1474,6 @@ void PageBar::Paint(HDC) {
           const float peek_zone_w = std::round(14.f * font_scale_);
           if (s.kind == SlotKind::Page) {
             const std::wstring num = std::to_wstring(s.page_index + 1);
-            Gdiplus::StringFormat cfmt;
-            cfmt.SetAlignment(Gdiplus::StringAlignmentCenter);
-            cfmt.SetLineAlignment(Gdiplus::StringAlignmentCenter);
-            cfmt.SetFormatFlags(Gdiplus::StringFormatFlagsNoWrap);
             Gdiplus::SolidBrush pb(peek_c);
             const Gdiplus::Font& pfont = on ? *font_on_ : *font_util_;
             g.DrawString(num.c_str(), -1, &pfont,

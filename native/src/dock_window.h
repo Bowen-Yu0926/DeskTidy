@@ -93,6 +93,7 @@ class DockWindow {
   std::wstring edge_ = L"bottom";
   BYTE fill_alpha_ = 217;  // ≈ 0.85
   int hover_index_ = -1;
+  int press_index_ = -1;
   Metrics metrics_{};
   std::vector<Slot> slots_;
   std::function<void(const std::wstring&, const std::wstring&)> on_path_replaced_;

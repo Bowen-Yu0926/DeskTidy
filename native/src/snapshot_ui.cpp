@@ -40,7 +40,9 @@ std::wstring SnapshotPreviewText(const std::wstring& path) {
   SnapshotInfo info;
   info.path = path;
   info.name = StripJsonExt(BaseName(path));
-  const SnapshotCardData card = BuildSnapshotCard(info);
+  SnapshotCardOptions opts;
+  opts.render_thumbs = false;
+  const SnapshotCardData card = BuildSnapshotCard(info, opts);
   if (card.boxes.empty() && card.name.empty()) {
     return L"（无法读取预览）";
   }

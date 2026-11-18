@@ -212,6 +212,8 @@ void ShowToastImpl(HWND anchor, HWND clear_above, const std::wstring& text,
   if (g_hwnd) {
     HWND old = g_hwnd;
     g_hwnd = nullptr;
+    g_rgn_ww = 0;
+    g_rgn_hh = 0;
     if (g_timer) {
       KillTimer(old, g_timer);
       g_timer = 0;

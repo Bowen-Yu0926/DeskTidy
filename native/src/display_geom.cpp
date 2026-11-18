@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <mutex>
 #include <winreg.h>
 #include <unordered_map>
 #include <utility>
@@ -55,17 +56,22 @@ UINT MonitorDpi(HMONITOR mon) {
 void PhysicalMm(const MonitorInfo& m, int* mm_w, int* mm_h) {
   *mm_w = 520;
   *mm_h = 290;
+  static std::mutex s_mm_mu;
   static std::unordered_map<std::wstring, std::pair<int, int>> s_cache;
   const std::wstring dev_key = m.device[0] ? m.device : L"DEFAULT";
-  auto it = s_cache.find(dev_key);
-  if (it != s_cache.end()) {
-    *mm_w = it->second.first;
-    *mm_h = it->second.second;
-    return;
+  {
+    std::lock_guard<std::mutex> lock(s_mm_mu);
+    auto it = s_cache.find(dev_key);
+    if (it != s_cache.end()) {
+      *mm_w = it->second.first;
+      *mm_h = it->second.second;
+      return;
+    }
   }
   HDC dc = CreateDCW(L"DISPLAY", m.device[0] ? m.device : nullptr, nullptr,
                      nullptr);
   if (!dc) {
+    std::lock_guard<std::mutex> lock(s_mm_mu);
     s_cache[dev_key] = {*mm_w, *mm_h};
     return;
   }
@@ -78,6 +84,7 @@ void PhysicalMm(const MonitorInfo& m, int* mm_w, int* mm_h) {
   if (h > 0) {
     *mm_h = h;
   }
+  std::lock_guard<std::mutex> lock(s_mm_mu);
   s_cache[dev_key] = {*mm_w, *mm_h};
 }
 
@@ -123,12 +130,14 @@ bool ParsePanelPixels(const std::string& part, int* w, int* h) {
 // GetMonitorInfoW per monitor was re-enumerated on every SnapRectToWorkArea
 // during a drag. Reuse for a short TTL, invalidating early when the monitor
 // count changes (plug/unplug) — same short-TTL pattern as icon grid metrics.
+std::mutex g_mon_mu;
 std::vector<MonitorInfo> g_mon_cache;
 ULONGLONG g_mon_tick = 0;
 bool g_mon_valid = false;
 constexpr ULONGLONG kMonCacheTtlMs = 500;
 
-const std::vector<MonitorInfo>& CachedMonitors() {
+std::vector<MonitorInfo> CachedMonitors() {
+  std::lock_guard<std::mutex> lock(g_mon_mu);
   const ULONGLONG now = GetTickCount64();
   const int count = GetSystemMetrics(SM_CMONITORS);
   if (g_mon_valid && now - g_mon_tick < kMonCacheTtlMs &&
@@ -552,6 +561,7 @@ void ScaleIconGridForDpi(IconGridMetrics* m, int old_dpi, int new_dpi) {
 }
 
 namespace {
+std::mutex g_grid_mu;
 IconGridMetrics g_grid_cache{};
 ULONGLONG g_grid_tick = 0;
 bool g_grid_valid = false;
@@ -561,14 +571,18 @@ constexpr ULONGLONG kGridCacheTtlMs = 750;
 }  // namespace
 
 void InvalidateIconGridMetricsCache() {
+  std::lock_guard<std::mutex> lock(g_grid_mu);
   g_grid_valid = false;
   g_grid_tick = 0;
 }
 
 IconGridMetrics QueryIconGridMetrics() {
   const ULONGLONG now = GetTickCount64();
-  if (g_grid_valid && now - g_grid_tick < kGridCacheTtlMs) {
-    return g_grid_cache;
+  {
+    std::lock_guard<std::mutex> lock(g_grid_mu);
+    if (g_grid_valid && now - g_grid_tick < kGridCacheTtlMs) {
+      return g_grid_cache;
+    }
   }
 
   // Legacy fixed defaults — preserved when Explorer metrics are unavailable.
@@ -607,6 +621,7 @@ IconGridMetrics QueryIconGridMetrics() {
   }
 
   if (native_w == 0 || native_h == 0) {
+    std::lock_guard<std::mutex> lock(g_grid_mu);
     g_grid_cache = out;
     g_grid_tick = now;
     g_grid_valid = true;
@@ -635,9 +650,12 @@ IconGridMetrics QueryIconGridMetrics() {
   out.cell_h = (std::max)(48, target_h);
   const int min_caption = (std::max)(16, line_h);
   out.cell_h = (std::max)(out.icon_size + min_caption, out.cell_h);
-  g_grid_cache = out;
-  g_grid_tick = now;
-  g_grid_valid = true;
+  {
+    std::lock_guard<std::mutex> lock(g_grid_mu);
+    g_grid_cache = out;
+    g_grid_tick = now;
+    g_grid_valid = true;
+  }
   return out;
 }
 

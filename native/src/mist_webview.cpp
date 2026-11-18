@@ -523,8 +523,8 @@ void MistWebDialogFocus(MistWebDialog* dlg) {
 }
 
 void MistWebDialogClose(MistWebDialog* dlg) {
-  if (dlg && dlg->hwnd) {
-    DestroyWindow(dlg->hwnd);
+  if (dlg && dlg->hwnd && IsWindow(dlg->hwnd)) {
+    PostMessageW(dlg->hwnd, WM_CLOSE, 0, 0);
   }
 }
 

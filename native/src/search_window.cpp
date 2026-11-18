@@ -480,14 +480,18 @@ bool SearchWindow::Create(HINSTANCE instance) {
     shared_state_ = std::make_shared<SearchSharedState>();
   }
   shared_state_->alive.store(true);
-  WNDCLASSEXW wc{};
-  wc.cbSize = sizeof(wc);
-  wc.lpfnWndProc = SearchWindow::WndProc;
-  wc.hInstance = instance;
-  wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
-  wc.hbrBackground = CreateSolidBrush(RGB(0xEE, 0xF1, 0xF6));
-  wc.lpszClassName = kClass;
-  RegisterClassExW(&wc);
+  static bool registered = false;
+  if (!registered) {
+    WNDCLASSEXW wc{};
+    wc.cbSize = sizeof(wc);
+    wc.lpfnWndProc = SearchWindow::WndProc;
+    wc.hInstance = instance;
+    wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
+    wc.hbrBackground = CreateSolidBrush(RGB(0xEE, 0xF1, 0xF6));
+    wc.lpszClassName = kClass;
+    RegisterClassExW(&wc);
+    registered = true;
+  }
 
   const RECT work = PrimaryWorkArea();
   hwnd_ = CreateWindowExW(
@@ -520,13 +524,15 @@ bool SearchWindow::CreateWebView() {
     RegisterClassExW(&wc);
     host_reg = true;
   }
-  RECT rc{};
-  GetClientRect(hwnd_, &rc);
-  host_ = CreateWindowExW(0, kHostClass, L"", WS_CHILD | WS_VISIBLE, 0, 0,
-                          rc.right, rc.bottom, hwnd_, nullptr,
-                          GetModuleHandleW(nullptr), nullptr);
-  if (!host_) {
-    return false;
+  if (!host_ || !IsWindow(host_)) {
+    RECT rc{};
+    GetClientRect(hwnd_, &rc);
+    host_ = CreateWindowExW(0, kHostClass, L"", WS_CHILD | WS_VISIBLE, 0, 0,
+                            rc.right, rc.bottom, hwnd_, nullptr,
+                            GetModuleHandleW(nullptr), nullptr);
+    if (!host_) {
+      return false;
+    }
   }
   const std::wstring user_data =
       JoinPath(NativeDataDir(), L"webview2-search");
@@ -535,7 +541,8 @@ bool SearchWindow::CreateWebView() {
       nullptr, user_data.c_str(), nullptr,
       Callback<ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler>(
           [this](HRESULT result, ICoreWebView2Environment* env) -> HRESULT {
-            if (FAILED(result) || !env || !host_) {
+            if (FAILED(result) || !env || !hwnd_ || !host_ ||
+                !IsWindow(host_)) {
               return S_OK;
             }
             env->CreateCoreWebView2Controller(
@@ -547,11 +554,17 @@ bool SearchWindow::CreateWebView() {
                       if (FAILED(result2) || !controller) {
                         return S_OK;
                       }
+                      if (!hwnd_ || !host_ || !IsWindow(host_)) {
+                        controller->Close();
+                        return S_OK;
+                      }
                       controller_ = controller;
                       controller->AddRef();
                       ICoreWebView2* web = nullptr;
-                      controller->get_CoreWebView2(&web);
-                      if (!web) {
+                      if (FAILED(controller->get_CoreWebView2(&web)) || !web) {
+                        controller->Close();
+                        controller->Release();
+                        controller_ = nullptr;
                         return S_OK;
                       }
                       webview_ = web;
@@ -1238,9 +1251,16 @@ LRESULT SearchWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
       Hide();
       return 0;
     case WM_DESTROY:
+      KillTimer(hwnd_, kTimerDebounce);
       if (shared_state_) {
         shared_state_->alive.store(false);
         ++shared_state_->gen;
+      }
+      {
+        MSG m{};
+        while (PeekMessageW(&m, hwnd_, kMsgSearchUi, kMsgSearchUi, PM_REMOVE)) {
+          delete reinterpret_cast<SearchUiMsg*>(m.lParam);
+        }
       }
       DestroyWebView();
       hwnd_ = nullptr;

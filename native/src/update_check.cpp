@@ -127,7 +127,8 @@ bool AllowedDownloadHost(const std::wstring& url) {
   uc.dwStructSize = sizeof(uc);
   uc.lpszHostName = host;
   uc.dwHostNameLength = 256;
-  if (!WinHttpCrackUrl(url.c_str(), 0, 0, &uc)) {
+  if (!WinHttpCrackUrl(url.c_str(), 0, 0, &uc) ||
+      uc.nScheme != INTERNET_SCHEME_HTTPS) {
     return false;
   }
   const std::wstring h = ToLowerW(host);
@@ -456,7 +457,10 @@ bool DownloadAsset(const std::wstring& url, const std::wstring& dir,
       ok = false;
       break;
     }
-    out.write(chunk.data(), read);
+    if (!out.write(chunk.data(), read)) {
+      ok = false;
+      break;
+    }
     done += read;
     if (content_len > 0 && progress_hwnd) {
       const int pct = static_cast<int>(done * 100 / content_len);
@@ -470,6 +474,9 @@ bool DownloadAsset(const std::wstring& url, const std::wstring& dir,
     }
   }
   out.close();
+  if (!out.good()) {
+    ok = false;
+  }
   WinHttpCloseHandle(req);
   WinHttpCloseHandle(conn);
   WinHttpCloseHandle(session);
@@ -478,10 +485,15 @@ bool DownloadAsset(const std::wstring& url, const std::wstring& dir,
     *err = L"下载中断";
     return false;
   }
+  if (!MoveFileExW(tmp_path.c_str(), final_path.c_str(),
+                   MOVEFILE_REPLACE_EXISTING)) {
+    DeleteFileW(tmp_path.c_str());
+    *err = L"保存安装包失败";
+    return false;
+  }
   if (progress_hwnd) {
     PostMessageW(progress_hwnd, kMsgUpdateProgress, 100, 0);
   }
-  MoveFileExW(tmp_path.c_str(), final_path.c_str(), MOVEFILE_REPLACE_EXISTING);
   if (out_path) {
     *out_path = final_path;
   }
@@ -689,6 +701,10 @@ void StartUpdateInstallAsync(HWND owner) {
     return;
   }
   std::thread([owner]() {
+    struct ResetGuard {
+      std::atomic<bool>* flag;
+      ~ResetGuard() { flag->store(false); }
+    } reset_guard{&g_installing};
     auto* r = new UpdateInstallResult;
     std::string body;
     std::wstring err;

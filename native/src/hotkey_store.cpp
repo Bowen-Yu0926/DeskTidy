@@ -60,6 +60,13 @@ struct CapState {
 
 LRESULT CALLBACK CapProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
   auto* st = reinterpret_cast<CapState*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+  auto close_modal = [hwnd]() {
+    HWND owner = GetWindow(hwnd, GW_OWNER);
+    if (owner) {
+      EnableWindow(owner, TRUE);
+    }
+    DestroyWindow(hwnd);
+  };
   switch (msg) {
     case WM_KEYDOWN:
     case WM_SYSKEYDOWN: {
@@ -68,7 +75,7 @@ LRESULT CALLBACK CapProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
       }
       const UINT vk = static_cast<UINT>(wparam);
       if (vk == VK_ESCAPE) {
-        DestroyWindow(hwnd);
+        close_modal();
         return 0;
       }
       if (vk == VK_CONTROL || vk == VK_SHIFT || vk == VK_MENU || vk == VK_LWIN ||
@@ -88,11 +95,11 @@ LRESULT CALLBACK CapProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
       st->mods = mods;
       st->vk = vk;
       st->done = true;
-      DestroyWindow(hwnd);
+      close_modal();
       return 0;
     }
     case WM_CLOSE:
-      DestroyWindow(hwnd);
+      close_modal();
       return 0;
     default:
       break;
@@ -141,13 +148,24 @@ bool CaptureChord(HWND owner, UINT* mods, UINT* vk) {
     EnableWindow(owner, FALSE);
   }
   MSG msg{};
-  while (IsWindow(hwnd) && GetMessageW(&msg, nullptr, 0, 0) > 0) {
+  while (IsWindow(hwnd)) {
+    const BOOL gm = GetMessageW(&msg, nullptr, 0, 0);
+    if (gm == 0) {
+      PostQuitMessage(static_cast<int>(msg.wParam));
+      break;
+    }
+    if (gm < 0) {
+      break;
+    }
     TranslateMessage(&msg);
     DispatchMessageW(&msg);
   }
   if (owner) {
     EnableWindow(owner, TRUE);
     SetForegroundWindow(owner);
+  }
+  if (IsWindow(hwnd)) {
+    DestroyWindow(hwnd);
   }
   if (!st.done) {
     return false;

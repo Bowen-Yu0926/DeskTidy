@@ -1198,7 +1198,17 @@ std::wstring MergeInterruptedRecording(const std::wstring& exe,
         c = L'/';
       }
     }
-    playlist += "file '" + NarrowUtf8(w) + "'\n";
+    std::string seg_u8 = NarrowUtf8(w);
+    std::string esc_u8;
+    esc_u8.reserve(seg_u8.size());
+    for (char ch : seg_u8) {
+      if (ch == '\'') {
+        esc_u8 += "'\\''";
+      } else {
+        esc_u8.push_back(ch);
+      }
+    }
+    playlist += "file '" + esc_u8 + "'\n";
   }
   const std::wstring list_path = JoinPath(temp_dir, stem + L".concat.txt");
   FILE* f = nullptr;
@@ -1821,9 +1831,13 @@ bool RecoverInterruptedRecording() {
 }
 
 void ReapScreenRecordOnExit() {
+  for (int i = 0; i < 150 && g_merging.load(); ++i) {
+    Sleep(20);
+  }
   // P1-25: clean exit merges segments instead of deleting them. Crash path
   // leaves screen_record_state.json so the next launch can AdoptOrphan…
-  if (g_proc || g_paused) {
+  const bool had_active = (g_proc != nullptr || g_paused);
+  if (had_active) {
     if (g_proc) {
       FinalizeCurrentSegment();
     }
@@ -1838,7 +1852,9 @@ void ReapScreenRecordOnExit() {
   g_segments.clear();
   g_cmd = RecCmd{};
   g_proc_pid = 0;
-  ClearRecordState();
+  if (had_active && !g_merging.load()) {
+    ClearRecordState();
+  }
 }
 
 bool ToggleScreenRecord(HWND owner) {

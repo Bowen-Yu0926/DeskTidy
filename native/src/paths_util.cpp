@@ -138,7 +138,6 @@ bool IsDevRuntime() {
 
 std::wstring NativeDataDir() {
   static const std::wstring s_dir = ComputeNativeDataDir();
-  CreateDirectoryW(s_dir.c_str(), nullptr);
 
   int expected = 0;
   if (!g_root_call_state.compare_exchange_strong(expected, 1)) {
@@ -335,7 +334,8 @@ bool AtomicWriteUtf8File(const std::wstring& path, const std::string& utf8,
   if (path.empty()) {
     return false;
   }
-  const std::wstring tmp = path + L".tmp";
+  const std::wstring tmp =
+      path + L"." + std::to_wstring(GetCurrentThreadId()) + L".tmp";
   HANDLE h = CreateFileW(tmp.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
                          FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH,
                          nullptr);
@@ -369,6 +369,7 @@ bool AtomicWriteUtf8File(const std::wstring& path, const std::string& utf8,
 }
 
 std::string EscapeJsonUtf8(const std::string& s) {
+  static constexpr char kHex[] = "0123456789abcdef";
   std::string out;
   out.reserve(s.size() + 8);
   for (unsigned char c : s) {
@@ -378,6 +379,12 @@ std::string EscapeJsonUtf8(const std::string& s) {
         break;
       case '"':
         out += "\\\"";
+        break;
+      case '\b':
+        out += "\\b";
+        break;
+      case '\f':
+        out += "\\f";
         break;
       case '\n':
         out += "\\n";
@@ -389,7 +396,13 @@ std::string EscapeJsonUtf8(const std::string& s) {
         out += "\\t";
         break;
       default:
-        out.push_back(static_cast<char>(c));
+        if (c < 0x20) {
+          out += "\\u00";
+          out.push_back(kHex[(c >> 4) & 0x0F]);
+          out.push_back(kHex[c & 0x0F]);
+        } else {
+          out.push_back(static_cast<char>(c));
+        }
         break;
     }
   }

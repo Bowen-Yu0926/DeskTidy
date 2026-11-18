@@ -398,6 +398,22 @@ void ShowPinHintWindow(HINSTANCE inst, const std::wstring& text, POINT cursor) {
                        static_cast<Gdiplus::REAL>(h));
     g.DrawString(text.c_str(), -1, &font, box, &fmt, &text_br);
   }
+  {
+    auto* px = static_cast<uint32_t*>(bits);
+    const size_t total = static_cast<size_t>(w) * static_cast<size_t>(h);
+    for (size_t i = 0; i < total; ++i) {
+      const uint32_t c = px[i];
+      const uint32_t a = (c >> 24) & 0xFFu;
+      if (a == 0) {
+        px[i] = 0;
+      } else if (a < 255) {
+        const uint32_t r = (((c >> 16) & 0xFFu) * a + 127u) / 255u;
+        const uint32_t g_ch = (((c >> 8) & 0xFFu) * a + 127u) / 255u;
+        const uint32_t b = ((c & 0xFFu) * a + 127u) / 255u;
+        px[i] = (a << 24) | (r << 16) | (g_ch << 8) | b;
+      }
+    }
+  }
   POINT origin{x, y};
   SIZE size{w, h};
   POINT src{0, 0};
@@ -690,6 +706,7 @@ void App::WireFence(FenceWindow* fence) {
       PersistLayouts();
       return;
     }
+    const std::vector<LayoutRect> before_rects = rects;
     std::vector<LayoutRect> others;
     others.reserve(rects.size() > 1 ? rects.size() - 1 : 0);
     for (size_t i = 0; i < rects.size(); ++i) {
@@ -744,11 +761,18 @@ void App::WireFence(FenceWindow* fence) {
         GetWindowRect(fw->Hwnd(), &live);
         rr = live;
       }
+      const int new_w = rr.right - rr.left;
+      const int new_h = rr.bottom - rr.top;
+      if (fw != moved &&
+          rr.left == before_rects[i].x && rr.top == before_rects[i].y &&
+          new_w == before_rects[i].w && new_h == before_rects[i].h) {
+        continue;
+      }
       FencePageGeometry geo;
       geo.x = rr.left;
       geo.y = rr.top;
-      geo.w = rr.right - rr.left;
-      geo.h = rr.bottom - rr.top;
+      geo.w = new_w;
+      geo.h = new_h;
       geo.visible = fw->VisibleOnPage(page);
       geo.collapsed = fw->IsCollapsed();
       // ApplyPageGeometry refreshes expanded_h_ so Present keeps owned size.
@@ -2393,6 +2417,10 @@ void App::Shutdown() {
 
   // 12) destroy pinned images.
   RunShutdownStep("step 12 pins", [this]() {
+    if (g_pin_hint_hwnd && IsWindow(g_pin_hint_hwnd)) {
+      DestroyWindow(g_pin_hint_hwnd);
+      g_pin_hint_hwnd = nullptr;
+    }
     for (auto& p : pins_img_) {
       if (p) {
         p->Destroy();
@@ -2601,9 +2629,13 @@ bool App::PinClipboardImage() {
     const std::wstring out_path =
         JoinPath(dir, L"clip_pin_" + std::to_wstring(tick) + L".png");
 
-    ULONG_PTR token = 0;
-    Gdiplus::GdiplusStartupInput input;
-    Gdiplus::GdiplusStartup(&token, &input, nullptr);
+    static ULONG_PTR s_gdip_token = 0;
+    static const bool s_gdip_ok = []() {
+      Gdiplus::GdiplusStartupInput input;
+      return Gdiplus::GdiplusStartup(&s_gdip_token, &input, nullptr) ==
+             Gdiplus::Ok;
+    }();
+    (void)s_gdip_ok;
     {
       Gdiplus::Bitmap gbmp(clip_bmp, nullptr);
       CLSID clsid{};
@@ -2611,7 +2643,6 @@ bool App::PinClipboardImage() {
         gbmp.Save(out_path.c_str(), &clsid, nullptr);
       }
     }
-    Gdiplus::GdiplusShutdown(token);
     DeleteObject(clip_bmp);
 
     if (GetFileAttributesW(out_path.c_str()) != INVALID_FILE_ATTRIBUTES) {
@@ -3224,10 +3255,11 @@ void App::HealLayoutsNow(bool toast) {
     if (!fences_[i]) {
       continue;
     }
-    SetOverlayScreenPos(fences_[i]->Hwnd(), layouts[i].x, layouts[i].y,
-                        layouts[i].w, layouts[i].h, SWP_NOZORDER);
-    fences_[i]->SetPageGeometry(
-        fences_[i]->Page(), FenceGeometryForPage(layouts[i], layouts[i].page));
+    const FencePageGeometry geo =
+        FenceGeometryForPage(layouts[i], layouts[i].page);
+    fences_[i]->SetPageGeometry(fences_[i]->Page(), geo);
+    fences_[i]->ApplyPageGeometry(geo, /*present=*/true);
+    fences_[i]->AttachToDesktopLayer();
   }
   PersistLayouts();
   if (toast) {
@@ -8361,6 +8393,10 @@ void App::SetFencePageAt(int index, int page) {
 }
 
 void App::CreateTrayIcon() {
+  if (nid_.hIcon) {
+    DestroyIcon(nid_.hIcon);
+    nid_.hIcon = nullptr;
+  }
   ZeroMemory(&nid_, sizeof(nid_));
   nid_.cbSize = sizeof(nid_);
   nid_.hWnd = message_hwnd_;
@@ -8396,6 +8432,8 @@ void App::RemoveTrayIcon() {
 
 LRESULT CALLBACK App::TrayWndProc(HWND hwnd, UINT msg, WPARAM wparam,
                                   LPARAM lparam) {
+  static const UINT s_msg_taskbar_created =
+      RegisterWindowMessageW(L"TaskbarCreated");
   App* self =
       reinterpret_cast<App*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
   if (msg == WM_NCCREATE) {
@@ -8405,6 +8443,11 @@ LRESULT CALLBACK App::TrayWndProc(HWND hwnd, UINT msg, WPARAM wparam,
   }
   if (!self) {
     return DefWindowProcW(hwnd, msg, wparam, lparam);
+  }
+  if (s_msg_taskbar_created != 0 && msg == s_msg_taskbar_created) {
+    self->CreateTrayIcon();
+    self->ScheduleDesktopBandRestore();
+    return 0;
   }
 
   switch (msg) {

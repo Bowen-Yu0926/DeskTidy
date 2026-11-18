@@ -33,25 +33,29 @@ int HexNibble(wchar_t c) {
 }
 
 std::wstring UrlDecodePath(const std::wstring& in) {
-  std::wstring out;
-  out.reserve(in.size());
+  std::string utf8;
+  utf8.reserve(in.size());
   for (size_t i = 0; i < in.size(); ++i) {
     if (in[i] == L'%' && i + 2 < in.size()) {
       const int hi = HexNibble(in[i + 1]);
       const int lo = HexNibble(in[i + 2]);
       if (hi >= 0 && lo >= 0) {
-        out.push_back(static_cast<wchar_t>((hi << 4) | lo));
+        utf8.push_back(static_cast<char>((hi << 4) | lo));
         i += 2;
         continue;
       }
     }
     if (in[i] == L'+') {
-      out.push_back(L' ');
+      utf8.push_back(' ');
       continue;
     }
-    out.push_back(in[i]);
+    if (in[i] <= 0x7F) {
+      utf8.push_back(static_cast<char>(in[i]));
+    } else {
+      utf8 += NarrowUtf8(std::wstring(1, in[i]));
+    }
   }
-  return out;
+  return WidenUtf8(utf8);
 }
 
 // file:///C:/a/b.md → C:\a\b.md (strips ?query / #frag).
@@ -490,8 +494,10 @@ bool NotesWebView::Create(HWND parent) {
                             &accel_tok);
                       }
                       ICoreWebView2* web = nullptr;
-                      controller->get_CoreWebView2(&web);
-                      if (!web) {
+                      if (FAILED(controller->get_CoreWebView2(&web)) || !web) {
+                        controller->Close();
+                        controller->Release();
+                        controller_ = nullptr;
                         return S_OK;
                       }
                       webview_ = web;

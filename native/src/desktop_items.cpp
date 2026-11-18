@@ -233,25 +233,24 @@ HICON IconFromShellItemFactory(const std::wstring& path, int size_px) {
     return nullptr;
   }
   BITMAP bm{};
-  if (GetObjectW(hbmp, sizeof(bm), &bm) != sizeof(bm) || bm.bmWidth <= 0) {
+  if (GetObjectW(hbmp, sizeof(bm), &bm) != sizeof(bm) || bm.bmWidth <= 0 ||
+      bm.bmHeight <= 0) {
     DeleteObject(hbmp);
     return nullptr;
   }
-  HBITMAP mask = CreateBitmap(bm.bmWidth, bm.bmHeight, 1, 1, nullptr);
+  // Fill the 1bpp AND-mask all-opaque (0 = opaque). CreateBitmap with nullptr
+  // leaves the bits uninitialized; if they land all-1 the icon is fully
+  // transparent and renders blank on some machines. The 32bpp alpha channel
+  // then drives the real transparency.
+  const size_t stride_bytes =
+      static_cast<size_t>(((bm.bmWidth + 15) / 16) * 2);
+  std::vector<BYTE> zero_mask(
+      stride_bytes * static_cast<size_t>(bm.bmHeight), 0);
+  HBITMAP mask =
+      CreateBitmap(bm.bmWidth, bm.bmHeight, 1, 1, zero_mask.data());
   if (!mask) {
     DeleteObject(hbmp);
     return nullptr;
-  }
-  // Fill the 1bpp AND-mask all-opaque (0 = opaque). CreateBitmap leaves the
-  // bits uninitialized; if they land all-1 the icon is fully transparent and
-  // renders blank on some machines. The 32bpp alpha channel then drives the
-  // real transparency.
-  {
-    HDC mask_dc = CreateCompatibleDC(nullptr);
-    HBITMAP old = static_cast<HBITMAP>(SelectObject(mask_dc, mask));
-    PatBlt(mask_dc, 0, 0, bm.bmWidth, bm.bmHeight, BLACKNESS);
-    SelectObject(mask_dc, old);
-    DeleteDC(mask_dc);
   }
   ICONINFO ii{};
   ii.fIcon = TRUE;
@@ -668,7 +667,7 @@ std::condition_variable g_icon_worker_cv;
 std::deque<IconPreloadBatch> g_icon_worker_q;
 std::thread g_icon_worker;
 bool g_icon_worker_started = false;
-bool g_icon_worker_stop = false;
+std::atomic<bool> g_icon_worker_stop{false};
 
 void IconWorkerMain() {
   // Dedicated STA: shell extensions often assume apartment COM. Keep ONE

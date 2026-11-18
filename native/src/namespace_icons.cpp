@@ -425,6 +425,7 @@ void GuardLoop() {
       ReapplyNamespaceIconHiddenState();
     }
   }
+  g_guard_started.store(false);
 }
 
 std::wstring ShortcutPathFor(const std::wstring& dir, const wchar_t* name) {
@@ -493,10 +494,12 @@ bool CreateNamespaceShortcut(const std::wstring& dest, const wchar_t* clsid,
 }  // namespace
 
 std::wstring PublicSystemDir() {
-  const std::wstring dir = JoinPath(NativeDataDir(), L".public_system");
-  CreateDirectoryW(NativeDataDir().c_str(), nullptr);
-  CreateDirectoryW(dir.c_str(), nullptr);
-  return dir;
+  static const std::wstring s_dir = []() {
+    std::wstring d = JoinPath(NativeDataDir(), L".public_system");
+    CreateDirectoryW(d.c_str(), nullptr);
+    return d;
+  }();
+  return s_dir;
 }
 
 void AppendPublicSystemItems(std::vector<DesktopItem>* out) {
@@ -678,6 +681,7 @@ void StartNamespaceIconRebuildGuard() {
   if (g_guard_started.load()) {
     return;
   }
+  g_guard_stop.store(false);
   g_guard_started.store(true);
   std::thread t(GuardLoop);
   t.detach();

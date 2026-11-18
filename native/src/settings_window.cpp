@@ -300,8 +300,8 @@ bool SettingsWindow::Create(HINSTANCE instance) {
 }
 
 bool SettingsWindow::CreateWebView() {
-  if (web_available_ || controller_ || !hwnd_) {
-    return web_available_;
+  if (web_available_ || web_creating_ || controller_ || !hwnd_) {
+    return web_available_ || web_creating_;
   }
   static bool registered = false;
   if (!registered) {
@@ -336,20 +336,32 @@ bool SettingsWindow::CreateWebView() {
       JoinPath(NativeDataDir(), L"webview2-settings");
   CreateDirectoryW(user_data.c_str(), nullptr);
 
+  web_creating_ = true;
+  const HWND expected_host = host_;
   const HRESULT hr = CreateCoreWebView2EnvironmentWithOptions(
       nullptr, user_data.c_str(), nullptr,
       Callback<ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler>(
-          [this](HRESULT result, ICoreWebView2Environment* env) -> HRESULT {
-            if (FAILED(result) || !env || !host_) {
+          [this, expected_host](HRESULT result,
+                                ICoreWebView2Environment* env) -> HRESULT {
+            if (FAILED(result) || !env || !host_ || host_ != expected_host ||
+                !IsWindow(expected_host)) {
+              web_creating_ = false;
               return S_OK;
             }
             env->CreateCoreWebView2Controller(
                 host_,
                 Callback<
                     ICoreWebView2CreateCoreWebView2ControllerCompletedHandler>(
-                    [this](HRESULT result2,
-                           ICoreWebView2Controller* controller) -> HRESULT {
-                      if (FAILED(result2) || !controller || !host_) {
+                    [this, expected_host](
+                        HRESULT result2,
+                        ICoreWebView2Controller* controller) -> HRESULT {
+                      web_creating_ = false;
+                      if (FAILED(result2) || !controller) {
+                        return S_OK;
+                      }
+                      if (!host_ || host_ != expected_host ||
+                          !IsWindow(expected_host) || controller_) {
+                        controller->Close();
                         return S_OK;
                       }
                       controller_ = controller;
@@ -416,7 +428,11 @@ bool SettingsWindow::CreateWebView() {
             return S_OK;
           })
           .Get());
-  return SUCCEEDED(hr);
+  if (FAILED(hr)) {
+    web_creating_ = false;
+    return false;
+  }
+  return true;
 }
 
 void SettingsWindow::NavigateFallback() {
@@ -475,6 +491,7 @@ void SettingsWindow::DestroyWebView() {
     host_ = nullptr;
   }
   web_available_ = false;
+  web_creating_ = false;
   web_ready_ = false;
 }
 
@@ -753,7 +770,7 @@ std::wstring SettingsWindow::BuildStateJson() const {
       ext_.page_chrome_style == "tabs" ? "tabs" : "float"));
   json += L"\",\"page_bar_style\":\"";
   json += JsonEscape(WidenUtf8(ext_.page_bar_style));
-  json += L",\"lang\":\"";
+  json += L"\",\"lang\":\"";
   json += JsonEscape(WidenUtf8(ext_.lang.empty() ? "zh" : ext_.lang));
   json += L"\",\"app_version\":\"";
   json += JsonEscape(ext_.app_version);

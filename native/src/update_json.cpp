@@ -3,6 +3,7 @@
 #include <Windows.h>
 
 #include <cstdlib>
+#include <cstring>
 
 namespace {
 
@@ -18,15 +19,60 @@ std::wstring Widen(const std::string& s) {
   return out;
 }
 
+size_t FindTopLevelKeyColon(const std::string& json, const char* key) {
+  const size_t key_len = std::strlen(key);
+  int depth = 0;
+  for (size_t i = 0; i < json.size(); ++i) {
+    const char c = json[i];
+    if (c == '{' || c == '[') {
+      ++depth;
+    } else if (c == '}' || c == ']') {
+      --depth;
+    } else if (c == '"') {
+      const size_t start = i + 1;
+      size_t end = start;
+      bool has_escape = false;
+      while (end < json.size() && json[end] != '"') {
+        if (json[end] == '\\' && end + 1 < json.size()) {
+          has_escape = true;
+          end += 2;
+        } else {
+          ++end;
+        }
+      }
+      if (end >= json.size()) {
+        break;
+      }
+      size_t after = end + 1;
+      while (after < json.size() &&
+             (json[after] == ' ' || json[after] == '\t' ||
+              json[after] == '\r' || json[after] == '\n')) {
+        ++after;
+      }
+      if (after < json.size() && json[after] == ':' && depth == 1 &&
+          !has_escape && (end - start) == key_len &&
+          json.compare(start, key_len, key) == 0) {
+        return after;
+      }
+      i = end;
+    }
+  }
+  const std::string needle = std::string("\"") + key + "\"";
+  const size_t p = json.find(needle);
+  if (p == std::string::npos) {
+    return std::string::npos;
+  }
+  return json.find(':', p + needle.size());
+}
+
 }  // namespace
 
 std::string JsonStringField(const std::string& json, const char* key) {
-  const std::string needle = std::string("\"") + key + "\"";
-  size_t p = json.find(needle);
-  if (p == std::string::npos) {
+  const size_t colon = FindTopLevelKeyColon(json, key);
+  if (colon == std::string::npos) {
     return {};
   }
-  p = json.find('"', json.find(':', p) + 1);
+  size_t p = json.find('"', colon + 1);
   if (p == std::string::npos) {
     return {};
   }
@@ -35,19 +81,22 @@ std::string JsonStringField(const std::string& json, const char* key) {
   while (p < json.size() && json[p] != '"') {
     if (json[p] == '\\' && p + 1 < json.size()) {
       ++p;
+      switch (json[p]) {
+        case 'n': v.push_back('\n'); break;
+        case 'r': v.push_back('\r'); break;
+        case 't': v.push_back('\t'); break;
+        default: v.push_back(json[p]); break;
+      }
+      ++p;
+    } else {
+      v.push_back(json[p++]);
     }
-    v.push_back(json[p++]);
   }
   return v;
 }
 
 std::string JsonNumberField(const std::string& json, const char* key) {
-  const std::string needle = std::string("\"") + key + "\"";
-  size_t p = json.find(needle);
-  if (p == std::string::npos) {
-    return {};
-  }
-  p = json.find(':', p + needle.size());
+  const size_t p = FindTopLevelKeyColon(json, key);
   if (p == std::string::npos) {
     return {};
   }

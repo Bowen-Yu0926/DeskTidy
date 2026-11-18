@@ -20,58 +20,78 @@ double Clamp01(double v) {
   return v;
 }
 
-bool FindDoubleNear(const std::string& body, size_t from, const char* key,
-                    double* out) {
+size_t FindObjectEnd(const std::string& body, size_t from) {
+  bool in_str = false;
+  for (size_t i = from; i < body.size(); ++i) {
+    if (in_str) {
+      if (body[i] == '\\' && i + 1 < body.size()) {
+        ++i;
+      } else if (body[i] == '"') {
+        in_str = false;
+      }
+    } else {
+      if (body[i] == '"') {
+        in_str = true;
+      } else if (body[i] == '}') {
+        return i;
+      }
+    }
+  }
+  return body.size();
+}
+
+bool FindDoubleNear(const std::string& body, size_t from, size_t limit,
+                    const char* key, double* out) {
   if (!out || !key) {
     return false;
   }
   const std::string needle = std::string("\"") + key + "\":";
   const size_t pos = body.find(needle, from);
-  if (pos == std::string::npos || pos > from + 400) {
+  if (pos == std::string::npos || pos >= limit) {
     return false;
   }
   size_t i = pos + needle.size();
-  while (i < body.size() && (body[i] == ' ' || body[i] == '\t')) {
+  while (i < limit && (body[i] == ' ' || body[i] == '\t')) {
     ++i;
   }
   try {
     size_t consumed = 0;
-    *out = std::stod(body.substr(i), &consumed);
+    *out = std::stod(body.substr(i, limit - i), &consumed);
     return consumed > 0;
   } catch (...) {
     return false;
   }
 }
 
-bool FindIntNear(const std::string& body, size_t from, const char* key,
-                 int* out) {
+bool FindIntNear(const std::string& body, size_t from, size_t limit,
+                 const char* key, int* out) {
   double d = 0;
-  if (!FindDoubleNear(body, from, key, &d)) {
+  if (!FindDoubleNear(body, from, limit, key, &d)) {
     return false;
   }
   *out = static_cast<int>(std::lround(d));
   return true;
 }
 
-bool FindBoolNear(const std::string& body, size_t from, const char* key,
-                  bool* out) {
+bool FindBoolNear(const std::string& body, size_t from, size_t limit,
+                  const char* key, bool* out) {
   if (!out || !key) {
     return false;
   }
   const std::string needle = std::string("\"") + key + "\":";
   const size_t pos = body.find(needle, from);
-  if (pos == std::string::npos || pos > from + 400) {
+  if (pos == std::string::npos || pos >= limit) {
     return false;
   }
   size_t i = pos + needle.size();
-  while (i < body.size() && (body[i] == ' ' || body[i] == '\t')) {
+  while (i < limit && (body[i] == ' ' || body[i] == '\t')) {
     ++i;
   }
-  if (body.compare(i, 4, "true") == 0) {
+  if (i + 4 <= limit && body.compare(i, 4, "true") == 0) {
     *out = true;
     return true;
   }
-  if (body.compare(i, 5, "false") == 0) {
+  if (i + 5 <= limit && body.compare(i, 5, "false") == 0) {
     *out = false;
     return true;
   }
@@ -96,49 +116,63 @@ FloatPlacementMap LoadFloatPlacements() {
     if (pkey == std::string::npos) {
       break;
     }
+    const size_t obj_end = FindObjectEnd(json, pkey);
     const size_t colon = json.find(':', pkey);
     const size_t q0 = json.find('"', colon == std::string::npos ? pkey : colon + 1);
-    if (q0 == std::string::npos) {
-      break;
-    }
-    const size_t q1 = json.find('"', q0 + 1);
-    if (q1 == std::string::npos) {
+    if (q0 == std::string::npos || q0 >= obj_end) {
       break;
     }
     std::string path_u8;
-    path_u8.reserve(q1 - q0);
-    for (size_t i = q0 + 1; i < q1; ++i) {
-      if (json[i] == '\\' && i + 1 < q1) {
+    size_t i = q0 + 1;
+    while (i < obj_end && json[i] != '"') {
+      if (json[i] == '\\' && i + 1 < obj_end) {
         ++i;
-        path_u8.push_back(json[i]);
+        switch (json[i]) {
+          case 'n':
+            path_u8.push_back('\n');
+            break;
+          case 'r':
+            path_u8.push_back('\r');
+            break;
+          case 't':
+            path_u8.push_back('\t');
+            break;
+          default:
+            path_u8.push_back(json[i]);
+            break;
+        }
       } else {
         path_u8.push_back(json[i]);
       }
+      ++i;
+    }
+    if (i >= obj_end) {
+      break;
     }
     FloatPlacement fp;
     fp.path = WidenUtf8(path_u8);
-    FindIntNear(json, pkey, "page", &fp.page);
+    FindIntNear(json, pkey, obj_end, "page", &fp.page);
     double rx = 0.05;
     double ry = 0.05;
-    const bool has_rx = FindDoubleNear(json, pkey, "rx", &rx);
-    const bool has_ry = FindDoubleNear(json, pkey, "ry", &ry);
+    const bool has_rx = FindDoubleNear(json, pkey, obj_end, "rx", &rx);
+    const bool has_ry = FindDoubleNear(json, pkey, obj_end, "ry", &ry);
     fp.rx = Clamp01(rx);
     fp.ry = Clamp01(ry);
     fp.has_pos = has_rx && has_ry;
     int ox = 0;
     int oy = 0;
-    const bool has_ox = FindIntNear(json, pkey, "ox", &ox);
-    const bool has_oy = FindIntNear(json, pkey, "oy", &oy);
+    const bool has_ox = FindIntNear(json, pkey, obj_end, "ox", &ox);
+    const bool has_oy = FindIntNear(json, pkey, obj_end, "oy", &oy);
     if (has_ox && has_oy) {
       fp.ox = ox;
       fp.oy = oy;
       fp.has_origin = true;
     }
-    FindBoolNear(json, pkey, "page_local", &fp.page_local);
+    FindBoolNear(json, pkey, obj_end, "page_local", &fp.page_local);
     if (!fp.path.empty()) {
       map[NormalizePinKey(fp.path)] = fp;
     }
-    pos = q1 + 1;
+    pos = obj_end + 1;
   }
   return map;
 }

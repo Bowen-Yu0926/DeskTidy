@@ -46,26 +46,51 @@ std::wstring TimestampNow() {
   return buf;
 }
 
-// Raw append used by the crash path: no CRITICAL_SECTION, no allocation beyond
-// the UTF-8 conversion of a fixed-size prefix. Callers must guard via g_in_crash.
+// Raw append used by the crash path: no CRITICAL_SECTION, zero heap allocations
+// so UnhandledFilter cannot deadlock if the process heap is corrupted.
 void CrashWrite(const wchar_t* message) {
-  std::wstring path = g_log_path;
-  if (path.empty()) {
-    path = LogDirPath() + L"\\" + kLogName;
+  const wchar_t* log_path = g_log_path.empty() ? nullptr : g_log_path.c_str();
+  wchar_t fallback_path[MAX_PATH * 2] = {};
+  if (!log_path) {
+    DWORD n = GetEnvironmentVariableW(L"LOCALAPPDATA", fallback_path,
+                                      static_cast<DWORD>(MAX_PATH));
+    if (n > 0 && n < MAX_PATH) {
+      wcscat_s(fallback_path, L"\\DeskTidyNative\\logs\\");
+      wcscat_s(fallback_path, kLogName);
+      log_path = fallback_path;
+    } else {
+      return;
+    }
   }
-  HANDLE h = CreateFileW(path.c_str(), FILE_APPEND_DATA, FILE_SHARE_READ,
+  HANDLE h = CreateFileW(log_path, FILE_APPEND_DATA, FILE_SHARE_READ,
                          nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
   if (h == INVALID_HANDLE_VALUE) {
     return;
   }
-  wchar_t prefix[96];
-  swprintf_s(prefix, L"%s [%lu:%lu] ", TimestampNow().c_str(),
-             GetCurrentProcessId(), GetCurrentThreadId());
-  std::string head = NarrowUtf8(prefix);
-  std::string body = NarrowUtf8(message);
+  SYSTEMTIME st{};
+  GetLocalTime(&st);
+  char head[128];
+  const int head_len = snprintf(
+      head, sizeof(head), "%04d-%02d-%02d %02d:%02d:%02d.%03d [%lu:%lu] ",
+      st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond,
+      st.wMilliseconds, GetCurrentProcessId(), GetCurrentThreadId());
   DWORD written = 0;
-  WriteFile(h, head.data(), static_cast<DWORD>(head.size()), &written, nullptr);
-  WriteFile(h, body.data(), static_cast<DWORD>(body.size()), &written, nullptr);
+  if (head_len > 0) {
+    WriteFile(h, head,
+              static_cast<DWORD>(head_len < static_cast<int>(sizeof(head))
+                                     ? head_len
+                                     : static_cast<int>(sizeof(head)) - 1),
+              &written, nullptr);
+  }
+  if (message && *message) {
+    char body[1024];
+    const int body_len = WideCharToMultiByte(
+        CP_UTF8, 0, message, -1, body, static_cast<int>(sizeof(body)), nullptr,
+        nullptr);
+    if (body_len > 1) {
+      WriteFile(h, body, static_cast<DWORD>(body_len - 1), &written, nullptr);
+    }
+  }
   const char nl = '\n';
   WriteFile(h, &nl, 1, &written, nullptr);
   FlushFileBuffers(h);

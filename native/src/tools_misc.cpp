@@ -61,11 +61,9 @@ struct GdiplusOnce {
     Gdiplus::GdiplusStartupInput input;
     Gdiplus::GdiplusStartup(&token, &input, nullptr);
   }
-  ~GdiplusOnce() {
-    if (token) {
-      Gdiplus::GdiplusShutdown(token);
-    }
-  }
+  // Intentionally omit GdiplusShutdown in static destructor: calling
+  // GdiplusShutdown during CRT exit / loader lock can deadlock or crash if
+  // other static GDI+ objects have not yet been destroyed.
 };
 
 GdiplusOnce& Gdi() {
@@ -94,7 +92,11 @@ std::wstring ReadCfgField(const char* key) {
   if (p == std::string::npos) {
     return {};
   }
-  p = json.find('"', json.find(':', p) + 1);
+  const size_t colon = json.find(':', p + needle.size());
+  if (colon == std::string::npos) {
+    return {};
+  }
+  p = json.find('"', colon + 1);
   if (p == std::string::npos) {
     return {};
   }
@@ -103,6 +105,22 @@ std::wstring ReadCfgField(const char* key) {
   while (p < json.size() && json[p] != '"') {
     if (json[p] == '\\' && p + 1 < json.size()) {
       ++p;
+      switch (json[p]) {
+        case 'n':
+          val.push_back('\n');
+          break;
+        case 'r':
+          val.push_back('\r');
+          break;
+        case 't':
+          val.push_back('\t');
+          break;
+        default:
+          val.push_back(json[p]);
+          break;
+      }
+      ++p;
+      continue;
     }
     val.push_back(json[p++]);
   }
@@ -111,24 +129,13 @@ std::wstring ReadCfgField(const char* key) {
 
 void WriteCfgFull(const std::wstring& folder, const std::wstring& previous,
                   const std::wstring& last_image) {
-  std::ofstream out(WallpaperCfgPath(), std::ios::binary);
-  if (!out) {
-    return;
-  }
   auto esc = [](const std::wstring& w) {
-    std::string s = NarrowUtf8(w);
-    std::string o;
-    for (char c : s) {
-      if (c == '\\' || c == '"') {
-        o.push_back('\\');
-      }
-      o.push_back(c);
-    }
-    return o;
+    return EscapeJsonUtf8(NarrowUtf8(w));
   };
-  out << "{\n  \"folder\":\"" << esc(folder) << "\",\n  \"previous\":\""
-      << esc(previous) << "\",\n  \"last_image\":\"" << esc(last_image)
-      << "\"\n}\n";
+  const std::string body =
+      "{\n  \"folder\":\"" + esc(folder) + "\",\n  \"previous\":\"" +
+      esc(previous) + "\",\n  \"last_image\":\"" + esc(last_image) + "\"\n}\n";
+  AtomicWriteUtf8File(WallpaperCfgPath(), body);
 }
 
 void WriteCfg(const std::wstring& folder, const std::wstring& previous) {
@@ -418,7 +425,7 @@ bool PickAndSetWallpaper(HWND owner) {
   ofn.lpstrFile = file;
   ofn.nMaxFile = MAX_PATH;
   ofn.lpstrFilter = L"Images\0*.bmp;*.jpg;*.jpeg;*.png\0All\0*.*\0";
-  ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST;
+  ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
   if (!GetOpenFileNameW(&ofn)) {
     return false;
   }
@@ -489,6 +496,7 @@ bool WallpaperMenu(HWND owner) {
 }
 
 bool CaptureRegionToPng(HWND owner) {
+  (void)owner;
   // Fallback fullscreen capture (region overlay is preferred via App).
   // Capture the whole VIRTUAL desktop so multi-monitor setups (incl. negative
   // coordinates) are covered, not just the primary screen.
@@ -497,9 +505,25 @@ bool CaptureRegionToPng(HWND owner) {
   const int top = GetSystemMetrics(SM_YVIRTUALSCREEN);
   const int w = GetSystemMetrics(SM_CXVIRTUALSCREEN);
   const int h = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+  if (w <= 0 || h <= 0) {
+    return false;
+  }
   HDC screen = GetDC(nullptr);
+  if (!screen) {
+    return false;
+  }
   HDC mem = CreateCompatibleDC(screen);
-  HBITMAP bmp = CreateCompatibleBitmap(screen, w, h);
+  HBITMAP bmp = mem ? CreateCompatibleBitmap(screen, w, h) : nullptr;
+  if (!mem || !bmp) {
+    if (bmp) {
+      DeleteObject(bmp);
+    }
+    if (mem) {
+      DeleteDC(mem);
+    }
+    ReleaseDC(nullptr, screen);
+    return false;
+  }
   HGDIOBJ old = SelectObject(mem, bmp);
   BitBlt(mem, 0, 0, w, h, screen, left, top, SRCCOPY);
 

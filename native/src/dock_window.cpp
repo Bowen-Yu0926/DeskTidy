@@ -718,9 +718,22 @@ LRESULT DockWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
         UpdateHoverTip(-1);
       }
       return 0;
+    case WM_LBUTTONDOWN: {
+      press_index_ = HitTest(GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam));
+      if (press_index_ >= 0) {
+        SetCapture(hwnd_);
+      }
+      return 0;
+    }
     case WM_LBUTTONUP: {
+      const int pressed = press_index_;
+      press_index_ = -1;
+      if (GetCapture() == hwnd_) {
+        ReleaseCapture();
+      }
       const int hit = HitTest(GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam));
-      if (hit >= 0) {
+      if (hit >= 0 && hit == pressed &&
+          static_cast<size_t>(hit) < slots_.size()) {
         OpenShellPath(slots_[static_cast<size_t>(hit)].item.path);
       }
       return 0;
@@ -735,6 +748,7 @@ LRESULT DockWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
       return 0;
     }
     case WM_CAPTURECHANGED:
+      press_index_ = -1;
       if (hover_index_ >= 0) {
         hover_index_ = -1;
         Present();
@@ -742,7 +756,7 @@ LRESULT DockWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
       }
       return 0;
     case WM_DPICHANGED:
-      Present();
+      RelayoutForDpi();
       return 0;
     case WM_DESTROY:
       FinishInlineRename(false);
@@ -809,11 +823,43 @@ void DockWindow::Paint(HDC hdc) {
       }
     }
   }
+  if (layer_bits_ && layer_buf_w_ == w && layer_buf_h_ == h) {
+    auto* px = static_cast<uint32_t*>(layer_bits_);
+    const size_t total = static_cast<size_t>(w) * static_cast<size_t>(h);
+    for (size_t i = 0; i < total; ++i) {
+      const uint32_t c = px[i];
+      const uint32_t a = (c >> 24) & 0xFFu;
+      if (a == 0) {
+        px[i] = 0;
+      } else if (a < 255) {
+        const uint32_t r = (((c >> 16) & 0xFFu) * a + 127u) / 255u;
+        const uint32_t g_ch = (((c >> 8) & 0xFFu) * a + 127u) / 255u;
+        const uint32_t b = ((c & 0xFFu) * a + 127u) / 255u;
+        px[i] = (a << 24) | (r << 16) | (g_ch << 8) | b;
+      }
+    }
+  }
   for (size_t i = 0; i < slots_.size(); ++i) {
     const auto& s = slots_[i];
     if (s.icon) {
       DrawIconEx(hdc, s.bounds.left, s.bounds.top, s.icon, icon, icon, 0,
                  nullptr, DI_NORMAL);
+      if (layer_bits_ && layer_buf_w_ == w && layer_buf_h_ == h) {
+        auto* px = static_cast<uint32_t*>(layer_bits_);
+        const int x0 = (std::max)(0, static_cast<int>(s.bounds.left));
+        const int y0 = (std::max)(0, static_cast<int>(s.bounds.top));
+        const int x1 = (std::min)(w, static_cast<int>(s.bounds.left) + icon);
+        const int y1 = (std::min)(h, static_cast<int>(s.bounds.top) + icon);
+        for (int py = y0; py < y1; ++py) {
+          uint32_t* row = px + static_cast<size_t>(py) * static_cast<size_t>(w);
+          for (int px_x = x0; px_x < x1; ++px_x) {
+            if ((row[px_x] & 0xFF000000u) == 0 &&
+                (row[px_x] & 0x00FFFFFFu) != 0) {
+              row[px_x] |= 0xFF000000u;
+            }
+          }
+        }
+      }
     }
   }
 }
