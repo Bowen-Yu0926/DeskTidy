@@ -4,11 +4,17 @@
 
 #include <atomic>
 #include <functional>
+#include <memory>
 #include <string>
 #include <vector>
 
 class SearchWindow {
  public:
+  struct SearchSharedState {
+    std::atomic<unsigned> gen{0};
+    std::atomic<bool> alive{true};
+  };
+
   bool Create(HINSTANCE instance);
   void Destroy();
   void Show();
@@ -86,7 +92,8 @@ class SearchWindow {
   // Drive letters without colon, e.g. L"C". Empty = user folders only.
   std::vector<std::wstring> selected_drives_;
   Options options_;
-  std::atomic<unsigned> search_gen_{0};
+  std::shared_ptr<SearchSharedState> shared_state_ =
+      std::make_shared<SearchSharedState>();
   bool searching_ = false;
   int progress_pct_ = 0;
   std::function<void(const std::wstring&, const std::wstring&)> on_path_replaced_;

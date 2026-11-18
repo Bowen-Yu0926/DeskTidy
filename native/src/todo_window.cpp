@@ -28,6 +28,8 @@ using Microsoft::WRL::Callback;
 namespace {
 constexpr wchar_t kClass[] = L"DeskTidyNativeTodo";
 constexpr wchar_t kHostClass[] = L"DeskTidyNativeTodoWeb";
+constexpr UINT kTimerSaveDebounce = 1;
+constexpr UINT kSaveDebounceMs = 400;
 
 std::wstring TodosPath() { return JoinPath(NativeDataDir(), L"todos.json"); }
 std::wstring TodosTxtPath() { return JoinPath(NativeDataDir(), L"todos.txt"); }
@@ -711,11 +713,6 @@ void TodoWindow::PushState() {
   json += L"]}";
   auto* web = static_cast<ICoreWebView2*>(webview_);
   web->PostWebMessageAsString(json.c_str());
-  std::wstring script =
-      L"(function(){try{var m=" + json +
-      L";if(typeof window.applyState==='function'){window.applyState(m);}"
-      L"}catch(e){}})();";
-  web->ExecuteScript(script.c_str(), nullptr);
 }
 
 void TodoWindow::OnWebMessage(const std::wstring& json) {
@@ -761,7 +758,10 @@ void TodoWindow::OnWebMessage(const std::wstring& json) {
     if (index >= 0 && index < static_cast<int>(items_.size())) {
       items_[static_cast<size_t>(index)].text =
           MistJsonStringField(json, L"text");
-      Save();
+      dirty_ = true;
+      if (hwnd_) {
+        SetTimer(hwnd_, kTimerSaveDebounce, kSaveDebounceMs, nullptr);
+      }
     }
   } else if (id == L"drag_start") {
     dragging_ = true;
@@ -871,6 +871,10 @@ void TodoWindow::Load() {
 }
 
 void TodoWindow::Save() {
+  if (hwnd_) {
+    KillTimer(hwnd_, kTimerSaveDebounce);
+  }
+  dirty_ = false;
   SaveStringAtomic(SerializeTodos(items_), TodosPath());
 }
 
@@ -893,6 +897,12 @@ LRESULT CALLBACK TodoWindow::WndProc(HWND hwnd, UINT msg, WPARAM wparam,
 
 LRESULT TodoWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
   switch (msg) {
+    case WM_TIMER:
+      if (wparam == kTimerSaveDebounce) {
+        Save();
+        return 0;
+      }
+      break;
     case WM_SIZE:
       ResizeWebView();
       return 0;
@@ -903,6 +913,9 @@ LRESULT TodoWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
       Hide();
       return 0;
     case WM_DESTROY:
+      if (dirty_) {
+        Save();
+      }
       DestroyWebView();
       hwnd_ = nullptr;
       return 0;

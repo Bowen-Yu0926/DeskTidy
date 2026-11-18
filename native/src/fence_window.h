@@ -188,6 +188,7 @@ class FenceWindow {
 
  private:
   bool NameMatchesFilter(const std::wstring& name) const;
+  void ApplyVisibleItems(std::vector<DesktopItem> items);
 
  public:
   // H1: manual pin order persistence.

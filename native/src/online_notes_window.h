@@ -5,6 +5,7 @@
 #include <Windows.h>
 
 #include <functional>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -15,6 +16,7 @@ class OnlineNotesWindow {
   using VoidFn = std::function<void()>;
   using OpenLocalFn = std::function<void(const std::wstring& path)>;
 
+  ~OnlineNotesWindow();
   bool Create(HINSTANCE instance);
   void Destroy();
   void Show();
@@ -65,4 +67,5 @@ class OnlineNotesWindow {
   std::wstring current_title_;
   std::wstring current_body_;
   std::wstring status_;
+  std::shared_ptr<bool> alive_ = std::make_shared<bool>(true);
 };

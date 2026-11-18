@@ -228,7 +228,8 @@ bool SettingsWindow::Create(HINSTANCE instance) {
   const int pos_y = work.top + (work_h - default_h) / 2;
 
   hwnd_ = CreateWindowExW(
-      WS_EX_APPWINDOW, kClassName, L"DeskTidy 设置",
+      WS_EX_APPWINDOW, kClassName,
+      IsDevRuntime() ? L"DeskTidy 设置 [dev]" : L"DeskTidy 设置",
       WS_OVERLAPPEDWINDOW, pos_x, pos_y, default_w, default_h, nullptr,
       nullptr, instance, this);
   if (!hwnd_) {
@@ -778,8 +779,7 @@ std::wstring SettingsWindow::BuildStateJson() const {
     json += JsonEscape(c.custom_bg);
     json += L"\",\"custom_accent\":\"";
     json += JsonEscape(c.custom_accent);
-    json += L"\",";
-    json += L",\"organize_kinds\":[";
+    json += L"\",\"organize_kinds\":[";
     for (size_t k = 0; k < c.organize_kinds.size(); ++k) {
       if (k) {
         json += L',';

@@ -543,12 +543,16 @@ void PublicHost::EnsureDropTarget() {
   });
 }
 
-void PublicHost::EnsureCaptionFonts() {
+void PublicHost::EnsureCaptionFonts(int dpi) {
+  if (dpi <= 0) {
+    dpi = SystemDpi();
+  }
   EnsureGdiplus();
   if (!caption_family_) {
     caption_family_ = new Gdiplus::FontFamily(L"Microsoft YaHei UI");
   }
-  if (!caption_font_) {
+  if (!caption_font_ || caption_font_dpi_ != dpi) {
+    delete caption_font_;
     const Gdiplus::FontFamily* face =
         caption_family_->IsAvailable()
             ? caption_family_
@@ -556,8 +560,9 @@ void PublicHost::EnsureCaptionFonts() {
     // Same DPI as the caption metrics in HitTest/IconLabelRect: a 12px font on
     // a 150% display painted 12 physical px while its hit band was scaled.
     caption_font_ = new Gdiplus::Font(
-        face, static_cast<Gdiplus::REAL>(ScalePxForDpi(12, SystemDpi())),
+        face, static_cast<Gdiplus::REAL>(ScalePxForDpi(12, dpi)),
         Gdiplus::FontStyleRegular, Gdiplus::UnitPixel);
+    caption_font_dpi_ = dpi;
   }
   if (!caption_fmt_) {
     caption_fmt_ = new Gdiplus::StringFormat();
@@ -575,6 +580,7 @@ void PublicHost::ReleaseCaptionFonts() {
   caption_font_ = nullptr;
   delete caption_family_;
   caption_family_ = nullptr;
+  caption_font_dpi_ = 0;
 }
 
 void PublicHost::InvalidateDpiCaches() {
@@ -602,6 +608,7 @@ void PublicHost::Destroy() {
     DestroyWindow(marquee_hwnd_);
   }
   marquee_hwnd_ = nullptr;
+  ReleaseMarqueeBuffer();
   ClearRubberBaseCache();
   ReleasePresentBuffer();
   ReleaseCaptionFonts();
@@ -1806,6 +1813,68 @@ void PublicHost::HideMarqueeBand() {
   }
 }
 
+void PublicHost::ReleaseMarqueeBuffer() {
+  if (marquee_dc_ && marquee_old_) {
+    SelectObject(marquee_dc_, marquee_old_);
+    marquee_old_ = nullptr;
+  }
+  if (marquee_dib_) {
+    DeleteObject(marquee_dib_);
+    marquee_dib_ = nullptr;
+  }
+  if (marquee_dc_) {
+    DeleteDC(marquee_dc_);
+    marquee_dc_ = nullptr;
+  }
+  marquee_bits_ = nullptr;
+  marquee_dib_w_ = 0;
+  marquee_dib_h_ = 0;
+}
+
+bool PublicHost::EnsureMarqueeBuffer(int w, int h) {
+  if (w <= 0 || h <= 0) {
+    return false;
+  }
+  if (marquee_dc_ && marquee_dib_ && marquee_bits_ && marquee_dib_w_ >= w &&
+      marquee_dib_h_ >= h) {
+    return true;
+  }
+  const int alloc_w = (std::max)({w, marquee_dib_w_, 256});
+  const int alloc_h = (std::max)({h, marquee_dib_h_, 256});
+  ReleaseMarqueeBuffer();
+  HDC screen = GetDC(nullptr);
+  if (!screen) {
+    return false;
+  }
+  HDC mem = CreateCompatibleDC(screen);
+  BITMAPINFO bi{};
+  bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+  bi.bmiHeader.biWidth = alloc_w;
+  bi.bmiHeader.biHeight = -alloc_h;
+  bi.bmiHeader.biPlanes = 1;
+  bi.bmiHeader.biBitCount = 32;
+  bi.bmiHeader.biCompression = BI_RGB;
+  void* bits = nullptr;
+  HBITMAP dib = CreateDIBSection(screen, &bi, DIB_RGB_COLORS, &bits, nullptr, 0);
+  ReleaseDC(nullptr, screen);
+  if (!mem || !dib || !bits) {
+    if (dib) {
+      DeleteObject(dib);
+    }
+    if (mem) {
+      DeleteDC(mem);
+    }
+    return false;
+  }
+  marquee_old_ = SelectObject(mem, dib);
+  marquee_dc_ = mem;
+  marquee_dib_ = dib;
+  marquee_bits_ = bits;
+  marquee_dib_w_ = alloc_w;
+  marquee_dib_h_ = alloc_h;
+  return true;
+}
+
 void PublicHost::PresentMarqueeBand() {
   if (!hwnd_ || !rubber_) {
     HideMarqueeBand();
@@ -1862,38 +1931,27 @@ void PublicHost::PresentMarqueeBand() {
     }
     AttachOverlayToDesktop(marquee_hwnd_, false);
   }
+  if (!EnsureMarqueeBuffer(bw, bh)) {
+    return;
+  }
   SetWindowPos(marquee_hwnd_, HWND_NOTOPMOST, tl.x, tl.y, bw, bh,
                SWP_NOACTIVATE | SWP_SHOWWINDOW | SWP_NOREDRAW);
   RaiseOverlayInDesktopBand(marquee_hwnd_);
-  HDC screen = GetDC(nullptr);
-  HDC mem = CreateCompatibleDC(screen);
-  BITMAPINFO bi{};
-  bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-  bi.bmiHeader.biWidth = bw;
-  bi.bmiHeader.biHeight = -bh;
-  bi.bmiHeader.biPlanes = 1;
-  bi.bmiHeader.biBitCount = 32;
-  bi.bmiHeader.biCompression = BI_RGB;
-  void* bits = nullptr;
-  HBITMAP dib = CreateDIBSection(screen, &bi, DIB_RGB_COLORS, &bits, nullptr, 0);
-  if (!dib || !bits) {
-    if (dib) {
-      DeleteObject(dib);
-    }
-    DeleteDC(mem);
-    ReleaseDC(nullptr, screen);
-    return;
+  auto* row = static_cast<unsigned char*>(marquee_bits_);
+  const size_t stride = static_cast<size_t>(marquee_dib_w_) * 4;
+  const size_t row_bytes = static_cast<size_t>(bw) * 4;
+  for (int y = 0; y < bh; ++y) {
+    std::memset(row + static_cast<size_t>(y) * stride, 0, row_bytes);
   }
-  HGDIOBJ old = SelectObject(mem, dib);
-  std::memset(bits, 0, static_cast<size_t>(bw) * static_cast<size_t>(bh) * 4);
   EnsureGdiplus();
   {
-    Gdiplus::Graphics g(mem);
+    Gdiplus::Graphics g(marquee_dc_);
     Gdiplus::SolidBrush fill(Gdiplus::Color(40, 0, 120, 215));
     Gdiplus::Pen pen(Gdiplus::Color(200, 0, 120, 215), 1.f);
     g.FillRectangle(&fill, 0, 0, bw, bh);
     g.DrawRectangle(&pen, 0, 0, bw - 1, bh - 1);
   }
+  HDC screen = GetDC(nullptr);
   POINT origin{tl.x, tl.y};
   SIZE size{bw, bh};
   POINT src{0, 0};
@@ -1901,11 +1959,8 @@ void PublicHost::PresentMarqueeBand() {
   blend.BlendOp = AC_SRC_OVER;
   blend.SourceConstantAlpha = 255;
   blend.AlphaFormat = AC_SRC_ALPHA;
-  UpdateOverlayLayered(marquee_hwnd_, screen, &origin, &size, mem, &src, 0,
-                      &blend, ULW_ALPHA);
-  SelectObject(mem, old);
-  DeleteObject(dib);
-  DeleteDC(mem);
+  UpdateOverlayLayered(marquee_hwnd_, screen, &origin, &size, marquee_dc_, &src,
+                       0, &blend, ULW_ALPHA);
   ReleaseDC(nullptr, screen);
 }
 
@@ -2729,7 +2784,11 @@ bool PublicHost::CaptionFitsLabel(const std::wstring& text,
   if (!hdc) {
     return true;
   }
-  HFONT font = CreateFontW(-12, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+  POINT sp{label.left, label.top};
+  ClientToScreen(hwnd_, &sp);
+  const int dpi = DpiAtPoint(sp);
+  const int font_px = ScalePxForDpi(12, dpi);
+  HFONT font = CreateFontW(-font_px, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
                            DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
                            CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
                            DEFAULT_PITCH | FF_DONTCARE, L"Microsoft YaHei UI");
@@ -2902,10 +2961,12 @@ bool PublicHost::IconLabelRect(size_t index, RECT* out) const {
   }
   const RECT& b = slots_[index].bounds;
   const RECT& ir = slots_[index].icon_rc;
-  // Caption metrics follow the same DPI as the painted font (see
-  // EnsureCaptionFonts): hardcoded 96-dpi values drifted off the glyphs at
-  // 125%/150%, so double-click-to-rename and hover hit the wrong band.
-  const int dpi = SystemDpi();
+  // Caption metrics follow the same per-monitor DPI as HitTest and Paint.
+  POINT sp{b.left, b.top};
+  if (hwnd_) {
+    ClientToScreen(hwnd_, &sp);
+  }
+  const int dpi = hwnd_ ? DpiAtPoint(sp) : SystemDpi();
   const int font_px = ScalePxForDpi(12, dpi);
   const int line_h = font_px + ScalePxForDpi(5, dpi);
   const int label_h = line_h * 2 + ScalePxForDpi(4, dpi);
@@ -3754,11 +3815,18 @@ void PublicHost::Paint(HDC hdc, bool draw_selection, bool draw_rubber) {
     }
   }
   // Captions: Explorer white + dark glow (readable on light wallpaper).
-  EnsureCaptionFonts();
+  RECT wr{};
+  if (hwnd_) {
+    GetWindowRect(hwnd_, &wr);
+  }
   Gdiplus::Graphics g(hdc);
   g.SetTextRenderingHint(Gdiplus::TextRenderingHintAntiAliasGridFit);
   g.SetTextContrast(4);
   for (const auto& s : slots_) {
+    const int slot_dpi =
+        hwnd_ ? DpiAtPoint({wr.left + s.bounds.left, wr.top + s.bounds.top})
+              : SystemDpi();
+    EnsureCaptionFonts(slot_dpi);
     const std::wstring& name = s.item.name.empty() ? s.item.path : s.item.name;
     Gdiplus::RectF box(
         static_cast<Gdiplus::REAL>(s.bounds.left + 2),

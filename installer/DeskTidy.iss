@@ -57,6 +57,10 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 Name: "desknote"; Description: "创建 DeskNote 快捷方式（桌面 + 开始菜单）"; GroupDescription: "{cm:AdditionalIcons}"; Flags: checkedonce
 Name: "startup"; Description: "开机自动启动 {#MyAppName}"; GroupDescription: "启动选项:"; Flags: checkedonce
 
+[InstallDelete]
+; Ensure installed release directory never carries a source-tree dev marker.
+Type: files; Name: "{app}\desktidy_dev.marker"
+
 [Files]
 ; Native binaries + runtime assets (exclude per-user folders recreated at runtime).
 Source: "{#SourceDir}\native\build\Release\desktidy_native.exe"; DestDir: "{app}"; Flags: ignoreversion

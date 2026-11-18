@@ -11,6 +11,7 @@
 #include "toast.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <cstdlib>
 #include <fstream>
@@ -566,6 +567,27 @@ bool LoadUpdateCache(std::wstring* latest, std::wstring* html, bool* fresh) {
   return true;
 }
 
+std::string EscapeJsonUtf8(const std::string& s) {
+  std::string out;
+  out.reserve(s.size() + 8);
+  for (unsigned char c : s) {
+    if (c == '"') {
+      out += "\\\"";
+    } else if (c == '\\') {
+      out += "\\\\";
+    } else if (c == '\n') {
+      out += "\\n";
+    } else if (c == '\r') {
+      out += "\\r";
+    } else if (c == '\t') {
+      out += "\\t";
+    } else if (c >= 0x20) {
+      out.push_back(static_cast<char>(c));
+    }
+  }
+  return out;
+}
+
 void SaveUpdateCache(const std::wstring& latest, const std::wstring& html) {
   std::ofstream out(JoinPath(NativeDataDir(), L"update_check_cache.json"),
                     std::ios::binary);
@@ -573,8 +595,8 @@ void SaveUpdateCache(const std::wstring& latest, const std::wstring& html) {
     return;
   }
   out << "{\n  \"ticks\": " << NowFileTime() << ",\n  \"tag\": \""
-      << NarrowUtf8(latest) << "\",\n  \"html\": \"" << NarrowUtf8(html)
-      << "\"\n}\n";
+      << EscapeJsonUtf8(NarrowUtf8(latest)) << "\",\n  \"html\": \""
+      << EscapeJsonUtf8(NarrowUtf8(html)) << "\"\n}\n";
 }
 
 }  // namespace
@@ -604,6 +626,14 @@ std::wstring NativeProductVersion() {
   swprintf_s(ver, L"%u.%u.%u", HIWORD(fi->dwFileVersionMS),
              LOWORD(fi->dwFileVersionMS), HIWORD(fi->dwFileVersionLS));
   return ver;
+}
+
+std::wstring NativeDisplayVersion() {
+  std::wstring v = NativeProductVersion();
+  if (IsDevRuntime()) {
+    v += L"-dev";
+  }
+  return v;
 }
 
 void StartUpdateCheckAsync(HWND owner, bool force, bool interactive) {
@@ -645,6 +675,11 @@ void StartUpdateCheckAsync(HWND owner, bool force, bool interactive) {
 }
 
 void StartUpdateInstallAsync(HWND owner) {
+  static std::atomic<bool> g_installing{false};
+  if (g_installing.exchange(true)) {
+    LogLine(L"[update] install already in progress, ignoring duplicate request");
+    return;
+  }
   std::thread([owner]() {
     auto* r = new UpdateInstallResult;
     std::string body;
@@ -715,6 +750,7 @@ void StartUpdateInstallAsync(HWND owner) {
     if (r->verify_ok && r->error.empty()) {
       r->ok = true;
     }
+    g_installing.store(false);
     if (!PostMessageW(owner, kMsgUpdateInstallDone, 0, reinterpret_cast<LPARAM>(r))) {
       delete r;
     }

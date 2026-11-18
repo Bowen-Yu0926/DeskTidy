@@ -1149,7 +1149,7 @@ void FenceWindow::ApplyFilter(const std::wstring& text) {
       narrowed.push_back(it);
     }
   }
-  SetItems(std::move(narrowed));
+  ApplyVisibleItems(std::move(narrowed));
 }
 
 void FenceWindow::CloseFilterEdit() {
@@ -1171,7 +1171,7 @@ void FenceWindow::EndFilter() {
   }
   if (!filter_text_.empty()) {
     filter_text_.clear();
-    SetItems(all_items_);
+    ApplyVisibleItems(all_items_);
   }
 }
 
@@ -2238,6 +2238,10 @@ void FenceWindow::SetItems(std::vector<DesktopItem> items) {
     }
     items = std::move(narrowed);
   }
+  ApplyVisibleItems(std::move(items));
+}
+
+void FenceWindow::ApplyVisibleItems(std::vector<DesktopItem> items) {
   // Keep HICONs across refresh when the path set is stable (desktop watch /
   // organize often re-pushes the same pins). Avoid SHGetFileInfo storms.
   // Premultiplied bitmap cache is keyed by HICON — only drop it when icons
@@ -2307,16 +2311,22 @@ void FenceWindow::SetItems(std::vector<DesktopItem> items) {
     std::vector<Cell> ordered;
     ordered.reserve(cells_.size());
     std::vector<char> used(cells_.size(), 0);
+    std::vector<std::wstring> cell_keys(cells_.size());
+    for (size_t i = 0; i < cells_.size(); ++i) {
+      if (!cells_[i].item.path.empty()) {
+        cell_keys[i] = NormalizePinKey(cells_[i].item.path);
+      }
+    }
     auto match = [&](const std::wstring& want) -> int {
       if (want.empty()) {
         return -1;
       }
       const std::wstring key = NormalizePinKey(want);
       for (size_t i = 0; i < cells_.size(); ++i) {
-        if (used[i] || cells_[i].item.path.empty()) {
+        if (used[i] || cell_keys[i].empty()) {
           continue;
         }
-        if (NormalizePinKey(cells_[i].item.path) == key) {
+        if (cell_keys[i] == key) {
           return static_cast<int>(i);
         }
       }

@@ -50,4 +50,5 @@ class TodoWindow {
   POINT win_origin_{};
   std::vector<Item> items_;
   std::string ui_theme_ = "mist";
+  bool dirty_ = false;
 };

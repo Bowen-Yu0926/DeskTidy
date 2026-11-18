@@ -49,6 +49,7 @@ class HotkeyRelay {
   HWND notify_hwnd_ = nullptr;
   UINT notify_msg_ = 0;
   bool helper_launched_ = false;
+  HANDLE helper_process_ = nullptr;
 };
 
 // Fences-class Win+D: minimize monitor-covering APPWINDOW (game/fullscreen)

@@ -154,6 +154,8 @@ class PublicHost {
   // Fences-class: icon host geometry stays fixed; marquee is a separate band.
   void PresentMarqueeBand();
   void HideMarqueeBand();
+  void ReleaseMarqueeBuffer();
+  bool EnsureMarqueeBuffer(int w, int h);
   void ClearRubberBaseCache();
   bool EnsureRubberBaseCache(int w, int h);
   void ReleasePresentBuffer();
@@ -215,6 +217,12 @@ class PublicHost {
   void* present_bits_ = nullptr;
   int present_w_ = 0;
   int present_h_ = 0;
+  HDC marquee_dc_ = nullptr;
+  HBITMAP marquee_dib_ = nullptr;
+  HGDIOBJ marquee_old_ = nullptr;
+  void* marquee_bits_ = nullptr;
+  int marquee_dib_w_ = 0;
+  int marquee_dib_h_ = 0;
   ULONGLONG rubber_present_ms_ = 0;
   std::vector<char> rubber_sel_finger_;
   // #1 premultiplied icon bitmap cache (DrawIconAlpha was per-frame GDI alloc).
@@ -238,11 +246,12 @@ class PublicHost {
   void ClearIconCache();
   void DrawIconCached(Gdiplus::Graphics& g, HICON icon, int x, int y, int dest,
                       BYTE opacity = 255);
-  void EnsureCaptionFonts();
+  void EnsureCaptionFonts(int dpi);
   void ReleaseCaptionFonts();
   Gdiplus::FontFamily* caption_family_ = nullptr;
   Gdiplus::Font* caption_font_ = nullptr;
   Gdiplus::StringFormat* caption_fmt_ = nullptr;
+  int caption_font_dpi_ = 0;
   std::vector<char> selected_;
   // Explorer: anchor (mark) + focus (active end) for Shift+arrow extend.
   int selection_anchor_ = -1;

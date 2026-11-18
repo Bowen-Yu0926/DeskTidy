@@ -1,5 +1,7 @@
 #include "brand_mark.h"
 
+#include "paths_util.h"
+
 #include <objidl.h>
 #include <gdiplus.h>
 
@@ -97,6 +99,36 @@ HICON CreateBrandMarkIcon(int size, COLORREF accent) {
   const float ph = (std::max)(1.f, 5.f * scale);
   Gdiplus::SolidBrush pip(Gdiplus::Color(230, 255, 255, 255));
   g.FillEllipse(&pip, px, py, pw, ph);
+
+  // Dev source-build corner badge (bottom-right amber "D" pill) so tray and
+  // taskbar icons are immediately distinguishable from the installed release.
+  if (IsDevRuntime()) {
+    const float bx = 19.f * scale;
+    const float by = 19.f * scale;
+    const float bw = 20.f * scale;
+    const float bh = 20.f * scale;
+    const float br = bw * 0.36f;
+    Gdiplus::GraphicsPath badge;
+    AddRoundRect(&badge, bx, by, bw, bh, br);
+    Gdiplus::LinearGradientBrush bg(
+        Gdiplus::PointF(bx, by), Gdiplus::PointF(bx + bw, by + bh),
+        Gdiplus::Color(255, 251, 146, 60), Gdiplus::Color(255, 217, 70, 15));
+    g.FillPath(&bg, &badge);
+    Gdiplus::Pen border(Gdiplus::Color(245, 255, 255, 255),
+                        (std::max)(1.0f, 1.6f * scale));
+    g.DrawPath(&border, &badge);
+    if (size >= 20) {
+      g.SetTextRenderingHint(Gdiplus::TextRenderingHintAntiAliasGridFit);
+      Gdiplus::Font font(L"Segoe UI", (std::max)(8.f, 13.f * scale),
+                         Gdiplus::FontStyleBold, Gdiplus::UnitPixel);
+      Gdiplus::StringFormat fmt(Gdiplus::StringFormat::GenericTypographic());
+      fmt.SetAlignment(Gdiplus::StringAlignmentCenter);
+      fmt.SetLineAlignment(Gdiplus::StringAlignmentCenter);
+      Gdiplus::SolidBrush fg(Gdiplus::Color(255, 255, 255, 255));
+      Gdiplus::RectF rc_txt(bx, by + 0.5f * scale, bw, bh);
+      g.DrawString(L"D", 1, &font, rc_txt, &fmt, &fg);
+    }
+  }
 
   HICON icon = nullptr;
   if (bmp.GetHICON(&icon) != Gdiplus::Ok) {

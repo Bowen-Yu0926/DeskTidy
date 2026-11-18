@@ -30,6 +30,9 @@ class PinnedImage {
 
   HWND hwnd_ = nullptr;
   HBITMAP bmp_ = nullptr;
+  HBITMAP scaled_bmp_ = nullptr;
+  int cache_w_ = 0;
+  int cache_h_ = 0;
   int orig_w_ = 0;
   int orig_h_ = 0;
   float zoom_ = 1.0f;

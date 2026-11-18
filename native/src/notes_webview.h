@@ -49,12 +49,17 @@ class NotesWebView {
   // Last known markdown (updated by SetMarkdown / Toast `changed`) — no IPC.
   const std::wstring& CachedMarkdown() const { return pending_md_; }
   // Host-side title compose without a Toast round-trip.
-  void SetCachedMarkdown(const std::wstring& md) { pending_md_ = md; }
+  void SetCachedMarkdown(const std::wstring& md,
+                         const std::wstring& base_dir = std::wstring());
   // Round-trip get (slow). Prefer CachedMarkdown when the cache is authoritative.
   std::wstring PullMarkdown(DWORD timeout_ms = 1500);
   // After a successful Save: clear Toast mdDirty + cancel debounced `changed`
   // so the tab glyph can flip disc → check (Typora / VS Code).
   void AckClean();
+  // Map the note's folder to https://note.assets/ so relative image srcs
+  // (`assets/x.png`) load from the page's own origin instead of 404ing inside
+  // the shell folder. Returns the URL prefix ("" when `dir` is unusable).
+  std::wstring SetAssetBaseDir(const std::wstring& dir);
 
   // Preview viewer (kViewer).
   // `base_dir` is the note's directory, used to resolve relative images.
@@ -87,15 +92,16 @@ class NotesWebView {
   // Explorer file drop onto the WebView surface (AllowExternalDrop → file://
   // NavigationStarting cancel). Opens note / inserts image in the host.
   std::function<void(const std::vector<std::wstring>&)> on_external_drop;
+  // WYSIWYG image paste / upload: decode dataUrl and save into <NoteBaseDir>/assets/,
+  // returning the relative path ("assets/img_...png").
+  std::function<std::wstring(const std::wstring& name, const std::wstring& mime,
+                             const std::wstring& data_url)>
+      on_upload_image;
   // Unified library rail actions (JSON from notes_library.html).
   std::function<void(const std::wstring& json)> on_library_action;
 
  private:
   void NavigateHome();
-  // Map the note's folder to https://note.assets/ so relative image srcs
-  // (`assets/x.png`) load from the page's own origin instead of 404ing inside
-  // the shell folder. Returns the URL prefix ("" when `dir` is unusable).
-  std::wstring SetAssetBaseDir(const std::wstring& dir);
   void OnReady();
   void OnWebMessage(const std::wstring& json);
   static LRESULT CALLBACK HostProc(HWND, UINT, WPARAM, LPARAM);
@@ -120,6 +126,7 @@ class NotesWebView {
   std::wstring pending_base_;
   // Folder currently mapped to https://note.assets/ (empty = none).
   std::wstring asset_base_dir_;
+  std::wstring mapped_asset_base_dir_;
   std::wstring pending_library_json_;
   void PushLibraryData();
   bool got_scroll_ = false;

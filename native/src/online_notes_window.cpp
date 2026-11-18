@@ -40,12 +40,20 @@ std::wstring JsonEscape(const std::wstring& s) {
     if (c == L'\\' || c == L'"') {
       o.push_back(L'\\');
       o.push_back(c);
+    } else if (c == L'\b') {
+      o += L"\\b";
+    } else if (c == L'\f') {
+      o += L"\\f";
     } else if (c == L'\n') {
       o += L"\\n";
     } else if (c == L'\r') {
       o += L"\\r";
     } else if (c == L'\t') {
       o += L"\\t";
+    } else if (c < 0x20 || c == 0x2028 || c == 0x2029) {
+      wchar_t buf[8];
+      swprintf_s(buf, L"\\u%04x", static_cast<unsigned>(c));
+      o += buf;
     } else {
       o.push_back(c);
     }
@@ -84,6 +92,37 @@ std::wstring JsonStringField(const std::wstring& json, const wchar_t* key) {
         v.push_back(L'\r');
       } else if (e == L't') {
         v.push_back(L'\t');
+      } else if (e == L'b') {
+        v.push_back(L'\b');
+      } else if (e == L'f') {
+        v.push_back(L'\f');
+      } else if (e == L'u') {
+        if (p + 4 <= json.size()) {
+          unsigned code = 0;
+          bool ok = true;
+          for (int k = 0; k < 4; ++k) {
+            const wchar_t hc = json[p + k];
+            code <<= 4;
+            if (hc >= L'0' && hc <= L'9') {
+              code |= static_cast<unsigned>(hc - L'0');
+            } else if (hc >= L'a' && hc <= L'f') {
+              code |= static_cast<unsigned>(hc - L'a' + 10);
+            } else if (hc >= L'A' && hc <= L'F') {
+              code |= static_cast<unsigned>(hc - L'A' + 10);
+            } else {
+              ok = false;
+              break;
+            }
+          }
+          if (ok) {
+            v.push_back(static_cast<wchar_t>(code));
+            p += 4;
+          } else {
+            v.push_back(L'u');
+          }
+        } else {
+          v.push_back(L'u');
+        }
       } else {
         v.push_back(e);
       }
@@ -333,15 +372,32 @@ std::wstring PromptPassword(HWND owner, const wchar_t* title,
 
 }  // namespace
 
+OnlineNotesWindow::~OnlineNotesWindow() {
+  if (alive_) {
+    *alive_ = false;
+  }
+  Destroy();
+}
+
 bool OnlineNotesWindow::Create(HINSTANCE instance) {
-  WNDCLASSEXW wc{};
-  wc.cbSize = sizeof(wc);
-  wc.lpfnWndProc = OnlineNotesWindow::WndProc;
-  wc.hInstance = instance;
-  wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
-  wc.hbrBackground = CreateSolidBrush(RGB(0xEE, 0xF1, 0xF6));
-  wc.lpszClassName = kClass;
-  RegisterClassExW(&wc);
+  if (!alive_) {
+    alive_ = std::make_shared<bool>(true);
+  } else {
+    *alive_ = true;
+  }
+  static bool win_registered = false;
+  if (!win_registered) {
+    static HBRUSH bg_brush = CreateSolidBrush(RGB(0xEE, 0xF1, 0xF6));
+    WNDCLASSEXW wc{};
+    wc.cbSize = sizeof(wc);
+    wc.lpfnWndProc = OnlineNotesWindow::WndProc;
+    wc.hInstance = instance;
+    wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
+    wc.hbrBackground = bg_brush;
+    wc.lpszClassName = kClass;
+    RegisterClassExW(&wc);
+    win_registered = true;
+  }
 
   hwnd_ = CreateWindowExW(
       WS_EX_APPWINDOW, kClass, L"在线笔记",
@@ -355,6 +411,9 @@ bool OnlineNotesWindow::Create(HINSTANCE instance) {
 }
 
 void OnlineNotesWindow::Destroy() {
+  if (alive_) {
+    *alive_ = false;
+  }
   DestroyWebView();
   if (hwnd_) {
     DestroyWindow(hwnd_);
@@ -449,20 +508,36 @@ bool OnlineNotesWindow::CreateWebView() {
       JoinPath(NativeDataDir(), L"webview2-online-notes");
   CreateDirectoryW(user_data.c_str(), nullptr);
 
+  if (!alive_) {
+    alive_ = std::make_shared<bool>(true);
+  }
+  const auto alive = alive_;
+  const HWND host_guard = host_;
+
   CreateCoreWebView2EnvironmentWithOptions(
       nullptr, user_data.c_str(), nullptr,
       Callback<ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler>(
-          [this](HRESULT result, ICoreWebView2Environment* env) -> HRESULT {
-            if (FAILED(result) || !env || !host_) {
+          [this, alive, host_guard](HRESULT result,
+                                    ICoreWebView2Environment* env) -> HRESULT {
+            if (FAILED(result) || !env || !alive || !*alive || !hwnd_ ||
+                !IsWindow(hwnd_) || !host_ || host_ != host_guard ||
+                !IsWindow(host_guard)) {
               return S_OK;
             }
             env->CreateCoreWebView2Controller(
                 host_,
                 Callback<
                     ICoreWebView2CreateCoreWebView2ControllerCompletedHandler>(
-                    [this](HRESULT result2,
-                           ICoreWebView2Controller* controller) -> HRESULT {
+                    [this, alive, host_guard](
+                        HRESULT result2,
+                        ICoreWebView2Controller* controller) -> HRESULT {
                       if (FAILED(result2) || !controller) {
+                        return S_OK;
+                      }
+                      if (!alive || !*alive || !hwnd_ || !IsWindow(hwnd_) ||
+                          !host_ || host_ != host_guard ||
+                          !IsWindow(host_guard)) {
+                        controller->Close();
                         return S_OK;
                       }
                       controller_ = controller;
@@ -478,9 +553,14 @@ bool OnlineNotesWindow::CreateWebView() {
                       controller->put_IsVisible(TRUE);
                       web->add_WebMessageReceived(
                           Callback<ICoreWebView2WebMessageReceivedEventHandler>(
-                              [this](ICoreWebView2*,
-                                     ICoreWebView2WebMessageReceivedEventArgs*
-                                         args) -> HRESULT {
+                              [this, alive](
+                                  ICoreWebView2*,
+                                  ICoreWebView2WebMessageReceivedEventArgs*
+                                      args) -> HRESULT {
+                                if (!alive || !*alive || !hwnd_ ||
+                                    !IsWindow(hwnd_)) {
+                                  return S_OK;
+                                }
                                 LPWSTR raw = nullptr;
                                 if (SUCCEEDED(args->TryGetWebMessageAsString(
                                         &raw)) &&
@@ -494,9 +574,14 @@ bool OnlineNotesWindow::CreateWebView() {
                           nullptr);
                       web->add_NavigationCompleted(
                           Callback<ICoreWebView2NavigationCompletedEventHandler>(
-                              [this](ICoreWebView2*,
-                                     ICoreWebView2NavigationCompletedEventArgs*
-                                         args) -> HRESULT {
+                              [this, alive](
+                                  ICoreWebView2*,
+                                  ICoreWebView2NavigationCompletedEventArgs*
+                                      args) -> HRESULT {
+                                if (!alive || !*alive || !hwnd_ ||
+                                    !IsWindow(hwnd_)) {
+                                  return S_OK;
+                                }
                                 BOOL ok = FALSE;
                                 if (args) {
                                   args->get_IsSuccess(&ok);
@@ -519,6 +604,9 @@ bool OnlineNotesWindow::CreateWebView() {
 }
 
 void OnlineNotesWindow::DestroyWebView() {
+  if (alive_) {
+    *alive_ = false;
+  }
   if (webview_) {
     static_cast<ICoreWebView2*>(webview_)->Release();
     webview_ = nullptr;

@@ -319,6 +319,16 @@ void ShowPinHintWindow(HINSTANCE inst, const std::wstring& text, POINT cursor) {
   if (!g_pin_hint_hwnd) {
     return;
   }
+  const int x = cursor.x + 12;
+  const int y = cursor.y + 12;
+  static std::wstring s_last_text;
+  static int s_last_w = 0;
+  static int s_last_h = 0;
+  if (text == s_last_text && s_last_w > 0 && s_last_h > 0) {
+    SetWindowPos(g_pin_hint_hwnd, HWND_TOPMOST, x, y, s_last_w, s_last_h,
+                 SWP_NOACTIVATE | SWP_SHOWWINDOW);
+    return;
+  }
   static ULONG_PTR gdi_token = 0;
   if (!gdi_token) {
     Gdiplus::GdiplusStartupInput input;
@@ -337,8 +347,6 @@ void ShowPinHintWindow(HINSTANCE inst, const std::wstring& text, POINT cursor) {
   const int pad_y = 7;
   const int w = (std::max)(16, static_cast<int>(mbox.Width + 0.5f) + pad_x * 2);
   const int h = (std::max)(16, static_cast<int>(mbox.Height + 0.5f) + pad_y * 2);
-  const int x = cursor.x + 12;
-  const int y = cursor.y + 12;
 
   HDC screen = GetDC(nullptr);
   HDC mem = CreateCompatibleDC(screen);
@@ -399,6 +407,12 @@ void ShowPinHintWindow(HINSTANCE inst, const std::wstring& text, POINT cursor) {
   blend.AlphaFormat = AC_SRC_ALPHA;
   UpdateLayeredWindow(g_pin_hint_hwnd, screen, &origin, &size, mem, &src, 0,
                       &blend, ULW_ALPHA);
+  if (!IsWindowVisible(g_pin_hint_hwnd)) {
+    ShowWindow(g_pin_hint_hwnd, SW_SHOWNOACTIVATE);
+  }
+  s_last_text = text;
+  s_last_w = w;
+  s_last_h = h;
   SelectObject(mem, old);
   DeleteObject(dib);
   DeleteDC(mem);
@@ -489,13 +503,34 @@ std::vector<std::wstring> PreviewVirtualOrganize(
                                     FenceTitlesOf(fences));
 }
 
-std::wstring FormatFileSize(const std::wstring& path) {
+void FillOrgFileTypeAndSize(const DesktopItem& it, std::wstring* out_type,
+                            std::wstring* out_size) {
   WIN32_FILE_ATTRIBUTE_DATA fad{};
-  if (!GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &fad)) {
-    return L"—";
+  const bool has_attr =
+      GetFileAttributesExW(it.path.c_str(), GetFileExInfoStandard, &fad) != 0;
+  const bool is_dir =
+      has_attr && ((fad.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0);
+  if (it.is_link) {
+    *out_type = L"快捷方式";
+  } else if (is_dir) {
+    *out_type = L"文件夹";
+  } else {
+    const size_t dot = it.name.find_last_of(L'.');
+    if (dot != std::wstring::npos && dot + 1 < it.name.size()) {
+      std::wstring ext = it.name.substr(dot + 1);
+      for (auto& c : ext) {
+        if (c >= L'a' && c <= L'z') {
+          c = static_cast<wchar_t>(c - L'a' + L'A');
+        }
+      }
+      *out_type = ext + L" 文件";
+    } else {
+      *out_type = L"文件";
+    }
   }
-  if (fad.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
-    return L"—";
+  if (!has_attr || is_dir) {
+    *out_size = L"—";
+    return;
   }
   ULARGE_INTEGER sz{};
   sz.HighPart = fad.nFileSizeHigh;
@@ -509,29 +544,7 @@ std::wstring FormatFileSize(const std::wstring& path) {
   } else {
     swprintf_s(buf, L"%.1f MB", bytes / (1024.0 * 1024.0));
   }
-  return buf;
-}
-
-std::wstring FileTypeLabel(const DesktopItem& it) {
-  if (it.is_link) {
-    return L"快捷方式";
-  }
-  WIN32_FILE_ATTRIBUTE_DATA fad{};
-  if (GetFileAttributesExW(it.path.c_str(), GetFileExInfoStandard, &fad) &&
-      (fad.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
-    return L"文件夹";
-  }
-  const size_t dot = it.name.find_last_of(L'.');
-  if (dot != std::wstring::npos && dot + 1 < it.name.size()) {
-    std::wstring ext = it.name.substr(dot + 1);
-    for (auto& c : ext) {
-      if (c >= L'a' && c <= L'z') {
-        c = static_cast<wchar_t>(c - L'a' + L'A');
-      }
-    }
-    return ext + L" 文件";
-  }
-  return L"文件";
+  *out_size = buf;
 }
 
 void PushOrganizePage(SettingsWindow* settings, const PinMap& pins,
@@ -554,6 +567,33 @@ void PushOrganizePage(SettingsWindow* settings, const PinMap& pins,
   const auto preview = OrganizePreviewVirtualPins(
       pins, items, rules, FenceTitlesOf(fences), "system_software",
       "system_docs", &layouts, current_page);
+  auto lower_name = [](std::wstring s) {
+    if (!s.empty()) {
+      CharLowerBuffW(&s[0], static_cast<DWORD>(s.size()));
+    }
+    return s;
+  };
+  struct NameBucket {
+    std::vector<const DesktopItem*> list;
+    size_t cursor = 0;
+  };
+  std::unordered_map<std::wstring, NameBucket> by_name;
+  by_name.reserve(items.size());
+  int organized = 0;
+  for (const auto& it : items) {
+    if (FindPin(pins, it.path)) {
+      ++organized;
+    } else {
+      const std::wstring n = it.name.empty() ? it.path : it.name;
+      by_name[lower_name(n)].list.push_back(&it);
+    }
+  }
+  for (const auto& it : items) {
+    if (FindPin(pins, it.path)) {
+      const std::wstring n = it.name.empty() ? it.path : it.name;
+      by_name[lower_name(n)].list.push_back(&it);
+    }
+  }
   std::vector<SettingsWindow::OrgFileRow> files;
   files.reserve(preview.size());
   for (const auto& line : preview) {
@@ -562,21 +602,14 @@ void PushOrganizePage(SettingsWindow* settings, const PinMap& pins,
     row.name = arrow == std::wstring::npos ? line : line.substr(0, arrow);
     row.type = L"文件";
     row.size = L"—";
-    for (const auto& it : items) {
-      const std::wstring n = it.name.empty() ? it.path : it.name;
-      if (_wcsicmp(n.c_str(), row.name.c_str()) == 0) {
-        row.type = FileTypeLabel(it);
-        row.size = FormatFileSize(it.path);
-        break;
-      }
+    auto bit = by_name.find(lower_name(row.name));
+    if (bit != by_name.end() && !bit->second.list.empty()) {
+      const size_t idx =
+          (std::min)(bit->second.cursor, bit->second.list.size() - 1);
+      bit->second.cursor++;
+      FillOrgFileTypeAndSize(*bit->second.list[idx], &row.type, &row.size);
     }
     files.push_back(std::move(row));
-  }
-  int organized = 0;
-  for (const auto& it : items) {
-    if (FindPin(pins, it.path)) {
-      ++organized;
-    }
   }
   settings->SetOrganizePreview(preview, static_cast<int>(preview.size()),
                                organized, static_cast<int>(items.size()),
@@ -3582,7 +3615,7 @@ void App::PushExtensionSettings() {
   ext.show_page_indicator = prefs_.show_page_indicator;
   ext.page_chrome_style = prefs_.page_chrome_style == "tabs" ? "tabs" : "float";
   ext.lang = CurrentLang() ? CurrentLang() : "zh";
-  ext.app_version = NativeProductVersion();
+  ext.app_version = NativeDisplayVersion();
   ext.theme_id = prefs_.theme_id;
   ext.page_bar_style =
       prefs_.page_bar_style.empty() ? "navy" : prefs_.page_bar_style;
@@ -6921,10 +6954,12 @@ void App::JoinFenceTabGroup(FenceWindow* fence) {
   if (!fence) {
     return;
   }
+  const std::string self_id = fence->Id();
+  const std::wstring self_title = fence->Title();
   // Candidates: other fences visible on at least one of this fence's pages.
   // Grouping across pages would make the tab strip appear/disappear as the
   // user switches pages, so membership stays page-compatible.
-  std::vector<FenceWindow*> candidates;
+  std::vector<std::string> candidate_ids;
   std::vector<std::wstring> labels;
   for (auto& f : fences_) {
     if (!f || f.get() == fence) {
@@ -6940,10 +6975,10 @@ void App::JoinFenceTabGroup(FenceWindow* fence) {
     if (!shared_page) {
       continue;
     }
-    candidates.push_back(f.get());
+    candidate_ids.push_back(f->Id());
     labels.push_back(f->Title());
   }
-  if (candidates.empty()) {
+  if (candidate_ids.empty()) {
     ShowToast(L"没有可合并的其他分区（需在同一分页）");
     return;
   }
@@ -6961,7 +6996,7 @@ void App::JoinFenceTabGroup(FenceWindow* fence) {
     std::wstring json = L"{\"type\":\"state\",\"title\":\"";
     json += MistJsonEscape(L"合并到标签组");
     json += L"\",\"hint\":\"";
-    json += MistJsonEscape(L"选择要与「" + fence->Title() + L"」合并的分区");
+    json += MistJsonEscape(L"选择要与「" + self_title + L"」合并的分区");
     json += L"\",\"open_label\":\"";
     json += MistJsonEscape(L"合并");
     json += L"\",\"allow_new\":false,\"sel\":0,\"items\":[";
@@ -6988,8 +7023,8 @@ void App::JoinFenceTabGroup(FenceWindow* fence) {
     }
     if (id == L"open") {
       const int index = MistJsonIntField(json, L"index", -1);
-      if (index >= 0 && index < static_cast<int>(candidates.size())) {
-        picked_id = candidates[static_cast<size_t>(index)]->Id();
+      if (index >= 0 && index < static_cast<int>(candidate_ids.size())) {
+        picked_id = candidate_ids[static_cast<size_t>(index)];
         return true;
       }
       return false;
@@ -7004,16 +7039,21 @@ void App::JoinFenceTabGroup(FenceWindow* fence) {
     return;
   }
 
-  // Target fence: reuse its group if it already has one, else start a new one
-  // keyed by its own id (stable, no counter to persist).
+  // Re-resolve both self and target in case `fences_` was rebuilt while the
+  // modal dialog pumped messages (display change / snapshot restore).
+  fence = nullptr;
   FenceWindow* target = nullptr;
   for (auto& f : fences_) {
-    if (f && f->Id() == picked_id) {
+    if (!f) {
+      continue;
+    }
+    if (f->Id() == self_id) {
+      fence = f.get();
+    } else if (f->Id() == picked_id) {
       target = f.get();
-      break;
     }
   }
-  if (!target) {
+  if (!fence || !target || fence == target) {
     return;
   }
   std::string group = target->TabGroup();
@@ -8332,7 +8372,10 @@ void App::CreateTrayIcon() {
   if (!nid_.hIcon) {
     nid_.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
   }
-  wcsncpy_s(nid_.szTip, L"DeskTidy", _TRUNCATE);
+  const std::wstring tip =
+      IsDevRuntime() ? (L"DeskTidy [dev] v" + NativeDisplayVersion())
+                     : (L"DeskTidy v" + NativeProductVersion());
+  wcsncpy_s(nid_.szTip, tip.c_str(), _TRUNCATE);
   tray_added_ = Shell_NotifyIconW(NIM_ADD, &nid_) == TRUE;
   if (tray_added_) {
     nid_.uVersion = NOTIFYICON_VERSION_4;
@@ -8863,6 +8906,12 @@ LRESULT CALLBACK App::TrayWndProc(HWND hwnd, UINT msg, WPARAM wparam,
         POINT pt{};
         GetCursorPos(&pt);
         HMENU menu = CreatePopupMenu();
+        const std::wstring ver_hdr =
+            IsDevRuntime()
+                ? (L"DeskTidy v" + NativeDisplayVersion() + L" [源码版]")
+                : (L"DeskTidy v" + NativeProductVersion());
+        AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, ver_hdr.c_str());
+        AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
         AppendMenuW(menu, MF_STRING, 1, L"打开设置");
         AppendMenuW(menu, MF_STRING, 17, Tr("hk_organize").c_str());
         AppendMenuW(menu, MF_STRING, 13, Tr("peek").c_str());
@@ -8954,8 +9003,12 @@ LRESULT CALLBACK App::TrayWndProc(HWND hwnd, UINT msg, WPARAM wparam,
             ShowAppHelp(self->settings_.Hwnd());
             break;
           case 41: {
+            const std::wstring channel_tag =
+                IsDevRuntime() ? L"（源码开发版）" : L"（正式版）";
             const std::wstring about_msg =
-                L"DeskTidy 桌面整理\n版本 " + NativeProductVersion() +
+                L"DeskTidy 桌面整理" + channel_tag +
+                L"\n版本 " + NativeDisplayVersion() +
+                L"\n目录 " + NativeExeDir() +
                 L"\n\n官网 / 发布页：\ngithub.com/Bowen-Yu0926/DeskTidy-Releases\n\n"
                 L"「是」打开发布页\n「否」打开使用说明";
             if (MistConfirm(hwnd, L"关于 DeskTidy", about_msg.c_str(),

@@ -25,10 +25,6 @@
       background: #1e1e1e;
       color: #e6e6e6;
     }
-    /* Title chrome is native Win32 (instant). Kept for splitTitleBody. */
-    #title-wrap {
-      display: none !important;
-    }
     /* Editor surface fills the stage under the native title strip. */
     #editor {
       flex: 1 1 auto;
@@ -89,7 +85,8 @@
       min-height: 46px;
       z-index: 20;
     }
-    #editor .milkdown-top-bar .top-bar-item svg {
+    #editor .milkdown-top-bar .top-bar-item svg,
+    #editor .milkdown-top-bar .top-bar-chevron svg {
       color: #4e5969;
       fill: #4e5969;
     }
@@ -100,10 +97,44 @@
     }
     #editor .milkdown-top-bar .top-bar-heading-label {
       color: #1f2329;
+      font-weight: 500;
     }
-    #editor .milkdown-top-bar .top-bar-chevron svg {
-      color: #8f959e;
-      stroke: #8f959e;
+    /* Disable heading selector when cursor is inside a list item */
+    #editor .milkdown-top-bar.in-list-item .top-bar-heading-button {
+      opacity: 0.42;
+      cursor: not-allowed;
+    }
+    #editor .milkdown-top-bar.in-list-item .top-bar-heading-dropdown {
+      display: none !important;
+    }
+    /* Toolbar button tooltip */
+    #editor .milkdown-top-bar .top-bar-item[data-tip],
+    #editor .milkdown-top-bar .top-bar-heading-button[data-tip] {
+      position: relative;
+    }
+    #editor .milkdown-top-bar .top-bar-item[data-tip]::after,
+    #editor .milkdown-top-bar .top-bar-heading-button[data-tip]::after {
+      content: attr(data-tip);
+      position: absolute;
+      top: calc(100% + 6px);
+      left: 50%;
+      transform: translateX(-50%);
+      white-space: nowrap;
+      background: rgba(31,35,41,.85);
+      color: #fff;
+      font-size: 11px;
+      line-height: 1;
+      padding: 5px 8px;
+      border-radius: 4px;
+      pointer-events: none;
+      opacity: 0;
+      transition: opacity 120ms;
+      z-index: 9999;
+    }
+    #editor .milkdown-top-bar .top-bar-item[data-tip]:hover::after,
+    #editor .milkdown-top-bar .top-bar-heading-button[data-tip]:hover::after {
+      opacity: 1;
+      transition-delay: 250ms;
     }
     #editor .milkdown-top-bar .top-bar-divider {
       background: #e8eaed;
@@ -112,12 +143,16 @@
       background: #1e1e1e;
       border-bottom-color: #333;
     }
-    body.theme-dark #editor .milkdown-top-bar .top-bar-item svg {
+    body.theme-dark #editor .milkdown-top-bar .top-bar-item svg,
+    body.theme-dark #editor .milkdown-top-bar .top-bar-chevron svg {
       color: #c4c8ce;
       fill: #c4c8ce;
     }
+    body.theme-dark #editor .milkdown-top-bar .top-bar-item:hover svg,
+    body.theme-dark #editor .milkdown-top-bar .top-bar-item.active svg,
     body.theme-dark #editor .milkdown-top-bar .top-bar-heading-label {
-      color: #e6e6e6;
+      color: #f0f2f5;
+      fill: #f0f2f5;
     }
 
     #editor .ProseMirror {
@@ -237,12 +272,34 @@
       margin-top: 2px;
     }
     /* Task list: Crepe reserves a fixed 32px label row; match the 1.75 line
-       box so the checkbox sits on the first text line instead of above it. */
+       box so the checkbox sits on the first text line instead of above it.
+       List markers / numbers / bullets use a deep blue theme. */
     #editor .milkdown-list-item-block li .label-wrapper,
     #editor .milkdown-list-item-block li .label-wrapper .label {
       height: 28px;
       padding: 0;
-      width: 22px;
+      width: 24px;
+      color: #1f6bff !important;
+      font-weight: 600;
+    }
+    #editor .milkdown-list-item-block li .label-wrapper svg {
+      color: #1f6bff !important;
+      fill: #1f6bff !important;
+    }
+    #editor .ProseMirror li::marker {
+      color: #1f6bff;
+      font-weight: 600;
+    }
+    body.theme-dark #editor .milkdown-list-item-block li .label-wrapper,
+    body.theme-dark #editor .milkdown-list-item-block li .label-wrapper .label {
+      color: #5b9bff !important;
+    }
+    body.theme-dark #editor .milkdown-list-item-block li .label-wrapper svg {
+      color: #5b9bff !important;
+      fill: #5b9bff !important;
+    }
+    body.theme-dark #editor .ProseMirror li::marker {
+      color: #5b9bff;
     }
 
     /* --- Blockquote: soft grey panel with a light left rule ------------- */
@@ -370,8 +427,13 @@
       max-width: 100%;
       margin: 12px 0;
     }
+    #editor .milkdown-image-block:not(:has(> .image-edit:not(.hidden))) {
+      width: fit-content;
+      max-width: 240px;
+    }
     #editor .milkdown-image-block .image-wrapper {
-      max-width: 100%;
+      width: fit-content;
+      max-width: 240px;
     }
     /* DingTalk inserts at the caret and keeps the image flush left; Crepe
        centres every block image. */
@@ -379,90 +441,178 @@
       margin: 0;
       justify-content: flex-start;
     }
+    /* Suppress Crepe's grey NodeSelection tint over the image box. */
+    #editor .milkdown-image-block.selected > .image-wrapper::before {
+      display: none !important;
+    }
     /* Crepe's own chrome (an emoji caption bubble and a 4px bottom grip) is
        replaced by the widget below, which is easier to hit and also deletes. */
     #editor .milkdown-image-block .operation,
-    #editor .milkdown-image-block .image-resize-handle {
+    #editor .milkdown-image-block .image-resize-handle,
+    #editor .milkdown-image-block .caption-input {
       display: none;
     }
-    #editor .milkdown-image-block img {
-      max-width: 100%;
-      height: auto;
-      border-radius: 4px;
+    /* Inline images: allow multiple images side-by-side on the same line. */
+    #editor .milkdown-image-inline {
+      display: inline-flex;
+      vertical-align: middle;
+      margin: 4px 8px 4px 0;
+      outline: none !important;
     }
-    /* --- Image chrome: outline, size presets, corner resize, delete ------ */
+    #editor .milkdown-image-inline .empty-image-inline {
+      border: 1px dashed rgba(31, 107, 255, 0.55);
+      background: rgba(31, 107, 255, 0.04);
+      border-radius: 6px;
+      padding: 4px 10px;
+    }
+    #editor .milkdown-image-inline .empty-image-inline .placeholder .uploader,
+    #editor .milkdown-image-block .image-edit .placeholder .uploader {
+      color: #1f6bff !important;
+      font-weight: 500;
+    }
+    #editor .milkdown-image-block .image-wrapper img,
+    #editor .milkdown-image-inline > img.image-inline {
+      /* Fixed placeholder thumbnail box regardless of original image dimensions. */
+      width: 240px !important;
+      height: 150px !important;
+      max-width: 240px !important;
+      max-height: 150px !important;
+      min-width: 240px !important;
+      min-height: 150px !important;
+      object-fit: contain !important;
+      box-sizing: border-box;
+      padding: 4px;
+      border-radius: 6px;
+      border: 1.5px dashed rgba(31, 107, 255, 0.55);
+      background: rgba(31, 107, 255, 0.04);
+      cursor: pointer;
+      display: inline-block;
+      vertical-align: middle;
+    }
+    body.theme-dark #editor .milkdown-image-block .image-wrapper img,
+    body.theme-dark #editor .milkdown-image-inline > img.image-inline {
+      border-color: rgba(91, 155, 255, 0.55);
+      background: rgba(91, 155, 255, 0.08);
+    }
+    /* Broken / not-yet-loaded images: tinted background. */
+    #editor .milkdown-image-block .image-wrapper img:not([src]),
+    #editor .milkdown-image-block .image-wrapper img[src=""],
+    #editor .milkdown-image-inline > img.image-inline:not([src]),
+    #editor .milkdown-image-inline > img.image-inline[src=""] {
+      background: rgba(31, 107, 255, 0.08);
+    }
+    /* Lightbox overlay */
+    #dsk-lightbox {
+      display: none;
+      position: fixed;
+      inset: 0;
+      z-index: 999;
+      background: rgba(0, 0, 0, 0.72);
+      align-items: center;
+      justify-content: center;
+      cursor: zoom-out;
+    }
+    #dsk-lightbox.on { display: flex; }
+    #dsk-lightbox img {
+      max-width: 90vw;
+      max-height: 88vh;
+      border-radius: 6px;
+      box-shadow: 0 8px 40px rgba(0,0,0,0.6);
+      object-fit: contain;
+      cursor: default;
+      pointer-events: none;
+      animation: lbIn 160ms cubic-bezier(0.16,1,0.3,1);
+    }
+    @keyframes lbIn {
+      from { opacity: 0; transform: scale(0.88); }
+      to   { opacity: 1; transform: none; }
+    }
+    #dsk-lightbox-close {
+      position: fixed;
+      top: 14px; right: 18px;
+      background: rgba(255,255,255,0.14);
+      border: none; color: #fff;
+      font-size: 22px; line-height: 1;
+      width: 32px; height: 32px;
+      border-radius: 50%; cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+    }
+    #dsk-lightbox-close:hover { background: rgba(255,255,255,0.28); }
+    /* --- Image mask overlay: fixed placeholder mask with "预览" button & delete --- */
     #dsk-img-chrome {
       position: fixed;
       z-index: 60;
       pointer-events: none;
       display: none;
+      border-radius: 6px;
+      overflow: hidden;
     }
     #dsk-img-chrome.on { display: block; }
-    #dsk-img-chrome .box {
+    #dsk-img-chrome .mask {
       position: absolute;
       inset: 0;
-      border: 1px solid #1f6bff;
-      border-radius: 4px;
-    }
-    #dsk-img-chrome .bar {
-      position: absolute;
+      background: rgba(15, 23, 42, 0.45);
+      border: 1.5px solid #1f6bff;
+      border-radius: 6px;
       display: flex;
       align-items: center;
-      gap: 2px;
-      padding: 3px;
-      background: #fff;
-      border: 1px solid #e5e6eb;
-      border-radius: 6px;
-      box-shadow: 0 4px 14px rgba(31, 35, 41, 0.14);
+      justify-content: center;
+      gap: 10px;
       pointer-events: auto;
-      white-space: nowrap;
+      backdrop-filter: blur(1px);
     }
-    #dsk-img-chrome .bar button {
-      height: 24px;
-      padding: 0 7px;
-      border: none;
-      border-radius: 4px;
-      background: transparent;
-      color: #4e5969;
+    #dsk-img-chrome .preview-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      height: 32px;
+      padding: 0 14px;
+      border: 1px solid rgba(255, 255, 255, 0.45);
+      border-radius: 16px;
+      background: rgba(31, 107, 255, 0.92);
+      color: #fff;
       font: inherit;
-      font-size: 12px;
-      line-height: 24px;
+      font-size: 13px;
+      font-weight: 500;
+      line-height: 1;
       cursor: pointer;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.28);
+      transition: background 120ms, transform 120ms;
     }
-    #dsk-img-chrome .bar button:hover { background: #f2f3f5; }
-    #dsk-img-chrome .bar button.on { background: #e8f0ff; color: #1f6bff; }
-    #dsk-img-chrome .bar button.del { color: #d83931; }
-    #dsk-img-chrome .bar button.del:hover { background: #fdecec; }
-    #dsk-img-chrome .bar .sep {
-      width: 1px;
+    #dsk-img-chrome .preview-btn:hover {
+      background: #1557e0;
+      transform: scale(1.03);
+    }
+    #dsk-img-chrome .preview-btn svg {
+      width: 14px;
       height: 14px;
-      margin: 0 2px;
-      background: #e5e6eb;
+      display: block;
     }
-    #dsk-img-chrome .bar button svg { width: 14px; height: 14px; display: block; }
-    #dsk-img-chrome .bar button.del { display: flex; align-items: center; }
-    #dsk-img-chrome .handle {
+    #dsk-img-chrome .del {
       position: absolute;
-      right: -6px;
-      bottom: -6px;
-      width: 12px;
-      height: 12px;
-      background: #fff;
-      border: 2px solid #1f6bff;
+      top: 6px;
+      right: 6px;
+      width: 26px;
+      height: 26px;
+      padding: 0;
+      border: none;
       border-radius: 50%;
-      pointer-events: auto;
-      cursor: nwse-resize;
+      background: rgba(31, 35, 41, 0.65);
+      color: #fff;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: background 120ms;
     }
-    body.theme-dark #dsk-img-chrome .bar {
-      background: #262626;
-      border-color: #3a3a3a;
-      box-shadow: 0 4px 14px rgba(0, 0, 0, 0.5);
+    #dsk-img-chrome .del:hover {
+      background: #d83931;
     }
-    body.theme-dark #dsk-img-chrome .bar button { color: #c4c8ce; }
-    body.theme-dark #dsk-img-chrome .bar button:hover { background: #333; }
-    body.theme-dark #dsk-img-chrome .bar button.on { background: #1b3a6b; color: #7aa7ff; }
-    body.theme-dark #dsk-img-chrome .bar .sep { background: #3a3a3a; }
-    body.theme-dark #dsk-img-chrome .handle { background: #262626; }
+    #dsk-img-chrome .del svg {
+      width: 13px;
+      height: 13px;
+      display: block;
+    }
     /* Floating UI chrome (block handle / slash menu / toolbar) must sit above
        the editor surface, which owns the whole stage. */
     .milkdown-block-handle,
@@ -473,20 +623,9 @@
     .milkdown-latex-inline-edit {
       z-index: 30;
     }
-    /* Drag-resize handle: keep it visible on hover (Crepe hides it until then). */
-    #editor .milkdown-image-block .image-resize-handle {
-      z-index: 5;
-    }
-    /* Chinese code block language picker. */
-    #editor .milkdown-code-block .cm-editor {
-      font-family: Consolas, "Cascadia Mono", monospace;
-    }
   </style>
 </head>
 <body>
-  <div id="title-wrap">
-    <input id="note-title" type="text" placeholder="标题" autocomplete="off" spellcheck="true" />
-  </div>
   <div id="editor"></div>
   <!-- Bundle loads async after title chromeReady — Typora-class open. -->
   <script>
@@ -498,18 +637,59 @@
   var changePostTimer = null;
   var ignoreDirtyPostsUntil = 0;
   var CHANGE_POST_MS = 150;
-  var titleEl = null;
   var bundleLoading = false;
   var bundleLoaded = false;
   var pendingBoot = null;  // { md, theme, baseUrl } while the bundle loads
   var editorFontFace = "Microsoft YaHei";
   var editorFontPt = 12;
   var assetBaseUrl = "";
+  var uploadSeq = 0;
+  var pendingUploads = {};
 
   function post(msg) {
     if (window.chrome && chrome.webview && chrome.webview.postMessage) {
       chrome.webview.postMessage(JSON.stringify(msg));
     }
+  }
+
+  function readFileAsDataUrl(file) {
+    return new Promise(function (resolve, reject) {
+      var reader = new FileReader();
+      reader.onload = function () { resolve(String(reader.result || "")); };
+      reader.onerror = function () { reject(new Error("read failed")); };
+      reader.readAsDataURL(file);
+    });
+  }
+
+  function uploadImageFile(file) {
+    if (!file) return Promise.resolve("");
+    return readFileAsDataUrl(file).then(function (dataUrl) {
+      if (!dataUrl) return "";
+      if (!(window.chrome && chrome.webview && chrome.webview.postMessage)) {
+        return dataUrl;
+      }
+      return new Promise(function (resolve) {
+        var id = "up_" + (++uploadSeq) + "_" + Date.now();
+        var timer = setTimeout(function () {
+          if (pendingUploads[id]) {
+            delete pendingUploads[id];
+            resolve(dataUrl);
+          }
+        }, 5000);
+        pendingUploads[id] = function (savedUrl) {
+          clearTimeout(timer);
+          delete pendingUploads[id];
+          resolve(savedUrl || dataUrl);
+        };
+        post({
+          type: "uploadImage",
+          id: id,
+          name: String(file.name || "image.png"),
+          mime: String(file.type || "image/png"),
+          dataUrl: dataUrl
+        });
+      });
+    });
   }
 
   function trimStr(s) {
@@ -568,7 +748,6 @@
 
   function setTitleValue(t) {
     hostTitle = t || "";
-    if (titleEl) titleEl.value = hostTitle;
   }
 
   function composedMarkdown() {
@@ -583,7 +762,6 @@
   window.__desknoteSetHostTitle = function (t) {
     hostTitle = String(t || "").replace(/[\r\n]+/g, " ");
     if (hostTitle) emitTitleLine = true;
-    if (titleEl) titleEl.value = hostTitle;
     if (suppress) {
       latestMd = composedMarkdown();
       return;
@@ -631,10 +809,6 @@
   // ---------------------------------------------------------------------
   // Boot
   // ---------------------------------------------------------------------
-  function ensureEditorCss() {
-    // Already linked in <head>; kept for parity with older shells.
-  }
-
   function onBundleReady() {
     bundleLoaded = true;
     bundleLoading = false;
@@ -666,6 +840,48 @@
   // Overlap the bundle fetch with the host round-trip (ready → set).
   ensureBundleLoaded();
 
+  // Toolbar tooltip: ordered labels matching the 14 .top-bar-item buttons in desknote-editor.js
+  var TOP_BAR_ITEM_TIPS = [
+    '加粗',
+    '斜体',
+    '删除线',
+    '行内代码',
+    '无序列表',
+    '有序列表',
+    '任务列表',
+    '插入链接',
+    '插入图片',
+    '插入表格',
+    '代码块',
+    '数学公式',
+    '引用',
+    '分割线'
+  ];
+
+  function installToolbarTooltips() {
+    var bar = document.querySelector('#editor .milkdown-top-bar');
+    if (!bar) {
+      setTimeout(installToolbarTooltips, 300);
+      return;
+    }
+    function applyTips() {
+      var headingBtn = bar.querySelector('.top-bar-heading-button');
+      if (headingBtn && !headingBtn.dataset.tip) {
+        headingBtn.dataset.tip = '段落与标题';
+      }
+      var items = bar.querySelectorAll('.top-bar-item');
+      items.forEach(function (btn, idx) {
+        if (btn.dataset.tip) return;
+        if (idx < TOP_BAR_ITEM_TIPS.length) {
+          btn.dataset.tip = TOP_BAR_ITEM_TIPS[idx];
+        }
+      });
+    }
+    applyTips();
+    var obs = new MutationObserver(applyTips);
+    obs.observe(bar, { childList: true, subtree: true });
+  }
+
   function applyDoc(md, theme) {
     var parts = splitTitleBody(md || "");
     setTitleValue(parts.title);
@@ -694,6 +910,7 @@
         root: el,
         defaultValue: parts.body || "",
         assetBaseUrl: assetBaseUrl,
+        onUpload: uploadImageFile,
         onMarkdownUpdated: function (markdown) {
           if (suppress) return;
           mdDirty = true;
@@ -706,6 +923,7 @@
             applyDefaultFont();
             post({ type: "contentReady" });
             try { focusBody(); } catch (e) {}
+            installToolbarTooltips();
           }, 0);
         }
       });
@@ -785,8 +1003,6 @@
       "#editor .ProseMirror{" +
       'font-family:"' + safe + '","Microsoft YaHei","微软雅黑",sans-serif;' +
       "font-size:" + editorFontPt + "pt;" +
-      "line-height:1.75;" +
-      "color:#1a1f27;" +
       "}";
   }
 
@@ -827,60 +1043,93 @@
     }, true);
   }
 
-  function bindTitleField() {
-    titleEl = document.getElementById("note-title");
-    if (!titleEl || titleEl.__desknoteBound) return;
-    titleEl.__desknoteBound = true;
-    titleEl.addEventListener("input", function () {
-      if (suppress) return;
-      emitTitleLine = true;
-      mdDirty = true;
-      signalDirty();
-      scheduleChangePost();
+  // ---------------------------------------------------------------------
+  // Lightbox: preview image at full size.
+  // ---------------------------------------------------------------------
+  var lbEl = null;
+
+  function lbEnsure() {
+    if (lbEl) return lbEl;
+    var el = document.createElement("div");
+    el.id = "dsk-lightbox";
+    el.innerHTML = '<button id="dsk-lightbox-close" aria-label="关闭">×</button><img />';
+    el.addEventListener("click", function (e) {
+      if (e.target === el || e.target.id === "dsk-lightbox-close") hideLightbox();
     });
+    document.body.appendChild(el);
+    lbEl = el;
+    return el;
+  }
+
+  function showLightbox(src) {
+    var el = lbEnsure();
+    var img = el.querySelector("img");
+    img.src = src;
+    el.classList.add("on");
+  }
+
+  function hideLightbox() {
+    if (lbEl) lbEl.classList.remove("on");
   }
 
   // ---------------------------------------------------------------------
-  // Image widget: click an image to get an outline, size presets, a corner
-  // drag handle and delete. Crepe's own node view only offers a height-only
-  // bottom handle plus a caption toggle, which is hard to hit and hides the
-  // affordance; this overlay is drawn in the page so it survives re-renders.
+  // Image mask overlay: hover or click an image to show a mask ("遮罩") with
+  // a prominent "预览" button and a corner delete button.
   // ---------------------------------------------------------------------
   var imgChrome = null;
   var imgTarget = null;
-  var IMG_PRESETS = [0.25, 0.5, 0.75, 1];
+  var imgHideTimer = null;
+
+  function clearImgHideTimer() {
+    if (imgHideTimer) {
+      clearTimeout(imgHideTimer);
+      imgHideTimer = null;
+    }
+  }
+
+  function scheduleHideImgChrome() {
+    clearImgHideTimer();
+    imgHideTimer = setTimeout(function () {
+      hideImgChrome();
+    }, 120);
+  }
 
   function imgChromeEl() {
     if (imgChrome) return imgChrome;
     var el = document.createElement("div");
     el.id = "dsk-img-chrome";
     el.innerHTML =
-      '<div class="box"></div>' +
-      '<div class="bar">' +
-        '<button type="button" data-p="0.25">25%</button>' +
-        '<button type="button" data-p="0.5">50%</button>' +
-        '<button type="button" data-p="0.75">75%</button>' +
-        '<button type="button" data-p="1">100%</button>' +
-        '<span class="sep"></span>' +
+      '<div class="mask">' +
+        '<button type="button" class="preview-btn">' +
+          '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6">' +
+            '<path d="M1.5 8s2.4-4.5 6.5-4.5S14.5 8 14.5 8s-2.4 4.5-6.5 4.5S1.5 8 1.5 8z"/>' +
+            '<circle cx="8" cy="8" r="2.2"/>' +
+          '</svg>' +
+          '<span>预览</span>' +
+        '</button>' +
         '<button type="button" class="del" title="删除图片">' +
           '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" ' +
           'stroke-width="1.5"><path d="M3 4.5h10M6.5 4.5V3h3v1.5" ' +
           'stroke-linecap="round"/><path d="M4.5 4.5l.6 8a1 1 0 0 0 1 .9h3.8a1 1 0 0 0 ' +
           '1-.9l.6-8" stroke-linecap="round"/></svg>' +
         '</button>' +
-      '</div>' +
-      '<div class="handle" title="拖拽调整大小"></div>';
+      '</div>';
     document.body.appendChild(el);
-    el.querySelectorAll(".bar button[data-p]").forEach(function (b) {
-      b.addEventListener("mousedown", function (e) {
-        e.preventDefault();
-        e.stopPropagation();
-      });
-      b.addEventListener("click", function (e) {
-        e.preventDefault();
-        e.stopPropagation();
-        applyImgRatio(Number(b.getAttribute("data-p")));
-      });
+    el.addEventListener("mouseenter", function () {
+      clearImgHideTimer();
+    });
+    el.addEventListener("mouseleave", function () {
+      scheduleHideImgChrome();
+    });
+    el.querySelector(".mask").addEventListener("mousedown", function (e) {
+      e.preventDefault();
+      e.stopPropagation();
+    });
+    el.querySelector(".mask").addEventListener("click", function (e) {
+      if (e.target.closest(".del")) return;
+      e.preventDefault();
+      e.stopPropagation();
+      if (imgTarget && imgTarget.src) showLightbox(imgTarget.src);
     });
     el.querySelector(".del").addEventListener("mousedown", function (e) {
       e.preventDefault();
@@ -891,34 +1140,16 @@
       e.stopPropagation();
       deleteImg();
     });
-    el.querySelector(".handle").addEventListener("pointerdown", function (e) {
-      startImgDrag(e);
-    });
     imgChrome = el;
     return el;
   }
 
-  function imgOrigin(img) {
-    var origin = Number(img && img.dataset ? img.dataset.origin : 0);
-    if (!origin || !isFinite(origin)) {
-      // Crepe records the ratio-1 height on load; before that, the rendered
-      // height is the best guess.
-      origin = (img && img.getBoundingClientRect().height) || 0;
-    }
-    return origin || 0;
-  }
-
-  // The node's ratio is the height multiplier Crepe applied; recover it from
-  // the rendered height so the presets are relative to the natural size.
-  function imgNaturalRatio(img) {
-    var origin = Number(img && img.dataset ? img.dataset.origin : 0);
-    var h = img.getBoundingClientRect().height || 0;
-    if (!origin || !isFinite(origin) || !h) return 1;
-    return h / origin;
-  }
-
   function placeImgChrome() {
     if (!imgChrome || !imgTarget) return;
+    if (!document.body.contains(imgTarget)) {
+      hideImgChrome();
+      return;
+    }
     var rect = imgTarget.getBoundingClientRect();
     if (!rect.width || !rect.height) {
       hideImgChrome();
@@ -928,42 +1159,20 @@
     imgChrome.style.top = rect.top + "px";
     imgChrome.style.width = rect.width + "px";
     imgChrome.style.height = rect.height + "px";
-    var bar = imgChrome.querySelector(".bar");
-    var above = rect.top > 44;
-    bar.style.left = "0px";
-    bar.style.top = above ? "-34px" : rect.height + 6 + "px";
-    var ratio = imgNaturalRatio(imgTarget);
-    imgChrome.querySelectorAll(".bar button[data-p]").forEach(function (b) {
-      var p = Number(b.getAttribute("data-p"));
-      b.classList.toggle("on", Math.abs(ratio - p) < 0.02);
-    });
   }
 
   function showImgChrome(img) {
     if (!img) return;
+    clearImgHideTimer();
     imgTarget = img;
     imgChromeEl().classList.add("on");
     placeImgChrome();
   }
 
   function hideImgChrome() {
+    clearImgHideTimer();
     imgTarget = null;
     if (imgChrome) imgChrome.classList.remove("on");
-  }
-
-  function applyImgRatio(ratio) {
-    if (!imgTarget || !editorApi) return;
-    var img = imgTarget;
-    var origin = imgOrigin(img);
-    // Paint immediately so the overlay follows the pointer, then let the
-    // editor commit the node attribute (which persists as `![alt|0.62]`).
-    if (origin) img.style.height = origin * ratio + "px";
-    img.dataset.height = String(origin * ratio);
-    try { editorApi.setImageRatio(img, ratio); } catch (e) {}
-    mdDirty = true;
-    signalDirty();
-    scheduleChangePost();
-    setTimeout(placeImgChrome, 0);
   }
 
   function deleteImg() {
@@ -979,50 +1188,87 @@
     } catch (e) {}
   }
 
-  function startImgDrag(e) {
-    if (!imgTarget) return;
-    e.preventDefault();
-    e.stopPropagation();
-    var img = imgTarget;
-    var startY = e.clientY;
-    var startH = img.getBoundingClientRect().height;
-    var origin = imgOrigin(img);
-    var moved = false;
-
-    function onMove(ev) {
-      var h = Math.max(60, startH + (ev.clientY - startY));
-      if (origin) h = Math.min(h, origin * 4);
-      img.style.height = h + "px";
-      img.dataset.height = String(h);
-      moved = true;
-      placeImgChrome();
-    }
-    function onUp() {
-      window.removeEventListener("pointermove", onMove);
-      window.removeEventListener("pointerup", onUp);
-      if (!moved || !origin) return;
-      var h = img.getBoundingClientRect().height;
-      applyImgRatio(Math.max(0.05, Math.min(4, h / origin)));
-    }
-    window.addEventListener("pointermove", onMove);
-    window.addEventListener("pointerup", onUp);
-  }
+  var IMG_SELECTOR = ".milkdown-image-block .image-wrapper img, .milkdown-image-inline > img.image-inline";
 
   function bindImageChrome() {
     var root = document.getElementById("editor");
     if (!root || root.__dskImgBound) return;
     root.__dskImgBound = true;
-    root.addEventListener("mousedown", function (e) {
+    root.addEventListener("mouseover", function (e) {
       var img = e.target && e.target.closest
-        ? e.target.closest(".milkdown-image-block img")
+        ? e.target.closest(IMG_SELECTOR)
         : null;
       if (img) {
         showImgChrome(img);
+      }
+    }, true);
+    root.addEventListener("mouseout", function (e) {
+      var img = e.target && e.target.closest
+        ? e.target.closest(IMG_SELECTOR)
+        : null;
+      if (img && img === imgTarget) {
+        scheduleHideImgChrome();
+      }
+    }, true);
+    root.addEventListener("mousedown", function (e) {
+      var t = e.target;
+      if (t && t.closest && t.closest(".image-edit")) {
         return;
       }
+      var img = t && t.closest ? t.closest(IMG_SELECTOR) : null;
+      if (img) {
+        var r = img.getBoundingClientRect();
+        if (e.clientX >= r.left && e.clientX <= r.right &&
+            e.clientY >= r.top && e.clientY <= r.bottom) {
+          showImgChrome(img);
+          return;
+        }
+      }
       if (imgTarget) hideImgChrome();
+      // Prevent clicking blank space beside an image row from selecting an image node.
+      var block = t && t.closest ? t.closest(".milkdown-image-block") : null;
+      if (block) {
+        var bImg = block.querySelector(".image-wrapper img");
+        if (bImg && editorApi && editorApi.placeCaretAfterImage) {
+          e.preventDefault();
+          e.stopPropagation();
+          editorApi.placeCaretAfterImage(bImg, false);
+          return;
+        }
+      }
+      var allImgs = root.querySelectorAll(IMG_SELECTOR);
+      var rowImgs = [];
+      for (var i = 0; i < allImgs.length; i++) {
+        var ir = allImgs[i].getBoundingClientRect();
+        if (ir.width > 0 && ir.height > 0 &&
+            e.clientY >= ir.top - 4 && e.clientY <= ir.bottom + 4) {
+          rowImgs.push({ el: allImgs[i], rect: ir });
+        }
+      }
+      if (rowImgs.length > 0 && editorApi && editorApi.placeCaretAfterImage) {
+        var first = rowImgs[0];
+        var last = rowImgs[rowImgs.length - 1];
+        if (e.clientX > last.rect.right) {
+          e.preventDefault();
+          e.stopPropagation();
+          editorApi.placeCaretAfterImage(last.el, false);
+        } else if (e.clientX < first.rect.left) {
+          e.preventDefault();
+          e.stopPropagation();
+          editorApi.placeCaretAfterImage(first.el, true);
+        }
+      }
     }, true);
-    // Clicks on the top bar or outside the surface dismiss the widget too.
+    root.addEventListener("dblclick", function (e) {
+      var img = e.target && e.target.closest
+        ? e.target.closest(IMG_SELECTOR)
+        : null;
+      if (img && img.src) {
+        e.preventDefault();
+        e.stopPropagation();
+        showLightbox(img.src);
+      }
+    }, true);
     document.addEventListener("mousedown", function (e) {
       if (!imgTarget) return;
       var t = e.target;
@@ -1030,8 +1276,6 @@
       if (t.closest("#dsk-img-chrome") || t.closest("#editor")) return;
       hideImgChrome();
     }, true);
-    // Anything that scrolls or reflows the surface moves the image under the
-    // overlay, so re-anchor on those.
     window.addEventListener("scroll", function () {
       if (imgTarget) placeImgChrome();
     }, true);
@@ -1040,6 +1284,7 @@
     });
     document.addEventListener("keydown", function (e) {
       if (e.key === "Escape" && imgTarget) hideImgChrome();
+      if (e.key === "Escape") hideLightbox();
     });
   }
 
@@ -1061,6 +1306,9 @@
         clearPendingDirtyPosts();
       } else if (msg.type === "get") {
         post({ type: "md", md: window.__desknoteWysiwygGet() });
+      } else if (msg.type === "uploadedImage") {
+        var cb = msg.id && pendingUploads[msg.id];
+        if (cb) cb(msg.url || "");
       } else if (msg.type === "insertImage") {
         if (!editorApi) return;
         var url = msg.url || "";
@@ -1085,14 +1333,19 @@
 
   // Scroll reporting (host keeps the preview pane in sync).
   var suppressScrollEmit = false;
+  var scrollRaf = 0;
   function scrollContainer() {
     return document.getElementById("editor") || document.scrollingElement || document.documentElement;
   }
   function emitScroll() {
-    if (suppressScrollEmit) return;
-    var el = scrollContainer();
-    var max = Math.max(1, el.scrollHeight - el.clientHeight);
-    post({ type: "scroll", ratio: el.scrollTop / max });
+    if (suppressScrollEmit || scrollRaf) return;
+    scrollRaf = requestAnimationFrame(function () {
+      scrollRaf = 0;
+      if (suppressScrollEmit) return;
+      var el = scrollContainer();
+      var max = Math.max(1, el.scrollHeight - el.clientHeight);
+      post({ type: "scroll", ratio: el.scrollTop / max });
+    });
   }
   window.addEventListener("scroll", emitScroll, true);
   window.__desknoteSetScrollRatio = function (r) {
@@ -1109,7 +1362,6 @@
   };
 
   function ready() {
-    bindTitleField();
     bindSoftBreakKeys();
     bindImageChrome();
     ensureBundleLoaded();

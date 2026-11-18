@@ -131,6 +131,12 @@ std::wstring JsonEscape(const std::wstring& s) {
       case L'"':
         o += L"\\\"";
         break;
+      case L'\b':
+        o += L"\\b";
+        break;
+      case L'\f':
+        o += L"\\f";
+        break;
       case L'\n':
         o += L"\\n";
         break;
@@ -141,7 +147,7 @@ std::wstring JsonEscape(const std::wstring& s) {
         o += L"\\t";
         break;
       default:
-        if (c < 0x20) {
+        if (c < 0x20 || c == 0x2028 || c == 0x2029) {
           wchar_t buf[8];
           swprintf_s(buf, L"\\u%04x", static_cast<unsigned>(c));
           o += buf;
@@ -160,7 +166,11 @@ std::wstring JsonStringField(const std::wstring& json, const wchar_t* key) {
   if (p == std::wstring::npos) {
     return {};
   }
-  p = json.find(L'"', json.find(L':', p) + 1);
+  p = json.find(L':', p + needle.size());
+  if (p == std::wstring::npos) {
+    return {};
+  }
+  p = json.find(L'"', p + 1);
   if (p == std::wstring::npos) {
     return {};
   }
@@ -175,6 +185,37 @@ std::wstring JsonStringField(const std::wstring& json, const wchar_t* key) {
         v.push_back(L'\r');
       } else if (json[p] == L't') {
         v.push_back(L'\t');
+      } else if (json[p] == L'b') {
+        v.push_back(L'\b');
+      } else if (json[p] == L'f') {
+        v.push_back(L'\f');
+      } else if (json[p] == L'u') {
+        if (p + 4 < json.size()) {
+          unsigned code = 0;
+          bool ok = true;
+          for (int k = 1; k <= 4; ++k) {
+            const wchar_t hc = json[p + k];
+            code <<= 4;
+            if (hc >= L'0' && hc <= L'9') {
+              code |= static_cast<unsigned>(hc - L'0');
+            } else if (hc >= L'a' && hc <= L'f') {
+              code |= static_cast<unsigned>(hc - L'a' + 10);
+            } else if (hc >= L'A' && hc <= L'F') {
+              code |= static_cast<unsigned>(hc - L'A' + 10);
+            } else {
+              ok = false;
+              break;
+            }
+          }
+          if (ok) {
+            v.push_back(static_cast<wchar_t>(code));
+            p += 4;
+          } else {
+            v.push_back(L'u');
+          }
+        } else {
+          v.push_back(L'u');
+        }
       } else {
         v.push_back(json[p]);
       }
@@ -614,9 +655,11 @@ void NotesWebView::NavigateHome() {
     }
     // Re-apply the note folder mapping (survives a controller rebuild).
     if (!asset_base_dir_.empty()) {
-      web3->SetVirtualHostNameToFolderMapping(
-          L"note.assets", asset_base_dir_.c_str(),
-          COREWEBVIEW2_HOST_RESOURCE_ACCESS_KIND_ALLOW);
+      if (SUCCEEDED(web3->SetVirtualHostNameToFolderMapping(
+              L"note.assets", asset_base_dir_.c_str(),
+              COREWEBVIEW2_HOST_RESOURCE_ACCESS_KIND_ALLOW))) {
+        mapped_asset_base_dir_ = asset_base_dir_;
+      }
     }
     const std::wstring url =
         L"https://app.desknote/" + leaf + L"?v=" + token;
@@ -805,7 +848,8 @@ void NotesWebView::OnReady() {
   // Prefer explicit pending push; else re-push cache. Always call SetMarkdown
   // for WYSIWYG — even "" — so Toast boots (skipping empty left a blank host).
   std::wstring md = pending_set_;
-  const std::wstring base = pending_base_;
+  const std::wstring base =
+      pending_base_.empty() ? asset_base_dir_ : pending_base_;
   pending_set_.clear();
   pending_base_.clear();
   if (md.empty()) {
@@ -892,9 +936,27 @@ void NotesWebView::OnWebMessage(const std::wstring& json) {
     }
   } else if (type == L"openExternal") {
     const std::wstring href = JsonStringField(json, L"href");
-    if (!href.empty()) {
+    if (_wcsnicmp(href.c_str(), L"http://", 7) == 0 ||
+        _wcsnicmp(href.c_str(), L"https://", 8) == 0 ||
+        _wcsnicmp(href.c_str(), L"mailto:", 7) == 0) {
       ShellExecuteW(nullptr, L"open", href.c_str(), nullptr, nullptr,
                     SW_SHOWNORMAL);
+    }
+  } else if (type == L"uploadImage") {
+    const std::wstring id = JsonStringField(json, L"id");
+    const std::wstring name = JsonStringField(json, L"name");
+    const std::wstring mime = JsonStringField(json, L"mime");
+    const std::wstring data_url = JsonStringField(json, L"dataUrl");
+    std::wstring rel_url;
+    if (on_upload_image) {
+      rel_url = on_upload_image(name, mime, data_url);
+    }
+    auto* web = static_cast<ICoreWebView2*>(webview_);
+    if (web && !id.empty()) {
+      const std::wstring reply = L"{\"type\":\"uploadedImage\",\"id\":\"" +
+                                 JsonEscape(id) + L"\",\"url\":\"" +
+                                 JsonEscape(rel_url) + L"\"}";
+      web->PostWebMessageAsJson(reply.c_str());
     }
   }
 }
@@ -917,6 +979,7 @@ void NotesWebView::Destroy() {
   available_ = false;
   ready_ = false;
   content_ready_ = false;
+  mapped_asset_base_dir_.clear();
 }
 
 void NotesWebView::Show() {
@@ -997,6 +1060,15 @@ void NotesWebView::AckClean() {
   web->PostWebMessageAsJson(L"{\"type\":\"ackClean\"}");
 }
 
+void NotesWebView::SetCachedMarkdown(const std::wstring& md,
+                                     const std::wstring& base_dir) {
+  pending_md_ = md;
+  if (!base_dir.empty()) {
+    pending_base_ = base_dir;
+    SetAssetBaseDir(base_dir);
+  }
+}
+
 void NotesWebView::SetMarkdown(const std::wstring& md,
                                const std::wstring& base_dir) {
   // Keep cache coherent so SyncFromWysiwyg / Save can skip PullMarkdown IPC.
@@ -1006,7 +1078,9 @@ void NotesWebView::SetMarkdown(const std::wstring& md,
   auto* web = static_cast<ICoreWebView2*>(webview_);
   if (!web || !ready_) {
     pending_set_ = md;
-    pending_base_ = base_dir;
+    if (!base_dir.empty()) {
+      pending_base_ = base_dir;
+    }
     // Not painted yet — cache is already the new doc; allow later changed.
     applying_set_ = false;
     return;
@@ -1024,20 +1098,16 @@ void NotesWebView::SetMarkdown(const std::wstring& md,
 // folder to a second virtual host lets the page prefix them with it; the
 // markdown itself keeps the plain `assets/x.png` form on disk.
 std::wstring NotesWebView::SetAssetBaseDir(const std::wstring& dir) {
-  if (dir.empty()) {
-    // Callers that only push text keep the mapping the note open set up.
-    return asset_base_dir_.empty() ? std::wstring() : L"https://note.assets/";
+  const std::wstring target = dir.empty() ? asset_base_dir_ : dir;
+  if (target.empty()) {
+    return std::wstring();
   }
   wchar_t canon[MAX_PATH * 4] = {};
-  const DWORD n = GetFullPathNameW(dir.c_str(), MAX_PATH * 4, canon, nullptr);
+  const DWORD n = GetFullPathNameW(target.c_str(), MAX_PATH * 4, canon, nullptr);
   if (n == 0 || n >= MAX_PATH * 4) {
     return asset_base_dir_.empty() ? std::wstring() : L"https://note.assets/";
   }
   const std::wstring full(canon);
-  // Already mapped to this folder — nothing to do.
-  if (_wcsicmp(full.c_str(), asset_base_dir_.c_str()) == 0) {
-    return L"https://note.assets/";
-  }
   // Online notes ("online://<id>") have no folder of their own — keep whatever
   // mapping the last local note set rather than mapping a bogus path.
   const DWORD attr = GetFileAttributesW(full.c_str());
@@ -1045,18 +1115,22 @@ std::wstring NotesWebView::SetAssetBaseDir(const std::wstring& dir) {
       (attr & FILE_ATTRIBUTE_DIRECTORY) == 0) {
     return asset_base_dir_.empty() ? std::wstring() : L"https://note.assets/";
   }
+  asset_base_dir_ = full;
+  // Already mapped to this folder on the active controller — nothing to do.
+  if (_wcsicmp(full.c_str(), mapped_asset_base_dir_.c_str()) == 0) {
+    return L"https://note.assets/";
+  }
   auto* web = static_cast<ICoreWebView2*>(webview_);
   ComPtr<ICoreWebView2_3> web3;
   if (!web || FAILED(web->QueryInterface(IID_PPV_ARGS(&web3))) || !web3) {
-    // Controller not up yet: report no base, the next push retries.
-    return asset_base_dir_.empty() ? std::wstring() : L"https://note.assets/";
+    // Controller not up yet: NavigateHome / next SetAssetBaseDir will map it.
+    return L"https://note.assets/";
   }
   const HRESULT hr = web3->SetVirtualHostNameToFolderMapping(
       L"note.assets", full.c_str(), COREWEBVIEW2_HOST_RESOURCE_ACCESS_KIND_ALLOW);
-  if (FAILED(hr)) {
-    return asset_base_dir_.empty() ? std::wstring() : L"https://note.assets/";
+  if (SUCCEEDED(hr)) {
+    mapped_asset_base_dir_ = full;
   }
-  asset_base_dir_ = full;
   return L"https://note.assets/";
 }
 
@@ -1087,6 +1161,25 @@ void NotesWebView::SetScrollRatio(double ratio) {
   web->PostWebMessageAsJson(buf);
 }
 
+namespace {
+void PumpWebViewWaitMessages(HWND parent) {
+  MSG msg{};
+  while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
+    // Drop user input and host commands/timers during synchronous WebView2
+    // waits so tab switching, saving, or closing cannot re-enter mid-call.
+    if ((msg.message >= WM_KEYFIRST && msg.message <= WM_KEYLAST) ||
+        (msg.message >= WM_MOUSEFIRST && msg.message <= WM_MOUSELAST) ||
+        msg.message == WM_COMMAND || msg.message == WM_SYSCOMMAND ||
+        msg.message == WM_CLOSE || msg.message == WM_HOTKEY ||
+        (msg.message == WM_TIMER && parent && msg.hwnd == parent)) {
+      continue;
+    }
+    TranslateMessage(&msg);
+    DispatchMessageW(&msg);
+  }
+}
+}  // namespace
+
 double NotesWebView::RequestScrollRatio(DWORD timeout_ms) {
   auto* web = static_cast<ICoreWebView2*>(webview_);
   if (!web || !ready_) {
@@ -1095,12 +1188,8 @@ double NotesWebView::RequestScrollRatio(DWORD timeout_ms) {
   got_scroll_ = false;
   web->PostWebMessageAsJson(L"{\"type\":\"getScroll\"}");
   const DWORD start = GetTickCount();
-  MSG msg{};
   while (!got_scroll_ && GetTickCount() - start < timeout_ms) {
-    while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
-      TranslateMessage(&msg);
-      DispatchMessageW(&msg);
-    }
+    PumpWebViewWaitMessages(parent_);
     Sleep(5);
   }
   return scroll_ratio_;
@@ -1140,12 +1229,8 @@ bool NotesWebView::PrintToPdf(const std::wstring& path, std::wstring* err) {
     return false;
   }
   const DWORD start = GetTickCount();
-  MSG msg{};
   while (!print_done_ && GetTickCount() - start < 30000) {
-    while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
-      TranslateMessage(&msg);
-      DispatchMessageW(&msg);
-    }
+    PumpWebViewWaitMessages(parent_);
     Sleep(10);
   }
   // Verify output file exists and is non-empty.
@@ -1246,12 +1331,8 @@ std::wstring NotesWebView::PullMarkdown(DWORD timeout_ms) {
           })
           .Get());
   const DWORD start = GetTickCount();
-  MSG msg{};
   while (!got_md_ && GetTickCount() - start < timeout_ms) {
-    while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
-      TranslateMessage(&msg);
-      DispatchMessageW(&msg);
-    }
+    PumpWebViewWaitMessages(parent_);
     Sleep(5);
   }
   pulling_md_ = false;

@@ -523,9 +523,7 @@ void PetWindow::TryLoadSprite() {
       JoinPath(ExeDir(), L"pet.png"),
       JoinPath(ExeDir(), L"assets\\pet.png"),
   };
-  Gdiplus::GdiplusStartupInput input;
-  ULONG_PTR token = 0;
-  Gdiplus::GdiplusStartup(&token, &input, nullptr);
+  EnsureGdiplus();
   for (const auto& path : candidates) {
     Gdiplus::Bitmap src(path.c_str());
     if (src.GetLastStatus() != Gdiplus::Ok) {
@@ -558,7 +556,6 @@ void PetWindow::TryLoadSprite() {
     }
     break;
   }
-  Gdiplus::GdiplusShutdown(token);
 }
 
 void PetWindow::ClearFrames() {
@@ -1052,9 +1049,7 @@ void PetWindow::SetPose(const std::wstring& pose) {
   if (files.empty()) {
     return;
   }
-  Gdiplus::GdiplusStartupInput input;
-  ULONG_PTR token = 0;
-  Gdiplus::GdiplusStartup(&token, &input, nullptr);
+  EnsureGdiplus();
   // Load every numbered cel (no 16-frame cap — Python scans until missing).
   for (const auto& path : files) {
     Gdiplus::Bitmap src(path.c_str());
@@ -1096,9 +1091,7 @@ void PetWindow::SetPose(const std::wstring& pose) {
     if (!ExtractPargb(scaled, w, h, &pargb, &alpha)) {
       continue;
     }
-    HBITMAP hb = nullptr;
-    scaled.GetHBITMAP(Gdiplus::Color(0, 0, 0, 0), &hb);
-    frames_.push_back(hb);  // may be null; Paint uses frames_pargb_
+    frames_.push_back(nullptr);  // Paint uses frames_pargb_; avoid per-frame HBITMAP allocation
     frames_alpha_.push_back(std::move(alpha));
     frames_pargb_.push_back(std::move(pargb));
     sprite_w_ = w;
@@ -1107,7 +1100,6 @@ void PetWindow::SetPose(const std::wstring& pose) {
       base_sprite_h_ = h;
     }
   }
-  Gdiplus::GdiplusShutdown(token);
   frame_i_ = 0;
   anim_accum_ms_ = 0;
   present_dirty_ = true;

@@ -187,6 +187,9 @@ add_custom_command(TARGET deskNote POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E copy_if_different
           ${CMAKE_CURRENT_SOURCE_DIR}/assets/dialogs/confirm.html
           $<TARGET_FILE_DIR:desktidy_native>/assets/dialogs/confirm.html
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          ${CMAKE_CURRENT_SOURCE_DIR}/assets/dialogs/account_login.html
+          $<TARGET_FILE_DIR:desktidy_native>/assets/dialogs/account_login.html
   COMMENT "Copy deskNote.exe + mist dialog assets next to desktidy_native"
 )
 
@@ -299,6 +302,9 @@ add_custom_command(TARGET desktidy_native POST_BUILD
           ${CMAKE_CURRENT_SOURCE_DIR}/assets/dialogs/help_manual_chapters.html
           $<TARGET_FILE_DIR:desktidy_native>/assets/dialogs/help_manual_chapters.html
   COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          ${CMAKE_CURRENT_SOURCE_DIR}/assets/dialogs/account_login.html
+          $<TARGET_FILE_DIR:desktidy_native>/assets/dialogs/account_login.html
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
           ${CMAKE_CURRENT_SOURCE_DIR}/../docs/desktidy.html
           $<TARGET_FILE_DIR:desktidy_native>/docs/desktidy.html
   COMMAND ${CMAKE_COMMAND} -E copy_if_different
@@ -313,6 +319,8 @@ add_custom_command(TARGET desktidy_native POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E copy_directory
           ${CMAKE_CURRENT_SOURCE_DIR}/assets/pets
           $<TARGET_FILE_DIR:desktidy_native>/assets/pets
+  COMMAND ${CMAKE_COMMAND} -E touch
+          $<TARGET_FILE_DIR:desktidy_native>/desktidy_dev.marker
 )
 
 if(MSVC)

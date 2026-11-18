@@ -46,6 +46,9 @@ Name: "chinesesimplified"; MessagesFile: "languages\ChineseSimplified.isl"
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: checkedonce
 Name: "startup"; Description: "开机自动启动 {#MyAppName}"; GroupDescription: "启动选项:"; Flags: checked
 
+[InstallDelete]
+Type: files; Name: "{app}\desktidy_dev.marker"
+
 [Files]
 Source: "{#SourceDir}\native\build\Release\desktidy_native.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceDir}\native\README.md"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist

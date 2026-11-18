@@ -38,7 +38,8 @@
       .replace(/&/g, "&amp;")
       .replace(/</g, "&lt;")
       .replace(/>/g, "&gt;")
-      .replace(/"/g, "&quot;");
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#39;");
   }
 
   function preprocessFootnotes(md) {
@@ -53,9 +54,10 @@
     }
     var text = body.join("\n");
     text = text.replace(/\[\^([^\]]+)\]/g, function (_, key) {
+      var safeKey = escapeHtml(key);
       return (
-        '<sup class="fn-ref"><a href="#fn-' + key + '" id="fnref-' + key +
-        '">[' + key + "]</a></sup>"
+        '<sup class="fn-ref"><a href="#fn-' + safeKey + '" id="fnref-' + safeKey +
+        '">[' + safeKey + "]</a></sup>"
       );
     });
     var keys = Object.keys(defs);
@@ -63,9 +65,10 @@
       text += '\n\n<div class="footnote"><ol>';
       for (var k = 0; k < keys.length; k++) {
         var key = keys[k];
+        var safeKey = escapeHtml(key);
         text +=
-          '<li id="fn-' + key + '">' + escapeHtml(defs[key]) +
-          ' <a href="#fnref-' + key + '">↩</a></li>';
+          '<li id="fn-' + safeKey + '">' + escapeHtml(defs[key]) +
+          ' <a href="#fnref-' + safeKey + '">↩</a></li>';
       }
       text += "</ol></div>";
     }
@@ -132,12 +135,57 @@
             highlighted = escapeHtml(src);
           }
           var cls = lang
-            ? ' class="hljs language-' + lang + '"'
+            ? ' class="hljs language-' + escapeHtml(lang) + '"'
             : ' class="hljs"';
           return "<pre><code" + cls + ">" + highlighted + "</code></pre>\n";
         },
       },
     });
+  }
+
+  function sanitizeHtmlToRoot(root, html) {
+    var tpl = document.createElement("template");
+    tpl.innerHTML = html;
+    var doc = tpl.content;
+    var blocked = doc.querySelectorAll(
+      "script, iframe, object, embed, applet, meta, base, link, form"
+    );
+    for (var i = 0; i < blocked.length; i++) {
+      if (blocked[i].parentNode) {
+        blocked[i].parentNode.removeChild(blocked[i]);
+      }
+    }
+    var all = doc.querySelectorAll("*");
+    for (var j = 0; j < all.length; j++) {
+      var el = all[j];
+      var attrs = el.attributes;
+      for (var k = attrs.length - 1; k >= 0; k--) {
+        var name = String(attrs[k].name || "").toLowerCase();
+        var val = String(attrs[k].value || "").trim();
+        if (name.indexOf("on") === 0 || name === "srcdoc") {
+          el.removeAttribute(attrs[k].name);
+          continue;
+        }
+        if (
+          name === "href" ||
+          name === "src" ||
+          name === "xlink:href" ||
+          name === "action" ||
+          name === "formaction"
+        ) {
+          var cleanVal = val.replace(/[\u0000- ]+/g, "").toLowerCase();
+          if (
+            cleanVal.indexOf("javascript:") === 0 ||
+            cleanVal.indexOf("vbscript:") === 0 ||
+            cleanVal.indexOf("data:text/html") === 0
+          ) {
+            el.removeAttribute(attrs[k].name);
+          }
+        }
+      }
+    }
+    root.textContent = "";
+    root.appendChild(doc);
   }
 
   function parseMarkdown(md) {
@@ -208,7 +256,7 @@
       html = html.replace(/\[TOC\]/i, toc);
     }
     var root = document.getElementById("content");
-    root.innerHTML = html;
+    sanitizeHtmlToRoot(root, html);
     rewriteRelativeImages(root, opts.baseUrl || "");
     try {
       if (window.renderMathInElement) {
@@ -272,7 +320,7 @@
       });
       return;
     }
-    if (/^(https?:|mailto:|file:)/i.test(href)) {
+    if (/^(https?:|mailto:)/i.test(href)) {
       ev.preventDefault();
       post({ type: "openExternal", href: href });
     }

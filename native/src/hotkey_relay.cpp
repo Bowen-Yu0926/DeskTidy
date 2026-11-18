@@ -208,6 +208,11 @@ void HotkeyRelay::Stop() {
     DeleteFileW(mapping_path_.c_str());
     mapping_path_.clear();
   }
+  if (helper_process_) {
+    TerminateProcess(helper_process_, 0);
+    CloseHandle(helper_process_);
+    helper_process_ = nullptr;
+  }
   port_ = 0;
   helper_launched_ = false;
 }
@@ -248,6 +253,11 @@ bool HotkeyRelay::LaunchHelper() {
   params += L" --mapping \"";
   params += mapping_path_;
   params += L"\"";
+  if (helper_process_) {
+    TerminateProcess(helper_process_, 0);
+    CloseHandle(helper_process_);
+    helper_process_ = nullptr;
+  }
   SHELLEXECUTEINFOW sei{};
   sei.cbSize = sizeof(sei);
   sei.fMask = SEE_MASK_NOCLOSEPROCESS;
@@ -258,9 +268,7 @@ bool HotkeyRelay::LaunchHelper() {
   if (!ShellExecuteExW(&sei)) {
     return false;
   }
-  if (sei.hProcess) {
-    CloseHandle(sei.hProcess);
-  }
+  helper_process_ = sei.hProcess;
   return true;
 }
 

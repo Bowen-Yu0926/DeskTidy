@@ -679,7 +679,31 @@ std::vector<VaultHttpCredential> ParseCredentialItems(const std::string& json) {
     if (start == std::string::npos) {
       break;
     }
-    const size_t end = json.find('}', start);
+    size_t end = std::string::npos;
+    bool in_str = false;
+    int depth = 0;
+    for (size_t i = start; i < json.size(); ++i) {
+      const char ch = json[i];
+      if (in_str) {
+        if (ch == '\\' && i + 1 < json.size()) {
+          ++i;
+        } else if (ch == '"') {
+          in_str = false;
+        }
+        continue;
+      }
+      if (ch == '"') {
+        in_str = true;
+      } else if (ch == '{') {
+        ++depth;
+      } else if (ch == '}') {
+        --depth;
+        if (depth == 0) {
+          end = i;
+          break;
+        }
+      }
+    }
     if (end == std::string::npos) {
       break;
     }

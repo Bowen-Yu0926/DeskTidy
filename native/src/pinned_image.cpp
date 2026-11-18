@@ -20,6 +20,14 @@ constexpr wchar_t kClass[] = L"DeskTidyNativePinImg";
 constexpr int kCloseSize = 24;
 bool g_reg = false;
 
+void EnsureGdiplus() {
+  static ULONG_PTR token = 0;
+  if (!token) {
+    Gdiplus::GdiplusStartupInput input;
+    Gdiplus::GdiplusStartup(&token, &input, nullptr);
+  }
+}
+
 int GetEncoderClsid(const WCHAR* format, CLSID* pClsid) {
   UINT num = 0, size = 0;
   Gdiplus::GetImageEncodersSize(&num, &size);
@@ -66,12 +74,9 @@ bool PinnedImage::Create(HINSTANCE instance, const std::wstring& path) {
   RegisterPinClass(instance);
   path_ = path;
 
-  Gdiplus::GdiplusStartupInput input;
-  ULONG_PTR token = 0;
-  Gdiplus::GdiplusStartup(&token, &input, nullptr);
+  EnsureGdiplus();
   Gdiplus::Bitmap src(path.c_str());
   if (src.GetLastStatus() != Gdiplus::Ok) {
-    Gdiplus::GdiplusShutdown(token);
     return false;
   }
   orig_w_ = static_cast<int>(src.GetWidth());
@@ -79,7 +84,6 @@ bool PinnedImage::Create(HINSTANCE instance, const std::wstring& path) {
   HBITMAP hbmp = nullptr;
   src.GetHBITMAP(Gdiplus::Color(0, 0, 0, 0), &hbmp);
   bmp_ = hbmp;
-  Gdiplus::GdiplusShutdown(token);
 
   if (!bmp_ || orig_w_ <= 0 || orig_h_ <= 0) {
     return false;
@@ -167,6 +171,12 @@ void PinnedImage::Destroy() {
     DestroyWindow(hwnd_);
     hwnd_ = nullptr;
   }
+  if (scaled_bmp_) {
+    DeleteObject(scaled_bmp_);
+    scaled_bmp_ = nullptr;
+  }
+  cache_w_ = 0;
+  cache_h_ = 0;
   if (bmp_) {
     DeleteObject(bmp_);
     bmp_ = nullptr;
@@ -256,17 +266,12 @@ void PinnedImage::SaveAs() {
     mime = L"image/bmp";
   }
 
-  ULONG_PTR token = 0;
-  Gdiplus::GdiplusStartupInput input;
-  Gdiplus::GdiplusStartup(&token, &input, nullptr);
-  {
-    CLSID clsid{};
-    if (GetEncoderClsid(mime, &clsid) >= 0 && bmp_) {
-      Gdiplus::Bitmap gbmp(bmp_, nullptr);
-      gbmp.Save(dest.c_str(), &clsid, nullptr);
-    }
+  EnsureGdiplus();
+  CLSID clsid{};
+  if (GetEncoderClsid(mime, &clsid) >= 0 && bmp_) {
+    Gdiplus::Bitmap gbmp(bmp_, nullptr);
+    gbmp.Save(dest.c_str(), &clsid, nullptr);
   }
-  Gdiplus::GdiplusShutdown(token);
 }
 
 void PinnedImage::CopyToClipboard() {
@@ -459,39 +464,72 @@ void PinnedImage::Paint(HDC hdc) {
   const int h = client.bottom - client.top;
   if (w <= 0 || h <= 0) return;
 
-  // 使用 Gdiplus 高质量插值平滑缩放绘制位图
-  Gdiplus::Graphics g(hdc);
-  g.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
-  g.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
-  g.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHalf);
+  EnsureGdiplus();
+  if (!scaled_bmp_ || cache_w_ != w || cache_h_ != h) {
+    if (scaled_bmp_) {
+      DeleteObject(scaled_bmp_);
+      scaled_bmp_ = nullptr;
+    }
+    Gdiplus::Bitmap scaled(w, h, PixelFormat32bppPARGB);
+    {
+      Gdiplus::Graphics gs(&scaled);
+      gs.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+      gs.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
+      gs.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHalf);
+      Gdiplus::Bitmap gbmp(bmp_, nullptr);
+      gs.DrawImage(&gbmp, 0, 0, w, h);
+    }
+    scaled.GetHBITMAP(Gdiplus::Color(0, 0, 0, 0), &scaled_bmp_);
+    cache_w_ = w;
+    cache_h_ = h;
+  }
 
-  Gdiplus::Bitmap gbmp(bmp_, nullptr);
-  g.DrawImage(&gbmp, 0, 0, w, h);
+  HDC mem_dc = CreateCompatibleDC(hdc);
+  HBITMAP mem_bmp = CreateCompatibleBitmap(hdc, w, h);
+  HGDIOBJ old_bmp = SelectObject(mem_dc, mem_bmp);
 
-  // 精致微光边框：内圈半透明白，外圈微阴影
-  Gdiplus::Pen outer_pen(Gdiplus::Color(55, 0, 0, 0), 1.0f);
-  g.DrawRectangle(&outer_pen, 0, 0, w - 1, h - 1);
-  Gdiplus::Pen inner_pen(Gdiplus::Color(80, 255, 255, 255), 1.0f);
-  g.DrawRectangle(&inner_pen, 1, 1, w - 3, h - 3);
+  if (scaled_bmp_) {
+    HDC src_dc = CreateCompatibleDC(hdc);
+    HGDIOBJ old_src = SelectObject(src_dc, scaled_bmp_);
+    BitBlt(mem_dc, 0, 0, w, h, src_dc, 0, 0, SRCCOPY);
+    SelectObject(src_dc, old_src);
+    DeleteDC(src_dc);
+  }
 
-  // 右上角现代悬浮毛玻璃关闭按钮
-  const float btn_w = static_cast<float>(kCloseSize);
-  const float btn_h = static_cast<float>(kCloseSize);
-  const float bx = static_cast<float>(w - kCloseSize - 4);
-  const float by = 4.0f;
+  {
+    Gdiplus::Graphics g(mem_dc);
+    g.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
 
-  Gdiplus::SolidBrush btn_bg(close_hover_
-      ? Gdiplus::Color(220, 239, 68, 68)     // hover 鲜艳红
-      : Gdiplus::Color(140, 15, 23, 42));    // 平时半透明深色磨砂
-  g.FillEllipse(&btn_bg, bx, by, btn_w, btn_h);
+    // 精致微光边框：内圈半透明白，外圈微阴影
+    Gdiplus::Pen outer_pen(Gdiplus::Color(55, 0, 0, 0), 1.0f);
+    g.DrawRectangle(&outer_pen, 0, 0, w - 1, h - 1);
+    Gdiplus::Pen inner_pen(Gdiplus::Color(80, 255, 255, 255), 1.0f);
+    g.DrawRectangle(&inner_pen, 1, 1, w - 3, h - 3);
 
-  Gdiplus::Pen cross_pen(Gdiplus::Color(240, 255, 255, 255), 1.6f);
-  cross_pen.SetLineCap(Gdiplus::LineCapRound, Gdiplus::LineCapRound, Gdiplus::DashCapRound);
-  const float cx = bx + btn_w * 0.5f;
-  const float cy = by + btn_h * 0.5f;
-  const float s = 4.5f;
-  g.DrawLine(&cross_pen, cx - s, cy - s, cx + s, cy + s);
-  g.DrawLine(&cross_pen, cx + s, cy - s, cx - s, cy + s);
+    // 右上角现代悬浮毛玻璃关闭按钮
+    const float btn_w = static_cast<float>(kCloseSize);
+    const float btn_h = static_cast<float>(kCloseSize);
+    const float bx = static_cast<float>(w - kCloseSize - 4);
+    const float by = 4.0f;
+
+    Gdiplus::SolidBrush btn_bg(close_hover_
+        ? Gdiplus::Color(220, 239, 68, 68)     // hover 鲜艳红
+        : Gdiplus::Color(140, 15, 23, 42));    // 平时半透明深色磨砂
+    g.FillEllipse(&btn_bg, bx, by, btn_w, btn_h);
+
+    Gdiplus::Pen cross_pen(Gdiplus::Color(240, 255, 255, 255), 1.6f);
+    cross_pen.SetLineCap(Gdiplus::LineCapRound, Gdiplus::LineCapRound, Gdiplus::DashCapRound);
+    const float cx = bx + btn_w * 0.5f;
+    const float cy = by + btn_h * 0.5f;
+    const float s = 4.5f;
+    g.DrawLine(&cross_pen, cx - s, cy - s, cx + s, cy + s);
+    g.DrawLine(&cross_pen, cx + s, cy - s, cx - s, cy + s);
+  }
+
+  BitBlt(hdc, 0, 0, w, h, mem_dc, 0, 0, SRCCOPY);
+  SelectObject(mem_dc, old_bmp);
+  DeleteObject(mem_bmp);
+  DeleteDC(mem_dc);
 }
 
 bool PinnedImage::InCloseButton(POINT client) const {

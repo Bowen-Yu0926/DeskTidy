@@ -29,6 +29,9 @@ bool EncodeTextFileBytes(const std::wstring& text, TextFileEncoding enc,
 // command line carries `--portable`. When portable, NativeDataDir() resolves to
 // `<exe dir>\data` instead of %LOCALAPPDATA%\DeskTidyNative (Python semantics).
 bool IsPortableMode();
+// True when running from the local source/CMake build tree (or `--dev`),
+// false when running from an installed release package (or `--release-mode`).
+bool IsDevRuntime();
 // Directory of the running exe (no trailing slash), resolved once.
 std::wstring NativeExeDir();
 

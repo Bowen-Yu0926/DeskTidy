@@ -14,8 +14,10 @@ constexpr UINT kMsgUpdateProgress = WM_APP + 103;
 // `ok` + `error` + `path` fields) that the UI thread frees.
 constexpr UINT kMsgUpdateInstallLaunched = WM_APP + 104;
 
-// Current product version (matches version.rc FileVersion).
+// Current product version (matches version.rc FileVersion, pure X.Y.Z).
 std::wstring NativeProductVersion();
+// Human-facing version label (`X.Y.Z-dev` when running from source, else `X.Y.Z`).
+std::wstring NativeDisplayVersion();
 
 struct UpdateCheckResult {
   // 0 = error, 1 = up-to-date, 2 = update available.

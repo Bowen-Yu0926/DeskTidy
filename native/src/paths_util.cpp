@@ -59,6 +59,53 @@ bool PortableFlagOnCommandLine() {
 bool g_portable_checked = false;
 bool g_portable = false;
 
+bool g_dev_checked = false;
+bool g_dev_runtime = false;
+
+bool FileExistsSimple(const std::wstring& path) {
+  const DWORD attr = GetFileAttributesW(path.c_str());
+  return attr != INVALID_FILE_ATTRIBUTES &&
+         !(attr & FILE_ATTRIBUTE_DIRECTORY);
+}
+
+bool DetectDevRuntime() {
+  int argc = 0;
+  LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+  if (argv) {
+    int cli_override = -1;
+    for (int i = 1; i < argc; ++i) {
+      if (!argv[i]) {
+        continue;
+      }
+      if (wcscmp(argv[i], L"--release-mode") == 0) {
+        cli_override = 0;
+      } else if (wcscmp(argv[i], L"--dev") == 0) {
+        cli_override = 1;
+      }
+    }
+    LocalFree(argv);
+    if (cli_override >= 0) {
+      return cli_override == 1;
+    }
+  }
+  const std::wstring exe_dir = ExeDir();
+  if (exe_dir.empty()) {
+    return false;
+  }
+  // CMake POST_BUILD writes desktidy_dev.marker into the build output dir;
+  // Inno Setup never packages it (and deletes any stale copy on install).
+  if (FileExistsSimple(exe_dir + L"\\desktidy_dev.marker")) {
+    return true;
+  }
+  // Multi-config (build\Release\*.exe) and single-config (build\*.exe) trees.
+  if (FileExistsSimple(exe_dir + L"\\CMakeCache.txt") ||
+      FileExistsSimple(exe_dir + L"\\..\\CMakeCache.txt") ||
+      FileExistsSimple(exe_dir + L"\\..\\..\\CMakeLists.txt")) {
+    return true;
+  }
+  return false;
+}
+
 // One-shot log of the resolved data root. Deferred to the second NativeDataDir()
 // call: the first call happens inside LogInit() before the logger is ready, so
 // LogLine would be a no-op. The resolved dir is deterministic, so logging it on
@@ -76,6 +123,14 @@ bool IsPortableMode() {
     g_portable = PortableFlagOnCommandLine() || PortableFileExists();
   }
   return g_portable;
+}
+
+bool IsDevRuntime() {
+  if (!g_dev_checked) {
+    g_dev_checked = true;
+    g_dev_runtime = DetectDevRuntime();
+  }
+  return g_dev_runtime;
 }
 
 std::wstring NativeDataDir() {
@@ -100,8 +155,9 @@ std::wstring NativeDataDir() {
     if (g_root_first_call) {
       // Set before LogLine: LogLine -> LogDirPath -> NativeDataDir recursion.
       g_root_log_done = true;
-      LogLine(L"[paths] data root = %s (portable=%s)", dir.c_str(),
-              IsPortableMode() ? L"yes" : L"no");
+      LogLine(L"[paths] data root = %s (portable=%s channel=%s)", dir.c_str(),
+              IsPortableMode() ? L"yes" : L"no",
+              IsDevRuntime() ? L"dev" : L"release");
     } else {
       g_root_first_call = true;
     }

@@ -62,7 +62,32 @@
     background: linear-gradient(90deg, #2F6FED 0 4px, var(--accent-soft) 4px);
   }
   .row-title {
-    font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    display: flex; align-items: center; gap: 5px;
+    font-weight: 600; min-width: 0;
+  }
+  .row-title-text {
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .cloud-icon {
+    flex-shrink: 0; display: inline-flex; align-items: center; justify-content: center;
+    width: 18px; height: 18px; padding: 0; border: 0; border-radius: 4px;
+    background: transparent; color: var(--accent); cursor: pointer;
+    transition: color 0.15s ease, background 0.15s ease, opacity 0.15s ease;
+  }
+  .cloud-icon svg {
+    width: 14px; height: 14px; display: block;
+  }
+  .row.local .cloud-icon {
+    color: #94a3b8; opacity: 0;
+  }
+  .row.local:hover .cloud-icon,
+  .row.local.on .cloud-icon {
+    opacity: 0.78;
+  }
+  .cloud-icon:hover {
+    background: rgba(47, 111, 237, 0.10);
+    color: var(--accent) !important;
+    opacity: 1 !important;
   }
   .row-meta { color: var(--muted); font-size: 11px; margin-top: 4px; }
   .more {
@@ -197,6 +222,7 @@
     const r = el.getBoundingClientRect();
     showMenuAt(r.right - 8, r.bottom + 2, it, kind);
   }
+  const CLOUD_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"/></svg>';
   function rowHtml(it, fallbackKind) {
     const kind = rowKind(it, fallbackKind);
     const key = (kind === 'online' && !it.path)
@@ -213,9 +239,11 @@
     if (it.pinned) data += ' data-pinned="1"';
     if (it.locked) data += ' data-locked="1"';
     const more = '<button type="button" class="more" title="更多">⋯</button>';
+    const cloudTip = cloud ? '已云同步（点击转本地）' : '本地文件（点击转云同步）';
+    const cloudBadge = '<button type="button" class="cloud-icon" title="' + cloudTip + '">' + CLOUD_SVG + '</button>';
     return '<div class="' + cls + on + '" ' + data + '>'
       + more
-      + '<div class="row-title">' + esc(it.title || '未命名') + '</div>'
+      + '<div class="row-title"><span class="row-title-text">' + esc(it.title || '未命名') + '</span>' + cloudBadge + '</div>'
       + '<div class="row-meta">' + esc(meta) + '</div></div>';
   }
   function bindRow(el) {
@@ -248,6 +276,19 @@
       more.onclick = (e) => {
         e.stopPropagation();
         showMenuNear(more, it, kind);
+      };
+    }
+    const cloudBtn = el.querySelector('.cloud-icon');
+    if (cloudBtn) {
+      cloudBtn.onclick = (e) => {
+        e.stopPropagation();
+        const act = (kind === 'online' || kind === 'synced') ? 'to_local' : 'to_cloud';
+        post({
+          type: 'action',
+          id: act,
+          path: it.path || '',
+          note_id: Number(it.id || 0)
+        });
       };
     }
   }

@@ -5,6 +5,7 @@
 #include "instance_lock.h"
 #include "log.h"
 #include "native_cleanup.h"
+#include "paths_util.h"
 #include "update_check.h"
 
 #include <Windows.h>
@@ -145,7 +146,7 @@ std::wstring WithFenceCoords(const std::wstring& action,
 // and PowerShell pipelines capture readable text.
 void PrintStatus() {
   const bool running = IsNativeInstanceRunning();
-  const std::wstring ver = NativeProductVersion();
+  const std::wstring ver = NativeDisplayVersion();
   const std::wstring line = L"DeskTidy " + ver + L" " +
                             (running ? L"running" : L"stopped") + L"\r\n";
   if (!AttachConsole(ATTACH_PARENT_PROCESS)) {
@@ -180,8 +181,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR cmd_line, int) {
   SetProcessAppUserModelId(kDeskTidyAumid);
 
   const std::wstring full_cmd = cmd_line ? cmd_line : L"";
-  LogLine(L"[boot] DeskTidy Native %s cmdline=%s",
-          NativeProductVersion().c_str(), full_cmd.c_str());
+  LogLine(L"[boot] DeskTidy Native %s (exe=%s) cmdline=%s",
+          NativeDisplayVersion().c_str(), NativeExeDir().c_str(),
+          full_cmd.c_str());
 
   // Installer-driven headless cleanup: run before any UI / instance lock so it
   // can stop a live instance and clear its state. Never enters the app loop.

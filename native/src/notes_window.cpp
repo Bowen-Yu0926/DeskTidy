@@ -279,8 +279,8 @@ constexpr int kSidebarId = 2004;
 constexpr int kSidebarSearchId = 2005;
 constexpr int kSidebarNewId = 2006;
 // Must not collide with kTitleEditId (2012) / kGutterId — shared IDs made
- // BN_CLICKED / DRAWITEM hit the wrong control and could tear down the app.
-constexpr int kSidebarOnlineId = 2013;
+// BN_CLICKED / DRAWITEM hit the wrong control and could tear down the app.
+constexpr int kSidebarAccountId = 2015;  // bottom login/username strip
 constexpr int kSidebarResultsId = 2007;
 constexpr int kStatusId = 2008;
 constexpr int kTabRename = 3101;
@@ -650,7 +650,9 @@ bool SaveBitmapAsPng(HBITMAP bmp, const std::wstring& path) {
 
 // Make a unique assets image path mirroring Python md_assets.py
 // (_unique_asset_path): img_YYYYMMDD_HHMMSS.png (img_…_NN.png on collision).
-std::wstring MakeAssetImagePath(const std::wstring& assets_dir) {
+std::wstring MakeAssetImagePath(const std::wstring& assets_dir,
+                                const std::wstring& ext = L".png") {
+  const std::wstring suffix_ext = ext.empty() ? L".png" : ext;
   SYSTEMTIME st{};
   GetLocalTime(&st);
   wchar_t stem[32];
@@ -659,13 +661,105 @@ std::wstring MakeAssetImagePath(const std::wstring& assets_dir) {
   auto exists = [](const std::wstring& p) {
     return GetFileAttributesW(p.c_str()) != INVALID_FILE_ATTRIBUTES;
   };
-  std::wstring path = JoinPath(assets_dir, std::wstring(stem) + L".png");
+  std::wstring path = JoinPath(assets_dir, std::wstring(stem) + suffix_ext);
   for (int n = 1; exists(path) && n < 100; ++n) {
     wchar_t suffix[8];
     swprintf_s(suffix, L"_%02d", n);
-    path = JoinPath(assets_dir, std::wstring(stem) + suffix + L".png");
+    path = JoinPath(assets_dir, std::wstring(stem) + suffix + suffix_ext);
   }
   return path;
+}
+
+bool DecodeBase64Bytes(const std::wstring& b64, std::vector<uint8_t>* out) {
+  if (!out) {
+    return false;
+  }
+  out->clear();
+  out->reserve((b64.size() * 3) / 4);
+  auto val_of = [](wchar_t c) -> int {
+    if (c >= L'A' && c <= L'Z') return c - L'A';
+    if (c >= L'a' && c <= L'z') return c - L'a' + 26;
+    if (c >= L'0' && c <= L'9') return c - L'0' + 52;
+    if (c == L'+' || c == L'-') return 62;
+    if (c == L'/' || c == L'_') return 63;
+    return -1;
+  };
+  uint32_t acc = 0;
+  int bits = 0;
+  for (wchar_t c : b64) {
+    if (c == L'=') {
+      break;
+    }
+    const int v = val_of(c);
+    if (v < 0) {
+      continue;
+    }
+    acc = (acc << 6) | static_cast<uint32_t>(v);
+    bits += 6;
+    if (bits >= 8) {
+      bits -= 8;
+      out->push_back(static_cast<uint8_t>((acc >> bits) & 0xFFu));
+    }
+  }
+  return !out->empty();
+}
+
+std::wstring ImageExtFromMimeOrName(const std::wstring& mime,
+                                    const std::wstring& name) {
+  std::wstring m = mime;
+  for (auto& ch : m) {
+    if (ch >= L'A' && ch <= L'Z') ch = static_cast<wchar_t>(ch - L'A' + L'a');
+  }
+  if (m.find(L"jpeg") != std::wstring::npos ||
+      m.find(L"jpg") != std::wstring::npos) {
+    return L".jpg";
+  }
+  if (m.find(L"gif") != std::wstring::npos) return L".gif";
+  if (m.find(L"webp") != std::wstring::npos) return L".webp";
+  if (m.find(L"bmp") != std::wstring::npos) return L".bmp";
+  if (m.find(L"svg") != std::wstring::npos) return L".svg";
+  if (m.find(L"png") != std::wstring::npos) return L".png";
+  const size_t dot = name.find_last_of(L'.');
+  if (dot != std::wstring::npos) {
+    std::wstring ext = name.substr(dot);
+    for (auto& ch : ext) {
+      if (ch >= L'A' && ch <= L'Z') ch = static_cast<wchar_t>(ch - L'A' + L'a');
+    }
+    if (ext == L".png" || ext == L".jpg" || ext == L".jpeg" || ext == L".gif" ||
+        ext == L".webp" || ext == L".bmp" || ext == L".svg") {
+      return ext;
+    }
+  }
+  return L".png";
+}
+
+std::wstring SaveDataUrlToAssets(const std::wstring& assets_dir,
+                                 const std::wstring& name,
+                                 const std::wstring& mime,
+                                 const std::wstring& data_url) {
+  const size_t comma = data_url.find(L',');
+  const std::wstring b64 =
+      comma == std::wstring::npos ? data_url : data_url.substr(comma + 1);
+  std::vector<uint8_t> bytes;
+  if (!DecodeBase64Bytes(b64, &bytes)) {
+    return {};
+  }
+  const std::wstring ext = ImageExtFromMimeOrName(mime, name);
+  const std::wstring dest = MakeAssetImagePath(assets_dir, ext);
+  std::ofstream out(dest, std::ios::binary);
+  if (!out) {
+    return {};
+  }
+  out.write(reinterpret_cast<const char*>(bytes.data()),
+            static_cast<std::streamsize>(bytes.size()));
+  out.close();
+  if (!out) {
+    return {};
+  }
+  const size_t slash = dest.find_last_of(L"\\/");
+  const std::wstring leaf =
+      slash == std::wstring::npos ? dest : dest.substr(slash + 1);
+  return L"assets/" + leaf;
 }
 
 // Returns the directory of a file path (or "." for a bare name).
@@ -749,6 +843,15 @@ bool NotesWindow::Create(HINSTANCE instance) {
   text_color_ = RGB(32, 36, 42);
   muted_color_ = RGB(120, 128, 140);
   border_color_ = RGB(226, 230, 236);
+  if (bg_brush_) {
+    DeleteObject(bg_brush_);
+  }
+  if (card_brush_) {
+    DeleteObject(card_brush_);
+  }
+  if (rail_brush_) {
+    DeleteObject(rail_brush_);
+  }
   bg_brush_ = CreateSolidBrush(content_bg_);
   card_brush_ = CreateSolidBrush(card_bg_);
   rail_brush_ = CreateSolidBrush(rail_bg_);
@@ -774,9 +877,11 @@ bool NotesWindow::Create(HINSTANCE instance) {
   wh = (std::max)((std::min)(420, max_h), wh);
   const int x = work.left + (std::max)(0, static_cast<int>(work.right - work.left - ww) / 2);
   const int y = work.top + (std::max)(0, static_cast<int>(work.bottom - work.top - wh) / 2);
-  hwnd_ = CreateWindowExW(WS_EX_APPWINDOW, kClassName, L"DeskNote",
-                          WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN, x, y, ww, wh,
-                          nullptr, nullptr, instance, this);
+  hwnd_ = CreateWindowExW(
+      WS_EX_APPWINDOW, kClassName,
+      IsDevRuntime() ? L"DeskNote [dev]" : L"DeskNote",
+      WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN, x, y, ww, wh,
+      nullptr, nullptr, instance, this);
   if (!hwnd_) {
     return false;
   }
@@ -786,34 +891,14 @@ bool NotesWindow::Create(HINSTANCE instance) {
   HMENU file = CreatePopupMenu();
   AppendMenuW(file, MF_STRING, kMenuNewTab, L"新建\tCtrl+N");
   AppendMenuW(file, MF_STRING, kMenuOpen, L"打开…\tCtrl+O");
-  AppendMenuW(file, MF_STRING, kMenuOpenHosts, L"打开 hosts 文件");
   AppendMenuW(file, MF_STRING, kMenuCloseTab, L"删除文件并关闭\tCtrl+W");
   AppendMenuW(file, MF_SEPARATOR, 0, nullptr);
   AppendMenuW(file, MF_STRING, kMenuSave, L"保存\tCtrl+S");
   AppendMenuW(file, MF_STRING, kMenuSaveAs, L"另存为…\tCtrl+Shift+S");
-  AppendMenuW(file, MF_STRING, kMenuReload, L"从磁盘重新加载\tF5");
-  AppendMenuW(file, MF_STRING, kMenuCopyPath, L"复制文件路径\tCtrl+Shift+C");
-  HMENU enc = CreatePopupMenu();
-  AppendMenuW(enc, MF_STRING, kMenuEncUtf8, L"UTF-8");
-  AppendMenuW(enc, MF_STRING, kMenuEncUtf8Bom, L"UTF-8 带 BOM");
-  AppendMenuW(enc, MF_STRING, kMenuEncAcp, L"系统 ANSI（如 GBK）");
-  AppendMenuW(file, MF_POPUP, reinterpret_cast<UINT_PTR>(enc),
-              L"编码转换（保存）");
-  AppendMenuW(file, MF_STRING, kMenuLibrary, Tr("notes_library").c_str());
-  AppendMenuW(file, MF_STRING, kMenuOnlineNotes, L"刷新笔记库");
-  AppendMenuW(file, MF_STRING, kMenuNewOnlineNote, L"新建在线笔记");
-  AppendMenuW(file, MF_STRING, kMenuToOnline, L"转在线");
-  AppendMenuW(file, MF_STRING, kMenuOpenFolder, Tr("notes_open_folder").c_str());
-  AppendMenuW(file, MF_STRING, kMenuSearchLib, L"搜索笔记库\tCtrl+Shift+F");
-  AppendMenuW(file, MF_STRING, kMenuPreview, L"Markdown 预览窗口…");
-  AppendMenuW(file, MF_STRING, kMenuExportMd, Tr("notes_export_md").c_str());
+  AppendMenuW(file, MF_SEPARATOR, 0, nullptr);
   AppendMenuW(file, MF_STRING, kMenuExportHtml, Tr("notes_export_html").c_str());
   AppendMenuW(file, MF_STRING, kMenuPandoc, Tr("notes_pandoc").c_str());
-  AppendMenuW(file, MF_STRING, kMenuOpenWith, Tr("notes_open_with").c_str());
   AppendMenuW(file, MF_STRING, kMenuPasteHtml, Tr("notes_paste_html").c_str());
-  AppendMenuW(file, MF_STRING, kMenuToast, Tr("notes_toast").c_str());
-  AppendMenuW(file, MF_STRING, kMenuWysiwyg, Tr("notes_wysiwyg").c_str());
-  AppendMenuW(file, MF_STRING, kMenuExportPdf, Tr("notes_export_pdf").c_str());
   AppendMenuW(file, MF_SEPARATOR, 0, nullptr);
   AppendMenuW(file, MF_STRING, kMenuTpl, Tr("notes_template").c_str());
   AppendMenuW(file, MF_SEPARATOR, 0, nullptr);
@@ -846,17 +931,11 @@ bool NotesWindow::Create(HINSTANCE instance) {
               Tr("edit").c_str());
   HMENU view = CreatePopupMenu();
   AppendMenuW(view, MF_STRING, kMenuEditMode, L"编辑\tCtrl+E");
-  AppendMenuW(view, MF_STRING | MF_CHECKED, kMenuSyncScroll, L"同步滚动");
   AppendMenuW(view, MF_SEPARATOR, 0, nullptr);
   AppendMenuW(view, MF_STRING, kMenuBigger, L"放大字体\tCtrl++");
   AppendMenuW(view, MF_STRING, kMenuSmaller, L"缩小字体\tCtrl+-");
   AppendMenuW(view, MF_SEPARATOR, 0, nullptr);
   AppendMenuW(view, MF_STRING | MF_CHECKED, kMenuWrap, L"自动换行(&W)");
-  AppendMenuW(view, MF_STRING, kMenuSidebar, L"文件树\tCtrl+Shift+E");
-  AppendMenuW(view, MF_STRING, kMenuFocus, L"专注模式\tF11");
-  AppendMenuW(view, MF_STRING, kMenuTypewriter, Tr("notes_typewriter").c_str());
-  AppendMenuW(view, MF_SEPARATOR, 0, nullptr);
-  AppendMenuW(view, MF_STRING, kMenuAlwaysOnTop, L"窗口置顶");
   AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(view),
               Tr("view").c_str());
   // Format menu removed — toolbar + Ctrl+B/I/U/K (and Shift+Enter soft break).
@@ -926,13 +1005,13 @@ bool NotesWindow::Create(HINSTANCE instance) {
       0, L"BUTTON", L"", WS_CHILD | BS_OWNERDRAW, 130, 6, 28, 28, hwnd_,
       reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSidebarNewId)), instance,
       nullptr);
-  sidebar_online_ = CreateWindowExW(
-      0, L"BUTTON", L"", WS_CHILD | BS_OWNERDRAW, 158, 6, 28, 28, hwnd_,
-      reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSidebarOnlineId)), instance,
-      nullptr);
   sidebar_refresh_ = CreateWindowExW(
       0, L"BUTTON", L"", WS_CHILD | BS_OWNERDRAW, 186, 6, 28, 28, hwnd_,
       reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSidebarRefreshId)), instance,
+      nullptr);
+  sidebar_account_ = CreateWindowExW(
+      0, L"BUTTON", L"", WS_CHILD | BS_OWNERDRAW, 0, 0, 240, 36, hwnd_,
+      reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSidebarAccountId)), instance,
       nullptr);
   sidebar_ = CreateWindowExW(
       0, WC_TREEVIEWW, L"",
@@ -951,9 +1030,6 @@ bool NotesWindow::Create(HINSTANCE instance) {
   }
   if (sidebar_new_) {
     SetWindowTheme(sidebar_new_, L"", L"");
-  }
-  if (sidebar_online_) {
-    SetWindowTheme(sidebar_online_, L"", L"");
   }
   if (sidebar_refresh_) {
     SetWindowTheme(sidebar_refresh_, L"", L"");
@@ -981,7 +1057,6 @@ bool NotesWindow::Create(HINSTANCE instance) {
         1, 0);
   };
   hook_btn(sidebar_new_);
-  hook_btn(sidebar_online_);
   hook_btn(sidebar_refresh_);
   sidebar_results_ = CreateWindowExW(
       0, L"LISTBOX", L"",
@@ -1004,9 +1079,6 @@ bool NotesWindow::Create(HINSTANCE instance) {
   }
   if (sidebar_new_) {
     ShowWindow(sidebar_new_, SW_HIDE);
-  }
-  if (sidebar_online_) {
-    ShowWindow(sidebar_online_, SW_HIDE);
   }
   if (sidebar_refresh_) {
     ShowWindow(sidebar_refresh_, SW_HIDE);
@@ -1042,6 +1114,20 @@ bool NotesWindow::Create(HINSTANCE instance) {
   };
   web_.on_external_drop = on_drop;
   preview_web_.on_external_drop = on_drop;
+  web_.on_upload_image = [this](const std::wstring& name,
+                                const std::wstring& mime,
+                                const std::wstring& data_url) -> std::wstring {
+    const std::wstring base_dir = NoteBaseDir();
+    const std::wstring assets_dir = JoinPath(base_dir, L"assets");
+    CreateDirectoryW(assets_dir.c_str(), nullptr);
+    web_.SetAssetBaseDir(base_dir);
+    const std::wstring rel =
+        SaveDataUrlToAssets(assets_dir, name, mime, data_url);
+    if (!rel.empty()) {
+      MarkDirty();
+    }
+    return rel;
+  };
   web_.on_dirty = [this]() {
     // Immediate (no markdown body) — covers the 150ms changed debounce window.
     MarkDirty();
@@ -1200,6 +1286,10 @@ void NotesWindow::SetFontFace(const std::wstring& face) {
     return;
   }
   font_face_ = std::move(next);
+  if (font_) {
+    DeleteObject(font_);
+    font_ = nullptr;
+  }
   ApplyEditorFont();
   SyncFontControls();
   PersistViewSettings();
@@ -1385,6 +1475,10 @@ void NotesWindow::ApplyUiFonts() {
     ui_font_bold_ = CreateFontIndirectW(&bold);
   }
   if (!menu_font) {
+    if (ui_font_bold_) {
+      DeleteObject(ui_font_bold_);
+      ui_font_bold_ = nullptr;
+    }
     HDC hdc = GetDC(nullptr);
     const int height = -MulDiv(9, GetDeviceCaps(hdc, LOGPIXELSY), 72);
     ReleaseDC(nullptr, hdc);
@@ -1555,6 +1649,9 @@ void NotesWindow::RefreshTitle() {
   }
   title += TabLabel(path_);
   title += L" — DeskNote";
+  if (IsDevRuntime()) {
+    title += L" [dev]";
+  }
   if (toast_) {
     title += L" · 便签条";
   } else if (wysiwyg_) {
@@ -1562,15 +1659,51 @@ void NotesWindow::RefreshTitle() {
   SetWindowTextW(hwnd_, title.c_str());
 }
 
+NotesWindow::~NotesWindow() {
+  if (font_) {
+    DeleteObject(font_);
+    font_ = nullptr;
+  }
+  if (ui_font_) {
+    DeleteObject(ui_font_);
+    ui_font_ = nullptr;
+  }
+  if (ui_font_bold_) {
+    DeleteObject(ui_font_bold_);
+    ui_font_bold_ = nullptr;
+  }
+  if (title_font_) {
+    DeleteObject(title_font_);
+    title_font_ = nullptr;
+  }
+  if (accel_) {
+    DestroyAcceleratorTable(accel_);
+    accel_ = nullptr;
+  }
+  if (bg_brush_) {
+    DeleteObject(bg_brush_);
+    bg_brush_ = nullptr;
+  }
+  if (card_brush_) {
+    DeleteObject(card_brush_);
+    card_brush_ = nullptr;
+  }
+  if (rail_brush_) {
+    DeleteObject(rail_brush_);
+    rail_brush_ = nullptr;
+  }
+}
+
 void NotesWindow::Destroy() {
-  Save(true);
-  PersistTabs();
-  PersistViewSettings();
   if (hwnd_) {
+    Save(true);
+    PersistTabs();
+    PersistViewSettings();
     KillTimer(hwnd_, kStatusTimer);
     KillTimer(hwnd_, kPersistTabsTimer);
     KillTimer(hwnd_, kGutterTimer);
   }
+  online_notes_.Destroy();
   if (web_.Host()) {
     RevokeDropOnSubtree(web_.Host());
   }
@@ -1900,6 +2033,7 @@ bool NotesWindow::InsertImageFile(const std::wstring& src_path) {
   // WYSIWYG stage is the visible editor — RichEdit is only the staging buffer,
   // so the node has to be inserted in Toast (the markdown stays relative).
   if (wysiwyg_ && web_.Ready()) {
+    web_.SetAssetBaseDir(NoteBaseDir());
     const size_t ndot = name.find_last_of(L'.');
     web_.InsertImage(rel, ndot == std::wstring::npos ? name
                                                      : name.substr(0, ndot));
@@ -2023,15 +2157,8 @@ void NotesWindow::SyncMdMenuState() {
   const bool md = PathLooksMarkdown();
   const UINT flag = MF_BYCOMMAND | (md ? MF_ENABLED : MF_GRAYED);
   EnableMenuItem(menu_, kMenuExportHtml, flag);
-  EnableMenuItem(menu_, kMenuExportPdf, flag);
   EnableMenuItem(menu_, kMenuPandoc, flag);
-  EnableMenuItem(menu_, kMenuExportMd, flag);
-  EnableMenuItem(menu_, kMenuPreview, flag);
-  EnableMenuItem(menu_, kMenuPreviewPane, flag);
   EnableMenuItem(menu_, kMenuEditMode, flag);
-  EnableMenuItem(menu_, kMenuOutline, flag);
-  EnableMenuItem(menu_, kMenuSyncScroll, flag);
-  EnableMenuItem(menu_, kMenuWysiwyg, flag);
 }
 
 void NotesWindow::SetSaveEncoding(TextFileEncoding enc) {
@@ -2067,239 +2194,6 @@ void NotesWindow::CopyPathToClipboard(const std::wstring& path) {
   }
   CloseClipboard();
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 void NotesWindow::PersistViewSettings() {
   const std::wstring file = JoinPath(NativeDataDir(), L"notes_ui.json");
@@ -3478,16 +3372,131 @@ void NotesWindow::LoadTabSession() {
   std::ostringstream ss;
   ss << in.rdbuf();
   const std::string json = ss.str();
-  auto unescape_json = [](const std::string& raw) {
+  auto append_utf8 = [](std::string* out, uint32_t cp) {
+    if (cp <= 0x7F) {
+      out->push_back(static_cast<char>(cp));
+    } else if (cp <= 0x7FF) {
+      out->push_back(static_cast<char>(0xC0 | (cp >> 6)));
+      out->push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+    } else if (cp <= 0xFFFF) {
+      out->push_back(static_cast<char>(0xE0 | (cp >> 12)));
+      out->push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+      out->push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+    } else if (cp <= 0x10FFFF) {
+      out->push_back(static_cast<char>(0xF0 | (cp >> 18)));
+      out->push_back(static_cast<char>(0x80 | ((cp >> 12) & 0x3F)));
+      out->push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+      out->push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+    }
+  };
+  auto parse_hex4 = [](const std::string& s, size_t idx, uint32_t* out_val) {
+    if (idx + 4 > s.size()) {
+      return false;
+    }
+    uint32_t v = 0;
+    for (size_t k = 0; k < 4; ++k) {
+      const char c = s[idx + k];
+      v <<= 4;
+      if (c >= '0' && c <= '9') {
+        v |= static_cast<uint32_t>(c - '0');
+      } else if (c >= 'a' && c <= 'f') {
+        v |= static_cast<uint32_t>(c - 'a' + 10);
+      } else if (c >= 'A' && c <= 'F') {
+        v |= static_cast<uint32_t>(c - 'A' + 10);
+      } else {
+        return false;
+      }
+    }
+    *out_val = v;
+    return true;
+  };
+  auto unescape_json = [&](const std::string& raw) {
     std::string unescaped;
+    unescaped.reserve(raw.size());
     for (size_t i = 0; i < raw.size(); ++i) {
       if (raw[i] == '\\' && i + 1 < raw.size()) {
-        unescaped.push_back(raw[++i]);
+        const char e = raw[++i];
+        switch (e) {
+          case 'n':
+            unescaped.push_back('\n');
+            break;
+          case 'r':
+            unescaped.push_back('\r');
+            break;
+          case 't':
+            unescaped.push_back('\t');
+            break;
+          case 'b':
+            unescaped.push_back('\b');
+            break;
+          case 'f':
+            unescaped.push_back('\f');
+            break;
+          case '"':
+          case '\\':
+          case '/':
+            unescaped.push_back(e);
+            break;
+          case 'u': {
+            uint32_t cp = 0;
+            if (parse_hex4(raw, i + 1, &cp)) {
+              i += 4;
+              if (cp >= 0xD800 && cp <= 0xDBFF && i + 6 < raw.size() &&
+                  raw[i + 1] == '\\' && raw[i + 2] == 'u') {
+                uint32_t low = 0;
+                if (parse_hex4(raw, i + 3, &low) && low >= 0xDC00 &&
+                    low <= 0xDFFF) {
+                  cp = 0x10000 + (((cp - 0xD800) << 10) | (low - 0xDC00));
+                  i += 6;
+                }
+              }
+              append_utf8(&unescaped, cp);
+            } else {
+              unescaped.push_back('u');
+            }
+            break;
+          }
+          default:
+            unescaped.push_back(e);
+            break;
+        }
       } else {
         unescaped.push_back(raw[i]);
       }
     }
     return unescaped;
+  };
+  auto find_closing_quote = [](const std::string& s, size_t start_after_open) {
+    size_t i = start_after_open;
+    while (i < s.size()) {
+      if (s[i] == '\\') {
+        i += 2;
+        continue;
+      }
+      if (s[i] == '"') {
+        return i;
+      }
+      ++i;
+    }
+    return std::string::npos;
+  };
+  auto find_closing_brace = [&](const std::string& s, size_t open_brace) {
+    size_t i = open_brace + 1;
+    while (i < s.size()) {
+      if (s[i] == '"') {
+        const size_t q2 = find_closing_quote(s, i + 1);
+        if (q2 == std::string::npos) {
+          return std::string::npos;
+        }
+        i = q2 + 1;
+        continue;
+      }
+      if (s[i] == '}') {
+        return i;
+      }
+      ++i;
+    }
+    return std::string::npos;
   };
   auto looks_like_path = [](const std::string& unescaped) {
     return unescaped.size() >= 3 &&
@@ -3507,11 +3516,19 @@ void NotesWindow::LoadTabSession() {
     }
     size_t pos = arr + 1;
     while (pos < json.size() && json[pos] != ']') {
-      const size_t q1 = json.find('"', pos);
-      if (q1 == std::string::npos || q1 > json.find(']', pos)) {
+      while (pos < json.size() &&
+             (json[pos] == ' ' || json[pos] == '\n' || json[pos] == '\r' ||
+              json[pos] == '\t' || json[pos] == ',')) {
+        ++pos;
+      }
+      if (pos >= json.size() || json[pos] == ']') {
         break;
       }
-      const size_t q2 = json.find('"', q1 + 1);
+      if (json[pos] != '"') {
+        break;
+      }
+      const size_t q1 = pos;
+      const size_t q2 = find_closing_quote(json, q1 + 1);
       if (q2 == std::string::npos) {
         break;
       }
@@ -3541,7 +3558,7 @@ void NotesWindow::LoadTabSession() {
             break;
           }
           if (json[pos] == '{') {
-            const size_t end = json.find('}', pos);
+            const size_t end = find_closing_brace(json, pos);
             if (end == std::string::npos) {
               break;
             }
@@ -3563,7 +3580,7 @@ void NotesWindow::LoadTabSession() {
               if (q1 == std::string::npos) {
                 return;
               }
-              const size_t q2 = obj.find('"', q1 + 1);
+              const size_t q2 = find_closing_quote(obj, q1 + 1);
               if (q2 == std::string::npos) {
                 return;
               }
@@ -3577,7 +3594,7 @@ void NotesWindow::LoadTabSession() {
             }
           } else if (json[pos] == '"') {
             const size_t q1 = pos;
-            const size_t q2 = json.find('"', q1 + 1);
+            const size_t q2 = find_closing_quote(json, q1 + 1);
             if (q2 == std::string::npos) {
               break;
             }
@@ -3877,7 +3894,7 @@ void NotesWindow::SeedBlankDraftTab() {
   // Drop the recycled note's Toast body immediately so tree/tab/title sync
   // cannot re-read「测试」and rename this 未命名 draft.
   if (web_.Available()) {
-    web_.SetMarkdown(L"# \n\n");
+    web_.SetMarkdown(L"# \n\n", NoteBaseDir());
   }
   if (edit_) {
     SetWindowTextW(edit_, L"# \n\n");
@@ -6112,7 +6129,7 @@ void NotesWindow::EnsureMarkdownEditor(bool force_reload) {
   if (entering || force_reload) {
     // Cache immediately; PostMessage defers JsonEscape + WebView IPC so the
     // tab strip / title can paint first (Typora-class feel).
-    web_.SetCachedMarkdown(md);
+    web_.SetCachedMarkdown(md, NoteBaseDir());
     pending_tab_markdown_ = md;
     has_pending_tab_markdown_ = true;
     if (hwnd_) {
@@ -6139,7 +6156,11 @@ void NotesWindow::ToggleWysiwyg() {
 }
 
 std::wstring NotesWindow::NoteBaseDir() const {
-  return DirOfPath(path_);
+  const std::wstring d = DirOfPath(path_);
+  if (d.empty() || d == L".") {
+    return NotesLibraryDir(true);
+  }
+  return d;
 }
 
 void NotesWindow::EnsureTabStates() {
@@ -6566,6 +6587,7 @@ bool NotesWindow::PasteImageToMarkdown() {
       slash == std::wstring::npos ? dest : dest.substr(slash + 1);
   const std::wstring rel = L"assets/" + name;
   if (wysiwyg_ && web_.Ready()) {
+    web_.SetAssetBaseDir(NoteBaseDir());
     web_.InsertImage(rel, name.substr(0, name.find_last_of(L'.')));
     MarkDirty();
     return true;
@@ -6717,11 +6739,6 @@ void NotesWindow::LayoutClient() {
     const int chrome_h = 44;
     const int pad = 12;
     const int btn_w = 30;
-    // Chrome: search + 新建 + 同步刷新（不再单独放「☁ 在线笔记」入口；
-    // 转云/登录走列表 ⋯ 与文案提示即可）。
-    if (sidebar_online_) {
-      ShowWindow(sidebar_online_, SW_HIDE);
-    }
     if (sidebar_search_) {
       MoveWindow(sidebar_search_, pad + 4, top + 10,
                  side - (btn_w * 2 + pad * 2 + 12), chrome_h - 18, TRUE);
@@ -6737,8 +6754,13 @@ void NotesWindow::LayoutClient() {
                  TRUE);
       ShowWindow(sidebar_refresh_, SW_SHOW);
     }
+    const int account_h = 36;
     const int body_top = top + chrome_h + 4;
-    const int body_h = (std::max)(40, bottom - body_top);
+    const int body_h = (std::max)(40, bottom - body_top - account_h);
+    if (sidebar_account_) {
+      MoveWindow(sidebar_account_, 0, bottom - account_h, side, account_h, TRUE);
+      ShowWindow(sidebar_account_, SW_SHOW);
+    }
     EnsureLibraryRail();
     if (sidebar_results_) {
       ShowWindow(sidebar_results_, SW_HIDE);
@@ -6762,14 +6784,14 @@ void NotesWindow::LayoutClient() {
     if (library_web_.Host()) {
       library_web_.Hide();
     }
+    if (sidebar_account_) {
+      ShowWindow(sidebar_account_, SW_HIDE);
+    }
     if (sidebar_search_) {
       ShowWindow(sidebar_search_, SW_HIDE);
     }
     if (sidebar_new_) {
       ShowWindow(sidebar_new_, SW_HIDE);
-    }
-    if (sidebar_online_) {
-      ShowWindow(sidebar_online_, SW_HIDE);
     }
     if (sidebar_refresh_) {
       ShowWindow(sidebar_refresh_, SW_HIDE);
@@ -7645,6 +7667,11 @@ int NotesWindow::RunReplaceAll(bool match_case, bool whole) {
     }
   }
   int n = 0;
+  const LRESULT old_mask = SendMessageW(edit_, EM_GETEVENTMASK, 0, 0);
+  SendMessageW(
+      edit_, EM_SETEVENTMASK, 0,
+      old_mask & ~static_cast<LRESULT>(ENM_CHANGE | ENM_SELCHANGE | ENM_SCROLL));
+  SendMessageW(edit_, WM_SETREDRAW, FALSE, 0);
   CHARRANGE top{};
   top.cpMin = 0;
   top.cpMax = 0;
@@ -7656,6 +7683,16 @@ int NotesWindow::RunReplaceAll(bool match_case, bool whole) {
     if (n > 100000) {
       break;
     }
+  }
+  SendMessageW(edit_, WM_SETREDRAW, TRUE, 0);
+  SendMessageW(edit_, EM_SETEVENTMASK, 0, old_mask);
+  InvalidateRect(edit_, nullptr, TRUE);
+  if (n > 0) {
+    status_full_text_dirty_ = true;
+    MarkDirty();
+    RefreshGutter();
+    SchedulePreviewRefresh();
+    UpdateStatusBar();
   }
   return n;
 }
@@ -8050,26 +8087,92 @@ void NotesWindow::EnsureOnlineNotesPanel() {
   });
 }
 
+bool NotesWindow::ShowAccountLoginDialog() {
+  const std::wstring html = MistFindAssetHtml(L"dialogs\\account_login.html");
+  if (html.empty()) {
+    // Fallback: simple prompt chain (unchanged behaviour).
+    const std::wstring login =
+        PromptTextWin32(hwnd_, L"在线笔记", L"用户名：", L"");
+    if (login.empty()) return false;
+    const std::wstring pass =
+        PromptTextWin32(hwnd_, L"在线笔记", L"密码：", L"");
+    if (pass.empty()) return false;
+    return VaultHttpLogin(login, pass);
+  }
+
+  bool logged_in = false;
+
+  MistWebDialog dlg;
+  dlg.owner = hwnd_;
+  dlg.frameless = true;
+  dlg.user_data_subdir = L"webview2-mist-account-login";
+  dlg.html_path = html;
+  dlg.build_state = []() -> std::wstring {
+    return L"{\"type\":\"state\",\"mode\":\"login\"}";
+  };
+  dlg.on_message = [&](const std::wstring& json) -> bool {
+    const std::wstring type = MistJsonStringField(json, L"type");
+    if (type != L"action") return false;
+    const std::wstring id = MistJsonStringField(json, L"id");
+    if (id == L"ready") {
+      MistWebDialogPushState(&dlg);
+      return false;
+    }
+    if (id == L"cancel") return true;
+
+    if (id == L"login") {
+      const std::wstring login = MistJsonStringField(json, L"login");
+      const std::wstring pass  = MistJsonStringField(json, L"pass");
+      if (VaultHttpLogin(login, pass)) {
+        logged_in = true;
+        // Reply success then close.
+        MistWebDialogPostJson(&dlg, L"{\"type\":\"result\",\"ok\":true}");
+        return true;
+      }
+      MistWebDialogPostJson(
+          &dlg,
+          L"{\"type\":\"result\",\"ok\":false,"
+          L"\"error\":\"用户名或密码错误，或服务端不可达。\"}");
+      return false;
+    }
+
+    if (id == L"register") {
+      const std::wstring login   = MistJsonStringField(json, L"login");
+      const std::wstring pass    = MistJsonStringField(json, L"pass");
+      const std::wstring display = MistJsonStringField(json, L"display");
+      std::wstring err;
+      if (!VaultHttpRegister(login, pass, display, &err)) {
+        const std::wstring msg =
+            err.empty() ? L"注册失败，请稍后重试。" : err;
+        std::wstring reply =
+            L"{\"type\":\"result\",\"ok\":false,\"error\":\""
+            + MistJsonEscape(msg) + L"\"}";
+        MistWebDialogPostJson(&dlg, reply);
+        return false;
+      }
+      // Register succeeded — auto login.
+      if (!VaultHttpLogin(login, pass)) {
+        MistWebDialogPostJson(
+            &dlg,
+            L"{\"type\":\"result\",\"ok\":false,"
+            L"\"error\":\"注册成功，但自动登录失败，请手动登录。\"}");
+        return false;
+      }
+      logged_in = true;
+      MistWebDialogPostJson(&dlg, L"{\"type\":\"result\",\"ok\":true}");
+      return true;
+    }
+
+    return false;
+  };
+
+  MistWebDialogRun(&dlg, L"在线笔记", 400, 340);
+  return logged_in;
+}
+
 void NotesWindow::EnsureLibraryCloudLogin() {
-  if (VaultHttpLoggedIn()) {
-    return;
-  }
-  const std::wstring login =
-      PromptTextWin32(hwnd_, L"在线笔记", L"云账号登录名：", L"");
-  if (login.empty()) {
-    return;
-  }
-  const std::wstring pass =
-      PromptTextWin32(hwnd_, L"在线笔记", L"登录密码：", L"");
-  if (pass.empty()) {
-    return;
-  }
-  if (!VaultHttpLogin(login, pass)) {
-    MistAlert(hwnd_, L"在线笔记",
-              L"登录失败（用户名或密码错误，或服务端不可达）。",
-              MistMsgTone::Danger);
-  } else {
-    // Flush anything queued while logged out.
+  if (VaultHttpLoggedIn()) return;
+  if (ShowAccountLoginDialog()) {
     NoteCloudNotifyPushWorker();
   }
 }
@@ -8594,12 +8697,18 @@ void NotesWindow::ConvertPathToCloud(const std::wstring& path) {
   VaultHttpNote remote;
   if (note_id > 0) {
     if (!VaultHttpUpdateNote(note_id, title, body, &remote)) {
-      MistAlert(hwnd_, L"转云", L"上传失败。", MistMsgTone::Danger);
+      MistAlert(hwnd_, L"转云",
+                L"上传失败。可能是登录已过期或网络不可达，"
+                L"请点击侧边栏底部的账号条重新登录后重试。",
+                MistMsgTone::Danger);
       return;
     }
   } else {
     if (!VaultHttpCreateNote(title, body, &remote) || remote.id <= 0) {
-      MistAlert(hwnd_, L"转云", L"上传失败。", MistMsgTone::Danger);
+      MistAlert(hwnd_, L"转云",
+                L"上传失败。可能是登录已过期或网络不可达，"
+                L"请点击侧边栏底部的账号条重新登录后重试。",
+                MistMsgTone::Danger);
       return;
     }
     note_id = remote.id;
@@ -8867,15 +8976,15 @@ void NotesWindow::NewOnlineNoteInEditor() {
 void NotesWindow::OpenOnlineNotes(bool create_new) {
   // Unified rail: no separate list popup. Create or just show the sidebar.
   if (!sidebar_visible_) {
-    ToggleSidebar();
+    ToggleSidebar();  // calls LayoutClient()
   }
   EnsureLibraryRail();
+  LayoutClient();  // position/show library WebView even if sidebar was already open
   if (create_new) {
     NewOnlineNoteInEditor();
   } else {
-    // Menu「刷新笔记库」— explicit pull.
-    library_online_stale_ = true;
-    RebuildSidebar();
+    // Pull the online list and refresh the WebView rail.
+    PushLibraryRailState(true);
   }
 }
 
@@ -10450,12 +10559,39 @@ LRESULT NotesWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
       }
       const UINT id = dis->CtlID;
       const bool is_new = id == static_cast<UINT>(kSidebarNewId);
-      const bool is_online = id == static_cast<UINT>(kSidebarOnlineId);
       const bool is_ref = id == static_cast<UINT>(kSidebarRefreshId);
       const bool is_mode = id == static_cast<UINT>(kModeStripId);
       const bool is_outline = id == static_cast<UINT>(kOutlineStripId);
-      if (!is_new && !is_online && !is_ref && !is_mode && !is_outline) {
+      const bool is_account = id == static_cast<UINT>(kSidebarAccountId);
+      if (!is_new && !is_ref && !is_mode && !is_outline && !is_account) {
         break;
+      }
+      // --- Account strip (bottom of sidebar) --------------------------------
+      if (is_account) {
+        HDC hdc = dis->hDC;
+        RECT rc = dis->rcItem;
+        const bool logged_in = VaultHttpLoggedIn();
+        HBRUSH back = CreateSolidBrush(rail_bg_);
+        FillRect(hdc, &rc, back);
+        DeleteObject(back);
+        // top divider line
+        HPEN pen = CreatePen(PS_SOLID, 1, border_color_);
+        HPEN old_pen = static_cast<HPEN>(SelectObject(hdc, pen));
+        MoveToEx(hdc, rc.left, rc.top, nullptr);
+        LineTo(hdc, rc.right, rc.top);
+        SelectObject(hdc, old_pen);
+        DeleteObject(pen);
+        SetBkMode(hdc, TRANSPARENT);
+        if (ui_font_) SelectObject(hdc, ui_font_);
+        const std::wstring label =
+            logged_in ? (L"● " + VaultHttpSessionLogin()) : L"登录 / 注册";
+        SetTextColor(hdc, logged_in ? RGB(47, 111, 237) : muted_color_);
+        RECT text_rc = rc;
+        text_rc.left += 14;
+        DrawTextW(hdc, label.c_str(), -1, &text_rc,
+                  DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX |
+                      DT_END_ELLIPSIS);
+        return TRUE;
       }
       HDC hdc = dis->hDC;
       RECT rc = dis->rcItem;
@@ -10466,7 +10602,7 @@ LRESULT NotesWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
       GetWindowRect(dis->hwndItem, &wr);
       const bool hot = !press && PtInRect(&wr, cur);
       const bool strip = is_outline;
-      const bool chip = is_mode || is_new || is_online || is_ref;
+      const bool chip = is_mode || is_new || is_ref;
       // Outline rail on white stage; mode chip on tab chrome; sidebar on rail.
       const COLORREF plate =
           strip ? content_bg_ : (is_mode ? content_bg_ : rail_bg_);
@@ -10509,15 +10645,10 @@ LRESULT NotesWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
       wchar_t label[32] = {};
       if (is_new) {
         wcscpy_s(label, L"+");
-      } else if (is_online) {
-        wcscpy_s(label, L"☁");
       } else if (is_ref) {
         wcscpy_s(label, L"↻");
       } else {
         GetWindowTextW(dis->hwndItem, label, 32);
-      }
-      if (is_online) {
-        SetTextColor(hdc, RGB(47, 111, 237));
       }
       const UINT dt = chip ? (DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX)
                            : (DT_CENTER | DT_VCENTER | DT_WORDBREAK | DT_NOPREFIX);
@@ -10573,16 +10704,32 @@ LRESULT NotesWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
           ti.hItem = hItem;
           if (TreeView_GetItem(sidebar_, &ti) && ti.lParam > 0) {
             const size_t idx = static_cast<size_t>(ti.lParam) - 1;
-            if (idx < sidebar_paths_.size() &&
-                PathIsPinned(sidebar_paths_[idx])) {
+            if (idx < sidebar_paths_.size()) {
+              const std::wstring& sp = sidebar_paths_[idx];
               RECT tr{};
               if (TreeView_GetItemRect(sidebar_, hItem, &tr, TRUE)) {
                 Gdiplus::Graphics g(cd->nmcd.hdc);
                 g.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
-                DrawTabPushPin(
-                    g, static_cast<float>(tr.left) + 6.f,
-                    static_cast<float>(tr.top + tr.bottom) * 0.5f, true,
-                    false);
+                if (PathIsPinned(sp)) {
+                  DrawTabPushPin(
+                      g, static_cast<float>(tr.left) + 6.f,
+                      static_cast<float>(tr.top + tr.bottom) * 0.5f, true,
+                      false);
+                }
+                if (PathIsCloudSynced(sp)) {
+                  const float cx = static_cast<float>(tr.right) + 6.f;
+                  const float cy = static_cast<float>(tr.top + tr.bottom) * 0.5f;
+                  Gdiplus::Pen cpen(Gdiplus::Color(255, 47, 111, 237), 1.4f);
+                  cpen.SetLineJoin(Gdiplus::LineJoinRound);
+                  cpen.SetStartCap(Gdiplus::LineCapRound);
+                  cpen.SetEndCap(Gdiplus::LineCapRound);
+                  Gdiplus::GraphicsPath cp;
+                  cp.AddArc(cx + 0.f, cy - 1.f, 5.f, 5.f, 90.f, 180.f);
+                  cp.AddArc(cx + 2.f, cy - 5.f, 6.5f, 6.5f, 195.f, 160.f);
+                  cp.AddArc(cx + 7.f, cy - 2.f, 5.f, 6.f, 260.f, 190.f);
+                  cp.CloseFigure();
+                  g.DrawPath(&cpen, &cp);
+                }
               }
             }
           }
@@ -10969,8 +11116,28 @@ LRESULT NotesWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
         RebuildSidebar();
         return 0;
       }
-      if (LOWORD(wparam) == kSidebarOnlineId && HIWORD(wparam) == BN_CLICKED) {
-        OpenOnlineNotes(true);
+      if (LOWORD(wparam) == kSidebarAccountId && HIWORD(wparam) == BN_CLICKED) {
+        if (!VaultHttpLoggedIn()) {
+          EnsureLibraryCloudLogin();
+          if (sidebar_account_) {
+            InvalidateRect(sidebar_account_, nullptr, TRUE);
+          }
+          if (VaultHttpLoggedIn()) {
+            OpenOnlineNotes(false);
+          }
+        } else {
+          // 已登录 — 询问是否退出
+          const std::wstring name = VaultHttpSessionLogin();
+          const std::wstring account_msg =
+              L"当前账号：" + name + L"\n\n是否退出登录？";
+          if (MistConfirm(hwnd_, L"在线笔记", account_msg.c_str(),
+                          MistMsgTone::Warn)) {
+            VaultHttpLogout();
+            if (sidebar_account_) {
+              InvalidateRect(sidebar_account_, nullptr, TRUE);
+            }
+          }
+        }
         return 0;
       }
       if (LOWORD(wparam) == kSidebarRefreshId &&
@@ -11237,7 +11404,7 @@ LRESULT NotesWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
             loading_ = false;
             dirty_ = false;
             if (wysiwyg_) {
-              web_.SetMarkdown(b.body);
+              web_.SetMarkdown(b.body, NoteBaseDir());
             }
           }
         }
@@ -11351,6 +11518,7 @@ LRESULT NotesWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
       return 0;
     case WM_DESTROY:
       hwnd_ = nullptr;
+      Destroy();
       if (quit_on_close_) {
         PostQuitMessage(0);
       }

@@ -11,7 +11,9 @@
 #include <WebView2.h>
 #include <wrl.h>
 
+#include <memory>
 #include <string>
+#include <unordered_map>
 
 #pragma comment(lib, "dwmapi.lib")
 
@@ -22,6 +24,34 @@ namespace {
 
 constexpr wchar_t kClass[] = L"DeskTidyNativeMistDialog";
 constexpr wchar_t kHostClass[] = L"DeskTidyNativeMistDialogHost";
+
+std::unordered_map<MistWebDialog*, std::shared_ptr<bool>>& MistAliveMap() {
+  static std::unordered_map<MistWebDialog*, std::shared_ptr<bool>> m;
+  return m;
+}
+
+std::shared_ptr<bool> EnsureMistAlive(MistWebDialog* dlg) {
+  auto& m = MistAliveMap();
+  auto it = m.find(dlg);
+  if (it == m.end() || !it->second) {
+    auto tok = std::make_shared<bool>(true);
+    m[dlg] = tok;
+    return tok;
+  }
+  *it->second = true;
+  return it->second;
+}
+
+void InvalidateMistAlive(MistWebDialog* dlg) {
+  auto& m = MistAliveMap();
+  auto it = m.find(dlg);
+  if (it != m.end()) {
+    if (it->second) {
+      *it->second = false;
+    }
+    m.erase(it);
+  }
+}
 
 bool PathExists(const std::wstring& path) {
   const DWORD attr = GetFileAttributesW(path.c_str());
@@ -110,20 +140,33 @@ void CreateWeb(MistWebDialog* dlg) {
                                     : dlg->user_data_subdir);
   CreateDirectoryW(user_data.c_str(), nullptr);
 
+  const auto alive = EnsureMistAlive(dlg);
+  const HWND host_hwnd = dlg->host;
+
   CreateCoreWebView2EnvironmentWithOptions(
       nullptr, user_data.c_str(), nullptr,
       Callback<ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler>(
-          [dlg](HRESULT result, ICoreWebView2Environment* env) -> HRESULT {
-            if (FAILED(result) || !env || !dlg->host) {
+          [dlg, alive, host_hwnd](HRESULT result,
+                                  ICoreWebView2Environment* env) -> HRESULT {
+            if (FAILED(result) || !env || !alive || !*alive || !dlg ||
+                !dlg->hwnd || !IsWindow(dlg->hwnd) || !dlg->host ||
+                dlg->host != host_hwnd || !IsWindow(host_hwnd)) {
               return S_OK;
             }
             env->CreateCoreWebView2Controller(
                 dlg->host,
                 Callback<
                     ICoreWebView2CreateCoreWebView2ControllerCompletedHandler>(
-                    [dlg](HRESULT result2,
-                          ICoreWebView2Controller* controller) -> HRESULT {
-                      if (FAILED(result2) || !controller || !dlg) {
+                    [dlg, alive, host_hwnd](
+                        HRESULT result2,
+                        ICoreWebView2Controller* controller) -> HRESULT {
+                      if (FAILED(result2) || !controller) {
+                        return S_OK;
+                      }
+                      if (!alive || !*alive || !dlg || !dlg->hwnd ||
+                          !IsWindow(dlg->hwnd) || !dlg->host ||
+                          dlg->host != host_hwnd || !IsWindow(host_hwnd)) {
+                        controller->Close();
                         return S_OK;
                       }
                       dlg->controller = controller;
@@ -152,9 +195,14 @@ void CreateWeb(MistWebDialog* dlg) {
                       MistFocusDialog(dlg);
                       web->add_WebMessageReceived(
                           Callback<ICoreWebView2WebMessageReceivedEventHandler>(
-                              [dlg](ICoreWebView2*,
-                                    ICoreWebView2WebMessageReceivedEventArgs*
-                                        args) -> HRESULT {
+                              [dlg, alive](
+                                  ICoreWebView2*,
+                                  ICoreWebView2WebMessageReceivedEventArgs*
+                                      args) -> HRESULT {
+                                if (!alive || !*alive || !dlg || !dlg->hwnd ||
+                                    !IsWindow(dlg->hwnd)) {
+                                  return S_OK;
+                                }
                                 LPWSTR raw = nullptr;
                                 if (SUCCEEDED(args->TryGetWebMessageAsString(
                                         &raw)) &&
@@ -172,9 +220,14 @@ void CreateWeb(MistWebDialog* dlg) {
                           nullptr);
                       web->add_NavigationCompleted(
                           Callback<ICoreWebView2NavigationCompletedEventHandler>(
-                              [dlg](ICoreWebView2*,
-                                    ICoreWebView2NavigationCompletedEventArgs*
-                                        args) -> HRESULT {
+                              [dlg, alive](
+                                  ICoreWebView2*,
+                                  ICoreWebView2NavigationCompletedEventArgs*
+                                      args) -> HRESULT {
+                                if (!alive || !*alive || !dlg || !dlg->hwnd ||
+                                    !IsWindow(dlg->hwnd)) {
+                                  return S_OK;
+                                }
                                 BOOL ok = FALSE;
                                 if (args) {
                                   args->get_IsSuccess(&ok);
@@ -203,6 +256,7 @@ void DestroyWeb(MistWebDialog* dlg) {
   if (!dlg) {
     return;
   }
+  InvalidateMistAlive(dlg);
   if (dlg->webview) {
     static_cast<ICoreWebView2*>(dlg->webview)->Release();
     dlg->webview = nullptr;
@@ -286,6 +340,12 @@ std::wstring MistJsonEscape(const std::wstring& s) {
       case L'"':
         o += L"\\\"";
         break;
+      case L'\b':
+        o += L"\\b";
+        break;
+      case L'\f':
+        o += L"\\f";
+        break;
       case L'\n':
         o += L"\\n";
         break;
@@ -296,7 +356,13 @@ std::wstring MistJsonEscape(const std::wstring& s) {
         o += L"\\t";
         break;
       default:
-        o.push_back(c);
+        if (c < 0x20 || c == 0x2028 || c == 0x2029) {
+          wchar_t buf[8];
+          swprintf_s(buf, L"\\u%04x", static_cast<unsigned>(c));
+          o += buf;
+        } else {
+          o.push_back(c);
+        }
         break;
     }
   }
@@ -309,7 +375,11 @@ std::wstring MistJsonStringField(const std::wstring& json, const wchar_t* key) {
   if (p == std::wstring::npos) {
     return {};
   }
-  p = json.find(L'"', json.find(L':', p) + 1);
+  p = json.find(L':', p + needle.size());
+  if (p == std::wstring::npos) {
+    return {};
+  }
+  p = json.find(L'"', p + 1);
   if (p == std::wstring::npos) {
     return {};
   }
@@ -318,6 +388,56 @@ std::wstring MistJsonStringField(const std::wstring& json, const wchar_t* key) {
   while (p < json.size() && json[p] != L'"') {
     if (json[p] == L'\\' && p + 1 < json.size()) {
       ++p;
+      const wchar_t e = json[p++];
+      switch (e) {
+        case L'n':
+          v.push_back(L'\n');
+          break;
+        case L'r':
+          v.push_back(L'\r');
+          break;
+        case L't':
+          v.push_back(L'\t');
+          break;
+        case L'b':
+          v.push_back(L'\b');
+          break;
+        case L'f':
+          v.push_back(L'\f');
+          break;
+        case L'u':
+          if (p + 4 <= json.size()) {
+            unsigned code = 0;
+            bool ok = true;
+            for (int k = 0; k < 4; ++k) {
+              const wchar_t hc = json[p + k];
+              code <<= 4;
+              if (hc >= L'0' && hc <= L'9') {
+                code |= static_cast<unsigned>(hc - L'0');
+              } else if (hc >= L'a' && hc <= L'f') {
+                code |= static_cast<unsigned>(hc - L'a' + 10);
+              } else if (hc >= L'A' && hc <= L'F') {
+                code |= static_cast<unsigned>(hc - L'A' + 10);
+              } else {
+                ok = false;
+                break;
+              }
+            }
+            if (ok) {
+              v.push_back(static_cast<wchar_t>(code));
+              p += 4;
+            } else {
+              v.push_back(L'u');
+            }
+          } else {
+            v.push_back(L'u');
+          }
+          break;
+        default:
+          v.push_back(e);
+          break;
+      }
+      continue;
     }
     v.push_back(json[p++]);
   }
@@ -475,6 +595,11 @@ void MistWebDialogRun(MistWebDialog* dlg, const wchar_t* title, int width,
       TranslateMessage(&msg);
       DispatchMessageW(&msg);
     }
+  }
+  DestroyWeb(dlg);
+  if (dlg->hwnd && IsWindow(dlg->hwnd)) {
+    DestroyWindow(dlg->hwnd);
+    dlg->hwnd = nullptr;
   }
   if (dlg->disable_owner && dlg->owner) {
     EnableWindow(dlg->owner, TRUE);

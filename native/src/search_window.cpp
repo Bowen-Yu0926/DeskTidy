@@ -178,9 +178,10 @@ void SearchRecursive(const std::wstring& dir, const std::wstring& needle,
                      std::vector<std::wstring>* out, int* budget, int depth,
                      int max_depth, bool include_hidden,
                      const std::unordered_set<std::wstring>* allowed_exts,
-                     const std::atomic<unsigned>* gen_ptr, unsigned gen) {
+                     const SearchWindow::SearchSharedState* state,
+                     unsigned gen) {
   if (!out || !budget || *budget <= 0 || needle.empty() || depth > max_depth ||
-      !gen_ptr || gen_ptr->load() != gen) {
+      !state || !state->alive.load() || state->gen.load() != gen) {
     return;
   }
   const std::wstring pattern = dir + L"\\*";
@@ -190,7 +191,7 @@ void SearchRecursive(const std::wstring& dir, const std::wstring& needle,
     return;
   }
   do {
-    if (gen_ptr->load() != gen) {
+    if (!state->alive.load() || state->gen.load() != gen) {
       break;
     }
     if (fd.cFileName[0] == L'.' &&
@@ -210,7 +211,7 @@ void SearchRecursive(const std::wstring& dir, const std::wstring& needle,
         continue;
       }
       SearchRecursive(full, needle, out, budget, depth + 1, max_depth,
-                      include_hidden, allowed_exts, gen_ptr, gen);
+                      include_hidden, allowed_exts, state, gen);
     } else if (NameContains(name, needle) && ExtAllowed(name, allowed_exts)) {
       out->push_back(full);
       --(*budget);
@@ -334,9 +335,13 @@ std::vector<std::wstring> FdSearchRoots(
     const std::wstring& fd, const std::wstring& needle,
     const std::vector<std::wstring>& roots, int max_results, int max_depth,
     int threads, bool include_hidden,
-    const std::vector<std::wstring>& exts) {
+    const std::vector<std::wstring>& exts,
+    const SearchWindow::SearchSharedState* state, unsigned gen) {
   std::vector<std::wstring> hits;
   if (fd.empty() || roots.empty() || needle.empty()) {
+    return hits;
+  }
+  if (state && (!state->alive.load() || state->gen.load() != gen)) {
     return hits;
   }
   std::wstring cmd = L"\"" + fd + L"\" -i -a --max-results " +
@@ -384,13 +389,48 @@ std::vector<std::wstring> FdSearchRoots(
   CloseHandle(pi.hThread);
   std::string utf8;
   char chunk[4096];
-  DWORD n = 0;
-  while (ReadFile(rd, chunk, sizeof(chunk), &n, nullptr) && n) {
+  bool canceled = false;
+  while (true) {
+    if (state && (!state->alive.load() || state->gen.load() != gen)) {
+      TerminateProcess(pi.hProcess, 0);
+      canceled = true;
+      break;
+    }
+    DWORD avail = 0;
+    if (!PeekNamedPipe(rd, nullptr, 0, nullptr, &avail, nullptr)) {
+      break;
+    }
+    if (avail == 0) {
+      if (WaitForSingleObject(pi.hProcess, 15) != WAIT_TIMEOUT) {
+        while (PeekNamedPipe(rd, nullptr, 0, nullptr, &avail, nullptr) &&
+               avail > 0) {
+          DWORD n = 0;
+          const DWORD to_read =
+              (std::min)(static_cast<DWORD>(sizeof(chunk)), avail);
+          if (!ReadFile(rd, chunk, to_read, &n, nullptr) || !n) {
+            break;
+          }
+          utf8.append(chunk, chunk + n);
+        }
+        break;
+      }
+      continue;
+    }
+    DWORD n = 0;
+    const DWORD to_read = (std::min)(static_cast<DWORD>(sizeof(chunk)), avail);
+    if (!ReadFile(rd, chunk, to_read, &n, nullptr) || !n) {
+      break;
+    }
     utf8.append(chunk, chunk + n);
   }
-  WaitForSingleObject(pi.hProcess, 20000);
+  if (!canceled) {
+    WaitForSingleObject(pi.hProcess, 2000);
+  }
   CloseHandle(pi.hProcess);
   CloseHandle(rd);
+  if (canceled) {
+    return hits;
+  }
   size_t pos = 0;
   while (pos < utf8.size()) {
     size_t eol = utf8.find('\n', pos);
@@ -436,6 +476,10 @@ std::vector<std::wstring> SearchWindow::EnumFixedDriveLetters() {
 }
 
 bool SearchWindow::Create(HINSTANCE instance) {
+  if (!shared_state_) {
+    shared_state_ = std::make_shared<SearchSharedState>();
+  }
+  shared_state_->alive.store(true);
   WNDCLASSEXW wc{};
   wc.cbSize = sizeof(wc);
   wc.lpfnWndProc = SearchWindow::WndProc;
@@ -940,6 +984,10 @@ void SearchWindow::ContextAt(int index, int screen_x, int screen_y) {
 }
 
 void SearchWindow::Destroy() {
+  if (shared_state_) {
+    shared_state_->alive.store(false);
+    ++shared_state_->gen;
+  }
   DestroyWebView();
   if (hwnd_) {
     DestroyWindow(hwnd_);
@@ -1035,7 +1083,7 @@ void SearchWindow::RunSearch(const std::wstring& needle) {
     PushState(Tr("search_hint"));
     return;
   }
-  const unsigned gen = ++search_gen_;
+  const unsigned gen = ++shared_state_->gen;
   searching_ = true;
   progress_pct_ = 0;
   PushState(L"搜索中…");
@@ -1051,8 +1099,9 @@ void SearchWindow::RunSearch(const std::wstring& needle) {
   const bool include_hidden = options_.include_hidden;
   const std::wstring fd = FindFdExe();
   HWND hwnd = hwnd_;
+  auto state = shared_state_;
 
-  std::thread([this, hwnd, gen, needle, roots, max_results, max_depth, threads,
+  std::thread([state, hwnd, gen, needle, roots, max_results, max_depth, threads,
                exts, include_hidden, fd]() {
     std::vector<std::wstring> hits;
     hits.reserve(static_cast<size_t>(max_results));
@@ -1065,7 +1114,7 @@ void SearchWindow::RunSearch(const std::wstring& needle) {
 
     const int n = static_cast<int>(roots.size());
     for (int i = 0; i < n; ++i) {
-      if (search_gen_.load() != gen) {
+      if (!state->alive.load() || state->gen.load() != gen) {
         return;
       }
       const std::wstring& root = roots[static_cast<size_t>(i)];
@@ -1099,12 +1148,12 @@ void SearchWindow::RunSearch(const std::wstring& needle) {
       std::vector<std::wstring> batch;
       if (!fd.empty()) {
         batch = FdSearchRoots(fd, needle, {root}, remain, max_depth, threads,
-                              include_hidden, exts);
+                              include_hidden, exts, state.get(), gen);
       }
-      if (batch.empty()) {
+      if (batch.empty() && state->alive.load() && state->gen.load() == gen) {
         int budget = remain;
         SearchRecursive(root, needle, &batch, &budget, 0, max_depth,
-                        include_hidden, allowed_ptr, &search_gen_, gen);
+                        include_hidden, allowed_ptr, state.get(), gen);
       }
       for (auto& p : batch) {
         if (hits.size() >= static_cast<size_t>(max_results)) {
@@ -1114,7 +1163,7 @@ void SearchWindow::RunSearch(const std::wstring& needle) {
       }
     }
 
-    if (search_gen_.load() != gen) {
+    if (!state->alive.load() || state->gen.load() != gen) {
       return;
     }
     auto* done = new SearchUiMsg;
@@ -1155,7 +1204,7 @@ LRESULT SearchWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
         return 0;
       }
       std::unique_ptr<SearchUiMsg> own(m);
-      if (own->gen != search_gen_.load()) {
+      if (!shared_state_ || own->gen != shared_state_->gen.load()) {
         return 0;
       }
       if (own->done) {
@@ -1189,7 +1238,10 @@ LRESULT SearchWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
       Hide();
       return 0;
     case WM_DESTROY:
-      ++search_gen_;
+      if (shared_state_) {
+        shared_state_->alive.store(false);
+        ++shared_state_->gen;
+      }
       DestroyWebView();
       hwnd_ = nullptr;
       return 0;

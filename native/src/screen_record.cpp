@@ -19,11 +19,14 @@
 #include <windowsx.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cstdio>
 #include <ctime>
 #include <fstream>
+#include <memory>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <vector>
 
 #ifndef WDA_EXCLUDEFROMCAPTURE
@@ -61,6 +64,7 @@ std::wstring g_out_path;  // current (segment) output path
 bool g_class_reg = false;
 bool g_border_class_reg = false;
 bool g_paused = false;
+std::atomic<bool> g_merging{false};
 DWORD g_rec_start_tick = 0;
 DWORD g_paused_accum_ms = 0;
 DWORD g_pause_tick = 0;
@@ -831,12 +835,14 @@ void FinalizeCurrentSegment() {
   WriteRecordState();
 }
 
-bool RunConcat(const std::wstring& list_path, const std::wstring& out_path) {
+bool RunConcatForCmd(const RecCmd& cmd_cfg, const std::wstring& list_path,
+                     const std::wstring& out_path) {
   // No audio → -c copy. With audio, remux desyncs on pause/resume — re-encode
   // like Python build_concat_command (P0-7).
-  std::wstring cmd = L"\"" + g_cmd.ff + L"\" -y -loglevel error -f concat -safe 0 -i \"" +
+  std::wstring cmd = L"\"" + cmd_cfg.ff +
+                     L"\" -y -loglevel error -f concat -safe 0 -i \"" +
                      list_path + L"\"";
-  if (!g_cmd.with_audio) {
+  if (!cmd_cfg.with_audio) {
     cmd += L" -c copy";
   } else {
     cmd += L" -c:v libx264 -preset ultrafast -crf 23 -pix_fmt yuv420p -c:a aac";
@@ -867,25 +873,29 @@ bool RunConcat(const std::wstring& list_path, const std::wstring& out_path) {
   return true;
 }
 
-std::wstring MergeSegments() {
-  if (g_segments.empty()) {
+std::wstring MergeSegmentsForCmd(const RecCmd& cmd_cfg,
+                                 const std::vector<std::wstring>& segments) {
+  if (segments.empty()) {
     return {};
   }
-  const std::wstring final_path = FinalOutputPath();
-  if (g_segments.size() == 1) {
-    const std::wstring seg = g_segments[0];
-    if (_wcsicmp(seg.c_str(), final_path.c_str()) != 0) {
+  const std::wstring final_path =
+      (cmd_cfg.out_dir.empty() || cmd_cfg.stem.empty())
+          ? std::wstring{}
+          : JoinPath(cmd_cfg.out_dir, cmd_cfg.stem + L".mp4");
+  if (segments.size() == 1) {
+    const std::wstring seg = segments[0];
+    if (!final_path.empty() && _wcsicmp(seg.c_str(), final_path.c_str()) != 0) {
       DeleteFileW(final_path.c_str());
       if (!MoveFileW(seg.c_str(), final_path.c_str())) {
         LogLineA("[record] rename to final failed, keep segment path");
         return seg;
       }
     }
-    return final_path;
+    return final_path.empty() ? seg : final_path;
   }
   // Concat demuxer playlist (forward slashes for safe parsing).
   std::string playlist;
-  for (const auto& s : g_segments) {
+  for (const auto& s : segments) {
     std::wstring p = s;
     for (auto& c : p) {
       if (c == L'\\') {
@@ -895,26 +905,30 @@ std::wstring MergeSegments() {
     playlist += "file '" + NarrowUtf8(p) + "'\n";
   }
   const std::wstring list_path =
-      JoinPath(g_cmd.out_dir, g_cmd.stem + L".concat.txt");
+      JoinPath(cmd_cfg.out_dir, cmd_cfg.stem + L".concat.txt");
   FILE* f = nullptr;
   if (_wfopen_s(&f, list_path.c_str(), L"wb") != 0 || !f) {
     LogLineA("[record] concat: cannot write playlist");
-    return g_segments.front();
+    return segments.front();
   }
   fwrite(playlist.data(), 1, playlist.size(), f);
   fclose(f);
 
   DeleteFileW(final_path.c_str());
-  if (!RunConcat(list_path, final_path)) {
+  if (!RunConcatForCmd(cmd_cfg, list_path, final_path)) {
     // Failure: keep segments + playlist so the user can recover (P0-7).
     LogLineA("[record] concat failed, keeping segments");
-    return g_segments.front();
+    return segments.front();
   }
   DeleteFileW(list_path.c_str());
-  for (const auto& s : g_segments) {
+  for (const auto& s : segments) {
     DeleteFileW(s.c_str());
   }
   return final_path;
+}
+
+std::wstring MergeSegments() {
+  return MergeSegmentsForCmd(g_cmd, g_segments);
 }
 
 ULONGLONG FileSizeOf(const std::wstring& path) {
@@ -1413,10 +1427,13 @@ void RunKeepDiscardRenameDialog(std::wstring saved) {
 LRESULT CALLBACK RecDoneWndProc(HWND hwnd, UINT msg, WPARAM wparam,
                                 LPARAM lparam) {
   if (msg == kMsgRecDonePrompt) {
+    std::unique_ptr<std::wstring> param_path(
+        reinterpret_cast<std::wstring*>(lparam));
     if (g_done_prompt_open) {
       return 0;
     }
-    std::wstring path = std::move(g_pending_done_path);
+    std::wstring path = param_path ? std::move(*param_path)
+                                   : std::move(g_pending_done_path);
     g_pending_done_path.clear();
     if (path.empty()) {
       return 0;
@@ -1463,8 +1480,68 @@ void PromptKeepDiscardRename(const std::wstring& saved_in) {
   PostMessageW(g_done_hwnd, kMsgRecDonePrompt, 0, 0);
 }
 
+void FinalizeAndMergeAsync() {
+  EnsureRecDoneHwnd();
+  HANDLE proc = g_proc;
+  HANDLE stdin_wr = g_stdin_wr;
+  bool adopted = g_adopted;
+  std::wstring out_path = std::move(g_out_path);
+  std::vector<std::wstring> segments = std::move(g_segments);
+  RecCmd cmd = g_cmd;
+
+  g_proc = nullptr;
+  g_proc_pid = 0;
+  g_proc_create_ms = 0;
+  g_stdin_wr = nullptr;
+  g_adopted = false;
+  g_paused = false;
+  g_pause_tick = 0;
+  g_out_path.clear();
+  g_segments.clear();
+  g_cmd = RecCmd{};
+  DestroyBadges();
+
+  g_merging.store(true);
+  std::thread([proc, stdin_wr, adopted, out_path = std::move(out_path),
+               segments = std::move(segments), cmd = std::move(cmd)]() mutable {
+    if (proc) {
+      if (stdin_wr) {
+        DWORD written = 0;
+        const char q = 'q';
+        WriteFile(stdin_wr, &q, 1, &written, nullptr);
+        CloseHandle(stdin_wr);
+        stdin_wr = nullptr;
+      } else if (adopted) {
+        TerminateProcess(proc, 0);
+      }
+      if (WaitForSingleObject(proc, 3000) == WAIT_TIMEOUT) {
+        LogLineA("[record] ffmpeg segment did not exit in time, terminating");
+        TerminateProcess(proc, 0);
+        WaitForSingleObject(proc, 2000);
+      }
+      CloseHandle(proc);
+    }
+    if (stdin_wr) {
+      CloseHandle(stdin_wr);
+    }
+    if (!out_path.empty()) {
+      segments.push_back(out_path);
+    }
+    const std::wstring saved = MergeSegmentsForCmd(cmd, segments);
+    ClearRecordState();
+    g_merging.store(false);
+    if (!saved.empty() && g_done_hwnd) {
+      auto* heap_saved = new std::wstring(saved);
+      if (!PostMessageW(g_done_hwnd, kMsgRecDonePrompt, 0,
+                        reinterpret_cast<LPARAM>(heap_saved))) {
+        delete heap_saved;
+      }
+    }
+  }).detach();
+}
+
 bool StartRecording(HWND owner) {
-  if (g_proc || g_paused) {
+  if (g_proc || g_paused || g_merging.load()) {
     return false;
   }
   std::wstring ff;
@@ -1616,16 +1693,7 @@ void PauseScreenRecord(bool pause) {
         const int rem = budget - elapsed_s;
         if (rem <= 0) {
           LogLineA("[record] resume: timed budget exhausted → stop");
-          g_paused = false;
-          DestroyBadges();
-          const std::wstring saved = MergeSegments();
-          g_out_path.clear();
-          g_segments.clear();
-          g_cmd = RecCmd{};
-          ClearRecordState();
-          if (!saved.empty()) {
-            PromptKeepDiscardRename(saved);
-          }
+          FinalizeAndMergeAsync();
           return;
         }
         g_cmd.seconds = rem;
@@ -1658,26 +1726,7 @@ bool IsScreenRecording() {
   }
   const DWORD wait = WaitForSingleObject(g_proc, 0);
   if (wait != WAIT_TIMEOUT) {
-    CloseHandle(g_proc);
-    g_proc = nullptr;
-    g_proc_pid = 0;
-    g_adopted = false;
-    if (g_stdin_wr) {
-      CloseHandle(g_stdin_wr);
-      g_stdin_wr = nullptr;
-    }
-    if (!g_out_path.empty()) {
-      g_segments.push_back(g_out_path);
-      g_out_path.clear();
-    }
-    DestroyBadges();
-    const std::wstring saved = MergeSegments();
-    g_segments.clear();
-    g_cmd = RecCmd{};
-    ClearRecordState();
-    if (!saved.empty()) {
-      PromptKeepDiscardRename(saved);
-    }
+    FinalizeAndMergeAsync();
     return false;
   }
   return true;
@@ -1687,20 +1736,7 @@ void StopScreenRecord() {
   if (!g_proc && !g_paused) {
     return;
   }
-  if (g_proc) {
-    FinalizeCurrentSegment();
-  }
-  g_paused = false;
-  g_pause_tick = 0;
-  DestroyBadges();
-  const std::wstring saved = MergeSegments();
-  g_out_path.clear();
-  g_segments.clear();
-  g_cmd = RecCmd{};
-  ClearRecordState();
-  if (!saved.empty()) {
-    PromptKeepDiscardRename(saved);
-  }
+  FinalizeAndMergeAsync();
 }
 
 std::wstring ScreenRecordOutputPath() {
@@ -1708,7 +1744,7 @@ std::wstring ScreenRecordOutputPath() {
 }
 
 bool AdoptOrphanScreenRecord() {
-  if (g_proc || g_paused) {
+  if (g_proc || g_paused || g_merging.load()) {
     return false;
   }
   DWORD pid = 0;

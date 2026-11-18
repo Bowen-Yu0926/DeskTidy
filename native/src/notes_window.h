@@ -17,6 +17,7 @@
 
 class NotesWindow {
  public:
+  ~NotesWindow();
   bool Create(HINSTANCE instance);
   void Destroy();
   void Show();
@@ -316,8 +317,8 @@ class NotesWindow {
   HWND sidebar_ = nullptr;
   HWND sidebar_search_ = nullptr;
   HWND sidebar_new_ = nullptr;
-  HWND sidebar_online_ = nullptr;  // ☁ open / create online notes
   HWND sidebar_refresh_ = nullptr;
+  HWND sidebar_account_ = nullptr;  // bottom strip: "登录/注册" or username
   void EnsureOnlineNotesPanel();
   void OpenOnlineNotes(bool create_new);
   void EnsureLibraryRail();
@@ -334,6 +335,8 @@ class NotesWindow {
   void OpenOnlineNoteInEditor(int note_id);
   void NewOnlineNoteInEditor();
   void EnsureLibraryCloudLogin();
+  // Returns true if logged in after the dialog closes.
+  bool ShowAccountLoginDialog();
   void ConvertPathToCloud(const std::wstring& path);
   void ConvertPathToLocal(const std::wstring& path, int note_id);
   void SyncRefreshFromCloud();
