@@ -44,7 +44,7 @@ std::wstring Widen(const std::string& s) {
 std::string EscapeJson(const std::string& s) {
   std::string out;
   out.reserve(s.size() + 8);
-  for (char c : s) {
+  for (unsigned char c : s) {
     switch (c) {
       case '\\':
         out += "\\\\";
@@ -58,21 +58,84 @@ std::string EscapeJson(const std::string& s) {
       case '\r':
         out += "\\r";
         break;
+      case '\t':
+        out += "\\t";
+        break;
       default:
-        out.push_back(c);
+        if (c >= 0x20) {
+          out.push_back(static_cast<char>(c));
+        } else {
+          char hex[8];
+          snprintf(hex, sizeof(hex), "\\u%04x", static_cast<unsigned int>(c));
+          out += hex;
+        }
         break;
     }
   }
   return out;
 }
 
-bool FindNumber(const std::string& body, const char* key, int* out) {
-  const std::string needle = std::string("\"") + key + "\"";
-  size_t p = body.find(needle);
-  if (p == std::string::npos) {
-    return false;
+// Find a JSON key `"<key>"` followed by `:` at the given brace depth (or any
+// depth when `required_depth < 0`), ignoring occurrences inside string values.
+// Returns the index of the `:` after the key, or std::string::npos.
+size_t FindJsonKeyColon(const std::string& body, const char* key,
+                        int required_depth = -1) {
+  const size_t key_len = strlen(key);
+  int depth = 0;
+  bool in_str = false;
+  for (size_t i = 0; i < body.size(); ++i) {
+    const char c = body[i];
+    if (in_str) {
+      if (c == '\\' && i + 1 < body.size()) {
+        ++i;
+      } else if (c == '"') {
+        in_str = false;
+      }
+      continue;
+    }
+    if (c == '{' || c == '[') {
+      ++depth;
+      continue;
+    }
+    if (c == '}' || c == ']') {
+      --depth;
+      continue;
+    }
+    if (c == '"') {
+      const size_t start = i + 1;
+      size_t end = start;
+      bool has_escape = false;
+      while (end < body.size() && body[end] != '"') {
+        if (body[end] == '\\' && end + 1 < body.size()) {
+          has_escape = true;
+          end += 2;
+        } else {
+          ++end;
+        }
+      }
+      if (end >= body.size()) {
+        break;
+      }
+      size_t after = end + 1;
+      while (after < body.size() &&
+             (body[after] == ' ' || body[after] == '\t' ||
+              body[after] == '\r' || body[after] == '\n')) {
+        ++after;
+      }
+      if (after < body.size() && body[after] == ':' &&
+          (required_depth < 0 || depth == required_depth) && !has_escape &&
+          (end - start) == key_len &&
+          body.compare(start, key_len, key) == 0) {
+        return after;
+      }
+      i = end;
+    }
   }
-  p = body.find(':', p + needle.size());
+  return std::string::npos;
+}
+
+bool FindNumber(const std::string& body, const char* key, int* out) {
+  size_t p = FindJsonKeyColon(body, key, 1);
   if (p == std::string::npos) {
     return false;
   }
@@ -98,12 +161,7 @@ bool FindNumber(const std::string& body, const char* key, int* out) {
 }
 
 bool FindString(const std::string& body, const char* key, std::string* out) {
-  const std::string needle = std::string("\"") + key + "\"";
-  size_t p = body.find(needle);
-  if (p == std::string::npos) {
-    return false;
-  }
-  p = body.find(':', p + needle.size());
+  size_t p = FindJsonKeyColon(body, key, 1);
   if (p == std::string::npos) {
     return false;
   }
@@ -120,6 +178,8 @@ bool FindString(const std::string& body, const char* key, std::string* out) {
         val.push_back('\n');
       } else if (body[p] == 'r') {
         val.push_back('\r');
+      } else if (body[p] == 't') {
+        val.push_back('\t');
       } else {
         val.push_back(body[p]);
       }
@@ -133,12 +193,7 @@ bool FindString(const std::string& body, const char* key, std::string* out) {
 }
 
 bool FindBool(const std::string& body, const char* key, bool* out) {
-  const std::string needle = std::string("\"") + key + "\"";
-  size_t p = body.find(needle);
-  if (p == std::string::npos) {
-    return false;
-  }
-  p = body.find(':', p + needle.size());
+  size_t p = FindJsonKeyColon(body, key, 1);
   if (p == std::string::npos) {
     return false;
   }
@@ -519,7 +574,7 @@ AppState LoadAppStateFromPath(const std::wstring& path, bool inject_defaults) {
     if (FindString(obj, "fp", &fp) && !fp.empty()) {
       continue;  // display-profile rows applied below
     }
-    if (obj.find("\"pg\"") != std::string::npos) {
+    if (FindJsonKeyColon(obj, "pg", 1) != std::string::npos) {
       continue;  // per-page geometry rows applied below
     }
     FindString(obj, "title", &title);
@@ -556,7 +611,7 @@ AppState LoadAppStateFromPath(const std::wstring& path, bool inject_defaults) {
     FindStringArray(obj, "organize_kinds", &organize_kinds);
     std::vector<int> fence_pages;
     {
-      const size_t arr = obj.find("\"pages\"");
+      const size_t arr = FindJsonKeyColon(obj, "pages", 1);
       if (arr != std::string::npos) {
         size_t lb = obj.find('[', arr);
         size_t rb = obj.find(']', lb == std::string::npos ? 0 : lb);
@@ -835,7 +890,7 @@ AppState LoadAppStateFromPath(const std::wstring& path, bool inject_defaults) {
   if (inject_defaults) {
     HealFenceLayouts(&state.fences);
   }
-  const auto pages_key = json.find("\"pages\"");
+  const auto pages_key = FindJsonKeyColon(json, "pages", 1);
   if (pages_key != std::string::npos) {
     const auto lb = json.find('[', pages_key);
     const auto rb = lb == std::string::npos ? std::string::npos : json.find(']', lb);
@@ -864,7 +919,7 @@ AppState LoadAppStateFromPath(const std::wstring& path, bool inject_defaults) {
   }
   // U7 page.locked: parse the per-page lock flags array (index = page id).
   {
-    const auto lock_key = json.find("\"page_locked\"");
+    const auto lock_key = FindJsonKeyColon(json, "page_locked", 1);
     if (lock_key != std::string::npos) {
       const auto lb = json.find('[', lock_key);
       const auto rb = lb == std::string::npos ? std::string::npos

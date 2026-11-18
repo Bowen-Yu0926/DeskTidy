@@ -626,6 +626,16 @@ HICON LoadItemIcon(const std::wstring& path, int size_px) {
   }
   {
     std::lock_guard<std::mutex> lk(g_master_icon_cache_mutex);
+    constexpr size_t kMaxMasterIconCacheEntries = 1024;
+    if (g_master_icon_cache.size() >= kMaxMasterIconCacheEntries &&
+        g_master_icon_cache.find(key) == g_master_icon_cache.end()) {
+      for (auto& kv : g_master_icon_cache) {
+        if (kv.second) {
+          DestroyIcon(kv.second);
+        }
+      }
+      g_master_icon_cache.clear();
+    }
     auto result = g_master_icon_cache.emplace(key, master);
     if (!result.second) {
       // Another worker already cached this icon — drop our duplicate.
@@ -686,7 +696,8 @@ void IconWorkerMain() {
         DestroyIcon(icon);
       }
     }
-    if (batch.notify && batch.done_msg && IsWindow(batch.notify)) {
+    if (!g_icon_worker_stop && batch.notify && batch.done_msg &&
+        IsWindow(batch.notify)) {
       PostMessageW(batch.notify, batch.done_msg, 0, 0);
     }
   }

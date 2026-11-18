@@ -253,17 +253,21 @@ std::wstring FileUrlFromPath(const std::wstring& path) {
 }  // namespace
 
 bool SettingsWindow::Create(HINSTANCE instance) {
-  WNDCLASSEXW wc{};
-  wc.cbSize = sizeof(wc);
-  wc.lpfnWndProc = SettingsWindow::WndProc;
-  wc.hInstance = instance;
-  wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
-  wc.hbrBackground = CreateSolidBrush(RGB(0xEE, 0xF1, 0xF6));
-  wc.lpszClassName = kClassName;
-  // Brand icons on the class so the taskbar never falls back to a live preview.
-  wc.hIcon = CreateBrandMarkIcon(32);
-  wc.hIconSm = CreateBrandMarkIcon(16);
-  RegisterClassExW(&wc);
+  static bool s_class_registered = false;
+  if (!s_class_registered) {
+    WNDCLASSEXW wc{};
+    wc.cbSize = sizeof(wc);
+    wc.lpfnWndProc = SettingsWindow::WndProc;
+    wc.hInstance = instance;
+    wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
+    wc.hbrBackground = CreateSolidBrush(RGB(0xEE, 0xF1, 0xF6));
+    wc.lpszClassName = kClassName;
+    // Brand icons on the class so the taskbar never falls back to a live preview.
+    wc.hIcon = CreateBrandMarkIcon(32);
+    wc.hIconSm = CreateBrandMarkIcon(16);
+    RegisterClassExW(&wc);
+    s_class_registered = true;
+  }
 
   // 现代桌面软件后台标准尺寸（1120x740），并自适应当前工作区居中展示
   int default_w = 1120;
@@ -353,6 +357,9 @@ bool SettingsWindow::CreateWebView() {
                       ICoreWebView2* web = nullptr;
                       controller->get_CoreWebView2(&web);
                       if (!web) {
+                        controller->Close();
+                        controller->Release();
+                        controller_ = nullptr;
                         return S_OK;
                       }
                       webview_ = web;

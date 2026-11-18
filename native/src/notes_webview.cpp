@@ -1188,18 +1188,38 @@ void NotesWebView::SetScrollRatio(double ratio) {
 namespace {
 void PumpWebViewWaitMessages(HWND parent) {
   MSG msg{};
+  bool deferred_close = false;
+  HWND close_hwnd = nullptr;
+  bool deferred_quit = false;
+  WPARAM quit_code = 0;
   while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
+    if (msg.message == WM_QUIT) {
+      deferred_quit = true;
+      quit_code = msg.wParam;
+      break;
+    }
+    if (msg.message == WM_CLOSE) {
+      deferred_close = true;
+      close_hwnd = msg.hwnd;
+      continue;
+    }
     // Drop user input and host commands/timers during synchronous WebView2
     // waits so tab switching, saving, or closing cannot re-enter mid-call.
     if ((msg.message >= WM_KEYFIRST && msg.message <= WM_KEYLAST) ||
         (msg.message >= WM_MOUSEFIRST && msg.message <= WM_MOUSELAST) ||
         msg.message == WM_COMMAND || msg.message == WM_SYSCOMMAND ||
-        msg.message == WM_CLOSE || msg.message == WM_HOTKEY ||
+        msg.message == WM_HOTKEY ||
         (msg.message == WM_TIMER && parent && msg.hwnd == parent)) {
       continue;
     }
     TranslateMessage(&msg);
     DispatchMessageW(&msg);
+  }
+  if (deferred_close && close_hwnd && IsWindow(close_hwnd)) {
+    PostMessageW(close_hwnd, WM_CLOSE, 0, 0);
+  }
+  if (deferred_quit) {
+    PostQuitMessage(static_cast<int>(quit_code));
   }
 }
 }  // namespace

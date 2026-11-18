@@ -637,7 +637,15 @@ std::wstring NativeDisplayVersion() {
 }
 
 void StartUpdateCheckAsync(HWND owner, bool force, bool interactive) {
+  static std::atomic<bool> g_checking{false};
+  if (g_checking.exchange(true)) {
+    LogLine(L"[update] check already in progress, ignoring duplicate request");
+    return;
+  }
   std::thread([owner, force, interactive]() {
+    struct ResetGuard {
+      ~ResetGuard() { g_checking.store(false); }
+    } reset_guard;
     auto* r = new UpdateCheckResult;
     r->interactive = interactive;
     r->current = NativeProductVersion();

@@ -23,6 +23,8 @@ CRITICAL_SECTION g_lock;
 bool g_inited = false;
 std::wstring g_log_path;
 std::wstring g_hist_path;
+HANDLE g_log_file = INVALID_HANDLE_VALUE;
+LONGLONG g_log_bytes = 0;
 
 // Guard against recursive crashes inside a handler (the handler must never
 // fault again and re-enter itself).
@@ -70,7 +72,8 @@ void CrashWrite(const wchar_t* message) {
   CloseHandle(h);
 }
 
-// Core append: thread-safe, rotates when oversized, flushes at ~2 Hz.
+// Core append: thread-safe, persistent file handle, rotates when oversized,
+// flushes at ~2 Hz.
 void WriteCore(const char* utf8, size_t len) {
   if (!g_inited) {
     return;
@@ -78,52 +81,68 @@ void WriteCore(const char* utf8, size_t len) {
   EnterCriticalSection(&g_lock);
 
   bool fresh = false;
-  HANDLE h =
-      CreateFileW(g_log_path.c_str(), FILE_APPEND_DATA, FILE_SHARE_READ, nullptr,
-                  OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-  if (h == INVALID_HANDLE_VALUE) {
-    LeaveCriticalSection(&g_lock);
-    return;
+  if (g_log_file != INVALID_HANDLE_VALUE && g_log_bytes > kMaxLogBytes) {
+    CloseHandle(g_log_file);
+    g_log_file = INVALID_HANDLE_VALUE;
+    g_log_bytes = 0;
+    MoveFileExW(g_log_path.c_str(), g_hist_path.c_str(),
+                MOVEFILE_REPLACE_EXISTING);
   }
-  LARGE_INTEGER size{};
-  if (GetFileSizeEx(h, &size)) {
-    fresh = size.QuadPart == 0;
-    if (size.QuadPart > kMaxLogBytes) {
-      CloseHandle(h);
-      MoveFileExW(g_log_path.c_str(), g_hist_path.c_str(),
-                  MOVEFILE_REPLACE_EXISTING);
-      h = CreateFileW(g_log_path.c_str(), FILE_APPEND_DATA, FILE_SHARE_READ,
-                      nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-      if (h == INVALID_HANDLE_VALUE) {
-        LeaveCriticalSection(&g_lock);
-        return;
+  if (g_log_file == INVALID_HANDLE_VALUE) {
+    g_log_file =
+        CreateFileW(g_log_path.c_str(), FILE_APPEND_DATA, FILE_SHARE_READ,
+                    nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (g_log_file == INVALID_HANDLE_VALUE) {
+      LeaveCriticalSection(&g_lock);
+      return;
+    }
+    LARGE_INTEGER size{};
+    if (GetFileSizeEx(g_log_file, &size)) {
+      g_log_bytes = size.QuadPart;
+      fresh = (size.QuadPart == 0);
+      if (size.QuadPart > kMaxLogBytes) {
+        CloseHandle(g_log_file);
+        g_log_file = INVALID_HANDLE_VALUE;
+        MoveFileExW(g_log_path.c_str(), g_hist_path.c_str(),
+                    MOVEFILE_REPLACE_EXISTING);
+        g_log_file =
+            CreateFileW(g_log_path.c_str(), FILE_APPEND_DATA, FILE_SHARE_READ,
+                        nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (g_log_file == INVALID_HANDLE_VALUE) {
+          LeaveCriticalSection(&g_lock);
+          return;
+        }
+        g_log_bytes = 0;
+        fresh = true;
       }
-      fresh = true;
     }
   }
 
-  DWORD written = 0;
-  if (fresh) {
-    const unsigned char bom[3] = {0xEF, 0xBB, 0xBF};
-    WriteFile(h, bom, 3, &written, nullptr);
-  }
   wchar_t prefix[96];
   swprintf_s(prefix, L"%s [%lu:%lu] ", TimestampNow().c_str(),
              GetCurrentProcessId(), GetCurrentThreadId());
-  std::string head = NarrowUtf8(prefix);
-  WriteFile(h, head.data(), static_cast<DWORD>(head.size()), &written, nullptr);
-  WriteFile(h, utf8, static_cast<DWORD>(len), &written, nullptr);
-  const char nl = '\n';
-  WriteFile(h, &nl, 1, &written, nullptr);
+  std::string line;
+  line.reserve((fresh ? 3 : 0) + 48 + len + 1);
+  if (fresh) {
+    line.append("\xEF\xBB\xBF", 3);
+  }
+  line += NarrowUtf8(prefix);
+  line.append(utf8, len);
+  line.push_back('\n');
+
+  DWORD written = 0;
+  WriteFile(g_log_file, line.data(), static_cast<DWORD>(line.size()), &written,
+            nullptr);
+  g_log_bytes += written;
+
   // Flush at most ~2 Hz. Every-line FlushFileBuffers stalled the UI during
   // RefreshDesktopIcons / shell-notify log storms (N fences × sync disk).
   static ULONGLONG s_last_flush_ms = 0;
   const ULONGLONG now = GetTickCount64();
   if (now - s_last_flush_ms >= 500) {
-    FlushFileBuffers(h);
+    FlushFileBuffers(g_log_file);
     s_last_flush_ms = now;
   }
-  CloseHandle(h);
   LeaveCriticalSection(&g_lock);
 }
 
@@ -194,6 +213,13 @@ void LogShutdown() {
   }
   static const char kShutdown[] = "[log] shutdown";
   WriteCore(kShutdown, strlen(kShutdown));
+  EnterCriticalSection(&g_lock);
+  if (g_log_file != INVALID_HANDLE_VALUE) {
+    FlushFileBuffers(g_log_file);
+    CloseHandle(g_log_file);
+    g_log_file = INVALID_HANDLE_VALUE;
+  }
+  LeaveCriticalSection(&g_lock);
 }
 
 void LogLine(const wchar_t* fmt, ...) {

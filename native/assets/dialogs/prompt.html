@@ -111,29 +111,34 @@
   function post(msg) {
     try { chrome.webview.postMessage(JSON.stringify(msg)); } catch (e) {}
   }
-  function focusVal() {
+  let userEdited = false;
+  function focusVal(forceSelect) {
     const el = document.getElementById('val');
     if (!el) return;
     el.focus();
-    el.select();
+    if (forceSelect || !userEdited) {
+      el.select();
+    }
   }
   window.applyState = function(m) {
     if (!m) return;
     // Host asks to restore caret after empty OK / IME glitch.
     if (m.type === 'focus') {
-      focusVal();
-      setTimeout(focusVal, 40);
+      focusVal(false);
+      setTimeout(() => focusVal(false), 40);
       return;
     }
     if (m.type !== 'state') return;
+    userEdited = false;
     if (m.title) document.getElementById('title').textContent = m.title;
     document.getElementById('label').textContent = m.label || '';
     document.getElementById('val').value = m.value || '';
     // Host MoveFocus + retries: WebView2 often ignores the first focus().
-    focusVal();
-    setTimeout(focusVal, 50);
-    setTimeout(focusVal, 160);
+    focusVal(true);
+    setTimeout(() => focusVal(false), 50);
+    setTimeout(() => focusVal(false), 160);
   };
+  document.getElementById('val').addEventListener('input', () => { userEdited = true; });
   document.getElementById('ok').onclick = () => {
     post({ type: 'action', id: 'ok', value: document.getElementById('val').value });
   };

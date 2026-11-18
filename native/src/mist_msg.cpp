@@ -206,7 +206,7 @@ std::wstring MistPromptText(HWND owner, const wchar_t* title,
   MistWebDialog dlg;
   dlg.owner = owner;
   dlg.frameless = true;
-  dlg.user_data_subdir = L"webview2-mist-prompt";
+  dlg.user_data_subdir = L"webview2-mist-msg";
   dlg.html_path = html;
   dlg.build_state = [&]() {
     std::wstring json = L"{\"type\":\"state\",\"title\":\"";

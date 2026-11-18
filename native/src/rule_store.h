@@ -34,15 +34,7 @@ class RuleMap {
     }
   }
 
-  std::string& operator[](const std::wstring& key) {
-    const auto it = index_.find(key);
-    if (it != index_.end()) {
-      return order_[it->second].second;
-    }
-    index_[key] = order_.size();
-    order_.emplace_back(key, std::string{});
-    return order_.back().second;
-  }
+  std::string& operator[](const std::wstring& key);
 
   bool empty() const { return order_.empty(); }
   size_t size() const { return order_.size(); }
@@ -59,15 +51,14 @@ class RuleMap {
   auto cbegin() const { return order_.cbegin(); }
   auto cend() const { return order_.cend(); }
 
-  // Case-folded (locale-invariant lowercase) copy of the key at `i`, cached
-  // lazily so ResolveFenceId skips the per-file LCMapStringW fold of every
-  // rule key. Defined in rule_store.cpp.
+  // Case-folded (locale-invariant lowercase) copy of the key at `i`, precomputed
+  // on insertion so concurrent const readers never mutate internal buffers.
   const std::wstring& FoldedKey(size_t i) const;
 
  private:
   std::vector<value_type> order_;
   std::unordered_map<std::wstring, size_t> index_;
-  mutable std::vector<std::wstring> folded_;
+  std::vector<std::wstring> folded_;
 };
 
 std::wstring RuleFilePath();

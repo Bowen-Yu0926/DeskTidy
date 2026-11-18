@@ -6,23 +6,15 @@
 #include <ShlObj.h>
 #include <Shellapi.h>
 
+#include <atomic>
 #include <cstring>
 #include <string>
 #include <utility>
 #include <vector>
-#include <string>
-#include <vector>
 
 namespace {
 
-std::wstring g_exe_dir;
-bool g_exe_dir_init = false;
-
-std::wstring ExeDir() {
-  if (g_exe_dir_init) {
-    return g_exe_dir;
-  }
-  g_exe_dir_init = true;
+std::wstring ComputeExeDir() {
   wchar_t mod[MAX_PATH] = {};
   const DWORD n = GetModuleFileNameW(nullptr, mod, MAX_PATH);
   std::wstring p(mod, n > 0 ? n : 0);
@@ -30,8 +22,12 @@ std::wstring ExeDir() {
   if (slash != std::wstring::npos) {
     p.resize(slash);
   }
-  g_exe_dir = p;
-  return g_exe_dir;
+  return p;
+}
+
+const std::wstring& ExeDir() {
+  static const std::wstring s_exe_dir = ComputeExeDir();
+  return s_exe_dir;
 }
 
 bool PortableFileExists() {
@@ -55,12 +51,6 @@ bool PortableFlagOnCommandLine() {
   LocalFree(argv);
   return found;
 }
-
-bool g_portable_checked = false;
-bool g_portable = false;
-
-bool g_dev_checked = false;
-bool g_dev_runtime = false;
 
 bool FileExistsSimple(const std::wstring& path) {
   const DWORD attr = GetFileAttributesW(path.c_str());
@@ -88,7 +78,7 @@ bool DetectDevRuntime() {
       return cli_override == 1;
     }
   }
-  const std::wstring exe_dir = ExeDir();
+  const std::wstring& exe_dir = ExeDir();
   if (exe_dir.empty()) {
     return false;
   }
@@ -106,34 +96,7 @@ bool DetectDevRuntime() {
   return false;
 }
 
-// One-shot log of the resolved data root. Deferred to the second NativeDataDir()
-// call: the first call happens inside LogInit() before the logger is ready, so
-// LogLine would be a no-op. The resolved dir is deterministic, so logging it on
-// the following call is equivalent.
-bool g_root_first_call = false;
-bool g_root_log_done = false;
-
-}  // namespace
-
-std::wstring NativeExeDir() { return ExeDir(); }
-
-bool IsPortableMode() {
-  if (!g_portable_checked) {
-    g_portable_checked = true;
-    g_portable = PortableFlagOnCommandLine() || PortableFileExists();
-  }
-  return g_portable;
-}
-
-bool IsDevRuntime() {
-  if (!g_dev_checked) {
-    g_dev_checked = true;
-    g_dev_runtime = DetectDevRuntime();
-  }
-  return g_dev_runtime;
-}
-
-std::wstring NativeDataDir() {
+std::wstring ComputeNativeDataDir() {
   std::wstring dir;
   if (IsPortableMode()) {
     dir = ExeDir() + L"\\data";
@@ -150,19 +113,43 @@ std::wstring NativeDataDir() {
     }
   }
   CreateDirectoryW(dir.c_str(), nullptr);
+  return dir;
+}
 
-  if (!g_root_log_done) {
-    if (g_root_first_call) {
-      // Set before LogLine: LogLine -> LogDirPath -> NativeDataDir recursion.
-      g_root_log_done = true;
-      LogLine(L"[paths] data root = %s (portable=%s channel=%s)", dir.c_str(),
+// One-shot log of the resolved data root. Deferred to the second NativeDataDir()
+// call: the first call happens inside LogInit() before the logger is ready, so
+// LogLine would be a no-op.
+std::atomic<int> g_root_call_state{0};
+
+}  // namespace
+
+std::wstring NativeExeDir() { return ExeDir(); }
+
+bool IsPortableMode() {
+  static const bool s_portable =
+      PortableFlagOnCommandLine() || PortableFileExists();
+  return s_portable;
+}
+
+bool IsDevRuntime() {
+  static const bool s_dev_runtime = DetectDevRuntime();
+  return s_dev_runtime;
+}
+
+std::wstring NativeDataDir() {
+  static const std::wstring s_dir = ComputeNativeDataDir();
+  CreateDirectoryW(s_dir.c_str(), nullptr);
+
+  int expected = 0;
+  if (!g_root_call_state.compare_exchange_strong(expected, 1)) {
+    if (expected == 1 &&
+        g_root_call_state.compare_exchange_strong(expected, 2)) {
+      LogLine(L"[paths] data root = %s (portable=%s channel=%s)", s_dir.c_str(),
               IsPortableMode() ? L"yes" : L"no",
               IsDevRuntime() ? L"dev" : L"release");
-    } else {
-      g_root_first_call = true;
     }
   }
-  return dir;
+  return s_dir;
 }
 
 std::wstring JoinPath(const std::wstring& a, const std::wstring& b) {

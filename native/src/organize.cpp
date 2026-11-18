@@ -353,9 +353,35 @@ std::vector<std::wstring> DefaultExcludePatterns() {
 }
 
 std::vector<std::wstring> LoadExcludePatterns() {
+  static std::mutex s_mu;
+  static ULONGLONG s_cached_mtime = 0;
+  static bool s_has_cache = false;
+  static std::vector<std::wstring> s_cached;
+
+  WIN32_FILE_ATTRIBUTE_DATA fad{};
+  ULONGLONG cur_mtime = 0;
+  if (GetFileAttributesExW(JoinPath(NativeDataDir(), L"app_prefs.json").c_str(),
+                           GetFileExInfoStandard, &fad)) {
+    ULARGE_INTEGER u{};
+    u.LowPart = fad.ftLastWriteTime.dwLowDateTime;
+    u.HighPart = fad.ftLastWriteTime.dwHighDateTime;
+    cur_mtime = u.QuadPart;
+  }
+  {
+    std::lock_guard<std::mutex> lk(s_mu);
+    if (s_has_cache && cur_mtime == s_cached_mtime) {
+      return s_cached;
+    }
+  }
   std::vector<std::wstring> patterns = LoadAppPrefs().exclude_patterns;
   if (patterns.empty()) {
     patterns = DefaultExcludePatterns();
+  }
+  {
+    std::lock_guard<std::mutex> lk(s_mu);
+    s_cached = patterns;
+    s_cached_mtime = cur_mtime;
+    s_has_cache = true;
   }
   return patterns;
 }
@@ -478,7 +504,8 @@ std::vector<DesktopItem> ScanPortalItems(
     item.name = fd.cFileName;
     item.is_link =
         item.name.size() >= 4 &&
-        _wcsicmp(item.name.c_str() + item.name.size() - 4, L".lnk") == 0;
+        (_wcsicmp(item.name.c_str() + item.name.size() - 4, L".lnk") == 0 ||
+         _wcsicmp(item.name.c_str() + item.name.size() - 4, L".url") == 0);
     out.push_back(std::move(item));
     // Soft safety only — Fences/Explorer portals show full folder membership.
     if (out.size() >= 10000) {

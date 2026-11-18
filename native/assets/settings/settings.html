@@ -2826,8 +2826,7 @@
   function applyState(msg) {
     if (!msg || typeof msg !== 'object') return;
     if (msg.type === 'ui_theme') { applyUiTheme(msg); return; }
-    // Never wipe a good list with an empty host array (WarmWebView race).
-    if (Array.isArray(msg.fences) && msg.fences.length) state.fences = msg.fences;
+    if (Array.isArray(msg.fences)) state.fences = msg.fences;
     // Host pages always win (including legacy「第 N 页」→ 工作/文档 migration).
     if (Array.isArray(msg.pages) && msg.pages.length) {
       state.pages = msg.pages.map((n, i) => {
@@ -2878,7 +2877,7 @@
     if (msg.pet_actions && typeof msg.pet_actions === 'object') state.pet_actions = msg.pet_actions;
     if (Array.isArray(msg.themes)) state.themes = msg.themes;
     if (Array.isArray(msg.ui_themes)) state.ui_themes = msg.ui_themes;
-    if (Array.isArray(msg.fence_cards) && msg.fence_cards.length) {
+    if (Array.isArray(msg.fence_cards)) {
       state.fence_cards = msg.fence_cards;
     }
     // Recover blank 分页 when cards arrived but pages[] was empty in an early push.

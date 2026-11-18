@@ -6,16 +6,19 @@
 import { Crepe } from '@milkdown/crepe'
 import { replaceAll, getMarkdown } from '@milkdown/kit/utils'
 import { listenerCtx } from '@milkdown/kit/plugin/listener'
-import { editorViewCtx, prosePluginsCtx } from '@milkdown/kit/core'
+import { commandsCtx, editorViewCtx, prosePluginsCtx } from '@milkdown/kit/core'
 import {
   imageBlockSchema,
   remarkImageBlockPlugin,
 } from '@milkdown/kit/component/image-block'
 import {
+  addBlockTypeCommand,
   imageSchema,
   paragraphSchema,
   clearTextInCurrentBlockCommand,
+  selectTextNearPosCommand,
 } from '@milkdown/kit/preset/commonmark'
+import { createTable } from '@milkdown/kit/preset/gfm'
 import { uploadConfig } from '@milkdown/kit/plugin/upload'
 import { Plugin, PluginKey, TextSelection } from '@milkdown/kit/prose/state'
 import { Fragment } from '@milkdown/kit/prose/model'
@@ -36,9 +39,11 @@ function isSelectionInListItem(state) {
   return checkPos(state.selection.$from) || checkPos(state.selection.$to)
 }
 
-function docHasHeadingInListItem(doc) {
+function rangeHasHeadingInListItem(doc, from, to) {
   let found = false
-  doc.descendants((node) => {
+  const safeFrom = Math.max(0, Math.min(doc.content.size, from))
+  const safeTo = Math.max(safeFrom, Math.min(doc.content.size, to))
+  doc.nodesBetween(safeFrom, safeTo, (node) => {
     if (found) return false
     if (node.type.name === 'list_item') {
       node.descendants((child) => {
@@ -53,6 +58,41 @@ function docHasHeadingInListItem(doc) {
     return true
   })
   return found
+}
+
+function trsHaveHeadingInListItem(trs, oldDoc, newDoc) {
+  for (const tr of trs) {
+    if (!tr.docChanged) continue
+    for (let i = 0; i < tr.steps.length; i++) {
+      const step = tr.steps[i]
+      const map = step.getMap()
+      const rem = tr.mapping.slice(i + 1)
+      let hit = false
+      map.forEach((_oldStart, _oldEnd, newStart, newEnd) => {
+        if (hit) return
+        const from = Math.max(0, rem.map(newStart, -1) - 2)
+        const to = Math.min(newDoc.content.size, rem.map(newEnd, 1) + 2)
+        if (rangeHasHeadingInListItem(newDoc, from, to)) {
+          hit = true
+        }
+      })
+      if (hit) return true
+    }
+  }
+  return false
+}
+
+function insertCustomTable(ctx, rows, cols) {
+  const r = Math.max(1, Math.min(30, Number(rows) || 3))
+  const c = Math.max(1, Math.min(20, Number(cols) || 3))
+  const commands = ctx.get(commandsCtx)
+  const view = ctx.get(editorViewCtx)
+  const { from } = view.state.selection
+  commands.call(addBlockTypeCommand.key, {
+    nodeType: createTable(ctx, r, c),
+  })
+  commands.call(selectTextNearPosCommand.key, { pos: from })
+  view.focus()
 }
 
 // Insert an inline image node at the current cursor position so multiple
@@ -149,6 +189,29 @@ const blockEditConfig = {
           insertInlineImageNode(ctx, '', '')
         }
       }
+      const tableItem = advGroup.items.find((it) => it.key === 'table')
+      if (tableItem) {
+        tableItem.onRun = (ctx) => {
+          const commands = ctx.get(commandsCtx)
+          const view = ctx.get(editorViewCtx)
+          commands.call(clearTextInCurrentBlockCommand.key)
+          if (typeof window !== 'undefined' && window.__desknoteOpenTablePicker) {
+            let anchorRect = null
+            try {
+              const coords = view.coordsAtPos(view.state.selection.from)
+              anchorRect = {
+                left: coords.left,
+                top: coords.top,
+                right: coords.right,
+                bottom: coords.bottom,
+              }
+            } catch (_) {}
+            window.__desknoteOpenTablePicker(anchorRect)
+          } else {
+            insertCustomTable(ctx, 3, 3)
+          }
+        }
+      }
     }
   },
 }
@@ -200,6 +263,20 @@ const topBarConfig = {
       if (imgItem) {
         imgItem.onRun = (ctx) => {
           insertInlineImageNode(ctx, '', '')
+        }
+      }
+      const tableItem = insertGroup.items.find((it) => it.key === 'table')
+      if (tableItem) {
+        tableItem.onRun = (ctx) => {
+          if (typeof window !== 'undefined' && window.__desknoteOpenTablePicker) {
+            const btnEl = document.querySelector(
+              '#editor .milkdown-top-bar .top-bar-item[data-tip="插入表格"]',
+            )
+            const rect = btnEl ? btnEl.getBoundingClientRect() : null
+            window.__desknoteOpenTablePicker(rect)
+          } else {
+            insertCustomTable(ctx, 3, 3)
+          }
         }
       }
     }
@@ -374,7 +451,10 @@ export function createDeskNoteEditor(options) {
       key: guardKey,
       filterTransaction(tr, state) {
         if (!tr.docChanged) return true
-        if (isSelectionInListItem(state) && docHasHeadingInListItem(tr.doc)) {
+        if (
+          isSelectionInListItem(state) &&
+          trsHaveHeadingInListItem([tr], state.doc, tr.doc)
+        ) {
           return false
         }
         return true
@@ -384,7 +464,7 @@ export function createDeskNoteEditor(options) {
         let fixTr = null
 
         // Normalize any heading that ended up inside a list_item into a paragraph.
-        if (pType && docHasHeadingInListItem(newState.doc)) {
+        if (pType && trsHaveHeadingInListItem(trs, oldState.doc, newState.doc)) {
           fixTr = newState.tr
           newState.doc.descendants((node, pos) => {
             if (node.type.name === 'list_item') {
@@ -616,6 +696,13 @@ export function createDeskNoteEditor(options) {
     insertImage(url, alt) {
       crepe.editor.action((ctx) => {
         insertInlineImageNode(ctx, url, alt)
+      })
+    },
+    insertTable(rows, cols) {
+      if (!isReady) return false
+      return crepe.editor.action((ctx) => {
+        insertCustomTable(ctx, rows, cols)
+        return true
       })
     },
     // Image chrome (the floating widget in the shell page) works from the DOM

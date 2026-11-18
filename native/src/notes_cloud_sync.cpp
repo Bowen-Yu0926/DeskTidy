@@ -75,78 +75,81 @@ bool ReadFileUtf8(const std::wstring& path, std::string* out) {
   return true;
 }
 
-int JsonIntAfter(const std::string& json, size_t from, const char* key) {
+int JsonIntAfter(const std::string& json, size_t from, size_t limit,
+                 const char* key) {
   const std::string needle = std::string("\"") + key + "\"";
   size_t p = json.find(needle, from);
-  if (p == std::string::npos) {
+  if (p == std::string::npos || p + needle.size() > limit) {
     return 0;
   }
   p = json.find(':', p + needle.size());
-  if (p == std::string::npos) {
+  if (p == std::string::npos || p >= limit) {
     return 0;
   }
   ++p;
-  while (p < json.size() && (json[p] == ' ' || json[p] == '\t')) {
+  while (p < limit && p < json.size() && (json[p] == ' ' || json[p] == '\t')) {
     ++p;
   }
-  return atoi(json.c_str() + p);
+  return p < limit ? atoi(json.c_str() + p) : 0;
 }
 
-long long JsonLongAfter(const std::string& json, size_t from, const char* key) {
+long long JsonLongAfter(const std::string& json, size_t from, size_t limit,
+                        const char* key) {
   const std::string needle = std::string("\"") + key + "\"";
   size_t p = json.find(needle, from);
-  if (p == std::string::npos) {
+  if (p == std::string::npos || p + needle.size() > limit) {
     return 0;
   }
   p = json.find(':', p + needle.size());
-  if (p == std::string::npos) {
+  if (p == std::string::npos || p >= limit) {
     return 0;
   }
   ++p;
-  while (p < json.size() && (json[p] == ' ' || json[p] == '\t')) {
+  while (p < limit && p < json.size() && (json[p] == ' ' || json[p] == '\t')) {
     ++p;
   }
-  return _atoi64(json.c_str() + p);
+  return p < limit ? _atoi64(json.c_str() + p) : 0;
 }
 
-bool JsonBoolAfter(const std::string& json, size_t from, const char* key) {
+bool JsonBoolAfter(const std::string& json, size_t from, size_t limit,
+                   const char* key) {
   const std::string needle = std::string("\"") + key + "\"";
   size_t p = json.find(needle, from);
-  if (p == std::string::npos) {
+  if (p == std::string::npos || p + needle.size() > limit) {
     return false;
   }
   p = json.find(':', p + needle.size());
-  if (p == std::string::npos) {
+  if (p == std::string::npos || p >= limit) {
     return false;
   }
   ++p;
-  while (p < json.size() && (json[p] == ' ' || json[p] == '\t')) {
+  while (p < limit && p < json.size() && (json[p] == ' ' || json[p] == '\t')) {
     ++p;
   }
-  return p < json.size() && json[p] == 't';
+  return p < limit && p < json.size() && json[p] == 't';
 }
 
-std::wstring JsonStringAfter(const std::string& json, size_t from,
+std::wstring JsonStringAfter(const std::string& json, size_t from, size_t limit,
                              const char* key) {
   const std::string needle = std::string("\"") + key + "\"";
   size_t p = json.find(needle, from);
-  if (p == std::string::npos) {
+  if (p == std::string::npos || p + needle.size() > limit) {
     return {};
   }
   p = json.find(':', p + needle.size());
-  if (p == std::string::npos) {
+  if (p == std::string::npos || p >= limit) {
     return {};
   }
   ++p;
-  while (p < json.size() && (json[p] == ' ' || json[p] == '\t')) {
+  while (p < limit && p < json.size() && (json[p] == ' ' || json[p] == '\t')) {
     ++p;
   }
-  if (p >= json.size() || json[p] != '"') {
+  if (p >= limit || p >= json.size() || json[p] != '"') {
     return {};
   }
   ++p;
   std::string v;
-  while (p < json.size() && json[p] != '"') {
+  while (p < limit && p < json.size() && json[p] != '"') {
     if (json[p] == '\\' && p + 1 < json.size()) {
       ++p;
       const char e = json[p++];
@@ -264,16 +267,16 @@ NoteCloudSyncStore LoadNoteCloudSync() {
       }
       if (links_section) {
         NoteCloudLink link;
-        link.path = NormPath(JsonStringAfter(json, obj, "path"));
-        link.note_id = JsonIntAfter(json, obj, "note_id");
-        link.sync = JsonBoolAfter(json, obj, "sync");
+        link.path = NormPath(JsonStringAfter(json, obj, end, "path"));
+        link.note_id = JsonIntAfter(json, obj, end, "note_id");
+        link.sync = JsonBoolAfter(json, obj, end, "sync");
         if (!link.path.empty() && link.note_id > 0) {
           store.links.push_back(std::move(link));
         }
       } else {
         NoteCloudPendingDelete pd;
-        pd.note_id = JsonIntAfter(json, obj, "note_id");
-        pd.delete_after = JsonLongAfter(json, obj, "delete_after");
+        pd.note_id = JsonIntAfter(json, obj, end, "note_id");
+        pd.delete_after = JsonLongAfter(json, obj, end, "delete_after");
         if (pd.note_id > 0 && pd.delete_after > 0) {
           store.pending_deletes.push_back(pd);
         }

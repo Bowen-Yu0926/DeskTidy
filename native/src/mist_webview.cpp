@@ -174,6 +174,9 @@ void CreateWeb(MistWebDialog* dlg) {
                       ICoreWebView2* web = nullptr;
                       controller->get_CoreWebView2(&web);
                       if (!web) {
+                        controller->Close();
+                        controller->Release();
+                        dlg->controller = nullptr;
                         return S_OK;
                       }
                       dlg->webview = web;
@@ -314,6 +317,9 @@ LRESULT CALLBACK MistWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
       ResizeWeb(dlg);
       return 0;
     case WM_CLOSE:
+      if (dlg && dlg->disable_owner && dlg->owner && IsWindow(dlg->owner)) {
+        EnableWindow(dlg->owner, TRUE);
+      }
       DestroyWindow(hwnd);
       return 0;
     case WM_DESTROY:
@@ -586,7 +592,8 @@ void MistWebDialogRun(MistWebDialog* dlg, const wchar_t* title, int width,
   MistFocusDialog(dlg);
 
   MSG msg{};
-  while (!dlg->done && GetMessageW(&msg, nullptr, 0, 0) > 0) {
+  BOOL gm = 0;
+  while (!dlg->done && (gm = GetMessageW(&msg, nullptr, 0, 0)) > 0) {
     if (dlg->owner && dlg->owner_accel &&
         TranslateAcceleratorW(dlg->owner, dlg->owner_accel, &msg)) {
       continue;
@@ -596,13 +603,20 @@ void MistWebDialogRun(MistWebDialog* dlg, const wchar_t* title, int width,
       DispatchMessageW(&msg);
     }
   }
+  if (!dlg->done && gm == 0) {
+    PostQuitMessage(static_cast<int>(msg.wParam));
+  }
+  // Win32 modal rule: re-enable owner BEFORE destroying the modal popup so
+  // Windows activates the owner instead of a background application.
+  if (dlg->disable_owner && dlg->owner && IsWindow(dlg->owner)) {
+    EnableWindow(dlg->owner, TRUE);
+  }
   DestroyWeb(dlg);
   if (dlg->hwnd && IsWindow(dlg->hwnd)) {
     DestroyWindow(dlg->hwnd);
     dlg->hwnd = nullptr;
   }
-  if (dlg->disable_owner && dlg->owner) {
-    EnableWindow(dlg->owner, TRUE);
+  if (dlg->disable_owner && dlg->owner && IsWindow(dlg->owner)) {
     if (GetForegroundWindow() != dlg->owner) {
       SetForegroundWindow(dlg->owner);
     }

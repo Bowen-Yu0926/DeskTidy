@@ -392,7 +392,10 @@ struct Session {
   std::wstring kdf_algo;      // "pbkdf2" | "argon2id"
 };
 
+std::mutex g_session_mutex;
+
 Session LoadSession() {
+  std::lock_guard<std::mutex> lock(g_session_mutex);
   Session s;
   std::ifstream in(SessionPath());
   if (!in) {
@@ -428,10 +431,8 @@ Session LoadSession() {
 }
 
 bool SaveSession(const Session& s) {
-  std::ofstream out(SessionPath(), std::ios::binary);
-  if (!out) {
-    return false;
-  }
+  std::lock_guard<std::mutex> lock(g_session_mutex);
+  std::ostringstream out;
   out << "{\n  \"api_base\": \""
       << EscapeJson(NarrowUtf8(NormalizeBase(s.api_base))) << "\",\n"
       << "  \"login\": \"" << EscapeJson(NarrowUtf8(s.login)) << "\",\n"
@@ -449,10 +450,13 @@ bool SaveSession(const Session& s) {
     out << ",\n  \"key_check\": \"" << EscapeJson(NarrowUtf8(s.key_check)) << "\"";
   }
   out << "\n}\n";
-  return true;
+  return AtomicWriteUtf8File(SessionPath(), out.str());
 }
 
-void ClearSessionFile() { DeleteFileW(SessionPath().c_str()); }
+void ClearSessionFile() {
+  std::lock_guard<std::mutex> lock(g_session_mutex);
+  DeleteFileW(SessionPath().c_str());
+}
 
 struct HttpResponse {
   DWORD status = 0;

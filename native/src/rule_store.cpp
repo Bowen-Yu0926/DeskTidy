@@ -41,11 +41,34 @@ std::wstring Widen(const std::string& s) {
 
 std::string EscapeJson(const std::string& s) {
   std::string out;
-  for (char c : s) {
-    if (c == '\\' || c == '"') {
-      out.push_back('\\');
+  out.reserve(s.size() + 8);
+  for (unsigned char c : s) {
+    switch (c) {
+      case '\\':
+        out += "\\\\";
+        break;
+      case '"':
+        out += "\\\"";
+        break;
+      case '\n':
+        out += "\\n";
+        break;
+      case '\r':
+        out += "\\r";
+        break;
+      case '\t':
+        out += "\\t";
+        break;
+      default:
+        if (c >= 0x20) {
+          out.push_back(static_cast<char>(c));
+        } else {
+          char hex[8];
+          snprintf(hex, sizeof(hex), "\\u%04x", static_cast<unsigned int>(c));
+          out += hex;
+        }
+        break;
     }
-    out.push_back(c);
   }
   return out;
 }
@@ -420,14 +443,20 @@ bool ParseAttrRule(const std::wstring& key, AttrRule* rule) {
 
 }  // namespace
 
+std::string& RuleMap::operator[](const std::wstring& key) {
+  const auto it = index_.find(key);
+  if (it != index_.end()) {
+    return order_[it->second].second;
+  }
+  index_[key] = order_.size();
+  order_.emplace_back(key, std::string{});
+  folded_.push_back(FoldLower(key));
+  return order_.back().second;
+}
+
 const std::wstring& RuleMap::FoldedKey(size_t i) const {
-  if (folded_.size() != order_.size()) {
-    folded_.resize(order_.size());
-  }
-  if (folded_[i].empty() && !order_[i].first.empty()) {
-    folded_[i] = FoldLower(order_[i].first);
-  }
-  return folded_[i];
+  static const std::wstring kEmpty;
+  return i < folded_.size() ? folded_[i] : kEmpty;
 }
 
 std::wstring ExtOf(const std::wstring& path) {
@@ -583,10 +612,7 @@ RuleMap LoadRules() {
 }
 
 bool SaveRules(const RuleMap& rules) {
-  std::ofstream out(RuleFilePath(), std::ios::binary);
-  if (!out) {
-    return false;
-  }
+  std::ostringstream out;
   out << "{\n  \"rules\": {\n";
   size_t i = 0;
   for (const auto& kv : rules) {
@@ -598,7 +624,7 @@ bool SaveRules(const RuleMap& rules) {
     out << "\n";
   }
   out << "  }\n}\n";
-  return true;
+  return AtomicWriteUtf8File(RuleFilePath(), out.str());
 }
 
 std::string ValidateRule(const std::wstring& pattern, const std::string& fence_id) {
@@ -666,11 +692,18 @@ std::string ResolveFenceId(const std::wstring& path, bool is_link,
   bool attrs_is_dir = false;
   long long file_size = 0;
   long long age_seconds = 0;
-  const std::wstring parent_dir = [&path]() {
-    const size_t slash = path.find_last_of(L"\\/");
-    return slash == std::wstring::npos ? std::wstring()
-                                       : FoldLower(path.substr(0, slash));
-  }();
+  bool parent_dir_loaded = false;
+  std::wstring parent_dir;
+  auto get_parent_dir = [&]() -> const std::wstring& {
+    if (!parent_dir_loaded) {
+      parent_dir_loaded = true;
+      const size_t slash = path.find_last_of(L"\\/");
+      if (slash != std::wstring::npos) {
+        parent_dir = FoldLower(path.substr(0, slash));
+      }
+    }
+    return parent_dir;
+  };
   auto load_attrs = [&]() {
     if (attrs_loaded) {
       return;
@@ -710,7 +743,7 @@ std::string ResolveFenceId(const std::wstring& path, bool is_link,
     }
     bool hit = false;
     if (!ar.text.empty()) {
-      hit = parent_dir.find(ar.text) != std::wstring::npos;
+      hit = get_parent_dir().find(ar.text) != std::wstring::npos;
     } else {
       load_attrs();
       const bool is_age_rule = (kv.first.rfind(L"age:", 0) == 0);
@@ -995,7 +1028,7 @@ void LoadCategories(CategoryFenceMap* fence_map,
   }
 }
 
-void SaveCategories(const CategoryFenceMap& fence_map,
+bool SaveCategories(const CategoryFenceMap& fence_map,
                     const FilenameRulesMap& filename_rules) {
   std::ostringstream out;
   out << "{\n  \"category_fence_map\": {\n";
@@ -1025,7 +1058,7 @@ void SaveCategories(const CategoryFenceMap& fence_map,
     out << "\n";
   }
   out << "  }\n}\n";
-  AtomicWriteCategories(out.str());
+  return AtomicWriteCategories(out.str());
 }
 
 }  // namespace
@@ -1089,15 +1122,13 @@ std::string ResolveCategoryFenceId(const std::wstring& path,
 bool SaveCategoryFenceMap(const CategoryFenceMap& map) {
   CategoryFenceMap fence_map = map;
   FilenameRulesMap filename_rules = LoadFilenameRules();
-  SaveCategories(fence_map, filename_rules);
-  return true;
+  return SaveCategories(fence_map, filename_rules);
 }
 
 bool SaveFilenameRules(const FilenameRulesMap& map) {
   CategoryFenceMap fence_map = LoadCategoryFenceMap();
   FilenameRulesMap filename_rules = map;
-  SaveCategories(fence_map, filename_rules);
-  return true;
+  return SaveCategories(fence_map, filename_rules);
 }
 
 // ---------------------------------------------------------------------------

@@ -721,6 +721,7 @@ void PageBar::ShowPageContextMenu(int page_index) {
   AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(color_menu), L"页签颜色");
   POINT pt{};
   GetCursorPos(&pt);
+  KillTimer(hwnd_, kTimerCollapseDelay);
   // Desktop-band chrome: no SetForegroundWindow — keeps page bar under apps.
   int cmd = 0;
   {
@@ -731,6 +732,14 @@ void PageBar::ShowPageContextMenu(int page_index) {
   }
   DestroyMenu(menu);
   PostMessageW(hwnd_, WM_NULL, 0, 0);
+  if (hwnd_ && IsWindow(hwnd_)) {
+    POINT cur{};
+    RECT wrc{};
+    if (GetCursorPos(&cur) && GetWindowRect(hwnd_, &wrc) &&
+        !PtInRect(&wrc, cur)) {
+      SetTimer(hwnd_, kTimerCollapseDelay, kCollapseDelayMs, nullptr);
+    }
+  }
   if (cmd >= CmdColorBase && cmd < CmdColorBase + static_cast<int>(all_styles.size())) {
     const size_t idx = static_cast<size_t>(cmd - CmdColorBase);
     if (on_set_style_) {
@@ -917,6 +926,17 @@ LRESULT PageBar::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
       }
       return 0;
     }
+    case WM_CAPTURECHANGED:
+      if (reinterpret_cast<HWND>(lparam) != hwnd_ && dragging_) {
+        dragging_ = false;
+        drag_moved_ = false;
+        RECT rc{};
+        GetWindowRect(hwnd_, &rc);
+        DockToRightEdge(rc.top);
+        AttachToDesktopLayer();
+        SetTimer(hwnd_, kTimerCollapseDelay, kCollapseDelayMs, nullptr);
+      }
+      return 0;
     case WM_DESTROY:
       KillTimer(hwnd_, kTimerExpand);
       KillTimer(hwnd_, kTimerCollapseDelay);

@@ -518,8 +518,14 @@ void DockWindow::BeginInlineRename(int index) {
   const RECT& b = slots_[static_cast<size_t>(index)].bounds;
   POINT origin{b.left, b.bottom + 2};
   ClientToScreen(hwnd_, &origin);
-  const int edit_w = (std::max)(96, static_cast<int>(b.right - b.left) + 40);
-  const int edit_h = 22;
+  UINT dpi = GetDpiForWindow(hwnd_);
+  if (!dpi) {
+    dpi = 96;
+  }
+  const int edit_w = (std::max)(static_cast<int>(96 * dpi / 96),
+                                static_cast<int>(b.right - b.left) +
+                                    static_cast<int>(40 * dpi / 96));
+  const int edit_h = (std::max)(22, static_cast<int>(24 * dpi / 96));
   rename_edit_ = CreateWindowExW(
       WS_EX_TOOLWINDOW | WS_EX_TOPMOST, L"EDIT",
       slots_[static_cast<size_t>(index)].item.name.c_str(),
@@ -529,6 +535,9 @@ void DockWindow::BeginInlineRename(int index) {
     rename_index_ = -1;
     return;
   }
+  SendMessageW(rename_edit_, WM_SETFONT,
+               reinterpret_cast<WPARAM>(GetStockObject(DEFAULT_GUI_FONT)),
+               TRUE);
   rename_proc_ = reinterpret_cast<WNDPROC>(
       SetWindowLongPtrW(rename_edit_, GWLP_WNDPROC,
                         reinterpret_cast<LONG_PTR>(DockRenameEditProc)));
@@ -725,6 +734,16 @@ LRESULT DockWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
       }
       return 0;
     }
+    case WM_CAPTURECHANGED:
+      if (hover_index_ >= 0) {
+        hover_index_ = -1;
+        Present();
+        UpdateHoverTip(-1);
+      }
+      return 0;
+    case WM_DPICHANGED:
+      Present();
+      return 0;
     case WM_DESTROY:
       FinishInlineRename(false);
       tip_ = nullptr;
@@ -741,27 +760,32 @@ void DockWindow::Paint(HDC hdc) {
   GetClientRect(hwnd_, &rc);
   const int w = (std::max)(1, static_cast<int>(rc.right));
   const int h = (std::max)(1, static_cast<int>(rc.bottom));
-  Gdiplus::Graphics g(hdc);
-  g.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
-  g.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHalf);
-  Gdiplus::GraphicsPath path;
   const int radius = (std::max)(4, metrics_.radius);
   const int btn = (std::max)(24, metrics_.btn);
   const int icon = (std::max)(16, metrics_.icon);
   const int glow = (std::max)(2, metrics_.glow);
-  AddRoundRect(&path, w, h, radius);
-  // Python default: rgba(22,27,34,0.85) + blue border.
-  Gdiplus::SolidBrush fill(Gdiplus::Color(fill_alpha_, 22, 27, 34));
-  Gdiplus::Pen edge(Gdiplus::Color(100, 88, 166, 255), 1.0f);
-  g.FillPath(&fill, &path);
-  g.DrawPath(&edge, &path);
+  {
+    Gdiplus::Graphics g(hdc);
+    g.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+    g.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHalf);
+    Gdiplus::GraphicsPath path;
+    AddRoundRect(&path, w, h, radius);
+    // Python default: rgba(22,27,34,0.85) + blue border.
+    Gdiplus::SolidBrush fill(Gdiplus::Color(fill_alpha_, 22, 27, 34));
+    Gdiplus::Pen edge(Gdiplus::Color(100, 88, 166, 255), 1.0f);
+    g.FillPath(&fill, &path);
+    g.DrawPath(&edge, &path);
+    for (size_t i = 0; i < slots_.size(); ++i) {
+      if (static_cast<int>(i) == hover_index_) {
+        const auto& s = slots_[i];
+        Gdiplus::SolidBrush glow_br(Gdiplus::Color(90, 120, 170, 255));
+        g.FillRectangle(&glow_br, s.bounds.left - glow, s.bounds.top - glow,
+                        btn, btn);
+      }
+    }
+  }
   for (size_t i = 0; i < slots_.size(); ++i) {
     const auto& s = slots_[i];
-    if (static_cast<int>(i) == hover_index_) {
-      Gdiplus::SolidBrush glow_br(Gdiplus::Color(90, 120, 170, 255));
-      g.FillRectangle(&glow_br, s.bounds.left - glow, s.bounds.top - glow, btn,
-                      btn);
-    }
     if (s.icon) {
       DrawIconEx(hdc, s.bounds.left, s.bounds.top, s.icon, icon, icon, 0,
                  nullptr, DI_NORMAL);

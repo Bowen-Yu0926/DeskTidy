@@ -1780,11 +1780,19 @@ void FenceWindow::EnsureDropTarget() {
     POINT pt{};
     GetCursorPos(&pt);
     ScreenToClient(hwnd_, &pt);
-    if (IsRecycleBinIconAt(pt.x, pt.y)) {
+    const DWORD now = GetTickCount();
+    const bool use_cache =
+        last_ole_preview_probe_ms_ != 0 &&
+        (now - last_ole_preview_probe_ms_ < 33u) &&
+        std::abs(pt.x - drop_pt_.x) <= 2 && std::abs(pt.y - drop_pt_.y) <= 2;
+    const bool is_recycle =
+        use_cache ? ole_probe_recycle_ : IsRecycleBinIconAt(pt.x, pt.y);
+    if (is_recycle) {
       return FileDropSemantics::PreferMove;
     }
-    // Folder icon: physical import (volume/Ctrl/Shift), not virtual pin.
-    if (!DirectoryIconAt(pt.x, pt.y).empty()) {
+    const std::wstring folder =
+        use_cache ? ole_probe_folder_ : DirectoryIconAt(pt.x, pt.y);
+    if (!folder.empty()) {
       return FileDropSemantics::Physical;
     }
     return portal_path_.empty() ? FileDropSemantics::VirtualPin
@@ -1794,7 +1802,13 @@ void FenceWindow::EnsureDropTarget() {
     POINT pt{};
     GetCursorPos(&pt);
     ScreenToClient(hwnd_, &pt);
-    const std::wstring folder = DirectoryIconAt(pt.x, pt.y);
+    const DWORD now = GetTickCount();
+    const bool use_cache =
+        last_ole_preview_probe_ms_ != 0 &&
+        (now - last_ole_preview_probe_ms_ < 33u) &&
+        std::abs(pt.x - drop_pt_.x) <= 2 && std::abs(pt.y - drop_pt_.y) <= 2;
+    const std::wstring folder =
+        use_cache ? ole_probe_folder_ : DirectoryIconAt(pt.x, pt.y);
     if (!folder.empty()) {
       return folder;
     }
@@ -5991,6 +6005,15 @@ if (!position_locked_) {
       on_style_changed_(this);
     }
   }
+  if (auto_hide_ && !position_locked_ && !collapsed_ && collapsible_ &&
+      hwnd_ && IsWindow(hwnd_)) {
+    POINT cur{};
+    RECT wrc{};
+    if (GetCursorPos(&cur) && GetWindowRect(hwnd_, &wrc) &&
+        !PtInRect(&wrc, cur)) {
+      SetTimer(hwnd_, kTimerAutoHide, 350, nullptr);
+    }
+  }
 }
 
 LRESULT CALLBACK FenceWindow::WndProc(HWND hwnd, UINT msg, WPARAM wparam,
@@ -6750,6 +6773,44 @@ if (wparam == kTimerDragScroll) {
         ShowIconMenu(icon, pt);
       } else {
         ShowFenceMenu(pt);
+      }
+      if (auto_hide_ && !position_locked_ && !collapsed_ && collapsible_ &&
+          hwnd_ && IsWindow(hwnd_)) {
+        POINT cur{};
+        RECT wrc{};
+        if (GetCursorPos(&cur) && GetWindowRect(hwnd_, &wrc) &&
+            !PtInRect(&wrc, cur)) {
+          SetTimer(hwnd_, kTimerAutoHide, 350, nullptr);
+        }
+      }
+      return 0;
+    }
+    case WM_CAPTURECHANGED: {
+      if (reinterpret_cast<HWND>(lparam) != hwnd_) {
+        KillTimer(hwnd_, kTimerDragScroll);
+        const bool need_repaint =
+            rubber_ || icon_dragging_ || header_press_ != HeaderBtn::None;
+        dragging_ = false;
+        drag_moved_ = false;
+        resizing_ = false;
+        resize_edge_ = Edge::None;
+        thumb_dragging_ = false;
+        rubber_ = false;
+        rubber_additive_ = false;
+        icon_press_ = false;
+        icon_press_index_ = -1;
+        icon_dragging_ = false;
+        drag_paths_.clear();
+        drag_indices_.clear();
+        drag_insert_ = -1;
+        drag_left_ = false;
+        rbutton_press_ = false;
+        rbutton_dragged_ = false;
+        rbutton_icon_ = -1;
+        header_press_ = HeaderBtn::None;
+        if (need_repaint) {
+          PresentLayered();
+        }
       }
       return 0;
     }

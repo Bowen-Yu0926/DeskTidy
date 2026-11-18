@@ -636,7 +636,8 @@
       box-shadow: 0 2px 6px rgba(15, 23, 42, 0.10);
       transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease, transform 0.1s ease;
     }
-    html.dark #dsk-block-del {
+    html.dark #dsk-block-del,
+    body.theme-dark #dsk-block-del {
       background: rgba(30, 35, 44, 0.94);
       border-color: rgba(255, 255, 255, 0.12);
       color: #94a3b8;
@@ -648,7 +649,8 @@
       color: #dc2626;
       transform: scale(1.04);
     }
-    html.dark #dsk-block-del:hover {
+    html.dark #dsk-block-del:hover,
+    body.theme-dark #dsk-block-del:hover {
       background: rgba(220, 38, 38, 0.22);
       border-color: rgba(248, 113, 113, 0.45);
       color: #f87171;
@@ -658,6 +660,87 @@
       height: 14px;
       display: block;
       pointer-events: none;
+    }
+    /* DingTalk / Tencent Docs style interactive table size grid picker */
+    #dsk-table-picker {
+      position: fixed;
+      top: 44px;
+      left: 120px;
+      z-index: 60;
+      display: none;
+      flex-direction: column;
+      gap: 8px;
+      padding: 10px 12px 12px;
+      border-radius: 10px;
+      border: 1px solid rgba(15, 23, 42, 0.10);
+      background: rgba(255, 255, 255, 0.98);
+      box-shadow: 0 10px 28px rgba(15, 23, 42, 0.16), 0 2px 6px rgba(15, 23, 42, 0.08);
+      user-select: none;
+      -webkit-user-select: none;
+    }
+    html.dark #dsk-table-picker,
+    body.theme-dark #dsk-table-picker {
+      background: rgba(28, 32, 40, 0.98);
+      border-color: rgba(255, 255, 255, 0.12);
+      box-shadow: 0 12px 32px rgba(0, 0, 0, 0.48);
+    }
+    #dsk-table-picker .dtp-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-size: 12px;
+      line-height: 1.2;
+      color: #475569;
+      font-weight: 500;
+      padding: 0 1px;
+    }
+    html.dark #dsk-table-picker .dtp-header,
+    body.theme-dark #dsk-table-picker .dtp-header {
+      color: #cbd5e1;
+    }
+    #dsk-table-picker .dtp-dim {
+      color: #2563eb;
+      font-weight: 600;
+      font-variant-numeric: tabular-nums;
+    }
+    html.dark #dsk-table-picker .dtp-dim,
+    body.theme-dark #dsk-table-picker .dtp-dim {
+      color: #60a5fa;
+    }
+    #dsk-table-picker .dtp-grid {
+      display: grid;
+      gap: 4px;
+      cursor: pointer;
+      touch-action: none;
+    }
+    #dsk-table-picker .dtp-cell {
+      width: 18px;
+      height: 18px;
+      border-radius: 3px;
+      border: 1px solid #cbd5e1;
+      background: #f8fafc;
+      box-sizing: border-box;
+      transition: background 0.06s ease, border-color 0.06s ease, transform 0.06s ease;
+    }
+    html.dark #dsk-table-picker .dtp-cell,
+    body.theme-dark #dsk-table-picker .dtp-cell {
+      border-color: #475569;
+      background: #1e293b;
+    }
+    #dsk-table-picker .dtp-cell.active {
+      border-color: #2563eb;
+      background: rgba(37, 99, 235, 0.20);
+    }
+    html.dark #dsk-table-picker .dtp-cell.active,
+    body.theme-dark #dsk-table-picker .dtp-cell.active {
+      border-color: #60a5fa;
+      background: rgba(96, 165, 250, 0.28);
+    }
+    #dsk-table-picker .dtp-hint {
+      font-size: 11px;
+      color: #94a3b8;
+      text-align: center;
+      margin-top: 2px;
     }
     /* Floating UI chrome (block handle / slash menu / toolbar) must sit above
        the editor surface, which owns the whole stage. */
@@ -1496,32 +1579,247 @@
   }
 
   function bindBlockDeleteChrome() {
+    var moveRaf = 0;
+    var lastMoveTarget = null;
+    var lastMoveX = 0;
+    var lastMoveY = 0;
     document.addEventListener("mousemove", function (e) {
-      var blk = findDeletableBlock(e.target);
-      if (blk) {
-        showBlockDel(blk);
-      } else if (blockDelTarget) {
-        // Also keep visible if mouse is near the top-right corner of the active block
-        var r = blockDelTarget.getBoundingClientRect();
-        if (
-          e.clientX >= r.left - 8 &&
-          e.clientX <= r.right + 16 &&
-          e.clientY >= r.top - 16 &&
-          e.clientY <= r.bottom + 8
-        ) {
-          positionBlockDel();
-          return;
+      lastMoveTarget = e.target;
+      lastMoveX = e.clientX;
+      lastMoveY = e.clientY;
+      if (moveRaf) return;
+      moveRaf = requestAnimationFrame(function () {
+        moveRaf = 0;
+        var blk = findDeletableBlock(lastMoveTarget);
+        if (blk) {
+          showBlockDel(blk);
+        } else if (blockDelTarget) {
+          var r = blockDelTarget.getBoundingClientRect();
+          if (
+            lastMoveX >= r.left - 8 &&
+            lastMoveX <= r.right + 16 &&
+            lastMoveY >= r.top - 16 &&
+            lastMoveY <= r.bottom + 8
+          ) {
+            positionBlockDel();
+            return;
+          }
+          scheduleHideBlockDel();
         }
-        scheduleHideBlockDel();
-      }
+      });
     }, true);
     window.addEventListener("scroll", function () {
       if (blockDelTarget) positionBlockDel();
+      hideTablePicker();
     }, true);
     window.addEventListener("resize", function () {
       if (blockDelTarget) positionBlockDel();
+      hideTablePicker();
     });
   }
+
+  // ---------------------------------------------------------------------
+  // DingTalk / Tencent Docs style interactive table size picker
+  // Supports both hover-click and press-drag-release selection, plus
+  // dynamic grid expansion up to 15 rows × 12 columns.
+  // ---------------------------------------------------------------------
+  var tablePickerEl = null;
+  var tablePickerGridEl = null;
+  var tablePickerDimEl = null;
+  var tableGridRows = 8;
+  var tableGridCols = 10;
+  var tableSelRows = 3;
+  var tableSelCols = 3;
+  var tableDragging = false;
+  var TABLE_MIN_ROWS = 8;
+  var TABLE_MIN_COLS = 10;
+  var TABLE_MAX_ROWS = 15;
+  var TABLE_MAX_COLS = 12;
+
+  function ensureTablePicker() {
+    if (tablePickerEl) return tablePickerEl;
+    var wrap = document.createElement("div");
+    wrap.id = "dsk-table-picker";
+    wrap.innerHTML =
+      '<div class="dtp-header">' +
+      '<span>插入表格</span>' +
+      '<span class="dtp-dim">3 × 3 表格</span>' +
+      '</div>' +
+      '<div class="dtp-grid"></div>' +
+      '<div class="dtp-hint">滑动或拖动选择行列数，点击完成插入</div>';
+    tablePickerDimEl = wrap.querySelector(".dtp-dim");
+    tablePickerGridEl = wrap.querySelector(".dtp-grid");
+
+    wrap.addEventListener("mousedown", function (e) {
+      e.preventDefault();
+      e.stopPropagation();
+      tableDragging = true;
+      updateTableCellFromPoint(e.clientX, e.clientY);
+    });
+
+    document.addEventListener("mousemove", function (e) {
+      if (!tablePickerEl || tablePickerEl.style.display === "none") return;
+      if (tableDragging || tablePickerEl.contains(e.target)) {
+        updateTableCellFromPoint(e.clientX, e.clientY);
+      }
+    }, true);
+
+    document.addEventListener("mouseup", function (e) {
+      if (!tablePickerEl || tablePickerEl.style.display === "none") return;
+      if (tableDragging) {
+        e.preventDefault();
+        e.stopPropagation();
+        tableDragging = false;
+        commitTablePickerSelection();
+        return;
+      }
+      var cell = e.target && e.target.closest ? e.target.closest("#dsk-table-picker .dtp-cell") : null;
+      if (cell) {
+        e.preventDefault();
+        e.stopPropagation();
+        var r = parseInt(cell.dataset.r, 10) || tableSelRows;
+        var c = parseInt(cell.dataset.c, 10) || tableSelCols;
+        tableSelRows = r;
+        tableSelCols = c;
+        commitTablePickerSelection();
+      }
+    }, true);
+
+    document.addEventListener("mousedown", function (e) {
+      if (!tablePickerEl || tablePickerEl.style.display === "none") return;
+      if (tablePickerEl.contains(e.target)) return;
+      var topBarTableBtn = e.target && e.target.closest
+        ? e.target.closest('#editor .milkdown-top-bar .top-bar-item[data-tip="插入表格"]')
+        : null;
+      if (topBarTableBtn) return;
+      hideTablePicker();
+    }, true);
+
+    document.addEventListener("keydown", function (e) {
+      if (e.key === "Escape" && tablePickerEl && tablePickerEl.style.display !== "none") {
+        e.preventDefault();
+        hideTablePicker();
+      }
+    });
+
+    document.body.appendChild(wrap);
+    tablePickerEl = wrap;
+    rebuildTablePickerGrid(TABLE_MIN_ROWS, TABLE_MIN_COLS);
+    return wrap;
+  }
+
+  function rebuildTablePickerGrid(rows, cols) {
+    tableGridRows = Math.max(TABLE_MIN_ROWS, Math.min(TABLE_MAX_ROWS, rows));
+    tableGridCols = Math.max(TABLE_MIN_COLS, Math.min(TABLE_MAX_COLS, cols));
+    if (!tablePickerGridEl) return;
+    tablePickerGridEl.style.gridTemplateColumns = "repeat(" + tableGridCols + ", 18px)";
+    tablePickerGridEl.innerHTML = "";
+    var frag = document.createDocumentFragment();
+    for (var r = 1; r <= tableGridRows; r++) {
+      for (var c = 1; c <= tableGridCols; c++) {
+        var cell = document.createElement("div");
+        cell.className = "dtp-cell" + (r <= tableSelRows && c <= tableSelCols ? " active" : "");
+        cell.dataset.r = String(r);
+        cell.dataset.c = String(c);
+        frag.appendChild(cell);
+      }
+    }
+    tablePickerGridEl.appendChild(frag);
+    if (tablePickerDimEl) {
+      tablePickerDimEl.textContent = tableSelRows + " × " + tableSelCols + " 表格";
+    }
+  }
+
+  function refreshTablePickerHighlight() {
+    if (!tablePickerGridEl) return;
+    var cells = tablePickerGridEl.children;
+    for (var i = 0; i < cells.length; i++) {
+      var cell = cells[i];
+      var r = parseInt(cell.dataset.r, 10);
+      var c = parseInt(cell.dataset.c, 10);
+      if (r <= tableSelRows && c <= tableSelCols) {
+        cell.classList.add("active");
+      } else {
+        cell.classList.remove("active");
+      }
+    }
+    if (tablePickerDimEl) {
+      tablePickerDimEl.textContent = tableSelRows + " × " + tableSelCols + " 表格";
+    }
+  }
+
+  function updateTableCellFromPoint(clientX, clientY) {
+    if (!tablePickerGridEl) return;
+    var rect = tablePickerGridEl.getBoundingClientRect();
+    var step = 22; // 18px cell + 4px gap
+    var relX = clientX - rect.left;
+    var relY = clientY - rect.top;
+    if (!tableDragging && (relX < -4 || relY < -4 || relX > rect.width + 12 || relY > rect.height + 12)) {
+      return;
+    }
+    var col = Math.max(1, Math.min(TABLE_MAX_COLS, Math.floor(Math.max(0, relX) / step) + 1));
+    var row = Math.max(1, Math.min(TABLE_MAX_ROWS, Math.floor(Math.max(0, relY) / step) + 1));
+    var needRows = tableGridRows;
+    var needCols = tableGridCols;
+    if (row >= tableGridRows && tableGridRows < TABLE_MAX_ROWS) {
+      needRows = Math.min(TABLE_MAX_ROWS, row + 1);
+    }
+    if (col >= tableGridCols && tableGridCols < TABLE_MAX_COLS) {
+      needCols = Math.min(TABLE_MAX_COLS, col + 1);
+    }
+    tableSelRows = row;
+    tableSelCols = col;
+    if (needRows !== tableGridRows || needCols !== tableGridCols) {
+      rebuildTablePickerGrid(needRows, needCols);
+    } else {
+      refreshTablePickerHighlight();
+    }
+  }
+
+  function commitTablePickerSelection() {
+    var rows = Math.max(1, tableSelRows || 3);
+    var cols = Math.max(1, tableSelCols || 3);
+    hideTablePicker();
+    if (editorApi && editorApi.insertTable) {
+      if (editorApi.insertTable(rows, cols)) {
+        mdDirty = true;
+        signalDirty();
+        scheduleChangePost();
+      }
+    }
+  }
+
+  function hideTablePicker() {
+    tableDragging = false;
+    if (tablePickerEl) {
+      tablePickerEl.style.display = "none";
+    }
+  }
+
+  window.__desknoteOpenTablePicker = function (anchorRect) {
+    var wrap = ensureTablePicker();
+    tableSelRows = 3;
+    tableSelCols = 3;
+    tableDragging = false;
+    rebuildTablePickerGrid(TABLE_MIN_ROWS, TABLE_MIN_COLS);
+    wrap.style.display = "flex";
+    var top = 46;
+    var left = 140;
+    if (anchorRect && (anchorRect.left || anchorRect.top || anchorRect.bottom)) {
+      top = Math.round((anchorRect.bottom || anchorRect.top || 40) + 6);
+      left = Math.round(anchorRect.left || 140);
+    }
+    var pw = wrap.offsetWidth || 244;
+    var ph = wrap.offsetHeight || 240;
+    if (left + pw > window.innerWidth - 12) {
+      left = Math.max(12, window.innerWidth - pw - 12);
+    }
+    if (top + ph > window.innerHeight - 12) {
+      top = Math.max(12, window.innerHeight - ph - 12);
+    }
+    wrap.style.top = top + "px";
+    wrap.style.left = left + "px";
+  };
 
   // ---------------------------------------------------------------------
   // WebView2 message bridge (protocol unchanged from the Toast shell)

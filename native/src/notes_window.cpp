@@ -7528,6 +7528,9 @@ bool NotesWindow::RunFindOnce(bool down, bool wrap, bool match_case, bool whole,
     }
     return false;
   }
+  if (wysiwyg_) {
+    SyncFromWysiwyg();
+  }
 
   auto select_range = [&](LONG a, LONG b) {
     CHARRANGE cr{a, b};
@@ -7664,6 +7667,10 @@ bool NotesWindow::RunReplaceOnce(bool match_case, bool whole, bool wrap,
   if (!edit_) {
     return false;
   }
+  if (wysiwyg_) {
+    SyncFromWysiwyg();
+  }
+  bool replaced = false;
   CHARRANGE sel{};
   SendMessageW(edit_, EM_EXGETSEL, 0, reinterpret_cast<LPARAM>(&sel));
   if (sel.cpMax > sel.cpMin) {
@@ -7688,6 +7695,7 @@ bool NotesWindow::RunReplaceOnce(bool match_case, bool whole, bool wrap,
               std::regex_replace(matched, re, std::wstring(replace_with_));
           SendMessageW(edit_, EM_REPLACESEL, TRUE,
                        reinterpret_cast<LPARAM>(repl.c_str()));
+          replaced = true;
         } catch (const std::regex_error&) {
           if (status_out) {
             *status_out = L"正则表达式无效";
@@ -7698,7 +7706,19 @@ bool NotesWindow::RunReplaceOnce(bool match_case, bool whole, bool wrap,
     } else {
       SendMessageW(edit_, EM_REPLACESEL, TRUE,
                    reinterpret_cast<LPARAM>(replace_with_));
+      replaced = true;
     }
+  }
+  if (replaced && wysiwyg_) {
+    int len = GetWindowTextLengthW(edit_);
+    std::wstring updated(static_cast<size_t>(len) + 1, L'\0');
+    if (len > 0) {
+      GetWindowTextW(edit_, updated.data(), len + 1);
+    }
+    updated.resize(static_cast<size_t>(len));
+    web_.SetCachedMarkdown(updated);
+    web_.SetMarkdown(updated, NoteBaseDir());
+    MarkDirty();
   }
   return RunFindOnce(true, wrap, match_case, whole, status_out);
 }
@@ -7706,6 +7726,9 @@ bool NotesWindow::RunReplaceOnce(bool match_case, bool whole, bool wrap,
 int NotesWindow::RunReplaceAll(bool match_case, bool whole) {
   if (!edit_ || find_what_[0] == 0) {
     return 0;
+  }
+  if (wysiwyg_) {
+    SyncFromWysiwyg();
   }
   if (find_regex_) {
     std::wstring hay = EditTextCpAligned();
@@ -7740,6 +7763,10 @@ int NotesWindow::RunReplaceAll(bool match_case, bool whole) {
       st.codepage = 1200;
       SendMessageW(edit_, EM_SETTEXTEX, reinterpret_cast<WPARAM>(&st),
                    reinterpret_cast<LPARAM>(out.c_str()));
+      if (wysiwyg_) {
+        web_.SetCachedMarkdown(out);
+        web_.SetMarkdown(out, NoteBaseDir());
+      }
       MarkDirty();
       RefreshGutter();
       return n;
@@ -7769,6 +7796,16 @@ int NotesWindow::RunReplaceAll(bool match_case, bool whole) {
   SendMessageW(edit_, EM_SETEVENTMASK, 0, old_mask);
   InvalidateRect(edit_, nullptr, TRUE);
   if (n > 0) {
+    if (wysiwyg_) {
+      int len = GetWindowTextLengthW(edit_);
+      std::wstring updated(static_cast<size_t>(len) + 1, L'\0');
+      if (len > 0) {
+        GetWindowTextW(edit_, updated.data(), len + 1);
+      }
+      updated.resize(static_cast<size_t>(len));
+      web_.SetCachedMarkdown(updated);
+      web_.SetMarkdown(updated, NoteBaseDir());
+    }
     status_full_text_dirty_ = true;
     MarkDirty();
     RefreshGutter();
@@ -8260,18 +8297,27 @@ void NotesWindow::EnsureLibraryCloudLogin() {
 void NotesWindow::LoadAndSweepCloudSync() {
   cloud_sync_ = LoadNoteCloudSync();
   const long long now = NoteCloudUnixNow();
-  bool has_due = false;
+  std::vector<int> due_ids;
   for (const auto& d : cloud_sync_.pending_deletes) {
     if (d.note_id > 0 && d.delete_after > 0 && now >= d.delete_after) {
-      has_due = true;
-      break;
+      due_ids.push_back(d.note_id);
     }
   }
-  if (has_due) {
-    std::thread([]() {
-      NoteCloudSyncStore bg = LoadNoteCloudSync();
-      if (NoteCloudSweepPendingDeletes(&bg) > 0) {
-        SaveNoteCloudSync(bg);
+  if (!due_ids.empty()) {
+    std::thread([hwnd = hwnd_, due_ids = std::move(due_ids)]() {
+      if (!VaultHttpLoggedIn()) {
+        return;
+      }
+      auto* deleted_ids = new std::vector<int>();
+      for (int id : due_ids) {
+        if (VaultHttpDeleteNote(id)) {
+          deleted_ids->push_back(id);
+        }
+      }
+      if (deleted_ids->empty() || !hwnd || !IsWindow(hwnd) ||
+          !PostMessageW(hwnd, WM_APP + 88, 0,
+                        reinterpret_cast<LPARAM>(deleted_ids))) {
+        delete deleted_ids;
       }
     }).detach();
   }
@@ -8295,6 +8341,7 @@ constexpr UINT kMsgCloudPushFailed = WM_APP + 87;
 // Backoff before retrying a failed batch. The queue keeps the latest body per
 // note, so a retry never resurrects stale content.
 constexpr unsigned kCloudPushRetryMs = 5000;
+std::atomic<HWND> g_cloud_push_notify_hwnd{nullptr};
 }  // namespace
 
 void NotesWindow::QueueCloudNotePush(int note_id, std::wstring title,
@@ -8306,6 +8353,7 @@ void NotesWindow::QueueCloudNotePush(int note_id, std::wstring title,
     title = L"未命名";
   }
   online_body_cache_[note_id] = OnlineBodyCache{title, body};
+  g_cloud_push_notify_hwnd.store(hwnd_, std::memory_order_release);
   // One worker thread + latest-wins queue (state lives in notes_cloud_sync so
   // it survives this window). The old detached-thread-per-save spawned
   // unbounded threads and let an older request finish after a newer one.
@@ -8313,9 +8361,8 @@ void NotesWindow::QueueCloudNotePush(int note_id, std::wstring title,
   if (!NoteCloudPushMarkWorkerStarted()) {
     return;
   }
-  // Only the HWND is captured — the worker outlives the window and must not
-  // dereference it. The push outcome goes back via PostMessage.
-  std::thread([hwnd = hwnd_]() {
+  // The push outcome goes back via PostMessage to the latest active window.
+  std::thread([]() {
     for (;;) {
       // Blocks until something is queued.
       NoteCloudPushWaitForRetry(1000u * 60u * 60u);
@@ -8331,17 +8378,19 @@ void NotesWindow::QueueCloudNotePush(int note_id, std::wstring title,
         NoteCloudPushWaitForRetry(kCloudPushRetryMs);
         continue;
       }
-      int failed = 0;
+      std::map<int, std::pair<std::wstring, std::wstring>> failed_batch;
       for (const auto& kv : batch) {
         VaultHttpNote updated;
         if (!VaultHttpUpdateNote(kv.first, kv.second.first,
                                  kv.second.second, &updated)) {
-          ++failed;
+          failed_batch.emplace(kv.first, kv.second);
         }
       }
-      if (failed > 0) {
-        // Re-queue what failed so the edit is retried, then tell the UI.
-        NoteCloudPushRequeue(batch);
+      if (!failed_batch.empty()) {
+        // Re-queue only what failed so succeeded notes are not re-uploaded.
+        const int failed = static_cast<int>(failed_batch.size());
+        NoteCloudPushRequeue(failed_batch);
+        HWND hwnd = g_cloud_push_notify_hwnd.load(std::memory_order_acquire);
         if (hwnd && IsWindow(hwnd)) {
           PostMessageW(hwnd, kMsgCloudPushFailed,
                        static_cast<WPARAM>(failed), 0);
@@ -8456,6 +8505,22 @@ void NotesWindow::PushLibraryRailState(bool refresh_online) {
   json += local_matched ? L"true" : L"false";
   json += L",\"online\":[";
   bool first_online = true;
+  std::set<std::wstring> pinned_set;
+  for (const auto& p : pinned_paths_) {
+    pinned_set.insert(NormalizePathKey(p));
+  }
+  std::set<std::wstring> locked_set;
+  for (const auto& p : locked_paths_) {
+    locked_set.insert(NormalizePathKey(p));
+  }
+  auto fast_is_pinned = [&](const std::wstring& p) -> bool {
+    return !pinned_set.empty() && pinned_set.count(NormalizePathKey(p)) > 0;
+  };
+  auto fast_is_locked = [&](const std::wstring& p) -> bool {
+    if (p.empty()) return false;
+    if (IsVaultAccountsNotePath(p)) return true;
+    return !locked_set.empty() && locked_set.count(NormalizePathKey(p)) > 0;
+  };
   // Synced local files (same path, sync attribute). Keys are normalized the
   // same way as the `key` lookups below (lowercase + backslash), otherwise a
   // link stored with forward slashes / different case silently misses.
@@ -8488,9 +8553,9 @@ void NotesWindow::PushLibraryRailState(bool refresh_online) {
     json += L"\",\"title\":\"";
     json += JsonEscLib(NoteDisplayName(L.path, false));
     json += L"\",\"updated_at\":\"已同步\",\"pinned\":";
-    json += PathIsPinned(L.path) ? L"true" : L"false";
+    json += fast_is_pinned(L.path) ? L"true" : L"false";
     json += L",\"locked\":";
-    json += PathIsLocked(L.path) ? L"true" : L"false";
+    json += fast_is_locked(L.path) ? L"true" : L"false";
     json += L"}";
   }
   // Pure remote rows only when never bound locally. After「转本地」sync=false
@@ -8567,9 +8632,9 @@ void NotesWindow::PushLibraryRailState(bool refresh_online) {
       json += L"\",\"folder\":\"";
       json += JsonEscLib(sub);
       json += L"\",\"pinned\":";
-      json += PathIsPinned(full) ? L"true" : L"false";
+      json += fast_is_pinned(full) ? L"true" : L"false";
       json += L",\"locked\":";
-      json += PathIsLocked(full) ? L"true" : L"false";
+      json += fast_is_locked(full) ? L"true" : L"false";
       json += L",\"line\":";
       json += std::to_wstring(hit.line);
       json += L"}";
@@ -8625,9 +8690,9 @@ void NotesWindow::PushLibraryRailState(bool refresh_online) {
       json += L"\",\"folder\":\"";
       json += JsonEscLib(folder);
       json += L"\",\"pinned\":";
-      json += PathIsPinned(full) ? L"true" : L"false";
+      json += fast_is_pinned(full) ? L"true" : L"false";
       json += L",\"locked\":";
-      json += PathIsLocked(full) ? L"true" : L"false";
+      json += fast_is_locked(full) ? L"true" : L"false";
       json += L"}";
     }
   }
@@ -8761,6 +8826,11 @@ void NotesWindow::ConvertPathToCloud(const std::wstring& path) {
       return;
     }
   }
+  if (_wcsicmp(NormalizePathKey(path).c_str(),
+               NormalizePathKey(path_).c_str()) == 0 &&
+      dirty_) {
+    Save(true, false);
+  }
   std::wstring body;
   {
     std::ifstream in(path, std::ios::binary);
@@ -8770,7 +8840,11 @@ void NotesWindow::ConvertPathToCloud(const std::wstring& path) {
     }
     std::ostringstream ss;
     ss << in.rdbuf();
-    body = WidenUtf8(ss.str());
+    const std::string raw = ss.str();
+    TextFileEncoding enc = TextFileEncoding::Utf8;
+    if (!DecodeTextFileBytes(raw, &body, &enc)) {
+      body = WidenUtf8(raw);
+    }
   }
   std::wstring title = NoteDisplayName(path, true);
   if (title.empty()) {
@@ -11528,6 +11602,24 @@ LRESULT NotesWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
         SetWindowTextW(status_, L"云端同步失败，稍后自动重试…");
       }
       ShowToast(L"云笔记上传失败，将在稍后自动重试");
+      return 0;
+    }
+    case WM_APP + 88: {
+      auto* deleted_ids = reinterpret_cast<std::vector<int>*>(lparam);
+      if (deleted_ids) {
+        if (!deleted_ids->empty()) {
+          std::set<int> del_set(deleted_ids->begin(), deleted_ids->end());
+          cloud_sync_.pending_deletes.erase(
+              std::remove_if(cloud_sync_.pending_deletes.begin(),
+                             cloud_sync_.pending_deletes.end(),
+                             [&del_set](const NoteCloudPendingDelete& d) {
+                               return del_set.count(d.note_id) > 0;
+                             }),
+              cloud_sync_.pending_deletes.end());
+          SaveNoteCloudSync(cloud_sync_);
+        }
+        delete deleted_ids;
+      }
       return 0;
     }
     case WM_APP + 60:
