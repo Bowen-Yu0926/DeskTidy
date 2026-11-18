@@ -600,8 +600,11 @@ int MigrateDocumentRulesLocked(RuleMap* rules) {
 }  // namespace
 
 RuleMap LoadRules() {
+  // ReadUtf8FileWithBak falls back to the .bak that SaveRules maintains; a
+  // bare ifstream turned a truncated / UTF-16 / hand-edited rules.json into
+  // silent defaults, which Shutdown then wrote back over the user's rules.
   std::string json;
-  if (!ReadUtf8FileWithBak(RuleFilePath(), &json)) {
+  if (!ReadUtf8FileWithBak(RuleFilePath(), &json) || json.empty()) {
     return DefaultRules();
   }
   RuleMap rules;
@@ -639,6 +642,8 @@ RuleMap LoadRules() {
     if (!ReadQuoted(json, &pos, &val)) {
       break;
     }
+    key = UnescapeJsonUtf8(key);
+    val = UnescapeJsonUtf8(val);
     if (!key.empty() && !val.empty()) {
       InsertNormalizedRule(&rules, Widen(key), val);
     }
@@ -1005,35 +1010,7 @@ FilenameRulesMap ParseStrListObject(const std::string& obj) {
 }
 
 bool AtomicWriteCategories(const std::string& json) {
-  const std::wstring path = CategoryFilePath();
-  const std::wstring tmp = path + L".tmp";
-  HANDLE h = CreateFileW(tmp.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
-                         FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH,
-                         nullptr);
-  if (h == INVALID_HANDLE_VALUE) {
-    return false;
-  }
-  DWORD written = 0;
-  const BOOL ok = WriteFile(h, json.data(), static_cast<DWORD>(json.size()),
-                            &written, nullptr);
-  FlushFileBuffers(h);
-  CloseHandle(h);
-  if (!ok || written != json.size()) {
-    DeleteFileW(tmp.c_str());
-    return false;
-  }
-  WIN32_FILE_ATTRIBUTE_DATA fad{};
-  if (GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &fad) &&
-      !(fad.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) &&
-      (fad.nFileSizeHigh != 0 || fad.nFileSizeLow != 0)) {
-    CopyFileW(path.c_str(), (path + L".bak").c_str(), FALSE);
-  }
-  if (!MoveFileExW(tmp.c_str(), path.c_str(),
-                   MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
-    DeleteFileW(tmp.c_str());
-    return false;
-  }
-  return true;
+  return AtomicWriteUtf8File(CategoryFilePath(), json);
 }
 
 void LoadCategories(CategoryFenceMap* fence_map,

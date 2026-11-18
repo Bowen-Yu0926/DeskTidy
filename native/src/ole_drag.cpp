@@ -72,6 +72,15 @@ bool IsOverRecycleBinIcon(HWND list, POINT client_pt) {
   if (item < 0) {
     return false;
   }
+  // Cache by item index: QueryContinueDrag runs on every mouse move, and this
+  // did a cross-apartment SHGetDesktopFolder + GetDisplayNameOf per move.
+  // The item under the cursor only changes when the hit test says so.
+  static HWND s_cached_list = nullptr;
+  static int s_cached_item = -1;
+  static bool s_cached_recycle = false;
+  if (list == s_cached_list && item == s_cached_item) {
+    return s_cached_recycle;
+  }
   LVITEMW lvi{};
   lvi.mask = LVIF_PARAM;
   lvi.iItem = item;
@@ -93,6 +102,9 @@ bool IsOverRecycleBinIcon(HWND list, POINT client_pt) {
     }
   }
   desktop->Release();
+  s_cached_list = list;
+  s_cached_item = item;
+  s_cached_recycle = recycle;
   return recycle;
 }
 

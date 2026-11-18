@@ -97,14 +97,11 @@ bool FindString(const std::string& body, const char* key, std::string* out) {
   std::string val;
   while (p < body.size() && body[p] != '"') {
     if (body[p] == '\\' && p + 1 < body.size()) {
-      ++p;
-      val.push_back(body[p]);
-    } else {
-      val.push_back(body[p]);
+      val.push_back(body[p++]);
     }
-    ++p;
+    val.push_back(body[p++]);
   }
-  *out = val;
+  *out = UnescapeJsonUtf8(val);
   return true;
 }
 
@@ -198,13 +195,14 @@ bool FindStringArray(const std::string& json, const char* key,
     std::string v;
     while (p < json.size() && json[p] != '"') {
       if (json[p] == '\\' && p + 1 < json.size()) {
-        ++p;
+        v.push_back(json[p++]);
       }
       v.push_back(json[p++]);
     }
     if (p < json.size() && json[p] == '"') {
       ++p;
     }
+    v = UnescapeJsonUtf8(v);
     if (!v.empty()) {
       out->push_back(v);
       any = true;
@@ -344,15 +342,14 @@ void CollectVirtualItemPins(const std::string& fence_obj, const std::string& fen
       std::string path;
       while (p < fence_obj.size() && fence_obj[p] != '"') {
         if (fence_obj[p] == '\\' && p + 1 < fence_obj.size()) {
-          ++p;
-          path.push_back(fence_obj[p++]);
-        } else {
           path.push_back(fence_obj[p++]);
         }
+        path.push_back(fence_obj[p++]);
       }
       if (p < fence_obj.size() && fence_obj[p] == '"') {
         ++p;
       }
+      path = UnescapeJsonUtf8(path);
       if (!path.empty()) {
         SetPin(pins, WidenUtf8(path), fence_id);
       }

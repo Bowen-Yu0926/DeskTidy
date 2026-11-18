@@ -136,6 +136,8 @@ class NotesWindow {
   // Image → assets, or HTML → Markdown (md only); false = use default paste.
   bool SmartPaste();
   void PersistViewSettings();
+  // Debounced PersistViewSettings for high-frequency changes (Ctrl+wheel zoom).
+  void SchedulePersistViewSettings();
   void LoadViewSettings();
   void ApplyViewMenuChecks();
   // Gray out Markdown-only commands when the active file is not .md.
@@ -399,6 +401,9 @@ class NotesWindow {
   std::set<int> bookmarks_;  // 0-based line indices (current tab).
   int gutter_width_ = 44;
   int pending_goto_line_ = -1;  // P1-19: deferred after SwitchToTab caret restore
+  // Online note whose body is being fetched on a worker; the placeholder is
+  // shown meanwhile and WM_APP+89 fills it in.
+  int pending_online_load_id_ = -1;
   bool quit_on_close_ = false;
   bool toast_ = false;
   bool wysiwyg_ = false;

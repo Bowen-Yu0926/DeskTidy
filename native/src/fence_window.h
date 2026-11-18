@@ -106,6 +106,8 @@ class FenceWindow {
   void Hide();
   // Force re-upload of the layered pixels (Optimus / ULW-loss recovery).
   void RefreshLayer();
+  // ReleaseCapture that the WM_CAPTURECHANGED handler recognises as our own.
+  void ReleaseCaptureSelf();
   // Temporary hide: hides the window without touching visible_/page geometry,
   // so page switches, the global show_fences toggle and the "stock desktop"
   // double-click view cannot permanently clear a fence (P1-2 leaked into them).
@@ -464,6 +466,13 @@ class FenceWindow {
   void RevertStylePreview();
 
   HWND hwnd_ = nullptr;
+  // Cached window DPI. S() is called per cell inside hit-test and paint loops,
+  // so querying GetDpiForWindow on every call was thousands of syscalls per
+  // mouse move on a large fence.
+  mutable int dpi_ = 0;
+  // DPI-scaled 96-dpi design value, using the cached window DPI.
+  int S(int px) const;
+  int S(HWND /*hwnd*/, int px) const { return S(px); }
   HWND tip_ = nullptr;
   int tip_index_ = -1;
   std::wstring tip_text_;
@@ -563,8 +572,7 @@ class FenceWindow {
   // date/created/size descending (newest / largest first).
   bool sort_desc_ = false;
   std::string view_mode_ = "grid";
-  int opacity_override_ = -1;
-  // H1: manual pin order (paths) mirrored to layout.pin_order.
+  int opacity_override_ = -1;  // H1: manual pin order (paths) mirrored to layout.pin_order.
   std::vector<std::wstring> pin_order_;
   // H3: top-level visibility + per-page geometry overrides.
   bool visible_ = true;
@@ -576,6 +584,11 @@ class FenceWindow {
   PageLockedFn page_locked_query_;
   bool rubber_ = false;
   bool rubber_additive_ = false;
+  // Set around our own ReleaseCapture() calls. WM_CAPTURECHANGED is *sent*
+  // synchronously by ReleaseCapture, so without this the handler cannot tell
+  // "we finished the gesture" from "another window stole capture" and would
+  // tear down the gesture state that the same WM_LBUTTONUP is about to read.
+  bool self_releasing_capture_ = false;
   POINT rubber_a_{};
   POINT rubber_b_{};
   HWND rename_edit_ = nullptr;
@@ -606,6 +619,8 @@ class FenceWindow {
   // ~60Hz and remember a present is still owed.
   DWORD last_hover_present_ms_ = 0;
   bool hover_present_pending_ = false;
+  // Marquee repaint throttle (full-window ULW upload per mouse move otherwise).
+  ULONGLONG last_rubber_present_ms_ = 0;
   // OLE inbound drop preview (Explorer / desktop / other fence).
   bool drop_preview_ = false;
   bool drop_over_recycle_ = false;
@@ -639,6 +654,16 @@ class FenceWindow {
   int thumb_start_scroll_ = 0;
   // F8 style preview.
   std::string preview_style_id_;
+  // Full visual state captured when the preview starts, so leaving the style
+  // submenu restores custom colours/opacity/radius instead of the preset's.
+  struct StyleSnapshot {
+    bool has_custom_colors = false;
+    COLORREF bg = 0;
+    COLORREF accent = 0;
+    int opacity = -1;
+    int radius = -1;
+  };
+  StyleSnapshot preview_style_snapshot_{};
   bool style_preview_active_ = false;
   bool style_menu_open_ = false;
   DWORD footer_zoom_hint_until_ = 0;

@@ -306,18 +306,40 @@ std::string FindHex64(const std::string& text) {
 
 std::string FindSha256InText(const std::string& text,
                              const std::string& asset_name) {
+  // Prefer a hash on the same line as the asset name: sha256sum-style notes
+  // put "<hash>  <file>", so scanning forward from the name picked up the
+  // *next* asset's digest and made every download fail verification.
   if (!asset_name.empty()) {
     size_t p = 0;
     while ((p = text.find(asset_name, p)) != std::string::npos) {
-      const size_t end = (std::min)(text.size(), p + asset_name.size() + 512);
-      const std::string tok = FindHex64(text.substr(p, end - p));
+      size_t line_begin = text.rfind('\n', p);
+      line_begin = (line_begin == std::string::npos) ? 0 : line_begin + 1;
+      size_t line_end = text.find('\n', p + asset_name.size());
+      if (line_end == std::string::npos) {
+        line_end = text.size();
+      }
+      const std::string tok =
+          FindHex64(text.substr(line_begin, line_end - line_begin));
       if (!tok.empty()) {
         return tok;
       }
       p += asset_name.size();
     }
   }
-  return FindHex64(text);
+  // No per-line match: a single-asset body with one hash is still unambiguous.
+  const std::string only = FindHex64(text);
+  if (!only.empty()) {
+    size_t first = 0;
+    size_t hits = 0;
+    while ((first = text.find(only, first)) != std::string::npos) {
+      ++hits;
+      first += only.size();
+    }
+    if (hits == 1) {
+      return only;
+    }
+  }
+  return {};
 }
 
 // sha256 for an asset: release body near the name, then a sidecar digest file.

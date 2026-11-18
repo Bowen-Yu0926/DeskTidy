@@ -329,13 +329,25 @@ bool EncodeTextFileBytes(const std::wstring& text, TextFileEncoding enc,
   return false;
 }
 
+// Per-write scratch name. A fixed "<path>.tmp" is shared state: two writers of
+// the same file (UI thread saving while a worker saves, or two processes) both
+// CREATE_ALWAYS the same handle target, so one truncates the other's bytes
+// mid-write and the loser's MoveFileEx publishes a torn file. PID + a process
+// wide counter keeps every in-flight write on its own file.
+std::wstring AtomicTempPathFor(const std::wstring& path) {
+  static std::atomic<unsigned long> s_seq{0};
+  wchar_t suffix[48];
+  swprintf_s(suffix, L".%lu.%lu.tmp", GetCurrentProcessId(),
+             s_seq.fetch_add(1, std::memory_order_relaxed));
+  return path + suffix;
+}
+
 bool AtomicWriteUtf8File(const std::wstring& path, const std::string& utf8,
                          bool keep_bak) {
   if (path.empty()) {
     return false;
   }
-  const std::wstring tmp =
-      path + L"." + std::to_wstring(GetCurrentThreadId()) + L".tmp";
+  const std::wstring tmp = AtomicTempPathFor(path);
   HANDLE h = CreateFileW(tmp.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
                          FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH,
                          nullptr);
@@ -403,6 +415,103 @@ std::string EscapeJsonUtf8(const std::string& s) {
         } else {
           out.push_back(static_cast<char>(c));
         }
+        break;
+    }
+  }
+  return out;
+}
+
+std::string UnescapeJsonUtf8(const std::string& body) {
+  std::string out;
+  out.reserve(body.size());
+  size_t i = 0;
+  while (i < body.size()) {
+    const char c = body[i];
+    if (c != '\\' || i + 1 >= body.size()) {
+      out.push_back(c);
+      ++i;
+      continue;
+    }
+    const char esc = body[i + 1];
+    i += 2;
+    switch (esc) {
+      case '"':
+        out.push_back('"');
+        break;
+      case '\\':
+        out.push_back('\\');
+        break;
+      case '/':
+        out.push_back('/');
+        break;
+      case 'b':
+        out.push_back('\b');
+        break;
+      case 'f':
+        out.push_back('\f');
+        break;
+      case 'n':
+        out.push_back('\n');
+        break;
+      case 'r':
+        out.push_back('\r');
+        break;
+      case 't':
+        out.push_back('\t');
+        break;
+      case 'u': {
+        // \uXXXX, possibly the high half of a surrogate pair.
+        auto hex4 = [&](size_t at, unsigned* v) {
+          if (at + 4 > body.size()) {
+            return false;
+          }
+          unsigned code = 0;
+          for (size_t k = 0; k < 4; ++k) {
+            const char h = body[at + k];
+            code <<= 4;
+            if (h >= '0' && h <= '9') {
+              code |= static_cast<unsigned>(h - '0');
+            } else if (h >= 'a' && h <= 'f') {
+              code |= static_cast<unsigned>(h - 'a' + 10);
+            } else if (h >= 'A' && h <= 'F') {
+              code |= static_cast<unsigned>(h - 'A' + 10);
+            } else {
+              return false;
+            }
+          }
+          *v = code;
+          return true;
+        };
+        unsigned code = 0;
+        if (!hex4(i, &code)) {
+          out.push_back('u');  // malformed: keep it literal, never drop text
+          break;
+        }
+        i += 4;
+        if (code >= 0xD800 && code <= 0xDBFF && i + 6 <= body.size() &&
+            body[i] == '\\' && body[i + 1] == 'u') {
+          unsigned low = 0;
+          if (hex4(i + 2, &low) && low >= 0xDC00 && low <= 0xDFFF) {
+            code = 0x10000 + ((code - 0xD800) << 10) + (low - 0xDC00);
+            i += 6;
+          }
+        }
+        // wchar_t is UTF-16 on Windows, so a code point above the BMP must be
+        // written as a surrogate PAIR — casting it to a single wchar_t
+        // truncates it (emoji came out as garbage).
+        std::wstring wide;
+        if (code <= 0xFFFF) {
+          wide.push_back(static_cast<wchar_t>(code));
+        } else {
+          const unsigned v = code - 0x10000;
+          wide.push_back(static_cast<wchar_t>(0xD800 + (v >> 10)));
+          wide.push_back(static_cast<wchar_t>(0xDC00 + (v & 0x3FF)));
+        }
+        out += NarrowUtf8(wide);
+        break;
+      }
+      default:
+        out.push_back(esc);
         break;
     }
   }

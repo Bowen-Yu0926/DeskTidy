@@ -92,6 +92,13 @@ LRESULT CALLBACK CapProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
       if (GetKeyState(VK_MENU) & 0x8000) {
         mods |= MOD_ALT;
       }
+      // Reject a bare printable key: RegisterHotKey with no modifiers takes
+      // that character away from every application. Function keys may stand
+      // alone (F2 is the default screenshot hotkey).
+      const bool is_function_key = vk >= VK_F1 && vk <= VK_F24;
+      if (mods == 0 && !is_function_key) {
+        return 0;
+      }
       st->mods = mods;
       st->vk = vk;
       st->done = true;
@@ -356,6 +363,12 @@ bool ParseHotkey(const std::wstring& text, UINT* modifiers, UINT* vk) {
     wchar_t c = t[0];
     if (c >= L'a' && c <= L'z') {
       c = static_cast<wchar_t>(c - L'a' + L'A');
+    }
+    // A bare printable key would be registered machine-wide with no modifiers,
+    // which swallows that character in every application. Only function keys
+    // may stand alone (F2 is the default screenshot hotkey).
+    if (*modifiers == 0) {
+      return false;
     }
     *vk = static_cast<UINT>(c);
     return true;

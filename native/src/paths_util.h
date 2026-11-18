@@ -35,12 +35,25 @@ bool IsDevRuntime();
 // Directory of the running exe (no trailing slash), resolved once.
 std::wstring NativeExeDir();
 
-// Atomic UTF-8 write: temp + flush + MoveFileEx replace (optional .bak).
+// Atomic UTF-8 write: unique temp + flush + MoveFileEx replace (optional .bak).
 bool AtomicWriteUtf8File(const std::wstring& path, const std::string& utf8,
                          bool keep_bak = true);
 
+// Unique scratch path for a manual temp-write-then-replace sequence, e.g. a
+// caller that needs extra checks before promoting the file. Every call returns
+// a different name, so concurrent writers of the same target never share a
+// scratch file.
+std::wstring AtomicTempPathFor(const std::wstring& path);
+
 // Escape a UTF-8 string for embedding inside a JSON "..." value.
 std::string EscapeJsonUtf8(const std::string& s);
+
+// Decode a JSON string body (the text between the quotes, escapes still
+// present) into UTF-8. Handles \" \\ \/ \b \f \n \r \t and \uXXXX (including
+// surrogate pairs). Python's json.dump defaults to ensure_ascii=True, so every
+// non-ASCII title/path arrives as \uXXXX — decoders that only unescape \\ and
+// \" turn those into literal "u5DE5" text.
+std::string UnescapeJsonUtf8(const std::string& body);
 
 // Read a UTF-8 text file; if missing/empty/tiny, try path.bak (layout-style).
 bool ReadUtf8FileWithBak(const std::wstring& path, std::string* out);

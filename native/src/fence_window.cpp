@@ -84,6 +84,8 @@ constexpr UINT kTimerDragScroll = 78;
 // before the next WM_MOUSEMOVE.
 constexpr UINT kTimerHoverFlush = 81;
 constexpr int kHoverRepaintThrottleMs = 16;
+// Marquee repaint cadence while the rubber band is live (~60 Hz).
+constexpr ULONGLONG kRubberPresentThrottleMs = 16;
 constexpr int kExtFenceSortDate = 11;
 constexpr int kExtFenceSortSize = 12;
 constexpr int kExtFenceSortType = 13;
@@ -184,8 +186,6 @@ void PaintSelectionChrome(Gdiplus::Graphics& g, Gdiplus::SolidBrush& fill,
     g.DrawPath(edge, &path);
   }
 }
-
-int S(HWND hwnd, int px) { return MulDiv(px, FenceDpi(hwnd), 96); }
 
 // opacity: 255 = full; ~107 (~0.42) matches Python cut ghost.
 // Builds an owned premultiplied 32bpp bitmap for `icon` drawn at `dest`
@@ -319,6 +319,15 @@ const std::unordered_set<std::wstring>& CutPathSet() {
   return g_cut_set;
 }
 }  // namespace
+
+// Scale a 96-dpi design value by this window's cached DPI. Cached because S()
+// runs per cell inside hit-test and paint loops.
+int FenceWindow::S(int px) const {
+  if (dpi_ <= 0) {
+    dpi_ = FenceDpi(hwnd_);
+  }
+  return MulDiv(px, dpi_, 96);
+}
 
 void FenceWindow::ClearIconCache() {
   for (auto& kv : icon_cache_) {
@@ -602,7 +611,7 @@ bool FenceWindow::ResolveLayerSize(int* out_w, int* out_h) const {
   GetWindowRect(hwnd_, &wr);
   int w = static_cast<int>(wr.right - wr.left);
   int h = static_cast<int>(wr.bottom - wr.top);
-  const int chrome_min = S(hwnd_, kCollapsedH0);
+  const int chrome_min = S(kCollapsedH0);
   const int owned_h =
       collapsed_ ? chrome_min : (std::max)(expanded_h_, kFenceExpandedFloor);
   // Explorer create/copy/attach can report a transient tiny HWND rect.
@@ -734,7 +743,7 @@ void FenceWindow::PresentLayered() {
   const size_t nbytes =
       static_cast<size_t>(w) * static_cast<size_t>(h) * 4u;
 
-  const int radius = (std::max)(0, S(hwnd_, radius_));
+  const int radius = (std::max)(0, S(radius_));
   const bool chrome_hit =
       panel_chrome_w_ == w && panel_chrome_h_ == h &&
       panel_chrome_bg_ == bg_ && panel_chrome_accent_ == accent_ &&
@@ -780,7 +789,7 @@ void FenceWindow::PresentLayered() {
       g.FillRectangle(&fill, 0, 0, rw, rh);
     }
     // Soft header wash only (Fences-style: no left accent stripe).
-    const int header_h = S(hwnd_, kHeaderH0);
+    const int header_h = S(kHeaderH0);
     const bool rounded = rr > 2 && rr < rw && rr < rh;
     {
       // Glossy vertical gradient wash for frosted glass depth
@@ -907,6 +916,18 @@ void FenceWindow::BlitLayerAtAlpha(BYTE alpha) {
   ReleaseDC(nullptr, screen);
 }
 
+void FenceWindow::ReleaseCaptureSelf() {
+  // ReleaseCapture sends WM_CAPTURECHANGED synchronously. Flag it so the
+  // handler knows this was our own gesture teardown and must not wipe the
+  // state the caller is still using.
+  if (GetCapture() != hwnd_) {
+    return;
+  }
+  self_releasing_capture_ = true;
+  ReleaseCapture();
+  self_releasing_capture_ = false;
+}
+
 void FenceWindow::RefreshLayer() {
   // Re-upload visible fence pixels. Fixes hybrid-GPU (Optimus) machines where
   // the initial UpdateLayeredWindow blit is lost after the driver/DWM swaps
@@ -958,7 +979,7 @@ void FenceWindow::SetCustomColors(bool enabled, COLORREF bg, COLORREF accent) {
 
 int FenceWindow::IconSizePx() const {
   if (view_mode_ == "list") {
-    return S(hwnd_, kListIcon0);  // kListIcon0 is a 96-dpi design value.
+    return S(kListIcon0);  // kListIcon0 is a 96-dpi design value.
   }
   // grid_metrics_ is already physical px (queried from the DPI-aware desktop
   // ListView / registry). Re-scaling by DPI/96 double-counts and inflates icons
@@ -1095,13 +1116,13 @@ void FenceWindow::BeginFilter() {
   }
   RECT rc{};
   GetClientRect(hwnd_, &rc);
-  const int edit_h = S(hwnd_, 24);
+  const int edit_h = S(24);
   // Pin the box to the fence's top strip so the filtered grid below it stays
   // readable; popup (not WS_CHILD) because ULW hosts hide child EDITs.
-  POINT origin{S(hwnd_, 6), S(hwnd_, 4)};
+  POINT origin{S(6), S(4)};
   ClientToScreen(hwnd_, &origin);
   const int edit_w =
-      (std::max)(S(hwnd_, 120), static_cast<int>(rc.right - S(hwnd_, 12)));
+      (std::max)(S(120), static_cast<int>(rc.right - S(12)));
   filter_edit_ = CreateWindowExW(
       WS_EX_TOOLWINDOW | WS_EX_TOPMOST, L"EDIT", filter_text_.c_str(),
       WS_POPUP | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL, origin.x, origin.y,
@@ -1422,7 +1443,7 @@ void FenceWindow::ApplyPageGeometry(const FencePageGeometry& geo,
   collapsed_ = geo.collapsed;
   expanded_h_ = (std::max)(h, kFenceExpandedFloor);
   if (hwnd_) {
-    const int win_h = collapsed_ ? S(hwnd_, kCollapsedH0) : expanded_h_;
+    const int win_h = collapsed_ ? S(kCollapsedH0) : expanded_h_;
     SetOverlayScreenPos(hwnd_, geo.x, geo.y, w, win_h,
                         SWP_NOZORDER | SWP_NOREDRAW);
     LayoutCells();
@@ -1469,7 +1490,7 @@ void FenceWindow::ScaleGeometryForDpi(int old_dpi, int new_dpi) {
   ScaleRectForDpi(&x, &y, &w, &h, old_dpi, new_dpi);
   expanded_h_ = (std::max)(h, kFenceExpandedFloor);
   if (hwnd_) {
-    const int win_h = collapsed_ ? S(hwnd_, kCollapsedH0) : h;
+    const int win_h = collapsed_ ? S(kCollapsedH0) : h;
     SetOverlayScreenPos(hwnd_, x, y, w, win_h, SWP_NOZORDER);
   }
   for (auto& kv : page_geometries_) {
@@ -1575,7 +1596,7 @@ void FenceWindow::SetCollapsed(bool collapsed, bool persist) {
     }
     collapsed_ = true;
     EndFilter();
-    SetOverlayScreenPos(hwnd_, rc.left, rc.top, w, S(hwnd_, kCollapsedH0),
+    SetOverlayScreenPos(hwnd_, rc.left, rc.top, w, S(kCollapsedH0),
                         SWP_NOZORDER);
   } else {
     collapsed_ = false;
@@ -1876,9 +1897,9 @@ bool FenceWindow::TitleLabelRect(RECT* out) const {
   chrome_right = (std::max)(0, chrome_right - 6);
   const int title_left =
       (portal_up_rc.right > portal_up_rc.left) ? portal_up_rc.right + 4
-                                               : S(hwnd_, 6);
-  const int title_top = S(hwnd_, 6);
-  const int title_px = S(hwnd_, 13);
+                                               : S(6);
+  const int title_top = S(6);
+  const int title_px = S(13);
   out->left = title_left;
   out->top = title_top;
   out->right = chrome_right;
@@ -1902,7 +1923,7 @@ bool FenceWindow::CaptionFitsLabel(const std::wstring& text,
   if (!hdc) {
     return true;
   }
-  const int font_px = S(hwnd_, 11);
+  const int font_px = S(11);
   static int s_cached_px = 0;
   static HFONT s_cached_font = nullptr;
   if (s_cached_px != font_px || !s_cached_font) {
@@ -2101,8 +2122,12 @@ bool FenceWindow::Show() {
   // not-visible and restore it (Python overlay_win32_visible does the same).
   const bool was_iconic = IsIconic(hwnd_) != FALSE;
   const bool was_visible = IsWindowVisible(hwnd_) != FALSE && !was_iconic;
-  const bool buried =
-      was_visible && IsAttachedToDesktop(hwnd_) && !IsOverlayAboveDefView(hwnd_);
+  const bool attached = IsAttachedToDesktop(hwnd_);
+  // One Z-order probe per Show(): IsOverlayAboveDefView walks the window stack
+  // with cross-process DwmGetWindowAttribute calls, and Show() runs for every
+  // fence on each page switch / restore tick.
+  const bool above = attached && IsOverlayAboveDefView(hwnd_);
+  const bool buried = was_visible && attached && !above;
 
   // Fences-class: 分层位图先就绪并提交显存，确保映射第一帧饱满无暇，杜绝先显示后绘制的白屏/黑边闪烁
   if (!was_visible || was_iconic || buried || layer_dirty_) {
@@ -2110,9 +2135,9 @@ bool FenceWindow::Show() {
     PresentLayered();
   }
 
-  if (!IsAttachedToDesktop(hwnd_)) {
+  if (!attached) {
     AttachToDesktopLayer();
-  } else if (buried || !IsOverlayAboveDefView(hwnd_)) {
+  } else if (buried || !above) {
     RaiseOverlayInDesktopBand(hwnd_);
   }
 
@@ -2454,7 +2479,7 @@ void FenceWindow::ApplyLayoutGeometry(const FenceLayout& layout) {
     return;
   }
   expanded_h_ = (std::max)(layout.h, kFenceExpandedFloor);
-  const int win_h = collapsed_ ? S(hwnd_, kCollapsedH0) : layout.h;
+  const int win_h = collapsed_ ? S(kCollapsedH0) : layout.h;
   SetWindowPos(hwnd_, nullptr, layout.x, layout.y, layout.w, win_h,
                SWP_NOZORDER | SWP_NOACTIVATE);
   LayoutCells();
@@ -2497,15 +2522,15 @@ void FenceWindow::TabStripRects(std::vector<RECT>* out) const {
   }
   RECT rc{};
   GetClientRect(hwnd_, &rc);
-  const int header = S(hwnd_, kHeaderH0);
-  const int pad = S(hwnd_, 4);
+  const int header = S(kHeaderH0);
+  const int pad = S(4);
   // Leave room for the right-hand chrome (collapse / lock / dissolve).
   RECT collapse_rc{}, lock_rc{}, dissolve_rc{}, portal_up_rc{};
   HeaderBtnRects(&collapse_rc, &lock_rc, &dissolve_rc, &portal_up_rc);
   int right_limit = rc.right - pad;
   auto consider = [&](const RECT& r) {
     if (r.right > r.left && r.left < right_limit) {
-      right_limit = r.left - S(hwnd_, 4);
+      right_limit = r.left - S(4);
     }
   };
   consider(collapse_rc);
@@ -2513,7 +2538,7 @@ void FenceWindow::TabStripRects(std::vector<RECT>* out) const {
   consider(dissolve_rc);
   const int left_start =
       (portal_up_rc.right > portal_up_rc.left) ? portal_up_rc.right + 4
-                                               : S(hwnd_, 6);
+                                               : S(6);
   const int avail = (std::max)(0, right_limit - left_start);
   if (avail <= 0) {
     return;
@@ -2527,7 +2552,7 @@ void FenceWindow::TabStripRects(std::vector<RECT>* out) const {
   tab_w = (std::min)(S(hwnd_, 132), (std::max)(S(hwnd_, 44), tab_w));
   int x = left_start;
   for (int i = 0; i < n; ++i) {
-    RECT r{x, S(hwnd_, 3), x + tab_w, header - S(hwnd_, 3)};
+    RECT r{x, S(3), x + tab_w, header - S(3)};
     if (r.right > right_limit) {
       r.right = right_limit;
     }
@@ -2761,13 +2786,13 @@ void FenceWindow::ClampScroll() {
   if (!ResolveLayerSize(&w, &h)) {
     return;
   }
-  const int pad = S(hwnd_, kPad0);
+  const int pad = S(kPad0);
   const int footer_h =
-      (!collapsed_ && (w - pad * 2) >= S(hwnd_, 180) && !cells_.empty())
-          ? S(hwnd_, 24)
+      (!collapsed_ && (w - pad * 2) >= S(180) && !cells_.empty())
+          ? S(24)
           : 0;
   const int view =
-      (std::max)(0, h - S(hwnd_, kHeaderH0) - pad - footer_h);
+      (std::max)(0, h - S(kHeaderH0) - pad - footer_h);
   ClampScrollForView(view);
 }
 
@@ -2776,8 +2801,8 @@ void FenceWindow::LayoutCellsTo(int w, int h) {
     return;
   }
   RECT rc{0, 0, w, h};
-  const int pad = S(hwnd_, kPad0);
-  const int header = S(hwnd_, kHeaderH0);
+  const int pad = S(kPad0);
+  const int header = S(kHeaderH0);
   const int inner_l = rc.left + pad;
   const int inner_r = rc.right - pad;
 
@@ -2788,7 +2813,7 @@ void FenceWindow::LayoutCellsTo(int w, int h) {
   int cols = 1;
   int row_h = 0;
   if (view_mode_ == "list") {
-    row_h = S(hwnd_, kListRowH0);
+    row_h = S(kListRowH0);
     content_h_ = static_cast<int>(cells_.size()) * row_h;
   } else {
     cell_w = (std::max)(1, CellWidthPx());
@@ -2802,8 +2827,8 @@ void FenceWindow::LayoutCellsTo(int w, int h) {
     content_h_ = rows * cell_h;
   }
   const int footer_h =
-      (!collapsed_ && (inner_r - inner_l) >= S(hwnd_, 180) && !cells_.empty())
-          ? S(hwnd_, 24)
+      (!collapsed_ && (inner_r - inner_l) >= S(180) && !cells_.empty())
+          ? S(24)
           : 0;
   const int view = (std::max)(0, h - header - pad - footer_h);
   ClampScrollForView(view);
@@ -2839,19 +2864,19 @@ bool FenceWindow::IconLabelRect(size_t index, RECT* out) const {
   if (view_mode_ == "list") {
     // List: text starts after the glyph — approximate right of icon + pad.
     const int icon = IconSizePx();
-    out->left = b.left + icon + S(hwnd_, 8);
+    out->left = b.left + icon + S(8);
     out->top = b.top;
     out->right = b.right;
     out->bottom = b.bottom;
     return out->right > out->left;
   }
   const int icon = IconSizePx();
-  const int font_px = S(hwnd_, 11);
-  const int line_h = font_px + S(hwnd_, 5);
-  const int idle_label_h = line_h * label_lines_ + S(hwnd_, 4);
+  const int font_px = S(11);
+  const int line_h = font_px + S(5);
+  const int idle_label_h = line_h * label_lines_ + S(4);
   const int iy = b.top + 4;
   const int label_top = iy + icon + 2;
-  const int label_bottom = label_top + idle_label_h + S(hwnd_, 2);
+  const int label_bottom = label_top + idle_label_h + S(2);
   out->left = b.left + 2;
   out->top = label_top;
   out->right = b.right - 2;
@@ -2874,15 +2899,15 @@ bool FenceWindow::IconContentRect(size_t index, RECT* out) const {
     return true;
   }
   const int icon = IconSizePx();
-  const int font_px = S(hwnd_, 11);
-  const int line_h = font_px + S(hwnd_, 5);
-  const int idle_label_h = line_h * label_lines_ + S(hwnd_, 4);
+  const int font_px = S(11);
+  const int line_h = font_px + S(5);
+  const int idle_label_h = line_h * label_lines_ + S(4);
   const int iy = b.top + 4;
   const int label_top = iy + icon + 2;
   // Glyph + idle caption shelf. Selected paint may grow taller, but
   // expanding the hit box to the cell bottom made "blank" clicks inside the
   // same cell re-hit the icon (rename) instead of clearing selection.
-  const int label_bottom = label_top + idle_label_h + S(hwnd_, 2);
+  const int label_bottom = label_top + idle_label_h + S(2);
   out->left = b.left + 2;
   out->top = iy - 2;
   out->right = b.right - 2;
@@ -2894,7 +2919,7 @@ int FenceWindow::HitTestIcon(int x, int y) const {
   if (collapsed_) {
     return -1;
   }
-  if (y < S(hwnd_, kHeaderH0)) {
+  if (y < S(kHeaderH0)) {
     return -1;
   }
   // Explorer / Fences: only glyph + caption are "icons". Cell padding and empty
@@ -2919,7 +2944,7 @@ int FenceWindow::GridColumnCount() const {
   }
   RECT rc{};
   GetClientRect(hwnd_, &rc);
-  const int pad = S(hwnd_, kPad0);
+  const int pad = S(kPad0);
   const int cell_w = CellWidthPx();
   const int inner = (std::max)(1, static_cast<int>(rc.right - rc.left) - pad * 2);
   return (std::max)(1, inner / cell_w);
@@ -2931,14 +2956,14 @@ bool FenceWindow::ScrollbarVisible() const {
   }
   RECT rc{};
   GetClientRect(hwnd_, &rc);
-  const int pad = S(hwnd_, kPad0);
+  const int pad = S(kPad0);
   const int footer_h =
-      (!collapsed_ && (rc.right - rc.left - pad * 2) >= S(hwnd_, 180) &&
+      (!collapsed_ && (rc.right - rc.left - pad * 2) >= S(180) &&
        !cells_.empty())
-          ? S(hwnd_, 24)
+          ? S(24)
           : 0;
   const int view = (std::max)(
-      0, static_cast<int>(rc.bottom) - S(hwnd_, kHeaderH0) - pad - footer_h);
+      0, static_cast<int>(rc.bottom) - S(kHeaderH0) - pad - footer_h);
   return content_h_ > view && view > 0;
 }
 
@@ -2948,8 +2973,8 @@ int FenceWindow::HitTestScrollbar(int x, int y) const {
   }
   RECT rc{};
   GetClientRect(hwnd_, &rc);
-  const int header = S(hwnd_, kHeaderH0);
-  const int pad = S(hwnd_, kPad0);
+  const int header = S(kHeaderH0);
+  const int pad = S(kPad0);
   // Keep scrollbar clear of the east resize strip ([rc.right - kEdge, rc.right))
   const int edge = kEdge;
   const int hit_w = S(hwnd_, 12);
@@ -2963,9 +2988,9 @@ int FenceWindow::HitTestScrollbar(int x, int y) const {
     return 0;
   }
   const int footer_h =
-      (!collapsed_ && (rc.right - rc.left - pad * 2) >= S(hwnd_, 180) &&
+      (!collapsed_ && (rc.right - rc.left - pad * 2) >= S(180) &&
        !cells_.empty())
-          ? S(hwnd_, 24)
+          ? S(24)
           : 0;
   const int view =
       (std::max)(0, static_cast<int>(rc.bottom) - header - pad - footer_h);
@@ -2983,14 +3008,14 @@ int FenceWindow::HitTestScrollbar(int x, int y) const {
 void FenceWindow::ScrollbarPage(int dir) {
   RECT rc{};
   GetClientRect(hwnd_, &rc);
-  const int pad = S(hwnd_, kPad0);
+  const int pad = S(kPad0);
   const int footer_h =
-      (!collapsed_ && (rc.right - rc.left - pad * 2) >= S(hwnd_, 180) &&
+      (!collapsed_ && (rc.right - rc.left - pad * 2) >= S(180) &&
        !cells_.empty())
-          ? S(hwnd_, 24)
+          ? S(24)
           : 0;
   const int view = (std::max)(
-      0, static_cast<int>(rc.bottom) - S(hwnd_, kHeaderH0) - pad - footer_h);
+      0, static_cast<int>(rc.bottom) - S(kHeaderH0) - pad - footer_h);
   scroll_y_ += dir * view;
   ClampScroll();
   LayoutCells();
@@ -2999,7 +3024,13 @@ void FenceWindow::ScrollbarPage(int dir) {
 
 void FenceWindow::PreviewStyleId(const std::string& style_id) {
   if (!style_preview_active_) {
+    // Snapshot the full visual state, not just the style id: SetStyleId()
+    // resets the custom colours/opacity/radius overrides, so reverting only
+    // the id silently discarded a fence's custom look just from hovering the
+    // style submenu.
     preview_style_id_ = style_id_;
+    preview_style_snapshot_ = StyleSnapshot{
+        has_custom_colors_, bg_, accent_, opacity_override_, radius_override_};
     style_preview_active_ = true;
   }
   SetStyleId(style_id);
@@ -3011,6 +3042,16 @@ void FenceWindow::RevertStylePreview() {
   }
   style_preview_active_ = false;
   SetStyleId(preview_style_id_);
+  const StyleSnapshot& s = preview_style_snapshot_;
+  has_custom_colors_ = s.has_custom_colors;
+  bg_ = s.bg;
+  accent_ = s.accent;
+  opacity_override_ = s.opacity;
+  radius_override_ = s.radius;
+  ApplyStyle();
+  if (hwnd_ && IsWindowVisible(hwnd_)) {
+    PresentLayered();
+  }
   preview_style_id_.clear();
 }
 
@@ -3148,7 +3189,7 @@ void FenceWindow::EnsureCellVisible(int index) {
   }
   RECT rc{};
   GetClientRect(hwnd_, &rc);
-  const int header = S(hwnd_, kHeaderH0);
+  const int header = S(kHeaderH0);
   const RECT& b = cells_[static_cast<size_t>(index)].bounds;
   bool moved = false;
   if (b.top < header) {
@@ -3359,7 +3400,7 @@ void FenceWindow::HandleFenceHotkey(int vk, bool ctrl, bool shift) {
     }
     if (rubber_) {
       rubber_ = false;
-      ReleaseCapture();
+      ReleaseCaptureSelf();
       PresentLayered();
       return;
     }
@@ -3371,7 +3412,7 @@ void FenceWindow::HandleFenceHotkey(int vk, bool ctrl, bool shift) {
       drag_left_ = false;
       last_manual_drag_present_ms_ = 0;
       if (GetCapture() == hwnd_) {
-        ReleaseCapture();
+        ReleaseCaptureSelf();
       }
       PresentLayered();
       return;
@@ -3624,7 +3665,7 @@ void FenceWindow::HandleFenceHotkey(int vk, bool ctrl, bool shift) {
     }
     RECT rc{};
     GetClientRect(hwnd_, &rc);
-    const int header = S(hwnd_, kHeaderH0);
+    const int header = S(kHeaderH0);
     const int view_h = (std::max)(1, static_cast<int>(rc.bottom) - header);
     int cell_h = 48;
     if (!cells_.empty()) {
@@ -3657,7 +3698,7 @@ FenceWindow::Edge FenceWindow::HitTestEdge(int x, int y) const {
   }
   RECT rc{};
   GetClientRect(hwnd_, &rc);
-  const int header = S(hwnd_, kHeaderH0);
+  const int header = S(kHeaderH0);
   // Title bar hosts lock / collapse / delete — never treat L/R as resize there
   // (otherwise the right-edge strip steals button clicks).
   if (y < header) {
@@ -3708,9 +3749,9 @@ void FenceWindow::HeaderBtnRects(RECT* collapse, RECT* lock, RECT* dissolve,
   }
   RECT rc{};
   GetClientRect(hwnd_, &rc);
-  const int header = S(hwnd_, kHeaderH0);
-  const int btn = S(hwnd_, 22);
-  const int gap = S(hwnd_, 2);
+  const int header = S(kHeaderH0);
+  const int btn = S(22);
+  const int gap = S(2);
   int right = rc.right - 2;
   auto place = [&](RECT* out, bool enabled) {
     if (!out || !enabled) {
@@ -3859,7 +3900,7 @@ void FenceWindow::BeginIconDrag(int index) {
     }
     icon_press_ = false;
     icon_press_index_ = -1;
-    ReleaseCapture();
+    ReleaseCaptureSelf();
     ShellDoDragFiles(paths);
     if (on_drag_done_) {
       on_drag_done_(this);
@@ -3931,7 +3972,7 @@ void FenceWindow::UpdateManualIconDrag(int x, int y) {
     drag_indices_.clear();
     drag_insert_ = -1;
     last_manual_drag_present_ms_ = 0;
-    ReleaseCapture();
+    ReleaseCaptureSelf();
     PresentLayered();
     CommitDragOutPins(std::move(paths));
     return;
@@ -3942,8 +3983,8 @@ void FenceWindow::UpdateManualIconDrag(int x, int y) {
   // path already did this; icon drags could not reach a scrolled-out seat.
   bool scrolled = false;
   if (!outside) {
-    const int header = S(hwnd_, kHeaderH0);
-    const int margin = S(hwnd_, 28);
+    const int header = S(kHeaderH0);
+    const int margin = S(28);
     const bool at_edge = y < header + margin || y > rc.bottom - margin;
     // Keep a ticker running while parked on the edge: a mouse that stops
     // moving must still keep scrolling, as it does in Explorer.
@@ -3976,9 +4017,9 @@ bool FenceWindow::ScrollIfAtDragEdge(int x, int y) {
   if (x < 0 || y < 0 || x >= rc.right || y >= rc.bottom) {
     return false;
   }
-  const int header = S(hwnd_, kHeaderH0);
-  const int margin = S(hwnd_, 28);
-  const int step = S(hwnd_, 24);
+  const int header = S(kHeaderH0);
+  const int margin = S(28);
+  const int step = S(24);
   const int old_scroll = scroll_y_;
   if (y < header + margin) {
     scroll_y_ -= step;
@@ -4002,7 +4043,7 @@ void FenceWindow::FinishManualIconDrag(int x, int y) {
   KillTimer(hwnd_, kTimerDragScroll);
   icon_dragging_ = false;
   last_manual_drag_present_ms_ = 0;
-  ReleaseCapture();
+  ReleaseCaptureSelf();
   RECT rc{};
   GetClientRect(hwnd_, &rc);
   const bool outside =
@@ -4018,7 +4059,7 @@ void FenceWindow::FinishManualIconDrag(int x, int y) {
     CommitDragOutPins(std::move(paths));
     return;
   }
-  if (y >= S(hwnd_, kHeaderH0)) {
+  if (y >= S(kHeaderH0)) {
     // Dropped onto the Recycle Bin icon → recycle (delete) instead of reorder.
     if (IsRecycleBinIconAt(x, y)) {
       std::vector<std::wstring> paths = std::move(drag_paths_);
@@ -5302,8 +5343,8 @@ void FenceWindow::BeginInlineRename() {
   POINT origin{label.left, label.top};
   ClientToScreen(hwnd_, &origin);
   const int edit_w =
-      (std::max)(S(hwnd_, 72), static_cast<int>(label.right - label.left));
-  const int edit_h = (std::max)(S(hwnd_, 22), S(hwnd_, 20));
+      (std::max)(S(72), static_cast<int>(label.right - label.left));
+  const int edit_h = (std::max)(S(22), S(20));
   // Popup (not WS_CHILD): UpdateLayeredWindow hosts hide child EDIT controls.
   rename_edit_ = CreateWindowExW(
       WS_EX_TOOLWINDOW | WS_EX_TOPMOST, L"EDIT",
@@ -5348,15 +5389,15 @@ void FenceWindow::BeginTitleInlineRename() {
   if (!TitleLabelRect(&label)) {
     RECT rc{};
     GetClientRect(hwnd_, &rc);
-    label = {S(hwnd_, 6), S(hwnd_, 6), rc.right - S(hwnd_, 80),
-             S(hwnd_, kHeaderH0) - 2};
+    label = {S(6), S(6), rc.right - S(80),
+             S(kHeaderH0) - 2};
   }
   POINT origin{label.left, label.top};
   ClientToScreen(hwnd_, &origin);
   const int edit_w =
-      (std::max)(S(hwnd_, 96), static_cast<int>(label.right - label.left));
+      (std::max)(S(96), static_cast<int>(label.right - label.left));
   const int edit_h =
-      (std::max)(S(hwnd_, 22), static_cast<int>(label.bottom - label.top));
+      (std::max)(S(22), static_cast<int>(label.bottom - label.top));
   rename_edit_ = CreateWindowExW(
       WS_EX_TOOLWINDOW | WS_EX_TOPMOST, L"EDIT", title_.c_str(),
       WS_POPUP | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL, origin.x, origin.y,
@@ -6027,6 +6068,10 @@ LRESULT CALLBACK FenceWindow::WndProc(HWND hwnd, UINT msg, WPARAM wparam,
 }
 
 LRESULT FenceWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
+  if (msg == WM_DPICHANGED) {
+    // Drop the cached DPI so S() re-queries on the new monitor.
+    dpi_ = 0;
+  }
   if (msg == WM_APP + 60) {
     const int vk = static_cast<int>(wparam);
     const bool ctrl = (lparam & 1) != 0;
@@ -6222,12 +6267,12 @@ LRESULT FenceWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
         // Click above/below thumb → page scroll.
         RECT rc{};
         GetClientRect(hwnd_, &rc);
-        const int header = S(hwnd_, kHeaderH0);
-        const int pad = S(hwnd_, kPad0);
+        const int header = S(kHeaderH0);
+        const int pad = S(kPad0);
         const int footer_h =
-            (!collapsed_ && (rc.right - rc.left - pad * 2) >= S(hwnd_, 180) &&
+            (!collapsed_ && (rc.right - rc.left - pad * 2) >= S(180) &&
              !cells_.empty())
-                ? S(hwnd_, 24)
+                ? S(24)
                 : 0;
         const int view = (std::max)(
             0, static_cast<int>(rc.bottom) - header - pad - footer_h);
@@ -6261,13 +6306,13 @@ LRESULT FenceWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
         icon_press_index_ = icon;
         // Explorer/Fences: Ctrl/Shift select on press so a following drag
         // includes the new target (public host already does this).
+        // SelectRange/ToggleSelected already repaint — a second PresentLayered
+        // here rendered and uploaded the whole fence twice per click.
         const bool shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
         if (shift && selection_anchor_ >= 0) {
           SelectRange(icon);
-          PresentLayered();
         } else if (ctrl) {
           ToggleSelected(icon);
-          PresentLayered();
         }
         SetCapture(hwnd_);
         return 0;
@@ -6282,7 +6327,7 @@ LRESULT FenceWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
       }
       icon_press_ = false;
       icon_press_index_ = -1;
-      if (press_client_.y >= S(hwnd_, kHeaderH0)) {
+      if (press_client_.y >= S(kHeaderH0)) {
         if (collapsed_) {
           return 0;
         }
@@ -6383,9 +6428,9 @@ LRESULT FenceWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
         {
           RECT rc{};
           GetClientRect(hwnd_, &rc);
-          const int header = S(hwnd_, kHeaderH0);
-          const int margin = S(hwnd_, 28);
-          const int step = S(hwnd_, 24);
+          const int header = S(kHeaderH0);
+          const int margin = S(28);
+          const int step = S(24);
           const int old_scroll = scroll_y_;
           if (rubber_b_.y < header + margin) {
             scroll_y_ -= step;
@@ -6407,7 +6452,14 @@ LRESULT FenceWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
         if (bw >= kDragThreshold || bh >= kDragThreshold) {
           ApplyRubberBandSelection();
         }
-        PresentLayered();
+        // PresentLayered() re-renders every cell (two text runs each) and
+        // re-uploads the whole surface. At raw mouse rate that is hundreds of
+        // full renders per second, so throttle it like the icon-drag path.
+        const ULONGLONG now_ms = GetTickCount64();
+        if (now_ms - last_rubber_present_ms_ >= kRubberPresentThrottleMs) {
+          last_rubber_present_ms_ = now_ms;
+          PresentLayered();
+        }
         return 0;
       }
       if (rbutton_press_ && (wparam & MK_RBUTTON) && rbutton_icon_ >= 0 &&
@@ -6427,7 +6479,7 @@ LRESULT FenceWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
           }
           rbutton_icon_ = -1;
           if (GetCapture() == hwnd_) {
-            ReleaseCapture();
+            ReleaseCaptureSelf();
           }
           if (!paths.empty()) {
             CommitDragOutPins(std::move(paths));
@@ -6456,12 +6508,12 @@ LRESULT FenceWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
         RECT rc{};
         GetClientRect(hwnd_, &rc);
         const int dy = pt.y - thumb_start_y_;
-        const int header = S(hwnd_, kHeaderH0);
-        const int pad = S(hwnd_, kPad0);
+        const int header = S(kHeaderH0);
+        const int pad = S(kPad0);
         const int footer_h =
-            (!collapsed_ && (rc.right - rc.left - pad * 2) >= S(hwnd_, 180) &&
+            (!collapsed_ && (rc.right - rc.left - pad * 2) >= S(180) &&
              !cells_.empty())
-                ? S(hwnd_, 24)
+                ? S(24)
                 : 0;
         const int view = (std::max)(
             0, static_cast<int>(rc.bottom) - header - pad - footer_h);
@@ -6602,7 +6654,9 @@ if (wparam == kTimerDragScroll) {
     case WM_LBUTTONUP: {
       const int x = GET_X_LPARAM(lparam);
       const int y = GET_Y_LPARAM(lparam);
-      ReleaseCapture();
+      // The gesture state below is consumed by this message: capture is
+      // released last (via ReleaseCaptureSelf) so the synchronously sent
+      // WM_CAPTURECHANGED cannot clear the flags first.
       if (header_press_ != HeaderBtn::None) {
         const HeaderBtn pressed = header_press_;
         header_press_ = HeaderBtn::None;
@@ -6612,16 +6666,19 @@ if (wparam == kTimerDragScroll) {
             !icon_dragging_ && !thumb_dragging_ && !resizing_) {
           ActivateHeaderBtn(pressed);
         }
+        ReleaseCaptureSelf();
         return 0;
       }
       if (thumb_dragging_) {
         thumb_dragging_ = false;
         scrollbar_hover_ = HitTestScrollbar(x, y) > 0;
         PresentLayered();
+        ReleaseCaptureSelf();
         return 0;
       }
       if (icon_dragging_) {
         FinishManualIconDrag(x, y);
+        ReleaseCaptureSelf();
         return 0;
       }
       if (rubber_) {
@@ -6632,11 +6689,13 @@ if (wparam == kTimerDragScroll) {
         if (bw < kDragThreshold && bh < kDragThreshold && !rubber_additive_) {
           rubber_additive_ = false;
           ClearSelection();
+          ReleaseCaptureSelf();
           return 0;
         }
         ApplyRubberBandSelection();
         rubber_additive_ = false;
         PresentLayered();
+        ReleaseCaptureSelf();
         return 0;
       }
       if (resizing_) {
@@ -6654,9 +6713,9 @@ if (wparam == kTimerDragScroll) {
           const int ev = static_cast<int>(resize_edge_);
           if (ev & static_cast<int>(Edge::Bottom)) {
             // Snap to full icon row height to avoid cutting icons horizontally
-            const int header = S(hwnd_, kHeaderH0);
-            const int pad = S(hwnd_, kPad0);
-            const int footer_h = S(hwnd_, 24);
+            const int header = S(kHeaderH0);
+            const int pad = S(kPad0);
+            const int footer_h = S(24);
             const int cell_h = CellHeightPx();
             if (cell_h > 0) {
               const int content_h = nh - header - pad * 2 - footer_h;
@@ -6683,7 +6742,7 @@ if (wparam == kTimerDragScroll) {
             expanded_h_ = (std::max)(kFenceExpandedFloor, static_cast<int>(rc.bottom - rc.top));
           }
           SetOverlayScreenPos(hwnd_, rc.left, rc.top, rc.right - rc.left,
-                              collapsed_ ? S(hwnd_, kCollapsedH0) : expanded_h_,
+                              collapsed_ ? S(kCollapsedH0) : expanded_h_,
                               SWP_NOZORDER);
         }
         resize_edge_ = Edge::None;
@@ -6695,6 +6754,7 @@ if (wparam == kTimerDragScroll) {
         } else if (on_moved_) {
           on_moved_(this);
         }
+        ReleaseCaptureSelf();
         return 0;
       }
       if (icon_press_) {
@@ -6715,11 +6775,13 @@ if (wparam == kTimerDragScroll) {
             if ((GetAsyncKeyState(VK_MENU) & 0x8000) != 0) {
               SelectOnly(idx);
               ShowShellPathsProperties(hwnd_, SelectedPaths());
+              ReleaseCaptureSelf();
               return 0;
             }
             const bool external =
                 (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
             OpenItem(idx, external);
+            ReleaseCaptureSelf();
             return 0;
           }
           last_icon_click_ = idx;
@@ -6728,6 +6790,7 @@ if (wparam == kTimerDragScroll) {
           const bool shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
           // Ctrl/Shift already applied on LBUTTONDOWN (drag sees new selection).
           if (ctrl || shift) {
+            ReleaseCaptureSelf();
             return 0;
           }
           if (was_selected) {
@@ -6743,6 +6806,7 @@ if (wparam == kTimerDragScroll) {
             SelectOnly(idx);
           }
         }
+        ReleaseCaptureSelf();
         return 0;
       }
       if (dragging_) {
@@ -6762,8 +6826,10 @@ if (wparam == kTimerDragScroll) {
             on_moved_(this);
           }
         }
+        ReleaseCaptureSelf();
         return 0;
       }
+      ReleaseCaptureSelf();
       return 0;
     }
     case WM_RBUTTONDOWN: {
@@ -6775,7 +6841,7 @@ if (wparam == kTimerDragScroll) {
       if (rubber_) {
         rubber_ = false;
         rubber_additive_ = false;
-        ReleaseCapture();
+        ReleaseCaptureSelf();
         PresentLayered();
       }
       rbutton_press_ = true;
@@ -6797,7 +6863,7 @@ if (wparam == kTimerDragScroll) {
       rbutton_dragged_ = false;
       rbutton_icon_ = -1;
       if (GetCapture() == hwnd_) {
-        ReleaseCapture();
+        ReleaseCaptureSelf();
       }
       if (was_drag) {
         return 0;  // OLE right-drag already handled drop / cancel
@@ -6823,6 +6889,11 @@ if (wparam == kTimerDragScroll) {
       return 0;
     }
     case WM_CAPTURECHANGED: {
+      // ReleaseCapture sends this synchronously from our own gesture teardown;
+      // only a genuine external steal should cancel the in-flight gesture.
+      if (self_releasing_capture_) {
+        return 0;
+      }
       if (reinterpret_cast<HWND>(lparam) != hwnd_) {
         KillTimer(hwnd_, kTimerDragScroll);
         const bool need_repaint =
@@ -6869,7 +6940,7 @@ if (wparam == kTimerDragScroll) {
         OpenItem(icon, external);
         return 0;
       }
-      if (y < S(hwnd_, kHeaderH0) && HitTestEdge(x, y) == Edge::None) {
+      if (y < S(kHeaderH0) && HitTestEdge(x, y) == Edge::None) {
         // Ctrl+title dblclick on portal → Explorer open current folder (Fences).
         if (!portal_path_.empty() &&
             (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0) {
@@ -6945,13 +7016,13 @@ void FenceWindow::Paint(HDC hdc) {
   }
   RECT rc{0, 0, lw, lh};
 
-  const int header = S(hwnd_, kHeaderH0);
-  const int pad = S(hwnd_, kPad0);
+  const int header = S(kHeaderH0);
+  const int pad = S(kPad0);
   const bool list = view_mode_ == "list";
   const int cell_w = CellWidthPx();
   const int icon = IconSizePx();
-  const int font_px = S(hwnd_, list ? 13 : 12);
-  const int title_px = S(hwnd_, 15);
+  const int font_px = S(list ? 13 : 12);
+  const int title_px = S(15);
 
   SetGraphicsMode(hdc, GM_COMPATIBLE);
   Gdiplus::Graphics g(hdc);
@@ -6964,7 +7035,7 @@ void FenceWindow::Paint(HDC hdc) {
   g.SetTextRenderingHint(Gdiplus::TextRenderingHintAntiAliasGridFit);
   g.SetTextContrast(4);
 
-  EnsureFonts(title_px, font_px, S(hwnd_, 11));
+  EnsureFonts(title_px, font_px, S(11));
   EnsureFooterFormat();
   Gdiplus::SolidBrush title_brush(
       Gdiplus::Color(255, GetRValue(title_color_), GetGValue(title_color_),
@@ -6974,12 +7045,12 @@ void FenceWindow::Paint(HDC hdc) {
   title_fmt.SetLineAlignment(Gdiplus::StringAlignmentNear);
   title_fmt.SetTrimming(Gdiplus::StringTrimmingEllipsisCharacter);
   title_fmt.SetFormatFlags(Gdiplus::StringFormatFlagsNoWrap);
-  const int title_top = S(hwnd_, 6);
+  const int title_top = S(6);
   RECT collapse_rc{}, lock_rc{}, dissolve_rc{}, portal_up_rc{};
   HeaderBtnRects(&collapse_rc, &lock_rc, &dissolve_rc, &portal_up_rc);
   const int title_left =
       (portal_up_rc.right > portal_up_rc.left) ? portal_up_rc.right + 4
-                                               : S(hwnd_, 6);
+                                               : S(6);
   const int chrome_right = [&]() {
     int leftmost = rc.right;
     auto consider = [&](const RECT& r) {
@@ -7244,9 +7315,9 @@ void FenceWindow::Paint(HDC hdc) {
   }
 
   const int footer_reserve =
-      (!collapsed_ && (rc.right - rc.left - pad * 2) >= S(hwnd_, 180) &&
+      (!collapsed_ && (rc.right - rc.left - pad * 2) >= S(180) &&
        !cells_.empty())
-          ? S(hwnd_, 24)
+          ? S(24)
           : 0;
   const int view =
       (std::max)(0, static_cast<int>(rc.bottom) - header - pad - footer_reserve);
@@ -7321,8 +7392,8 @@ void FenceWindow::Paint(HDC hdc) {
   sel_fmt.SetLineAlignment(Gdiplus::StringAlignmentNear);
   sel_fmt.SetTrimming(Gdiplus::StringTrimmingNone);
 
-  const int line_h = font_px + S(hwnd_, 5);
-  const int idle_label_h = line_h * label_lines_ + S(hwnd_, 4);
+  const int line_h = font_px + S(5);
+  const int idle_label_h = line_h * label_lines_ + S(4);
   const int max_sel_lines = 8;
 
   // Cut ghost opacity matches Python _CUT_GHOST_OPACITY ≈ 0.42.
@@ -7442,16 +7513,16 @@ void FenceWindow::Paint(HDC hdc) {
       if (is_sel) {
         PaintSelectionChrome(g, chrome_sel_brush, &chrome_sel_pen,
                              b.left + 2, b.top + 1, b.right - 2,
-                             b.bottom - 1, S(hwnd_, 4));
+                             b.bottom - 1, S(4));
       } else if (is_focus) {
         // Ctrl+Arrow focus (not selected) — lighter ring than full selection.
         PaintSelectionChrome(g, chrome_focus_brush, &chrome_focus_pen,
                              b.left + 2, b.top + 1, b.right - 2,
-                             b.bottom - 1, S(hwnd_, 4));
+                             b.bottom - 1, S(4));
       } else if (is_hover) {
         PaintSelectionChrome(g, chrome_hover_brush, &chrome_hover_pen,
                              b.left + 2, b.top + 1, b.right - 2,
-                             b.bottom - 1, S(hwnd_, 4));
+                             b.bottom - 1, S(4));
       }
       const int iy = b.top + ((b.bottom - b.top) - icon) / 2;
       if (cell.icon) {
@@ -7481,7 +7552,7 @@ void FenceWindow::Paint(HDC hdc) {
       if (label_h < idle_label_h) {
         label_h = idle_label_h;
       }
-      const int cap = line_h * max_sel_lines + S(hwnd_, 8);
+      const int cap = line_h * max_sel_lines + S(8);
       if (label_h > cap) {
         label_h = cap;
       }
@@ -7489,20 +7560,20 @@ void FenceWindow::Paint(HDC hdc) {
         ink_h = label_h;
       }
       // Hug glyph + caption ink (not empty 2-line shelf). Translucent accent.
-      const int chrome_b = label_top + ink_h + S(hwnd_, 3);
+      const int chrome_b = label_top + ink_h + S(3);
       PaintSelectionChrome(g, chrome_sel_brush, &chrome_sel_pen,
                            b.left + 3, b.top + 2, b.right - 3, chrome_b,
-                           S(hwnd_, 6));
+                           S(6));
     } else if (is_focus) {
-      const int chrome_b = label_top + idle_label_h + S(hwnd_, 2);
+      const int chrome_b = label_top + idle_label_h + S(2);
       PaintSelectionChrome(g, chrome_focus_brush, &chrome_focus_pen,
                            b.left + 3, b.top + 2, b.right - 3, chrome_b,
-                           S(hwnd_, 6));
+                           S(6));
     } else if (is_hover) {
-      const int chrome_b = label_top + idle_label_h + S(hwnd_, 2);
+      const int chrome_b = label_top + idle_label_h + S(2);
       PaintSelectionChrome(g, chrome_hover_brush, &chrome_hover_pen,
                            b.left + 3, b.top + 2, b.right - 3, chrome_b,
-                           S(hwnd_, 6));
+                           S(6));
     }
 
     if (cell.icon) {
@@ -7515,6 +7586,8 @@ void FenceWindow::Paint(HDC hdc) {
                          static_cast<Gdiplus::REAL>(label_w),
                          static_cast<Gdiplus::REAL>(label_h));
     Gdiplus::StringFormat* fmt = is_sel ? &sel_fmt : &grid_fmt;
+    // The ellipsis format is only needed for the rare overflowing selection;
+    // constructing it per cell was a GDI+ heap allocation in the hottest loop.
     Gdiplus::StringFormat ellipsis_fmt;
     if (is_sel && label_h >= line_h * max_sel_lines) {
       // If still overflowing max lines, fall back to ellipsis on last line.
@@ -7606,7 +7679,7 @@ void FenceWindow::Paint(HDC hdc) {
     } else if (!cells_.empty()) {
       ref = &cells_.back().bounds;
     }
-    const int bar = icon + S(hwnd_, 8);
+    const int bar = icon + S(8);
     if (view_mode_ == "list") {
       const int y = ref ? (insert < static_cast<int>(cells_.size()) ? ref->top
                                                                    : ref->bottom)
@@ -7646,16 +7719,16 @@ void FenceWindow::Paint(HDC hdc) {
       if (!ic) {
         continue;
       }
-      const int ox = drag_pt_.x - icon / 2 + s * S(hwnd_, 4);
-      const int oy = drag_pt_.y - icon / 2 + s * S(hwnd_, 4);
+      const int ox = drag_pt_.x - icon / 2 + s * S(4);
+      const int oy = drag_pt_.y - icon / 2 + s * S(4);
       stack_right = (std::max)(stack_right, ox + icon);
       stack_bottom = (std::max)(stack_bottom, oy + icon);
       DrawIconCached(g, ic, ox, oy, icon, kGhostOp);
     }
     if (total > 1) {
-      const int badge = (std::max)(S(hwnd_, 18), icon / 3);
-      const int bx = stack_right - badge + S(hwnd_, 2);
-      const int by = stack_bottom - badge + S(hwnd_, 2);
+      const int badge = (std::max)(S(18), icon / 3);
+      const int bx = stack_right - badge + S(2);
+      const int by = stack_bottom - badge + S(2);
       Gdiplus::SolidBrush fill(Gdiplus::Color(230, 0, 120, 215));
       g.FillEllipse(&fill, bx, by, badge, badge);
       Gdiplus::Pen ring(Gdiplus::Color(255, 255, 255, 255), 1.f);
@@ -7676,9 +7749,9 @@ void FenceWindow::Paint(HDC hdc) {
   }
 
   // F5: bottom count / zoom hint band (hidden when narrow or collapsed).
-  if (!collapsed_ && (rc.right - rc.left - pad * 2) >= S(hwnd_, 180)) {
-    const int footer_h = S(hwnd_, 20);
-    const int fy = rc.bottom - footer_h - S(hwnd_, 4);
+  if (!collapsed_ && (rc.right - rc.left - pad * 2) >= S(180)) {
+    const int footer_h = S(20);
+    const int fy = rc.bottom - footer_h - S(4);
     std::wstring footer;
     if (GetTickCount() < footer_zoom_hint_until_) {
       footer = L"图标大小 " + std::to_wstring(icon_zoom_percent_) + L"%";

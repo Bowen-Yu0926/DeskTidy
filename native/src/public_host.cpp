@@ -3432,7 +3432,22 @@ LRESULT PublicHost::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
       }
       return 0;
     }
+    case WM_MOUSELEAVE:
+      tracking_mouse_ = false;
+      if (tip_index_ >= 0) {
+        UpdateHoverTip(-1);
+      }
+      return 0;
     case WM_MOUSEMOVE: {
+      // TTF_TRACK tooltips stay pinned until told otherwise; without a leave
+      // notification the name tip hung over the desktop after the cursor left.
+      if (!tracking_mouse_) {
+        TRACKMOUSEEVENT tme{};
+        tme.cbSize = sizeof(tme);
+        tme.dwFlags = TME_LEAVE;
+        tme.hwndTrack = hwnd_;
+        tracking_mouse_ = TrackMouseEvent(&tme) != FALSE;
+      }
       if (rbutton_press_ && (wparam & MK_RBUTTON) && rbutton_icon_ >= 0 &&
           !rbutton_dragged_) {
         const int x = GET_X_LPARAM(lparam);

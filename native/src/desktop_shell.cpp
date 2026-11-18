@@ -957,15 +957,12 @@ bool IsOverlayAboveDefView(HWND hwnd, const DefViewHost* cached) {
   if (!GetWindowRect(hwnd, &self_rc)) {
     return false;
   }
-  // The desktop must actually be showing for "buried" to mean anything. When
-  // the shell is running a full-screen switcher (Task View / Alt+Tab /
-  // MultitaskingViewFrame) the desktop is covered BY DESIGN — the fences are
-  // supposed to be behind it. Reporting "buried" there made the band-restore
-  // loop fire on every tick during a switcher animation, which is what made
-  // the fences flash in and out while pressing Win+D repeatedly.
-  if (!IsShowDesktopActive()) {
-    return true;
-  }
+  // NOTE: this predicate deliberately does NOT special-case "desktop not
+  // showing". It answers exactly one question — is this overlay's Z order above
+  // DefView right now. Returning healthy while a fullscreen switcher covered
+  // the desktop made the health check report success without looking at Z order
+  // at all, which is the failure mode that hid buried fences. Callers that must
+  // not repair during a switcher gate on QueryDesktopBandState() themselves.
   for (HWND cur = GetWindow(hwnd, GW_HWNDPREV); cur;
        cur = GetWindow(cur, GW_HWNDPREV)) {
     if (cur == host.defview || cur == host.host) {

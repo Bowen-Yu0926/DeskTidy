@@ -1185,10 +1185,10 @@ bool SaveAppState(const AppState& state) {
   out << "\n  ]\n}\n";
   const std::string json = out.str();
 
-  // U2: atomic write — write temp file, preserve a single .bak of the previous
+  // U2: atomic write — unique temp file, preserve a single .bak of the previous
   // good file, then atomic replace (avoid double synchronous hardware flush on
   // the UI thread during interactive drag/resize).
-  const std::wstring tmp = path + L".tmp";
+  const std::wstring tmp = AtomicTempPathFor(path);
   HANDLE h = CreateFileW(tmp.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
                          FILE_ATTRIBUTE_NORMAL, nullptr);
   if (h == INVALID_HANDLE_VALUE) {

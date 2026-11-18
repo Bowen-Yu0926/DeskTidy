@@ -35,55 +35,69 @@ bool ParseBoolField(const std::string& json, const char* key, bool fallback) {
   return fallback;
 }
 
-int ParseIntField(const std::string& json, const char* key, int fallback) {
-  const std::string needle = std::string("\"") + key + "\"";
-  size_t p = json.find(needle);
-  if (p == std::string::npos) {
-    return fallback;
-  }
-  p = json.find(':', p);
-  if (p == std::string::npos) {
-    return fallback;
-  }
-  ++p;
+// Consume the numeric token at `p` in place. Returns false when the token is
+// not a well-formed integer (no digits, or a value beyond `limit`), in which
+// case the caller keeps its fallback. Deliberately non-throwing: this runs on
+// the startup path with no top-level catch, so a truncated or hostile prefs
+// file ("record_fps": -, "record_fps": 99999999999) must not terminate the app.
+bool ConsumeIntToken(const std::string& json, size_t p, long long limit,
+                     long long* out) {
   while (p < json.size() && (json[p] == ' ' || json[p] == '\t')) {
     ++p;
   }
-  if (p >= json.size() ||
-      !(json[p] == '-' || (json[p] >= '0' && json[p] <= '9'))) {
+  bool negative = false;
+  if (p < json.size() && json[p] == '-') {
+    negative = true;
+    ++p;
+  }
+  const size_t digits_begin = p;
+  long long value = 0;
+  while (p < json.size() && json[p] >= '0' && json[p] <= '9') {
+    const int digit = json[p] - '0';
+    // Compare before multiplying so a long digit run cannot overflow.
+    if (value > (limit - digit) / 10) {
+      return false;  // saturate to the caller's fallback, never wrap
+    }
+    value = value * 10 + digit;
+    ++p;
+  }
+  if (p == digits_begin) {
+    return false;
+  }
+  *out = negative ? -value : value;
+  return true;
+}
+
+// Locate the value of "key" and parse it as an integer no larger than limit.
+bool FindIntField(const std::string& json, const char* key, long long limit,
+                  long long* out) {
+  const std::string needle = std::string("\"") + key + "\"";
+  size_t p = json.find(needle);
+  if (p == std::string::npos) {
+    return false;
+  }
+  p = json.find(':', p + needle.size());
+  if (p == std::string::npos) {
+    return false;
+  }
+  return ConsumeIntToken(json, p + 1, limit, out);
+}
+
+int ParseIntField(const std::string& json, const char* key, int fallback) {
+  long long v = 0;
+  if (!FindIntField(json, key, 0x7FFFFFFF, &v)) {
     return fallback;
   }
-  try {
-    return std::stoi(json.substr(p));
-  } catch (...) {
-    return fallback;
-  }
+  return static_cast<int>(v);
 }
 
 long long ParseInt64Field(const std::string& json, const char* key,
                           long long fallback) {
-  const std::string needle = std::string("\"") + key + "\"";
-  size_t p = json.find(needle);
-  if (p == std::string::npos) {
+  long long v = 0;
+  if (!FindIntField(json, key, 0x7FFFFFFFFFFFFFFFLL, &v)) {
     return fallback;
   }
-  p = json.find(':', p);
-  if (p == std::string::npos) {
-    return fallback;
-  }
-  ++p;
-  while (p < json.size() && (json[p] == ' ' || json[p] == '\t')) {
-    ++p;
-  }
-  if (p >= json.size() ||
-      !(json[p] == '-' || (json[p] >= '0' && json[p] <= '9'))) {
-    return fallback;
-  }
-  try {
-    return std::stoll(json.substr(p));
-  } catch (...) {
-    return fallback;
-  }
+  return v;
 }
 
 std::string ParseStringField(const std::string& json, const char* key) {
@@ -543,36 +557,10 @@ void SaveAppPrefsToPath(const AppPrefs& prefs, const std::wstring& path) {
       << "\"\n}\n";
   const std::string json = out.str();
 
-  // Atomic write: temp file + write-through flush, then atomic replace.
-  const std::wstring tmp = path + L".tmp";
-  HANDLE h = CreateFileW(tmp.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
-                         FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH,
-                         nullptr);
-  if (h == INVALID_HANDLE_VALUE) {
-    return;
-  }
-  DWORD written = 0;
-  const BOOL ok = WriteFile(h, json.data(),
-                            static_cast<DWORD>(json.size()), &written, nullptr);
-  FlushFileBuffers(h);
-  CloseHandle(h);
-  if (!ok || written != json.size()) {
-    DeleteFileW(tmp.c_str());
-    return;
-  }
-
-  // Preserve a .bak copy of the previous good file before replacing.
-  WIN32_FILE_ATTRIBUTE_DATA fad{};
-  if (GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &fad) &&
-      !(fad.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) &&
-      (fad.nFileSizeHigh != 0 || fad.nFileSizeLow != 0)) {
-    CopyFileW(path.c_str(), (path + L".bak").c_str(), FALSE);
-  }
-
-  if (!MoveFileExW(tmp.c_str(), path.c_str(),
-                   MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
-    DeleteFileW(tmp.c_str());
-  }
+  // Atomic write: unique temp + write-through flush, then atomic replace with
+  // a .bak of the previous good file. Shared helper so this and the layout /
+  // rules / todos stores cannot drift apart.
+  AtomicWriteUtf8File(path, json);
 }
 
 void SaveAppPrefs(const AppPrefs& prefs) {

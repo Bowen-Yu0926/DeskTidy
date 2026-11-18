@@ -83,6 +83,9 @@ class SearchWindow {
   void* webview_ = nullptr;
   bool web_available_ = false;
   bool web_ready_ = false;
+  // Set while the async WebView2 environment/controller creation is in flight,
+  // so a second Show() does not start a duplicate init and leak the first.
+  bool web_init_in_flight_ = false;
   bool dragging_ = false;
   POINT drag_origin_{};
   POINT win_origin_{};

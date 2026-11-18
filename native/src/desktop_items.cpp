@@ -628,12 +628,18 @@ HICON LoadItemIcon(const std::wstring& path, int size_px) {
     constexpr size_t kMaxMasterIconCacheEntries = 1024;
     if (g_master_icon_cache.size() >= kMaxMasterIconCacheEntries &&
         g_master_icon_cache.find(key) == g_master_icon_cache.end()) {
-      for (auto& kv : g_master_icon_cache) {
-        if (kv.second) {
-          DestroyIcon(kv.second);
+      // Evict a slice, not the whole map: clearing everything made the next
+      // refresh re-extract every icon through the shell (the 1024-entry cap is
+      // reached routinely on a large desktop), which is the churn the cache
+      // exists to prevent.
+      const size_t to_drop = kMaxMasterIconCacheEntries / 4;
+      auto it = g_master_icon_cache.begin();
+      for (size_t i = 0; i < to_drop && it != g_master_icon_cache.end(); ++i) {
+        if (it->second) {
+          DestroyIcon(it->second);
         }
+        it = g_master_icon_cache.erase(it);
       }
-      g_master_icon_cache.clear();
     }
     auto result = g_master_icon_cache.emplace(key, master);
     if (!result.second) {
@@ -727,11 +733,20 @@ void PreloadIconsAsync(const std::vector<std::pair<std::wstring, int>>& jobs,
   cold.reserve(jobs.size());
   {
     std::lock_guard<std::mutex> lk(g_master_icon_cache_mutex);
+    // De-dupe within the batch as well: RefreshDesktopIcons builds this list
+    // from every fence + public slot, so the same file commonly appears many
+    // times and each duplicate became another shell icon extraction.
+    std::unordered_set<std::wstring> seen;
+    seen.reserve(jobs.size() * 2);
     for (const auto& job : jobs) {
       const std::wstring key = IconCacheKey(job.first, job.second);
-      if (g_master_icon_cache.find(key) == g_master_icon_cache.end()) {
-        cold.push_back(job);
+      if (g_master_icon_cache.find(key) != g_master_icon_cache.end()) {
+        continue;
       }
+      if (!seen.insert(key).second) {
+        continue;
+      }
+      cold.push_back(job);
     }
   }
   if (cold.empty()) {

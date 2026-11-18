@@ -1035,6 +1035,13 @@ void PetWindow::SetCharacter(const std::wstring& character) {
 }
 
 void PetWindow::SetPose(const std::wstring& pose) {
+  // Idle re-asserts the same pose every few seconds (ScheduleIdle after the
+  // dwell expires, follow-cursor walk boundaries). Re-decoding the whole pose
+  // pack from disk on each of those caused periodic hitches while the app was
+  // otherwise idle, so a no-op pose change returns immediately.
+  if (pose == pose_ && !frames_pargb_.empty()) {
+    return;
+  }
   pose_ = pose;
   // 剑仙倚树：Doubao 原图已面朝左；勿镜像，也勿继承走路/拖拽朝向。
   // facing_=1 = 按素材原向（朝左）。
@@ -2275,6 +2282,9 @@ void PetWindow::SetSizeScale(float scale) {
     chrome_dirty_ = true;
     PlacePages();
     PlaceMenu();
+    // SetWindowPos on a layered window clears its surface; repaint now instead
+    // of waiting up to a second for the next idle tick (the pet blinked out).
+    Present();
   }
 }
 
@@ -3597,6 +3607,8 @@ LRESULT PetWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
       ApplyScaledWindowSize();
       present_dirty_ = true;
       chrome_dirty_ = true;
+      // Resizing a layered window clears its pixels; repaint immediately.
+      Present();
       return 0;
     }
     case WM_DESTROY:

@@ -418,7 +418,11 @@ void DestroyBadges() {
   }
   g_badges.clear();
   DestroyBorders();
-  g_capture_rc_set = false;
+  // Do NOT clear g_capture_rc_set here: it records the *recording target*,
+  // and ShowBadges() destroys the previous badges before re-creating them, so
+  // clearing it here made every re-create (start, pause, resume) fall into the
+  // "whole desktop" branch and lose the selected monitor. It is reset by
+  // StartRecording / ClearRecordState instead.
 }
 
 LRESULT CALLBACK BorderProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
@@ -1510,6 +1514,10 @@ void FinalizeAndMergeAsync() {
   g_segments.clear();
   g_cmd = RecCmd{};
   DestroyBadges();
+  // The recording target is only meaningful for a live session; the next
+  // StartRecording sets it again.
+  g_capture_rc_set = false;
+  g_capture_rc = RECT{};
 
   g_merging.store(true);
   std::thread([proc, stdin_wr, adopted, out_path = std::move(out_path),

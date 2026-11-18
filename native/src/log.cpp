@@ -18,6 +18,11 @@ namespace {
 constexpr wchar_t kLogName[] = L"desktidy.log";
 constexpr wchar_t kLogHistName[] = L"desktidy.1.log";
 constexpr LONGLONG kMaxLogBytes = 2LL * 1024 * 1024;
+// DeskTidy.exe and DeskNote.exe share desktidy.log. Denying write sharing made
+// whichever process started second fail every open (and retry per log line),
+// silently discarding its whole log stream — crash reports included.
+constexpr DWORD kLogShareMode =
+    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE;
 
 CRITICAL_SECTION g_lock;
 bool g_inited = false;
@@ -62,7 +67,7 @@ void CrashWrite(const wchar_t* message) {
       return;
     }
   }
-  HANDLE h = CreateFileW(log_path, FILE_APPEND_DATA, FILE_SHARE_READ,
+  HANDLE h = CreateFileW(log_path, FILE_APPEND_DATA, kLogShareMode,
                          nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
   if (h == INVALID_HANDLE_VALUE) {
     return;
@@ -115,7 +120,7 @@ void WriteCore(const char* utf8, size_t len) {
   }
   if (g_log_file == INVALID_HANDLE_VALUE) {
     g_log_file =
-        CreateFileW(g_log_path.c_str(), FILE_APPEND_DATA, FILE_SHARE_READ,
+        CreateFileW(g_log_path.c_str(), FILE_APPEND_DATA, kLogShareMode,
                     nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (g_log_file == INVALID_HANDLE_VALUE) {
       LeaveCriticalSection(&g_lock);
@@ -131,7 +136,7 @@ void WriteCore(const char* utf8, size_t len) {
         MoveFileExW(g_log_path.c_str(), g_hist_path.c_str(),
                     MOVEFILE_REPLACE_EXISTING);
         g_log_file =
-            CreateFileW(g_log_path.c_str(), FILE_APPEND_DATA, FILE_SHARE_READ,
+            CreateFileW(g_log_path.c_str(), FILE_APPEND_DATA, kLogShareMode,
                         nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
         if (g_log_file == INVALID_HANDLE_VALUE) {
           LeaveCriticalSection(&g_lock);

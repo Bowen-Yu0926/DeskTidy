@@ -265,6 +265,8 @@ class PublicHost {
   DWORD typeahead_tick_ = 0;
   HWND tip_ = nullptr;
   int tip_index_ = -1;
+  // TME_LEAVE is one-shot; re-armed on the next mouse move.
+  bool tracking_mouse_ = false;
   std::wstring tip_text_;
   void EnsureTooltip();
   void UpdateHoverTip(int index);

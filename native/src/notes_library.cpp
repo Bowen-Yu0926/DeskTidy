@@ -277,6 +277,24 @@ bool WideContains(const std::wstring& hay, const std::wstring& needle) {
   return hay.find(needle) != std::wstring::npos;
 }
 
+// find() restricted to [begin, end). std::wstring::find scans to the end of the
+// string, so a per-line search over a long document degenerates to
+// O(lines x size); compare at each candidate position instead.
+size_t FindInRange(const std::wstring& hay, const std::wstring& needle,
+                   size_t begin, size_t end) {
+  const size_t n = needle.size();
+  if (n == 0 || begin >= end || end > hay.size() || end - begin < n) {
+    return std::wstring::npos;
+  }
+  const size_t last = end - n;
+  for (size_t i = begin; i <= last; ++i) {
+    if (hay.compare(i, n, needle) == 0) {
+      return i;
+    }
+  }
+  return std::wstring::npos;
+}
+
 std::wstring RunPickDialog(HWND owner, const std::wstring& dir,
                            const std::vector<std::wstring>& files,
                            const wchar_t* title, bool allow_new) {
@@ -631,8 +649,11 @@ std::vector<NoteSearchHit> SearchNotesLibrary(const std::wstring& dir,
       }
       bool hit = false;
       if (hay_end > j) {
-        const size_t p = hay.find(q_low, j);
-        hit = (p != std::wstring::npos && p + q_low.size() <= hay_end);
+        // Search only within this line. An unbounded find() scans the rest of
+        // the document for every non-matching line, which made one search
+        // O(lines x size) — ~2.5e9 comparisons on a 500 KB note.
+        const size_t p = FindInRange(hay, q_low, j, hay_end);
+        hit = (p != std::wstring::npos);
       }
       if (hit) {
         hits.push_back(

@@ -6,6 +6,7 @@
 #include <Shellapi.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cstdlib>
 #include <fstream>
 #include <sstream>
@@ -306,7 +307,17 @@ bool PreviewMarkdownText(HWND owner, const std::wstring& md,
                          const std::wstring& title,
                          const std::wstring& base_dir) {
   const std::wstring html = MarkdownToHtmlDocument(md, title, base_dir);
-  const std::wstring path = JoinPath(NativeDataDir(), L"preview_note.html");
+  // One fixed file meant previewing note B reused note A's URL, so the browser
+  // just re-focused the existing tab and kept showing A. A fresh name per
+  // preview makes the navigation a real load.
+  static std::atomic<unsigned long> s_preview_seq{0};
+  const std::wstring path =
+      JoinPath(NativeDataDir(), L"preview_note_" +
+                                    std::to_wstring(GetCurrentProcessId()) +
+                                    L"_" +
+                                    std::to_wstring(s_preview_seq.fetch_add(
+                                        1, std::memory_order_relaxed)) +
+                                    L".html");
   {
     std::ofstream out(path, std::ios::binary);
     if (!out) {
@@ -314,6 +325,10 @@ bool PreviewMarkdownText(HWND owner, const std::wstring& md,
       return false;
     }
     out << NarrowUtf8(html);
+    if (!out) {
+      MistAlert(owner, L"预览", L"写入预览文件失败。", MistMsgTone::Warn);
+      return false;
+    }
   }
   const HINSTANCE r =
       ShellExecuteW(owner, L"open", path.c_str(), nullptr, nullptr, SW_SHOWNORMAL);

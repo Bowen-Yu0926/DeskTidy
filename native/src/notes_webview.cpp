@@ -1192,32 +1192,43 @@ void NotesWebView::SetScrollRatio(double ratio) {
 }
 
 namespace {
+// Peek without removing: a message that must not be dispatched during a
+// synchronous wait has to stay in the queue, otherwise the keystroke or click
+// is destroyed outright (the user's typing silently disappears).
+bool ShouldDeferDuringWait(UINT message, HWND parent, HWND hwnd) {
+  return (message >= WM_KEYFIRST && message <= WM_KEYLAST) ||
+         (message >= WM_MOUSEFIRST && message <= WM_MOUSELAST) ||
+         message == WM_COMMAND || message == WM_SYSCOMMAND ||
+         message == WM_HOTKEY ||
+         (message == WM_TIMER && parent && hwnd == parent);
+}
+
 void PumpWebViewWaitMessages(HWND parent) {
   MSG msg{};
   bool deferred_close = false;
   HWND close_hwnd = nullptr;
   bool deferred_quit = false;
   WPARAM quit_code = 0;
-  while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
+  while (PeekMessageW(&msg, nullptr, 0, 0, PM_NOREMOVE)) {
     if (msg.message == WM_QUIT) {
+      PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE);
       deferred_quit = true;
       quit_code = msg.wParam;
       break;
     }
     if (msg.message == WM_CLOSE) {
+      PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE);
       deferred_close = true;
       close_hwnd = msg.hwnd;
       continue;
     }
-    // Drop user input and host commands/timers during synchronous WebView2
-    // waits so tab switching, saving, or closing cannot re-enter mid-call.
-    if ((msg.message >= WM_KEYFIRST && msg.message <= WM_KEYLAST) ||
-        (msg.message >= WM_MOUSEFIRST && msg.message <= WM_MOUSELAST) ||
-        msg.message == WM_COMMAND || msg.message == WM_SYSCOMMAND ||
-        msg.message == WM_HOTKEY ||
-        (msg.message == WM_TIMER && parent && msg.hwnd == parent)) {
-      continue;
+    // Leave input and host commands/timers queued so tab switching, saving or
+    // closing cannot re-enter mid-call — and so the user's keystrokes survive
+    // and are processed once the wait finishes.
+    if (ShouldDeferDuringWait(msg.message, parent, msg.hwnd)) {
+      break;
     }
+    PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE);
     TranslateMessage(&msg);
     DispatchMessageW(&msg);
   }

@@ -164,6 +164,8 @@ class App {
   bool PinClipboardImage();
   // True when an open pin already shows this file (case-insensitive).
   bool IsPathPinned(const std::wstring& path) const;
+  // Drop pins whose window has closed (their objects stay in pins_img_).
+  void PruneClosedPins();
   void RememberPinClipboardSeq();
   void ReregisterHotkeys();
   // P1-28: start/update elevated hotkey helper relay.

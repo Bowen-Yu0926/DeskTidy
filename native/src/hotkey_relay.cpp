@@ -284,6 +284,10 @@ void HotkeyRelay::ServeLoop() {
     if (client == INVALID_SOCKET) {
       break;
     }
+    // Bounded receive: a local client that connects and sends nothing must not
+    // park the thread here forever. Stop() only waits 2 s, after which it
+    // closes the thread handle and the object may be destroyed while this
+    // thread is still inside recv().
     DWORD rcv_timeout = 200;
     setsockopt(client, SOL_SOCKET, SO_RCVTIMEO,
                reinterpret_cast<const char*>(&rcv_timeout),

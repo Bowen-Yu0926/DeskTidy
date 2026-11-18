@@ -105,7 +105,15 @@ constexpr int kTbSep96 = 8;
 constexpr int kTbIconStroke96 = 2;
 constexpr int kTbTipFont96 = 13;
 
+// Toolbar metrics follow the DPI of the monitor the selection is on, not the
+// primary monitor's: the overlay spans the whole virtual screen, so on a 150 %
+// secondary display the buttons were drawn at two-thirds their intended size.
+int g_tb_dpi = 0;
+
 int TbDpi() {
+  if (g_tb_dpi > 0) {
+    return g_tb_dpi;
+  }
   const int d = SystemDpi();
   return d > 0 ? d : 96;
 }
@@ -1107,6 +1115,20 @@ void CaptureOverlay::PlaceToolbar() {
   }
   POINT origin{};
   ClientToScreen(hwnd_, &origin);
+  // Resolve the toolbar scale from the monitor the selection sits on.
+  {
+    POINT mid{origin.x + (sel_.left + sel_.right) / 2,
+              origin.y + (sel_.top + sel_.bottom) / 2};
+    const int dpi = DpiAtPoint(mid);
+    if (dpi != g_tb_dpi) {
+      g_tb_dpi = dpi;
+      DestroyToolbar();
+      CreateToolbar();
+      if (!toolbar_) {
+        return;
+      }
+    }
+  }
   const int tw = ToolbarWidth();
   const int th = ToolbarHeight();
   int x = origin.x + sel_.left + (sel_.right - sel_.left - tw) / 2;

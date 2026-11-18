@@ -49,6 +49,7 @@
 #include <sstream>
 #include <string>
 #include <thread>
+#include <unordered_map>
 #include <utility>
 
 #pragma comment(lib, "comdlg32.lib")
@@ -325,6 +326,10 @@ constexpr UINT_PTR kPersistTabsTimer = 6;
 constexpr UINT_PTR kGutterTimer = 7;
 constexpr UINT_PTR kSyncFilenameTimer = 8;
 constexpr UINT_PTR kTitleSyncTimer = 9;
+// View settings (font size/face, toggles) are persisted on a short debounce:
+// Ctrl+wheel zoom used to do a blocking write+flush+rename per wheel notch.
+constexpr UINT_PTR kPersistViewTimer = 10;
+constexpr UINT kPersistViewDebounceMs = 400;
 constexpr int kStatusBarH = 26;
 
 // P2-30: follow Windows app light/dark preference for MD preview chrome.
@@ -1312,7 +1317,7 @@ void NotesWindow::SetFontSize(int pt) {
   font_pt_ = pt;
   ApplyEditorFont();
   SyncFontControls();
-  PersistViewSettings();
+  SchedulePersistViewSettings();
 }
 
 void NotesWindow::SetFontFace(const std::wstring& face) {
@@ -2240,6 +2245,14 @@ void NotesWindow::CopyPathToClipboard(const std::wstring& path) {
   CloseClipboard();
 }
 
+void NotesWindow::SchedulePersistViewSettings() {
+  if (hwnd_) {
+    SetTimer(hwnd_, kPersistViewTimer, kPersistViewDebounceMs, nullptr);
+  } else {
+    PersistViewSettings();
+  }
+}
+
 void NotesWindow::PersistViewSettings() {
   const std::wstring file = JoinPath(NativeDataDir(), L"notes_ui.json");
   const char* face_json = "Microsoft YaHei";
@@ -2526,13 +2539,34 @@ std::wstring NotesWindow::NormalizePathKey(const std::wstring& path) {
   if (path.empty()) {
     return path;
   }
+  // GetFullPathNameW is a syscall, and this runs inside per-item loops (library
+  // rail rebuild compares every file against every open tab, and per keystroke).
+  // Paths repeat heavily within a session, so memoise the mapping. Keys are
+  // immutable per path, so a cache entry never goes stale.
+  static std::mutex s_mu;
+  static std::unordered_map<std::wstring, std::wstring> s_cache;
+  {
+    std::lock_guard<std::mutex> lk(s_mu);
+    const auto it = s_cache.find(path);
+    if (it != s_cache.end()) {
+      return it->second;
+    }
+  }
+  std::wstring key = path;
   wchar_t buf[MAX_PATH * 4] = {};
   constexpr DWORD kBuf = static_cast<DWORD>(MAX_PATH * 4);
   const DWORD n = GetFullPathNameW(path.c_str(), kBuf, buf, nullptr);
-  if (n == 0 || n >= kBuf) {
-    return path;
+  if (n != 0 && n < kBuf) {
+    key = buf;
   }
-  return buf;
+  {
+    std::lock_guard<std::mutex> lk(s_mu);
+    if (s_cache.size() >= 8192) {
+      s_cache.clear();
+    }
+    s_cache.emplace(path, key);
+  }
+  return key;
 }
 
 namespace {
@@ -4707,18 +4741,19 @@ void NotesWindow::Load() {
                  ? (L"# " + (title.empty() ? std::wstring(L"") : title) + L"\n\n")
                  : it->second.body;
     } else if (id > 0 && VaultHttpLoggedIn()) {
-      VaultHttpNote n;
-      if (VaultHttpGetNote(id, &n)) {
-        title = n.title;
-        wide = n.body.empty()
-                   ? (L"# " + (n.title.empty() ? std::wstring(L"") : n.title) +
-                      L"\n\n")
-                   : n.body;
-        if (!n.title.empty() && wide.rfind(L"# ", 0) != 0) {
-          wide = L"# " + n.title + L"\n\n" + wide;
+      // Cache miss: fetch on a worker. VaultHttpGetNote retries with blocking
+      // sleeps (up to ~45 s with a dead server); running it here froze the whole
+      // window — no paint, no input — on the first open of an online note.
+      // Render the placeholder now and fill the body in when WM_APP+89 lands.
+      pending_online_load_id_ = id;
+      std::thread([hwnd = hwnd_, id]() {
+        auto* n = new VaultHttpNote;
+        const bool ok = VaultHttpGetNote(id, n);
+        if (!PostMessageW(hwnd, WM_APP + 89, ok ? 1 : 0,
+                          reinterpret_cast<LPARAM>(n))) {
+          delete n;
         }
-        online_body_cache_[id] = OnlineBodyCache{n.title, wide};
-      }
+      }).detach();
     }
     if (!title.empty() && wide.rfind(L"# ", 0) != 0) {
       wide = L"# " + title + L"\n\n" + wide;
@@ -4737,7 +4772,15 @@ void NotesWindow::Load() {
   if (!in) {
     std::ifstream legacy(JoinPath(NativeDataDir(), L"notes.txt"), std::ios::binary);
     if (!legacy) {
+      // The tab points at a file that is gone (deleted/renamed in Explorer).
+      // Leaving the previous tab's body in the editor would let the next
+      // keystroke mark it dirty and Save() would write that body into this
+      // path — silently copying one note over another. Clear it instead.
+      SetWindowTextW(edit_, L"");
+      ApplyNativeTitleFromMarkdown(L"");
       loading_ = false;
+      dirty_ = false;
+      SyncCurrentTabTitleHint();
       UpdateStatusBar();
       RefreshGutter();
       return;
@@ -4855,7 +4898,9 @@ void NotesWindow::ToggleMdViewMode() {
 
 void NotesWindow::ShowEditMode() {
   if (PathLooksMarkdown() && !toast_) {
-    EnsureMarkdownEditor(true);
+    // Already editing this document: keep the live editor (and its undo
+    // history / caret) instead of re-pushing the body.
+    EnsureMarkdownEditor(false);
     return;
   }
   if (wysiwyg_) {
@@ -4938,19 +4983,21 @@ void NotesWindow::Save(bool authoritative_pull, bool push_cloud) {
     online_body_cache_[id] = OnlineBodyCache{title, plain};
     // Explicit Save: enqueue cloud push — never block the UI thread on WinHTTP.
     if (push_cloud) {
-      if (!VaultHttpLoggedIn()) {
-        EnsureLibraryCloudLogin();
-        if (!VaultHttpLoggedIn()) {
-          return;
+      // Never open a modal login from Save: Save also runs from Hide()/close,
+      // where a modal would block teardown behind a network dialog. The push
+      // worker keeps unauthenticated batches queued and retries, so the edit
+      // still reaches the cloud once the session is restored.
+      if (VaultHttpLoggedIn()) {
+        for (auto& row : library_online_cache_) {
+          if (row.id == id) {
+            row.title = title;
+            break;
+          }
         }
+        QueueCloudNotePush(id, title, plain);
+      } else if (status_) {
+        SetWindowTextW(status_, L"已保存到本地缓存；未登录，稍后自动上传");
       }
-      for (auto& row : library_online_cache_) {
-        if (row.id == id) {
-          row.title = title;
-          break;
-        }
-      }
-      QueueCloudNotePush(id, title, plain);
     }
     dirty_ = false;
     ignore_dirty_until_ = GetTickCount64() + 600;
@@ -8136,7 +8183,11 @@ void NotesWindow::Present() {
   ShowWindow(hwnd_, SW_SHOWMAXIMIZED);
   SetForegroundWindow(hwnd_);
   LayoutClient();
-  EnsureMarkdownEditor(true);
+  // Do NOT force a reload here: Present() runs on every activation (tray click,
+  // --focus), and force_reload re-pushes the whole document through
+  // setMarkdown() → replaceAll(), which drops ProseMirror undo history,
+  // selection and scroll position. Only a tab/path change needs the reload.
+  EnsureMarkdownEditor(false);
   UpdateWindow(hwnd_);
   FocusActiveEditor(true);
 }
@@ -8912,15 +8963,28 @@ void NotesWindow::ConvertPathToLocal(const std::wstring& path, int note_id) {
     id = OnlineNoteIdFromPath(path);
     // Materialize online:// into a library file, then mark unsynced.
     VaultHttpNote n;
-    std::wstring body = L"# 未命名\n\n";
+    std::wstring body;
     std::wstring title = L"未命名";
+    bool have_body = false;
     auto cit = online_body_cache_.find(id);
-    if (cit != online_body_cache_.end()) {
-      body = cit->second.body.empty() ? body : cit->second.body;
+    if (cit != online_body_cache_.end() && !cit->second.body.empty()) {
+      body = cit->second.body;
       title = cit->second.title.empty() ? title : cit->second.title;
-    } else if (id > 0 && VaultHttpLoggedIn() && VaultHttpGetNote(id, &n)) {
+      have_body = true;
+    } else if (id > 0 && VaultHttpLoggedIn() && VaultHttpGetNote(id, &n) &&
+               !n.body.empty()) {
       title = n.title.empty() ? title : n.title;
-      body = n.body.empty() ? (L"# " + title + L"\n\n") : n.body;
+      body = n.body;
+      have_body = true;
+    }
+    // The cloud copy is deleted after this conversion, so a stub body would
+    // replace the user's note with an empty file. Refuse instead.
+    if (!have_body) {
+      MistAlert(hwnd_, L"转本地",
+                L"未能取到云端内容（可能已离线或登录过期）。\n"
+                L"为避免云端笔记被删除后内容丢失，本次未执行转换，请联网后重试。",
+                MistMsgTone::Danger);
+      return;
     }
     const std::wstring dir = JoinPath(NotesLibraryDir(true), L"云笔记");
     CreateDirectoryW(dir.c_str(), nullptr);
@@ -8945,7 +9009,11 @@ void NotesWindow::ConvertPathToLocal(const std::wstring& path, int note_id) {
         }
       }
     }
-    AtomicWriteUtf8File(local_path, NarrowUtf8(body), false);
+    if (!AtomicWriteUtf8File(local_path, NarrowUtf8(body), false)) {
+      MistAlert(hwnd_, L"转本地", L"写入本地文件失败，云端笔记未删除。",
+                MistMsgTone::Danger);
+      return;
+    }
     // Retarget open tab from online:// to local file.
     for (auto& tp : tab_paths_) {
       if (_wcsicmp(tp.c_str(), path.c_str()) == 0) {
@@ -8964,6 +9032,15 @@ void NotesWindow::ConvertPathToLocal(const std::wstring& path, int note_id) {
     }
     if (id <= 0) {
       MistAlert(hwnd_, L"转本地", L"该文件尚未关联云笔记。", MistMsgTone::Info);
+      return;
+    }
+    // The library rail's online rows carry only an id, so `path` can be empty
+    // here. Without a real local file there is nothing to convert *to*, and
+    // scheduling the cloud delete would destroy the note outright.
+    if (local_path.empty() ||
+        GetFileAttributesW(local_path.c_str()) == INVALID_FILE_ATTRIBUTES) {
+      MistAlert(hwnd_, L"转本地",
+                L"找不到对应的本地文件，云端笔记未删除。", MistMsgTone::Danger);
       return;
     }
     NoteCloudUpsertLink(&cloud_sync_, path, id, false);
@@ -9064,20 +9141,8 @@ void NotesWindow::OpenOnlineNoteInEditor(int note_id) {
     }
   }
   // Fetch body only on cache miss (first open). Tab switches reuse cache.
-  if (online_body_cache_.find(note_id) == online_body_cache_.end()) {
-    VaultHttpNote n;
-    if (VaultHttpGetNote(note_id, &n)) {
-      std::wstring wide = n.body.empty()
-                              ? (L"# " + (n.title.empty() ? std::wstring(L"未命名")
-                                                         : n.title) +
-                                 L"\n\n")
-                              : n.body;
-      if (!n.title.empty() && wide.rfind(L"# ", 0) != 0) {
-        wide = L"# " + n.title + L"\n\n" + wide;
-      }
-      online_body_cache_[note_id] = OnlineBodyCache{n.title, wide};
-    }
-  }
+  // The fetch itself runs on the worker inside Load() (WM_APP+89), so opening
+  // an online note never blocks the UI thread on a retrying HTTPS call.
   const std::wstring opath = OnlineNotePathFromId(note_id);
   for (size_t i = 0; i < tab_paths_.size(); ++i) {
     if (_wcsicmp(tab_paths_[i].c_str(), opath.c_str()) == 0) {
@@ -11630,6 +11695,47 @@ LRESULT NotesWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
       }
       return 0;
     }
+    case WM_APP + 89: {
+      // Online note body fetched on a worker (see Load()). Apply only if the
+      // tab that asked for it is still the current one.
+      std::unique_ptr<VaultHttpNote> n(reinterpret_cast<VaultHttpNote*>(lparam));
+      const int want_id = pending_online_load_id_;
+      pending_online_load_id_ = -1;
+      if (!n || want_id <= 0 || !IsOnlineNotePath(path_) ||
+          OnlineNoteIdFromPath(path_) != want_id) {
+        return 0;
+      }
+      if (wparam == 0) {
+        if (status_) {
+          SetWindowTextW(status_, L"云端笔记加载失败，请检查网络或登录状态");
+        }
+        return 0;
+      }
+      std::wstring wide =
+          n->body.empty() ? (L"# " + n->title + L"\n\n") : n->body;
+      if (!n->title.empty() && wide.rfind(L"# ", 0) != 0) {
+        wide = L"# " + n->title + L"\n\n" + wide;
+      }
+      online_body_cache_[want_id] = OnlineBodyCache{n->title, wide};
+      // The user may have started typing into the placeholder; never clobber
+      // that with the fetched body.
+      if (dirty_) {
+        return 0;
+      }
+      text_enc_ = TextFileEncoding::Utf8;
+      loading_ = true;
+      SetWindowTextW(edit_, wide.c_str());
+      ApplyNativeTitleFromMarkdown(wide);
+      loading_ = false;
+      dirty_ = false;
+      SyncCurrentTabTitleHint();
+      UpdateStatusBar();
+      RefreshGutter();
+      if (wysiwyg_) {
+        web_.SetMarkdown(wide, NoteBaseDir());
+      }
+      return 0;
+    }
     case WM_APP + 60:
       if (pending_goto_line_ >= 0) {
         const int line = pending_goto_line_;
@@ -11684,6 +11790,11 @@ LRESULT NotesWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
       }
       if (wparam == kPersistTabsTimer) {
         PersistTabs();
+        return 0;
+      }
+      if (wparam == kPersistViewTimer) {
+        KillTimer(hwnd_, kPersistViewTimer);
+        PersistViewSettings();
         return 0;
       }
       if (wparam == kSyncFilenameTimer) {

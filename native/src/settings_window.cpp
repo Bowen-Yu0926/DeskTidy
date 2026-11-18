@@ -1094,20 +1094,32 @@ void SettingsWindow::OnWebMessage(const std::wstring& json) {
   }
   if (type == L"field") {
     const std::wstring id = JsonStringField(json, L"id");
-    std::wstring value = JsonStringField(json, L"value");
-    if (value.empty()) {
-      // Numeric / unquoted value.
+    // Detect the value's form from its first character, not from
+    // JsonStringField() returning empty: an emptied text field is a legitimate
+    // `"value":""`, and treating that as "unquoted" stored the two literal
+    // quote characters as the folder path.
+    std::wstring value;
+    {
       const std::wstring needle = L"\"value\"";
       size_t p = json.find(needle);
       if (p != std::wstring::npos) {
-        p = json.find(L':', p);
+        p = json.find(L':', p + needle.size());
         if (p != std::wstring::npos) {
           ++p;
           while (p < json.size() && (json[p] == L' ' || json[p] == L'\t')) {
             ++p;
           }
-          while (p < json.size() && json[p] != L',' && json[p] != L'}') {
-            value.push_back(json[p++]);
+          if (p < json.size() && json[p] == L'"') {
+            value = JsonStringField(json, L"value");
+          } else {
+            while (p < json.size() && json[p] != L',' && json[p] != L'}') {
+              value.push_back(json[p++]);
+            }
+            while (!value.empty() &&
+                   (value.back() == L' ' || value.back() == L'\t' ||
+                    value.back() == L'\r' || value.back() == L'\n')) {
+              value.pop_back();
+            }
           }
         }
       }

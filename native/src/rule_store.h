@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <initializer_list>
+#include <map>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -73,8 +74,11 @@ bool SaveRules(const RuleMap& rules);
 // Persisted in a dedicated organize_categories.json (kept separate from the
 // pattern->fence `rules` schema so the two never clobber each other).
 using CategoryFenceMap = std::unordered_map<std::string, std::string>;
-using FilenameRulesMap =
-    std::unordered_map<std::string, std::vector<std::wstring>>;
+// Insertion-ordered (same reasoning as RuleMap): ResolveCategoryFenceId returns
+// the FIRST matching category, so bucket order made the target fence depend on
+// hash order — different between runs and between saves when two categories
+// match one file.
+using FilenameRulesMap = std::map<std::string, std::vector<std::wstring>>;
 
 CategoryFenceMap LoadCategoryFenceMap();
 FilenameRulesMap LoadFilenameRules();

@@ -368,3 +368,12 @@ endif()
 if(MSVC)
   target_compile_options(test_desktop_item_identity PRIVATE /W4 /permissive- /utf-8)
 endif()
+
+add_executable(test_json_unescape
+  tests/t_unesc.cpp
+  src/paths_util.cpp
+  src/log.cpp
+)
+target_include_directories(test_json_unescape PRIVATE src)
+target_compile_definitions(test_json_unescape PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+target_link_libraries(test_json_unescape PRIVATE user32 shell32 ole32 advapi32)

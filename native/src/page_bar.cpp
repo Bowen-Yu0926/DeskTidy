@@ -599,6 +599,16 @@ void PageBar::ScaleForDpi(int old_dpi, int new_dpi) {
   if (new_dpi <= 0) {
     new_dpi = 96;
   }
+  // The bar tracks its own scale in font_scale_, so derive the previous DPI
+  // from it rather than trusting the caller. Callers pass 96 unconditionally,
+  // which made a second WM_DPICHANGED (96→144→120) scale anchor_y_ from 96
+  // again and drift the bar upward on every DPI toggle.
+  if (font_scale_ > 0.f) {
+    const int tracked_dpi = static_cast<int>(std::lround(font_scale_ * 96.f));
+    if (tracked_dpi > 0) {
+      old_dpi = tracked_dpi;
+    }
+  }
   const float next_scale = static_cast<float>(new_dpi) / 96.f;
   if (old_dpi == new_dpi && std::fabs(font_scale_ - next_scale) < 0.001f) {
     return;
@@ -659,6 +669,15 @@ int PageBar::HitTest(int x, int y) const {
     }
   }
   return -1;
+}
+
+void PageBar::ReleaseCaptureSelf() {
+  if (!hwnd_ || GetCapture() != hwnd_) {
+    return;
+  }
+  self_releasing_capture_ = true;
+  ReleaseCapture();
+  self_releasing_capture_ = false;
 }
 
 void PageBar::ActivateSlot(int index) {
@@ -916,17 +935,18 @@ LRESULT PageBar::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
       const bool was_moved = drag_moved_;
       dragging_ = false;
       drag_moved_ = false;
-      ReleaseCapture();
       if (was_dragging && was_moved) {
         RECT rc{};
         GetWindowRect(hwnd_, &rc);
         DockToRightEdge(rc.top);
         AttachToDesktopLayer();
         SetTimer(hwnd_, kTimerCollapseDelay, kCollapseDelayMs, nullptr);
+        ReleaseCaptureSelf();
         return 0;
       }
       const int hit = HitTest(x, y);
       ActivateSlot(hit);
+      ReleaseCaptureSelf();
       return 0;
     }
     case WM_RBUTTONUP: {
@@ -939,7 +959,8 @@ LRESULT PageBar::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
       return 0;
     }
     case WM_CAPTURECHANGED:
-      if (reinterpret_cast<HWND>(lparam) != hwnd_ && dragging_) {
+      if (!self_releasing_capture_ && reinterpret_cast<HWND>(lparam) != hwnd_ &&
+          dragging_) {
         dragging_ = false;
         drag_moved_ = false;
         RECT rc{};

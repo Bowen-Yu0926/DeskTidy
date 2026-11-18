@@ -108,6 +108,8 @@ class PageBar {
   bool PageLockedAt(int index) const;
   void DockToRightEdge(int preferred_y);
   void ActivateSlot(int index);
+  // ReleaseCapture that WM_CAPTURECHANGED recognises as our own teardown.
+  void ReleaseCaptureSelf();
   void ShowPageContextMenu(int page_index);
   void EnsureTooltip();
   void UpdateHoverTip(int index);
@@ -161,6 +163,10 @@ class PageBar {
   float expand_target_ = 0.f;  // hover wants 1, leave wants 0
   bool dragging_ = false;
   bool drag_moved_ = false;
+  // ReleaseCapture sends WM_CAPTURECHANGED synchronously; this marks our own
+  // teardown so the handler does not cancel the drag the same message is
+  // still finishing.
+  bool self_releasing_capture_ = false;
   int hover_index_ = -1;
   POINT drag_grab_{};
   POINT press_pt_{};

@@ -200,7 +200,12 @@ bool LastWriteWasAccessDenied() {
 
 bool WriteFileBytes(const std::wstring& path, const void* data, size_t size) {
   g_last_write_err = 0;
-  HANDLE h = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
+  // Write to a unique temp file and replace: CREATE_ALWAYS on the destination
+  // truncated the user's note first, so a crash or power loss mid-write left a
+  // partial file with the previous content already gone. This is the single
+  // funnel for every note save.
+  const std::wstring tmp = AtomicTempPathFor(path);
+  HANDLE h = CreateFileW(tmp.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
                          FILE_ATTRIBUTE_NORMAL, nullptr);
   if (h == INVALID_HANDLE_VALUE) {
     g_last_write_err = GetLastError();
@@ -214,6 +219,13 @@ bool WriteFileBytes(const std::wstring& path, const void* data, size_t size) {
   CloseHandle(h);
   if (!ok || written != size) {
     g_last_write_err = err ? err : ERROR_WRITE_FAULT;
+    DeleteFileW(tmp.c_str());
+    return false;
+  }
+  if (!MoveFileExW(tmp.c_str(), path.c_str(),
+                   MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+    g_last_write_err = GetLastError();
+    DeleteFileW(tmp.c_str());
     return false;
   }
   return true;

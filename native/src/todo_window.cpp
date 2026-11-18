@@ -318,34 +318,9 @@ TodoWindow::Item NewTodoItem(const std::wstring& text, bool done) {
   return it;
 }
 
-// Atomic UTF-8 write: temp + write-through + replace, preserving .bak first.
+// Atomic UTF-8 write via the shared helper (unique temp + .bak + replace).
 void SaveStringAtomic(const std::string& data, const std::wstring& path) {
-  const std::wstring tmp = path + L".tmp";
-  HANDLE h = CreateFileW(tmp.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
-                         FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH,
-                         nullptr);
-  if (h == INVALID_HANDLE_VALUE) {
-    return;
-  }
-  DWORD written = 0;
-  const BOOL ok = WriteFile(h, data.data(), static_cast<DWORD>(data.size()),
-                            &written, nullptr);
-  FlushFileBuffers(h);
-  CloseHandle(h);
-  if (!ok || written != data.size()) {
-    DeleteFileW(tmp.c_str());
-    return;
-  }
-  WIN32_FILE_ATTRIBUTE_DATA fad{};
-  if (GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &fad) &&
-      !(fad.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) &&
-      (fad.nFileSizeHigh != 0 || fad.nFileSizeLow != 0)) {
-    CopyFileW(path.c_str(), (path + L".bak").c_str(), FALSE);
-  }
-  if (!MoveFileExW(tmp.c_str(), path.c_str(),
-                   MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
-    DeleteFileW(tmp.c_str());
-  }
+  AtomicWriteUtf8File(path, data);
 }
 
 std::string SerializeTodos(const std::vector<TodoWindow::Item>& items) {

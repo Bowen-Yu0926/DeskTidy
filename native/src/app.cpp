@@ -662,7 +662,11 @@ void App::WireFence(FenceWindow* fence) {
   if (!fence) {
     return;
   }
-  fence->SetOnMoved([this](FenceWindow*) { PersistLayouts(); });
+  // Style / sort / lock / zoom / collapse toggles all land here. They change
+  // layout fields, not geometry, so a coalesced write is enough — persisting
+  // synchronously made each toggle block the UI thread on a full state build
+  // plus four file operations.
+  fence->SetOnMoved([this](FenceWindow*) { SchedulePersistLayouts(); });
   fence->SetOnGeometryMoved([this](FenceWindow* moved) {
     if (!moved) {
       return;
@@ -787,13 +791,16 @@ void App::WireFence(FenceWindow* fence) {
       }
     }
     PersistLayouts();
-    RebuildPublicItems();  // reflow floats outside moved fence frames
+    // Reflow only — RebuildPublicItems rescans the desktop, re-sorts every
+    // float and rebuilds all slots, which ran on every drag-end / resize-end.
+    // ReflowPublicFloats updates blocked rects + layout from current state.
+    ReflowPublicFloats();
     NudgePetClearOfFences(pet_, fences_, current_page_);
   });
   fence->SetOnZoomChanged([this](FenceWindow* f, int zoom) {
     (void)f;
     (void)zoom;
-    PersistLayouts();
+    SchedulePersistLayouts();
     NudgePetClearOfFences(pet_, fences_, current_page_);
   });
   fence->SetOnReorder([this](FenceWindow* f,
@@ -801,7 +808,7 @@ void App::WireFence(FenceWindow* fence) {
     if (f) {
       f->SetPinOrder(order);
     }
-    PersistLayouts();
+    SchedulePersistLayouts();
   });
   fence->SetOnPathsDroppedAt(
       [this](FenceWindow* f, const std::vector<std::wstring>& paths,
@@ -2483,12 +2490,25 @@ bool App::IsPathPinned(const std::wstring& path) const {
     return false;
   }
   for (const auto& p : pins_img_) {
-    if (p && !p->Path().empty() &&
+    if (p && p->Hwnd() && !p->Path().empty() &&
         _wcsicmp(p->Path().c_str(), path.c_str()) == 0) {
       return true;
     }
   }
   return false;
+}
+
+// Drop entries whose window has already closed. A closed PinnedImage keeps its
+// object alive in pins_img_ (Destroy only nulls hwnd_), so without pruning the
+// list fills with dead entries: IsPathPinned() reports a pin that can no longer
+// be shown, and the max_pins cap evicts live pins while dead ones linger.
+void App::PruneClosedPins() {
+  pins_img_.erase(
+      std::remove_if(pins_img_.begin(), pins_img_.end(),
+                     [](const std::unique_ptr<PinnedImage>& p) {
+                       return !p || !p->Hwnd();
+                     }),
+      pins_img_.end());
 }
 
 static int GetPngEncoderClsid(CLSID* pClsid) {
@@ -2513,6 +2533,7 @@ void App::PinImage(const std::wstring& path) {
   if (path.empty()) {
     return;
   }
+  PruneClosedPins();
   // Same path already open → just raise it (Snipaste: no duplicate sticker).
   if (IsPathPinned(path)) {
     for (auto& p : pins_img_) {
@@ -6457,26 +6478,52 @@ void App::PruneStickyMissingPins() {
   for (const auto& it : desk_items) {
     on_desk.insert(NormalizePinKey(it.path));
   }
+  // Index the desktop once instead of rescanning it per missing pin: this runs
+  // every 30 s on the UI thread and was O(missing pins x desktop items) with
+  // two _wcsicmp per pair.
+  std::unordered_map<std::wstring, std::wstring> by_name;
+  std::unordered_map<std::wstring, std::wstring> link_stem_first;
+  by_name.reserve(desk_items.size() * 2);
+  link_stem_first.reserve(desk_items.size() * 2);
+  for (const auto& it : desk_items) {
+    const std::wstring bn = file_name(it.path);
+    std::wstring lower = bn;
+    for (auto& ch : lower) {
+      ch = towlower(ch);
+    }
+    by_name.emplace(lower, it.path);
+    if (it.is_link) {
+      std::wstring stem = link_stem(bn);
+      for (auto& ch : stem) {
+        ch = towlower(ch);
+      }
+      link_stem_first.emplace(stem, it.path);
+    }
+  }
   auto find_desktop_replacement =
       [&](const std::wstring& missing) -> std::wstring {
     const std::wstring want_name = file_name(missing);
-    const std::wstring want_stem = link_stem(want_name);
+    std::wstring want_lower = want_name;
+    for (auto& ch : want_lower) {
+      ch = towlower(ch);
+    }
+    std::wstring want_stem = link_stem(want_name);
     if (want_stem.empty()) {
       return {};
     }
-    std::wstring stem_hit;
-    for (const auto& it : desk_items) {
-      const std::wstring bn = file_name(it.path);
-      if (_wcsicmp(bn.c_str(), want_name.c_str()) == 0) {
-        return it.path;
-      }
-      // Soft fallback for「启动 Foo.lnk」↔ Foo.lnk (links only).
-      if (it.is_link && stem_hit.empty() &&
-          _wcsicmp(link_stem(bn).c_str(), want_stem.c_str()) == 0) {
-        stem_hit = it.path;
-      }
+    for (auto& ch : want_stem) {
+      ch = towlower(ch);
     }
-    return stem_hit;
+    const auto exact = by_name.find(want_lower);
+    if (exact != by_name.end()) {
+      return exact->second;
+    }
+    // Soft fallback for「启动 Foo.lnk」↔ Foo.lnk (links only).
+    const auto stem_hit = link_stem_first.find(want_stem);
+    if (stem_hit != link_stem_first.end()) {
+      return stem_hit->second;
+    }
+    return {};
   };
 
   int dropped = 0;
@@ -7600,6 +7647,13 @@ bool App::DesktopChromeHealthy() const {
   if (peek_active_ || fences_hidden_) {
     return true;
   }
+  // The desktop is not showing (app in front, Task View / Alt+Tab switcher):
+  // overlays are supposed to be behind it, so "buried" is not a fault and must
+  // not trigger a restore loop. This gate belongs here, in the repair decision
+  // — IsOverlayAboveDefView() itself reports the real Z order.
+  if (!IsShowDesktopActive()) {
+    return true;
+  }
   // One DefView host lookup per pass — IsAttached/IsOverlayAbove used to each
   // call FindDefViewHost (N overlays × 2s/4s timers).
   const DefViewHost host = FindDefViewHost();
@@ -8492,9 +8546,13 @@ LRESULT CALLBACK App::TrayWndProc(HWND hwnd, UINT msg, WPARAM wparam,
       // still delivers it (copy progress must not rebuild fences).
       long event = 0;
       PIDLIST_ABSOLUTE* pidls = nullptr;
-      HANDLE lock = SHChangeNotification_Lock(reinterpret_cast<HANDLE>(wparam),
-                                              static_cast<DWORD>(lparam),
-                                              &pidls, &event);
+      // SHCNRF_NewDelivery: wParam is the change handle and lParam is the
+      // SENDING PROCESS ID — it is NOT a value to pass back as dwProcId.
+      // Passing lParam made every lock fail, so all shell notifications were
+      // dropped and desktop changes only surfaced on the ~10 s poll.
+      HANDLE lock = SHChangeNotification_Lock(
+          reinterpret_cast<HANDLE>(wparam), GetCurrentProcessId(), &pidls,
+          &event);
       if (lock) {
         std::wstring rename_from;
         std::wstring rename_to;

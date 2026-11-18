@@ -336,8 +336,12 @@ std::vector<std::wstring> FdSearchRoots(
     const std::vector<std::wstring>& roots, int max_results, int max_depth,
     int threads, bool include_hidden,
     const std::vector<std::wstring>& exts,
-    const SearchWindow::SearchSharedState* state, unsigned gen) {
+    const SearchWindow::SearchSharedState* state, unsigned gen,
+    bool* ran) {
   std::vector<std::wstring> hits;
+  if (ran) {
+    *ran = false;
+  }
   if (fd.empty() || roots.empty() || needle.empty()) {
     return hits;
   }
@@ -384,6 +388,9 @@ std::vector<std::wstring> FdSearchRoots(
     CloseHandle(wr);
     CloseHandle(rd);
     return hits;
+  }
+  if (ran) {
+    *ran = true;
   }
   CloseHandle(wr);
   CloseHandle(pi.hThread);
@@ -509,7 +516,7 @@ bool SearchWindow::Create(HINSTANCE instance) {
 }
 
 bool SearchWindow::CreateWebView() {
-  if (web_available_ || controller_ || !hwnd_) {
+  if (web_available_ || controller_ || web_init_in_flight_ || !hwnd_) {
     return web_available_;
   }
   static bool host_reg = false;
@@ -524,6 +531,8 @@ bool SearchWindow::CreateWebView() {
     RegisterClassExW(&wc);
     host_reg = true;
   }
+  // Reuse the host window: a duplicate init (or a failed one) must not orphan
+  // another child window.
   if (!host_ || !IsWindow(host_)) {
     RECT rc{};
     GetClientRect(hwnd_, &rc);
@@ -537,12 +546,14 @@ bool SearchWindow::CreateWebView() {
   const std::wstring user_data =
       JoinPath(NativeDataDir(), L"webview2-search");
   CreateDirectoryW(user_data.c_str(), nullptr);
+  web_init_in_flight_ = true;
   CreateCoreWebView2EnvironmentWithOptions(
       nullptr, user_data.c_str(), nullptr,
       Callback<ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler>(
           [this](HRESULT result, ICoreWebView2Environment* env) -> HRESULT {
             if (FAILED(result) || !env || !hwnd_ || !host_ ||
                 !IsWindow(host_)) {
+              web_init_in_flight_ = false;
               return S_OK;
             }
             env->CreateCoreWebView2Controller(
@@ -551,6 +562,7 @@ bool SearchWindow::CreateWebView() {
                     ICoreWebView2CreateCoreWebView2ControllerCompletedHandler>(
                     [this](HRESULT result2,
                            ICoreWebView2Controller* controller) -> HRESULT {
+                      web_init_in_flight_ = false;
                       if (FAILED(result2) || !controller) {
                         return S_OK;
                       }
@@ -1029,6 +1041,11 @@ void SearchWindow::Hide() {
   if (hwnd_) {
     ShowWindow(hwnd_, SW_HIDE);
   }
+  // Cancel an in-flight scan: without a new generation the worker keeps
+  // walking (possibly a whole drive) and posting results to a hidden WebView.
+  if (shared_state_) {
+    ++shared_state_->gen;
+  }
 }
 
 std::vector<std::wstring> SearchWindow::BuildRoots() const {
@@ -1159,11 +1176,16 @@ void SearchWindow::RunSearch(const std::wstring& needle) {
         break;
       }
       std::vector<std::wstring> batch;
+      bool fd_ran = false;
       if (!fd.empty()) {
         batch = FdSearchRoots(fd, needle, {root}, remain, max_depth, threads,
-                              include_hidden, exts, state.get(), gen);
+                              include_hidden, exts, state.get(), gen, &fd_ran);
       }
-      if (batch.empty() && state->alive.load() && state->gen.load() == gen) {
+      // Fall back to the native walk only when fd could not run. Empty results
+      // from a successful fd run are a real "no match", and re-walking the same
+      // root there doubled the work of every miss — the common case while
+      // typing.
+      if (!fd_ran && state->alive.load() && state->gen.load() == gen) {
         int budget = remain;
         SearchRecursive(root, needle, &batch, &budget, 0, max_depth,
                         include_hidden, allowed_ptr, state.get(), gen);
