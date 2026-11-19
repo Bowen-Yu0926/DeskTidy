@@ -123,18 +123,13 @@ bool RegisterNativeShellVerbs() {
                       KEY_WRITE, nullptr, &hk, nullptr) != ERROR_SUCCESS) {
     return false;
   }
-  const wchar_t* label = L"DeskTidy";
-  // Empty default value: setting a non-empty string as (Default) turns the key
-  // into an actionable leaf item and breaks cascading subcommands from expanding.
-  const wchar_t empty[] = L"";
+  const wchar_t label[] = L"DeskTidy 选项";
   RegSetValueExW(hk, nullptr, 0, REG_SZ,
-                 reinterpret_cast<const BYTE*>(empty), sizeof(wchar_t));
+                 reinterpret_cast<const BYTE*>(label),
+                 static_cast<DWORD>((wcslen(label) + 1) * sizeof(wchar_t)));
   RegSetValueExW(hk, L"MUIVerb", 0, REG_SZ,
                  reinterpret_cast<const BYTE*>(label),
                  static_cast<DWORD>((wcslen(label) + 1) * sizeof(wchar_t)));
-  // Empty SubCommands → nested shell\\* children (cascade menu).
-  RegSetValueExW(hk, L"SubCommands", 0, REG_SZ,
-                 reinterpret_cast<const BYTE*>(empty), sizeof(wchar_t));
   const wchar_t pos[] = L"Top";
   RegSetValueExW(hk, L"Position", 0, REG_SZ,
                  reinterpret_cast<const BYTE*>(pos),
@@ -145,8 +140,15 @@ bool RegisterNativeShellVerbs() {
                  static_cast<DWORD>((exe.size() + 1) * sizeof(wchar_t)));
   RegCloseKey(hk);
 
-  for (const auto& c : kChildren) {
-    WriteChild(parent, c);
+  HKEY cmd = nullptr;
+  if (RegCreateKeyExW(HKEY_CURRENT_USER, (parent + L"\\command").c_str(), 0,
+                      nullptr, 0, KEY_WRITE, nullptr, &cmd,
+                      nullptr) == ERROR_SUCCESS) {
+    const std::wstring cmdline = L"\"" + exe + L"\" --settings";
+    RegSetValueExW(cmd, nullptr, 0, REG_SZ,
+                   reinterpret_cast<const BYTE*>(cmdline.c_str()),
+                   static_cast<DWORD>((cmdline.size() + 1) * sizeof(wchar_t)));
+    RegCloseKey(cmd);
   }
   return true;
 }

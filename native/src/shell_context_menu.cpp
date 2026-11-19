@@ -390,12 +390,30 @@ int TrackCommon(HWND owner, POINT screen, IContextMenu* pcm, UINT cmf_flags,
     return -1;
   }
 
-  // Group all DeskTidy extras inside the "DeskTidy" submenu so the root menu
-  // stays clean and all DeskTidy options live under one place.
-  g_desktidy_sub = FindDeskTidySubmenu(menu);
-  g_pending_extras = &extras;
+  // Remove any stale or broken DeskTidy items brought in by Explorer's registry scan
+  // so broken static cascading registry entries never pollute or deadlock the menu.
+  for (int i = GetMenuItemCount(menu) - 1; i >= 0; --i) {
+    wchar_t buf[256] = {};
+    if (GetMenuStringW(menu, static_cast<UINT>(i), buf, 255, MF_BYPOSITION) > 0) {
+      std::wstring clean;
+      for (wchar_t c : std::wstring(buf)) {
+        if (c != L'&') {
+          clean.push_back(c);
+        }
+      }
+      if (_wcsicmp(clean.c_str(), L"DeskTidy") == 0 ||
+          clean.find(L"DeskTidy") != std::wstring::npos) {
+        DeleteMenu(menu, static_cast<UINT>(i), MF_BYPOSITION);
+      }
+    }
+  }
+
+  // Group all DeskTidy extras inside our own reliable dynamic "DeskTidy" submenu
+  // so the root menu stays clean and all DeskTidy options live under one place.
+  g_desktidy_sub = nullptr;
+  g_pending_extras = nullptr;
   g_desktidy_extras_injected = false;
-  if (!g_desktidy_sub && !extras.empty()) {
+  if (!extras.empty()) {
     HMENU sub = CreatePopupMenu();
     if (sub && AppendShellExtras(sub, extras)) {
       const bool had_shell = GetMenuItemCount(menu) > 0;
@@ -404,7 +422,6 @@ int TrackCommon(HWND owner, POINT screen, IContextMenu* pcm, UINT cmf_flags,
       if (had_shell) {
         InsertMenuW(menu, 1, MF_BYPOSITION | MF_SEPARATOR, 0, nullptr);
       }
-      g_desktidy_extras_injected = true;
     } else if (sub) {
       DestroyMenu(sub);
     }

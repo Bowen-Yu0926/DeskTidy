@@ -52,6 +52,9 @@ constexpr int kExtPublicZoomIn = 4;
 constexpr int kExtPublicZoomOut = 5;
 constexpr int kExtPublicZoomReset = 6;
 constexpr int kExtPublicSettings = 7;
+constexpr int kExtPublicNewFence = 8;
+constexpr int kExtPublicOrganize = 9;
+constexpr int kExtPublicDeskNote = 10;
 constexpr int kDragThreshold = 6;
 bool g_reg = false;
 ULONG_PTR g_gdiplus = 0;
@@ -1203,11 +1206,14 @@ void PublicHost::ShowBackgroundMenu(POINT screen) {
   }
   const std::vector<ShellMenuExtra> extras{
       {L"选项 (设置)", kExtPublicSettings},
+      {L"新建分区", kExtPublicNewFence},
+      {L"一键整理", kExtPublicOrganize},
       {L"刷新", kExtPublicRefresh},
       {L"对齐图标到网格", kExtPublicAlignGrid},
       {L"放大图标", kExtPublicZoomIn},
       {L"缩小图标", kExtPublicZoomOut},
       {L"图标恢复默认大小", kExtPublicZoomReset},
+      {L"用便签记事打开", kExtPublicDeskNote},
   };
   // Snapshot Desktop membership so New can SuppressOrganize (Fences: new
   // loose icons stay as floats; watch must not vacuum them into a fence).
@@ -1287,6 +1293,12 @@ void PublicHost::ShowBackgroundMenu(POINT screen) {
   }
   if (rc == kExtPublicSettings && on_open_settings_) {
     on_open_settings_();
+  } else if (rc == kExtPublicNewFence && on_new_fence_) {
+    on_new_fence_(screen);
+  } else if (rc == kExtPublicOrganize && on_organize_) {
+    on_organize_();
+  } else if (rc == kExtPublicDeskNote && on_notes_) {
+    on_notes_();
   } else if (rc == kExtPublicRefresh && on_refresh_) {
     on_refresh_();
   } else if (rc == kExtPublicAlignGrid) {

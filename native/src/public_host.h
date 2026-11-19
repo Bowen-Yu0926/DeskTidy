@@ -76,6 +76,9 @@ class PublicHost {
   }
   void SetOnRefresh(std::function<void()> fn) { on_refresh_ = std::move(fn); }
   void SetOnOpenSettings(std::function<void()> fn) { on_open_settings_ = std::move(fn); }
+  void SetOnNewFence(std::function<void(POINT)> fn) { on_new_fence_ = std::move(fn); }
+  void SetOnOrganize(std::function<void()> fn) { on_organize_ = std::move(fn); }
+  void SetOnNotes(std::function<void()> fn) { on_notes_ = std::move(fn); }
   // Fences / Explorer: clicking floats clears fence icon selection.
   void SetOnActivated(std::function<void()> fn) {
     on_activated_ = std::move(fn);
@@ -284,6 +287,9 @@ class PublicHost {
   std::function<void(const std::wstring&)> on_removed_;
   std::function<void()> on_refresh_;
   std::function<void()> on_open_settings_;
+  std::function<void(POINT)> on_new_fence_;
+  std::function<void()> on_organize_;
+  std::function<void()> on_notes_;
   std::function<void()> on_undo_;
   std::function<void()> on_activated_;
   std::function<void(bool)> on_paste_;

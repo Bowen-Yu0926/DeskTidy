@@ -2,10 +2,21 @@
 
 #include "instance_lock.h"
 
+#include <Windows.h>
 #include <string>
 
 bool ForwardCliToRunningInstance(const std::wstring& action) {
   HWND hwnd = FindWindowW(kNativeMsgWindowClass, L"DeskTidyNative");
+  if (!hwnd) {
+    // If the sender is on a different desktop (e.g. background console, service,
+    // or detached runner), switch thread desktop to the interactive input desktop.
+    HDESK input_desk = OpenInputDesktop(0, FALSE, GENERIC_ALL);
+    if (input_desk) {
+      SetThreadDesktop(input_desk);
+      hwnd = FindWindowW(kNativeMsgWindowClass, L"DeskTidyNative");
+      CloseDesktop(input_desk);
+    }
+  }
   if (!hwnd || action.empty()) {
     return false;
   }

@@ -2871,17 +2871,21 @@ std::wstring NotesWindow::NoteDisplayName(const std::wstring& path,
         continue;
       }
       if (i < tab_states_.size() && !tab_states_[i].title_hint.empty()) {
-        return L"☁ " + tab_states_[i].title_hint;
+        std::wstring h = tab_states_[i].title_hint;
+        if (h.rfind(L"☁ ", 0) == 0) h = h.substr(2);
+        return h;
       }
       break;
     }
     const int id = OnlineNoteIdFromPath(path);
     for (const auto& it : library_online_cache_) {
       if (it.id == id && !it.title.empty()) {
-        return L"☁ " + it.title;
+        std::wstring t = it.title;
+        if (t.rfind(L"☁ ", 0) == 0) t = t.substr(2);
+        return t;
       }
     }
-    return L"☁ 在线笔记";
+    return L"在线笔记";
   }
   {
     const size_t slash = path.find_last_of(L"\\/");
@@ -3109,6 +3113,68 @@ void DrawTabPushPin(Gdiplus::Graphics& g, float cx, float cy, bool pinned,
   }
 }
 
+// 优化后的现代高质感云朵矢量图标 (天蓝色调，饱满圆润)
+void DrawTabCloudGlyph(Gdiplus::Graphics& g, float cx, float cy, bool on) {
+  Gdiplus::Color pen_color = on ? Gdiplus::Color(255, 37, 99, 235)
+                                : Gdiplus::Color(255, 96, 165, 250);
+  Gdiplus::Color fill_color = on ? Gdiplus::Color(200, 219, 234, 254)
+                                 : Gdiplus::Color(140, 239, 246, 255);
+  Gdiplus::Pen pen(pen_color, 1.25f);
+  pen.SetLineCap(Gdiplus::LineCapRound, Gdiplus::LineCapRound, Gdiplus::DashCapRound);
+  pen.SetLineJoin(Gdiplus::LineJoinRound);
+  Gdiplus::SolidBrush fill(fill_color);
+
+  Gdiplus::GraphicsPath path;
+  path.AddArc(cx + 0.9f, cy - 1.5f, 4.6f, 4.6f, 270.f, 180.f);
+  path.AddArc(cx - 3.6f, cy - 4.6f, 6.8f, 6.8f, 200.f, 150.f);
+  path.AddArc(cx - 5.7f, cy - 2.0f, 5.0f, 5.0f, 90.f, 180.f);
+  path.CloseFigure();
+
+  g.FillPath(&fill, &path);
+  g.DrawPath(&pen, &path);
+}
+
+// 本地文档/便签折角小纸张矢量图标 (极简现代，中性灰/石板蓝)
+void DrawTabDocumentGlyph(Gdiplus::Graphics& g, float cx, float cy, bool on) {
+  Gdiplus::Color pen_color = on ? Gdiplus::Color(255, 100, 116, 139)
+                                : Gdiplus::Color(255, 148, 163, 184);
+  Gdiplus::Color fill_color = on ? Gdiplus::Color(255, 255, 255, 255)
+                                 : Gdiplus::Color(220, 241, 245, 249);
+  Gdiplus::Pen pen(pen_color, 1.15f);
+  pen.SetLineCap(Gdiplus::LineCapRound, Gdiplus::LineCapRound, Gdiplus::DashCapRound);
+  pen.SetLineJoin(Gdiplus::LineJoinRound);
+  Gdiplus::SolidBrush fill(fill_color);
+
+  const float l = cx - 4.3f;
+  const float r = cx + 4.3f;
+  const float t = cy - 5.5f;
+  const float b = cy + 5.5f;
+  const float fold = 2.8f;
+
+  Gdiplus::GraphicsPath doc;
+  Gdiplus::PointF pts[5] = {
+      {l, t},
+      {r - fold, t},
+      {r, t + fold},
+      {r, b},
+      {l, b}
+  };
+  doc.AddPolygon(pts, 5);
+  g.FillPath(&fill, &doc);
+  g.DrawPath(&pen, &doc);
+
+  Gdiplus::PointF fold_pts[3] = {
+      {r - fold, t},
+      {r - fold, t + fold},
+      {r, t + fold}
+  };
+  g.DrawLines(&pen, fold_pts, 3);
+
+  Gdiplus::Pen line_pen(pen_color, 0.85f);
+  g.DrawLine(&line_pen, l + 2.0f, cy + 0.6f, r - 2.0f, cy + 0.6f);
+  g.DrawLine(&line_pen, l + 2.0f, cy + 3.0f, r - 3.0f, cy + 3.0f);
+}
+
 // System sticky tab (账号库): padlock where × would be.
 void DrawTabLockGlyph(Gdiplus::Graphics& g, float cx, float cy) {
   Gdiplus::Pen pen(Gdiplus::Color(255, 100, 116, 139), 1.5f);
@@ -3171,15 +3237,16 @@ void NotesWindow::RelayoutTabChips() {
                           &sz);
     // pin | text | save glyph | close
     const int lead = 30;
+    const int type_w = 16;
     const int save_w = 16;
-    const int close_w = 28;
+    const int close_w = 26;
     const int pad = 8;
-    int w = sz.cx + lead + save_w + close_w + pad;
-    if (w < 136) {
-      w = 136;
+    int w = sz.cx + lead + type_w + save_w + close_w + pad;
+    if (w < 148) {
+      w = 148;
     }
-    if (w > 268) {
-      w = 268;
+    if (w > 280) {
+      w = 280;
     }
     tab_chip_rects_.push_back(RECT{x, y, x + w, y + h});
     x += w + 8;  // clear gap so idle chips read as separate units
@@ -3305,23 +3372,30 @@ void NotesWindow::PaintTabBar(HDC hdc) {
     // Locked tabs (账号库 always; user lock): padlock instead of ×.
     const bool locked = PathIsLocked(path_s);
     const bool vault_locked = IsVaultAccountsNotePath(path_s);
-    // Save glyph sits left of × / lock (market: dirty disc / saved check).
-    const int save_cx = chip.right - 38;
-    // Active tab only — path compare broke after title→filename rename
-    // (status said 已修改 while glyph stayed on the saved check).
+    // Layout on right side (from right to left):
+    // [close/lock ×: right-24..right-6] [save glyph: right-34] [cloud/doc glyph: right-50]
+    const int save_cx = chip.right - 34;
+    const int type_cx = chip.right - 50;
     const bool tab_dirty = on && dirty_;
 
     std::wstring label = TabLabel(path_s);
-    if (PathLooksCloudNotes(path_s) && label.rfind(L"☁ ", 0) != 0) {
-      label = L"☁ " + label;
+    if (label.rfind(L"☁ ", 0) == 0) {
+      label = label.substr(2);
     }
-    RECT text_rc{text_left, chip.top, save_cx - 6, chip.bottom};
+    RECT text_rc{text_left, chip.top, chip.right - 60, chip.bottom};
     DrawTextW(hdc, label.c_str(), -1, &text_rc,
               DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
 
+    const float cy_mid = (static_cast<float>(chip.top + chip.bottom)) * 0.5f;
+    const bool is_cloud = IsOnlineNotePath(path_s) || PathLooksCloudNotes(path_s) || PathIsCloudSynced(path_s);
+    if (is_cloud) {
+      DrawTabCloudGlyph(g, static_cast<float>(type_cx), cy_mid, on);
+    } else {
+      DrawTabDocumentGlyph(g, static_cast<float>(type_cx), cy_mid, on);
+    }
+
     DrawTabSaveGlyph(
-        g, static_cast<float>(save_cx),
-        (static_cast<float>(chip.top + chip.bottom)) * 0.5f, tab_dirty);
+        g, static_cast<float>(save_cx), cy_mid, tab_dirty);
 
     if (locked) {
       // Padlock: vault cannot unlock; user-locked → click unlocks.

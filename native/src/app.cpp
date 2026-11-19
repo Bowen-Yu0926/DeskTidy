@@ -1553,6 +1553,12 @@ bool App::Init(HINSTANCE instance) {
     }
   });
   public_host_.SetOnOpenSettings([this]() { OpenSettings(); });
+  public_host_.SetOnNewFence([this](POINT pt) {
+    RECT rc{pt.x, pt.y, pt.x + 280, pt.y + 360};
+    AddFenceAtRect(rc);
+  });
+  public_host_.SetOnOrganize([this]() { OrganizeVirtual(true); });
+  public_host_.SetOnNotes([this]() { OpenNotes(); });
   public_host_.SetOnRefresh([this]() {
     InvalidateDesktopScanCache();
     RefreshDesktopIcons();

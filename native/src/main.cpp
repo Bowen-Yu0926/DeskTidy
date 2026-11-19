@@ -280,8 +280,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR cmd_line, int) {
       LogShutdown();
       return 0;
     }
-    MessageBoxW(nullptr, L"DeskTidy Native 已在运行。", L"DeskTidy Native",
-                MB_OK | MB_ICONINFORMATION);
+    if (effective_action.empty() || effective_action == L"--focus") {
+      MessageBoxW(nullptr, L"DeskTidy Native 已在运行。", L"DeskTidy Native",
+                  MB_OK | MB_ICONINFORMATION);
+    }
     LogLineA("[boot] instance lock held by another process, exiting");
     LogShutdown();
     return 0;
