@@ -51,6 +51,7 @@ constexpr int kExtPublicAlignGrid = 3;
 constexpr int kExtPublicZoomIn = 4;
 constexpr int kExtPublicZoomOut = 5;
 constexpr int kExtPublicZoomReset = 6;
+constexpr int kExtPublicSettings = 7;
 constexpr int kDragThreshold = 6;
 bool g_reg = false;
 ULONG_PTR g_gdiplus = 0;
@@ -1201,6 +1202,7 @@ void PublicHost::ShowBackgroundMenu(POINT screen) {
     return;
   }
   const std::vector<ShellMenuExtra> extras{
+      {L"选项 (设置)", kExtPublicSettings},
       {L"刷新", kExtPublicRefresh},
       {L"对齐图标到网格", kExtPublicAlignGrid},
       {L"放大图标", kExtPublicZoomIn},
@@ -1283,7 +1285,9 @@ void PublicHost::ShowBackgroundMenu(POINT screen) {
     TrackFallbackDesktopMenu(hwnd_, screen, desk);
     return;
   }
-  if (rc == kExtPublicRefresh && on_refresh_) {
+  if (rc == kExtPublicSettings && on_open_settings_) {
+    on_open_settings_();
+  } else if (rc == kExtPublicRefresh && on_refresh_) {
     on_refresh_();
   } else if (rc == kExtPublicAlignGrid) {
     AlignIconsToGrid();

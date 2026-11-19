@@ -23,6 +23,7 @@ struct ChildVerb {
 // Python parity verbs: new-fence / refresh-fences / show-window. The extra
 // C++ verbs below (organize/notes/search/shot/todos/peek) are native-only.
 constexpr ChildVerb kChildren[] = {
+    {L"settings", L"选项 (设置)", L"--settings"},
     {L"new_fence", L"新建分区", L"--new-fence"},
     {L"refresh_fences", L"刷新所有分区", L"--refresh-fences"},
     {L"show_window", L"显示主窗口", L"--show-window"},
@@ -123,14 +124,15 @@ bool RegisterNativeShellVerbs() {
     return false;
   }
   const wchar_t* label = L"DeskTidy";
+  // Empty default value: setting a non-empty string as (Default) turns the key
+  // into an actionable leaf item and breaks cascading subcommands from expanding.
+  const wchar_t empty[] = L"";
   RegSetValueExW(hk, nullptr, 0, REG_SZ,
-                 reinterpret_cast<const BYTE*>(label),
-                 static_cast<DWORD>((wcslen(label) + 1) * sizeof(wchar_t)));
+                 reinterpret_cast<const BYTE*>(empty), sizeof(wchar_t));
   RegSetValueExW(hk, L"MUIVerb", 0, REG_SZ,
                  reinterpret_cast<const BYTE*>(label),
                  static_cast<DWORD>((wcslen(label) + 1) * sizeof(wchar_t)));
   // Empty SubCommands → nested shell\\* children (cascade menu).
-  const wchar_t empty[] = L"";
   RegSetValueExW(hk, L"SubCommands", 0, REG_SZ,
                  reinterpret_cast<const BYTE*>(empty), sizeof(wchar_t));
   const wchar_t pos[] = L"Top";

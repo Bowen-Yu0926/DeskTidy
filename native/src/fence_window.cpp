@@ -107,6 +107,7 @@ constexpr int kExtFenceFilter = 22;
 // Sort direction (Explorer's ascending/descending toggle). Manual has none.
 constexpr int kExtFenceSortAsc = 23;
 constexpr int kExtFenceSortDesc = 24;
+constexpr int kExtFenceSettings = 25;
 constexpr int kExtFenceOpaFollow = 30;
 constexpr int kExtFenceOpa40 = 31;
 constexpr int kExtFenceOpa55 = 32;
@@ -5596,6 +5597,7 @@ void FenceWindow::ShowFenceMenu(POINT screen) {
     return ex;
   };
   std::vector<ShellMenuExtra> extras{
+      leaf(L"选项 (设置)", kExtFenceSettings),
       leaf(Tr("fence_rename"), kExtFenceRename),
       leaf_en(collapsed_ ? Tr("fence_expand") : Tr("fence_collapse"),
               kExtFenceCollapse, false, !position_locked_),
@@ -5841,6 +5843,10 @@ if (!position_locked_) {
                rc < kExtFencePageBase + static_cast<int>(page_names_.size()) &&
                rc < kExtFencePageBase + 12) {
       TogglePageMembership(rc - kExtFencePageBase);
+    } else if (rc == kExtFenceSettings) {
+      if (on_open_settings_) {
+        on_open_settings_();
+      }
     } else if (rc >= kExtFenceStyleBase &&
                rc < kExtFenceStyleBase + static_cast<int>(all_styles.size())) {
       SetStyleId(all_styles[static_cast<size_t>(rc - kExtFenceStyleBase)]->id);
@@ -5852,6 +5858,7 @@ if (!position_locked_) {
   }
   // Hosted menu unavailable — fall back to the hand-rolled fence menu.
   HMENU menu = CreatePopupMenu();
+  AppendMenuW(menu, MF_STRING, 17, L"选项 (设置)");
   AppendMenuW(menu, MF_STRING, 10, Tr("fence_rename").c_str());
   AppendMenuW(menu, MF_STRING, 11,
               collapsed_ ? Tr("fence_expand").c_str()
@@ -5945,7 +5952,11 @@ if (!position_locked_) {
     RevertStylePreview();
     return;
   }
-  if (cmd == 10) {
+  if (cmd == 17) {
+    if (on_open_settings_) {
+      on_open_settings_();
+    }
+  } else if (cmd == 10) {
     BeginTitleInlineRename();
   } else if (cmd == 11) {
     ToggleCollapsed();

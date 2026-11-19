@@ -975,6 +975,7 @@ void App::WireFence(FenceWindow* fence) {
       [this](FenceWindow*, const std::vector<std::wstring>& paths, bool add) {
         SetWhitelistForPaths(paths, add);
       });
+  fence->SetOnOpenSettings([this]() { OpenSettings(); });
   fence->SetOnOpenNotes(
       [this](FenceWindow*, const std::vector<std::wstring>& paths) {
         OpenPathsInNotes(paths);
@@ -1046,6 +1047,8 @@ bool App::Init(HINSTANCE instance) {
   SetWindowLongPtrW(message_hwnd_, GWLP_USERDATA,
                     reinterpret_cast<LONG_PTR>(this));
   // Cut-ghost dimming tracks Explorer Preferred DropEffect changes.
+  ChangeWindowMessageFilter(WM_COPYDATA, 1);
+  ChangeWindowMessageFilter(kCliActionMsg, 1);
   AddClipboardFormatListener(message_hwnd_);
   WTSRegisterSessionNotification(message_hwnd_, NOTIFY_FOR_THIS_SESSION);
   // P1-12: drive the floating drop hint from the OLE drag loop.
@@ -1549,6 +1552,7 @@ bool App::Init(HINSTANCE instance) {
       }
     }
   });
+  public_host_.SetOnOpenSettings([this]() { OpenSettings(); });
   public_host_.SetOnRefresh([this]() {
     InvalidateDesktopScanCache();
     RefreshDesktopIcons();
@@ -3029,7 +3033,7 @@ void App::DispatchSettingsCommand(const std::wstring& id) {
 }
 
 void App::HandleCliAction(const std::wstring& action) {
-  if (action == L"--settings") {
+  if (action == L"--settings" || action == L"--options") {
     OpenSettings();
   } else if (action == L"--refresh-fences") {
     RefreshDesktopIcons();
@@ -3083,6 +3087,7 @@ void App::HandleCliAction(const std::wstring& action) {
   } else if (action == L"--show-window") {
     // Show/activate fences + main chrome without opening settings.
     RestoreDesktopChrome();
+    OpenSettings();
   } else if (action == L"--quit-silent") {
     PostQuitMessage(0);
   } else if (action == L"--quit") {

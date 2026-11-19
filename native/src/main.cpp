@@ -59,7 +59,7 @@ std::wstring FindCliAction(LPWSTR cmd) {
     return {};
   }
   const wchar_t* keys[] = {
-      L"--settings",        L"--refresh-fences", L"--refresh",
+      L"--settings",        L"--options",        L"--refresh-fences", L"--refresh",
       L"--organize",        L"--notes",          L"--notepad",
       L"--desknote",        L"--desk-note",      L"--search",
       L"--shot",            L"--todos",          L"--peek",
@@ -71,6 +71,9 @@ std::wstring FindCliAction(LPWSTR cmd) {
       if (wcscmp(k, L"--notepad") == 0 || wcscmp(k, L"--desknote") == 0 ||
           wcscmp(k, L"--desk-note") == 0) {
         return L"--notes";
+      }
+      if (wcscmp(k, L"--options") == 0) {
+        return L"--settings";
       }
       return k;
     }

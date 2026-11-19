@@ -140,6 +140,7 @@ class FenceWindow {
   void SetOnOpenNotes(OpenNotesFn fn) { on_open_notes_ = std::move(fn); }
   void SetOnDissolve(DissolveFn fn) { on_dissolve_ = std::move(fn); }
   void SetOnRefresh(RefreshFn fn) { on_refresh_ = std::move(fn); }
+  void SetOnOpenSettings(std::function<void()> fn) { on_open_settings_ = std::move(fn); }
   // Fences / Explorer: clicking this fence clears selection elsewhere.
   void SetOnActivated(MovedFn fn) { on_activated_ = std::move(fn); }
   void SetOnReorder(ReorderFn fn) { on_reorder_ = std::move(fn); }
@@ -536,6 +537,7 @@ class FenceWindow {
   OpenNotesFn on_open_notes_;
   DissolveFn on_dissolve_;
   RefreshFn on_refresh_;
+  std::function<void()> on_open_settings_;
   UndoFn on_undo_;
   MovedFn on_activated_;
   ReorderFn on_reorder_;
