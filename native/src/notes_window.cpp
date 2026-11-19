@@ -1762,6 +1762,9 @@ void NotesWindow::RefreshTitle() {
   }
   title += TabLabel(path_);
   title += L" — DeskNote";
+  if (IsCurrentProcessElevated()) {
+    title += L" [管理员]";
+  }
   if (IsDevRuntime()) {
     title += L" [dev]";
   }
@@ -1809,7 +1812,9 @@ NotesWindow::~NotesWindow() {
 
 void NotesWindow::Destroy() {
   if (hwnd_) {
-    Save(true);
+    if (!in_elevated_save_) {
+      Save(true);
+    }
     PersistTabs();
     PersistViewSettings();
     KillTimer(hwnd_, kStatusTimer);
@@ -4987,6 +4992,18 @@ void NotesWindow::Load() {
 
 bool NotesWindow::OfferElevatedSave(const std::wstring& path,
                                     const std::wstring& text) {
+  if (in_elevated_save_) {
+    return true;
+  }
+  if (IsCurrentProcessElevated()) {
+    MistAlert(hwnd_, L"保存",
+              (L"当前已处于管理员权限，但仍无法写入文件：\n" + path +
+               L"\n\n请检查文件是否被其它程序独占或安全软件拦截。")
+                  .c_str(),
+              MistMsgTone::Warn);
+    return true;
+  }
+  in_elevated_save_ = true;
   if (!MistConfirm(
           hwnd_, L"保存",
           (L"「" + path +
@@ -4995,16 +5012,21 @@ bool NotesWindow::OfferElevatedSave(const std::wstring& path,
            L"（将弹出 UAC 确认框，重启后自动保存该文件）")
               .c_str(),
           MistMsgTone::Warn)) {
-    return false;
+    in_elevated_save_ = false;
+    return true;
   }
   if (!WriteElevatedPending(path, text)) {
+    in_elevated_save_ = false;
     MistAlert(hwnd_, L"笔记", L"无法准备提权保存的暂存内容。",
               MistMsgTone::Warn);
-    return false;
+    return true;
   }
+  PersistTabs();
+  PersistViewSettings();
   ReleaseDeskNoteInstanceLock();
   if (!RelaunchDeskNoteElevated(path)) {
     ClearElevatedPending();
+    in_elevated_save_ = false;
     if (!AcquireDeskNoteInstanceLock()) {
       LogLine(L"[elevated] mutex reacquire failed; exiting");
       dirty_ = false;
@@ -5013,16 +5035,20 @@ bool NotesWindow::OfferElevatedSave(const std::wstring& path,
       } else {
         Destroy();
       }
-      return false;
+      return true;
     }
     MistAlert(hwnd_, L"保存",
               L"已取消提权保存（UAC 未确认）。\n"
               L"可尝试以管理员身份运行 DeskNote 后重试。",
               MistMsgTone::Warn);
-    return false;
+    return true;
   }
   dirty_ = false;
+  if (hwnd_) {
+    ShowWindow(hwnd_, SW_HIDE);
+  }
   if (quit_on_close_) {
+    DestroyWindow(hwnd_);
     PostQuitMessage(0);
   } else {
     Destroy();
@@ -5077,6 +5103,9 @@ void NotesWindow::ShowEditMode() {
 }
 
 void NotesWindow::Save(bool authoritative_pull, bool push_cloud) {
+  if (in_elevated_save_) {
+    return;
+  }
   // Arm before Pull/SetWindowText — EN_CHANGE + Toast posts during Save must
   // not keep the tab disc after a successful write (Typora / VS Code).
   ignore_dirty_until_ = GetTickCount64() + 600;
@@ -8605,6 +8634,11 @@ bool NotesWindow::ConfirmSaveCurrent() {
 }
 
 bool NotesWindow::ConfirmCloseAll() {
+  if (in_elevated_save_) {
+    PersistTabs();
+    PersistViewSettings();
+    return true;
+  }
   // Notepad++ style: close always autosaves (no discard prompt).
   if (!path_.empty()) {
     Save(true);

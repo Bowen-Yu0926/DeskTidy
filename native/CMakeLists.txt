@@ -35,6 +35,7 @@ add_executable(desktidy_native WIN32
   src/dock_window.cpp
   src/pet_window.cpp
   src/desknote_launch.cpp
+  src/mist_msg.cpp
   src/page_bar.cpp
   src/desktop_watch.cpp
   src/prompt_text.cpp
@@ -99,6 +100,7 @@ add_executable(desktidy_native WIN32
 add_executable(deskNote WIN32
   src/desknote_main.cpp
   src/desknote_launch.cpp
+  src/mist_msg.cpp
   src/elevated_save.cpp
   src/file_assoc.cpp
   src/notes_window.cpp
@@ -377,3 +379,16 @@ add_executable(test_json_unescape
 target_include_directories(test_json_unescape PRIVATE src)
 target_compile_definitions(test_json_unescape PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
 target_link_libraries(test_json_unescape PRIVATE user32 shell32 ole32 advapi32)
+
+add_executable(test_elevated_write
+  tests/test_elevated_write.cpp
+  src/elevated_save.cpp
+  src/paths_util.cpp
+  src/log.cpp
+)
+target_include_directories(test_elevated_write PRIVATE src)
+target_compile_definitions(test_elevated_write PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+target_link_libraries(test_elevated_write PRIVATE user32 shell32 ole32 advapi32)
+if(MSVC)
+  target_compile_options(test_elevated_write PRIVATE /W4 /permissive- /utf-8)
+endif()

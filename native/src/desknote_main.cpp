@@ -162,7 +162,26 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     PurgeOrphanElevatedPending();
   }
 
-  if (!AcquireDeskNoteInstanceLock()) {
+  // When relaunched with --elevated-save, the predecessor un-elevated process
+  // is in the middle of exiting and releasing the mutex. Retry briefly before giving up.
+  bool lock_acquired = false;
+  const int max_retries = elev_save ? 40 : 1;
+  for (int i = 0; i < max_retries; ++i) {
+    if (AcquireDeskNoteInstanceLock()) {
+      lock_acquired = true;
+      break;
+    }
+    Sleep(50);
+  }
+
+  if (!lock_acquired) {
+    if (elev_save) {
+      LogLine(L"[elevated] lock reacquire timed out; notify predecessor instance");
+      std::wstring action = L"--open\n" + cmd.elev_save_target;
+      ForwardToDeskNote(action);
+      LogShutdown();
+      return 0;
+    }
     std::wstring action = L"--focus";
     if (!cmd.paths.empty()) {
       action = L"--open";
@@ -170,10 +189,6 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
         action.push_back(L'\n');
         action += p;
       }
-    } else if (elev_save) {
-      action = L"--open";
-      action.push_back(L'\n');
-      action += cmd.elev_save_target;
     }
     ForwardToDeskNote(action);
     LogShutdown();

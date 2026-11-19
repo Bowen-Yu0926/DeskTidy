@@ -186,10 +186,75 @@ bool ReadPendingFile(std::string* json) {
   return !json->empty();
 }
 
+// In-place direct write fallback for system-protected paths (like hosts)
+// or read-only files where MoveFileExW(REPLACE_EXISTING) is blocked by security filter drivers.
+bool DirectWriteFileBytes(const std::wstring& path, const void* data, size_t size) {
+  DWORD orig_attrs = GetFileAttributesW(path.c_str());
+  bool was_readonly = false;
+  if (orig_attrs != INVALID_FILE_ATTRIBUTES && (orig_attrs & FILE_ATTRIBUTE_READONLY)) {
+    SetFileAttributesW(path.c_str(), orig_attrs & ~FILE_ATTRIBUTE_READONLY);
+    was_readonly = true;
+  }
+
+  HANDLE h = CreateFileW(path.c_str(), GENERIC_READ | GENERIC_WRITE,
+                         FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+                         FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH,
+                         nullptr);
+  if (h == INVALID_HANDLE_VALUE && GetLastError() == ERROR_FILE_NOT_FOUND) {
+    h = CreateFileW(path.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr,
+                    CREATE_ALWAYS,
+                    FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH,
+                    nullptr);
+  }
+
+  if (h == INVALID_HANDLE_VALUE) {
+    g_last_write_err = GetLastError();
+    if (was_readonly) {
+      SetFileAttributesW(path.c_str(), orig_attrs);
+    }
+    return false;
+  }
+
+  SetFilePointer(h, 0, nullptr, FILE_BEGIN);
+  DWORD written = 0;
+  const BOOL ok =
+      WriteFile(h, data, static_cast<DWORD>(size), &written, nullptr);
+  const DWORD write_err = ok ? 0 : GetLastError();
+  if (ok && written == size) {
+    SetEndOfFile(h);
+    FlushFileBuffers(h);
+  }
+  CloseHandle(h);
+
+  if (was_readonly) {
+    SetFileAttributesW(path.c_str(), orig_attrs);
+  }
+
+  if (!ok || written != size) {
+    g_last_write_err = write_err ? write_err : ERROR_WRITE_FAULT;
+    return false;
+  }
+  g_last_write_err = 0;
+  return true;
+}
+
 }  // namespace
 
 std::wstring ElevatedPendingPath() {
   return JoinPath(NativeDataDir(), kPendingName);
+}
+
+bool IsCurrentProcessElevated() {
+  HANDLE token = nullptr;
+  if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) {
+    return false;
+  }
+  TOKEN_ELEVATION elev{};
+  DWORD len = 0;
+  const BOOL ok =
+      GetTokenInformation(token, TokenElevation, &elev, sizeof(elev), &len);
+  CloseHandle(token);
+  return ok && elev.TokenIsElevated != 0;
 }
 
 bool LastWriteWasAccessDenied() {
@@ -202,33 +267,46 @@ bool WriteFileBytes(const std::wstring& path, const void* data, size_t size) {
   g_last_write_err = 0;
   // Write to a unique temp file and replace: CREATE_ALWAYS on the destination
   // truncated the user's note first, so a crash or power loss mid-write left a
-  // partial file with the previous content already gone. This is the single
-  // funnel for every note save.
+  // partial file with the previous content already gone.
   const std::wstring tmp = AtomicTempPathFor(path);
   HANDLE h = CreateFileW(tmp.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
-                         FILE_ATTRIBUTE_NORMAL, nullptr);
-  if (h == INVALID_HANDLE_VALUE) {
+                         FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH,
+                         nullptr);
+  if (h != INVALID_HANDLE_VALUE) {
+    DWORD written = 0;
+    const BOOL ok =
+        WriteFile(h, data, static_cast<DWORD>(size), &written, nullptr);
+    const DWORD err = ok ? 0 : GetLastError();
+    FlushFileBuffers(h);
+    CloseHandle(h);
+    if (ok && written == size) {
+      if (MoveFileExW(tmp.c_str(), path.c_str(),
+                      MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+        g_last_write_err = 0;
+        return true;
+      }
+      g_last_write_err = GetLastError();
+      DeleteFileW(tmp.c_str());
+      // MoveFileEx blocked (e.g. system hosts file or readonly target).
+      // Fallback to in-place direct write.
+      if (DirectWriteFileBytes(path, data, size)) {
+        return true;
+      }
+      return false;
+    } else {
+      g_last_write_err = err ? err : ERROR_WRITE_FAULT;
+      DeleteFileW(tmp.c_str());
+    }
+  } else {
     g_last_write_err = GetLastError();
-    return false;
   }
-  DWORD written = 0;
-  const BOOL ok =
-      WriteFile(h, data, static_cast<DWORD>(size), &written, nullptr);
-  const DWORD err = ok ? 0 : GetLastError();
-  FlushFileBuffers(h);
-  CloseHandle(h);
-  if (!ok || written != size) {
-    g_last_write_err = err ? err : ERROR_WRITE_FAULT;
-    DeleteFileW(tmp.c_str());
-    return false;
+
+  // If temp creation failed (e.g. non-elevated or protected folder), try direct write
+  // which will record genuine target error (e.g. ERROR_ACCESS_DENIED).
+  if (DirectWriteFileBytes(path, data, size)) {
+    return true;
   }
-  if (!MoveFileExW(tmp.c_str(), path.c_str(),
-                   MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
-    g_last_write_err = GetLastError();
-    DeleteFileW(tmp.c_str());
-    return false;
-  }
-  return true;
+  return false;
 }
 
 bool WriteElevatedPending(const std::wstring& target,

@@ -18,8 +18,11 @@ bool ConsumeElevatedPending(const std::wstring& target);
 // ShellExecuteW("runas") deskNote.exe --elevated-save "<target>".
 bool RelaunchDeskNoteElevated(const std::wstring& target);
 
+// True when current process runs with elevated (admin) token.
+bool IsCurrentProcessElevated();
+
 // True when last CreateFile/Write failed with ERROR_ACCESS_DENIED (or share).
 bool LastWriteWasAccessDenied();
 
-// Write raw bytes to path (CREATE_ALWAYS). Sets LastWriteWasAccessDenied on fail.
+// Write raw bytes to path. Sets LastWriteWasAccessDenied on fail.
 bool WriteFileBytes(const std::wstring& path, const void* data, size_t size);

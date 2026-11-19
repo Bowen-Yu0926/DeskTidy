@@ -414,6 +414,7 @@ class NotesWindow {
   bool sidebar_visible_ = true;  // Match Python library_sidebar default.
   bool dirty_ = false;
   bool loading_ = false;
+  bool in_elevated_save_ = false;
   // Swallow Toast dirty/changed for a beat after Save (debounced posts).
   ULONGLONG ignore_dirty_until_ = 0;
   bool title_applying_ = false;  // suppress EN_CHANGE while SetWindowText title
