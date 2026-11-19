@@ -3,7 +3,7 @@
 ; Version: VERSION (+ /DMyAppVersion) — bump via scripts\bump_version.py --bump
 
 #ifndef MyAppVersion
-#define MyAppVersion "4.0.49"
+#define MyAppVersion "4.0.50"
 #endif
 
 #define MyAppName "DeskTidy"
