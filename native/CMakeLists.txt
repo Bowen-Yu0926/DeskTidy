@@ -91,6 +91,7 @@ add_executable(desktidy_native WIN32
   src/pet_lines.cpp
   src/cli_ipc.cpp
   src/file_assoc.cpp
+  src/docx_export.cpp
   src/version.rc
   src/desktidy_icon.rc
   ${ARGON2_SOURCES}
@@ -99,6 +100,7 @@ add_executable(desktidy_native WIN32
 # Standalone DeskNote (sibling of desktidy_native.exe).
 add_executable(deskNote WIN32
   src/desknote_main.cpp
+  src/docx_export.cpp
   src/desknote_launch.cpp
   src/mist_msg.cpp
   src/elevated_save.cpp
@@ -391,4 +393,17 @@ target_compile_definitions(test_elevated_write PRIVATE UNICODE _UNICODE WIN32_LE
 target_link_libraries(test_elevated_write PRIVATE user32 shell32 ole32 advapi32)
 if(MSVC)
   target_compile_options(test_elevated_write PRIVATE /W4 /permissive- /utf-8)
+endif()
+
+add_executable(test_docx_export
+  tests/test_docx_export.cpp
+  src/docx_export.cpp
+  src/paths_util.cpp
+  src/log.cpp
+)
+target_include_directories(test_docx_export PRIVATE src)
+target_compile_definitions(test_docx_export PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+target_link_libraries(test_docx_export PRIVATE user32 shell32 ole32 advapi32 gdiplus oleaut32)
+if(MSVC)
+  target_compile_options(test_docx_export PRIVATE /W4 /permissive- /utf-8)
 endif()

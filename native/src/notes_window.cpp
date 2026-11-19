@@ -5,6 +5,7 @@
 #include "desknote_launch.h"
 #include "desktop_shell.h"
 #include "display_geom.h"
+#include "docx_export.h"
 #include "elevated_save.h"
 #include "i18n.h"
 #include "log.h"
@@ -81,6 +82,7 @@ constexpr int kMenuReplace = 2112;
 constexpr int kMenuSearchLib = 2113;
 constexpr int kMenuExportMd = 2114;
 constexpr int kMenuPandoc = 2115;
+constexpr int kMenuExportWord = 2174;
 constexpr int kMenuOpenWith = 2116;
 constexpr int kMenuPasteHtml = 2117;
 constexpr int kMenuToast = 2118;
@@ -1006,8 +1008,11 @@ bool NotesWindow::Create(HINSTANCE instance) {
   AppendMenuW(file, MF_STRING, kMenuSave, L"保存\tCtrl+S");
   AppendMenuW(file, MF_STRING, kMenuSaveAs, L"另存为…\tCtrl+Shift+S");
   AppendMenuW(file, MF_SEPARATOR, 0, nullptr);
-  AppendMenuW(file, MF_STRING, kMenuExportHtml, Tr("notes_export_html").c_str());
-  AppendMenuW(file, MF_STRING, kMenuPandoc, Tr("notes_pandoc").c_str());
+  AppendMenuW(file, MF_STRING, kMenuExportWord, L"导出为 Word (.docx)…");
+  AppendMenuW(file, MF_STRING, kMenuExportPdf, L"导出为 PDF (.pdf)…");
+  AppendMenuW(file, MF_STRING, kMenuExportHtml, L"导出为 HTML 网页…");
+  AppendMenuW(file, MF_STRING, kMenuExportMd, L"导出为 Markdown (含图片)…");
+  AppendMenuW(file, MF_SEPARATOR, 0, nullptr);
   AppendMenuW(file, MF_STRING, kMenuPasteHtml, Tr("notes_paste_html").c_str());
   AppendMenuW(file, MF_SEPARATOR, 0, nullptr);
   AppendMenuW(file, MF_STRING, kMenuTpl, Tr("notes_template").c_str());
@@ -2277,7 +2282,10 @@ void NotesWindow::SyncMdMenuState() {
   }
   const bool md = PathLooksMarkdown();
   const UINT flag = MF_BYCOMMAND | (md ? MF_ENABLED : MF_GRAYED);
+  EnableMenuItem(menu_, kMenuExportWord, flag);
+  EnableMenuItem(menu_, kMenuExportPdf, flag);
   EnableMenuItem(menu_, kMenuExportHtml, flag);
+  EnableMenuItem(menu_, kMenuExportMd, flag);
   EnableMenuItem(menu_, kMenuPandoc, flag);
   EnableMenuItem(menu_, kMenuEditMode, flag);
 }
@@ -6086,6 +6094,8 @@ bool NotesWindow::ExportNoteWithAssets(const std::wstring& note_path) {
   ofn.lStructSize = sizeof(ofn);
   ofn.hwndOwner = hwnd_;
   ofn.lpstrFilter =
+      L"Word 文档 (*.docx)\0*.docx\0"
+      L"PDF 文档 (*.pdf)\0*.pdf\0"
       L"Markdown 文档 (包含图片资源) (*.md)\0*.md\0"
       L"单文件网页 (含内嵌图片) (*.html)\0*.html\0"
       L"纯文本 (*.txt)\0*.txt\0"
@@ -6093,7 +6103,7 @@ bool NotesWindow::ExportNoteWithAssets(const std::wstring& note_path) {
   ofn.lpstrFile = file_buf;
   ofn.nMaxFile = static_cast<DWORD>(sizeof(file_buf) / sizeof(file_buf[0]));
   ofn.Flags = OFN_OVERWRITEPROMPT | OFN_NOCHANGEDIR;
-  ofn.lpstrDefExt = L"md";
+  ofn.lpstrDefExt = L"docx";
   if (!GetSaveFileNameW(&ofn)) {
     return false;
   }
@@ -6219,12 +6229,70 @@ bool NotesWindow::ExportNoteWithAssets(const std::wstring& note_path) {
     pos = tag_end + 1;
   }
 
+  const bool is_docx = (dst_file.size() >= 5 && _wcsicmp(dst_file.c_str() + dst_file.size() - 5, L".docx") == 0) ||
+                       (dst_file.size() >= 4 && _wcsicmp(dst_file.c_str() + dst_file.size() - 4, L".doc") == 0);
+  const bool is_pdf = (dst_file.size() >= 4 && _wcsicmp(dst_file.c_str() + dst_file.size() - 4, L".pdf") == 0);
   const bool is_html = (dst_file.size() >= 5 && _wcsicmp(dst_file.c_str() + dst_file.size() - 5, L".html") == 0) ||
                        (dst_file.size() >= 4 && _wcsicmp(dst_file.c_str() + dst_file.size() - 4, L".htm") == 0);
 
   int images_copied = 0;
 
-  if (is_html) {
+  if (is_docx) {
+    std::wstring err;
+    if (!ExportMarkdownToDocx(md_text, title, base_dir, dst_file, &err)) {
+      MistAlert(hwnd_, L"导出失败", (L"导出 Word 文档失败：" + (err.empty() ? L"未知错误" : err)).c_str(), MistMsgTone::Danger);
+      return false;
+    }
+    std::wstring tip = L"已成功导出「" + title + L"」为 Word 文档";
+    if (!images.empty()) {
+      tip += L"\n已完整内嵌 " + std::to_wstring(images.size()) + L" 张图片资源";
+    }
+    tip += L"\n\n保存位置：\n" + dst_file;
+    MistAlert(hwnd_, L"导出成功", tip.c_str(), MistMsgTone::Info);
+    ShellExecuteW(nullptr, L"open", dst_file.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+    return true;
+  } else if (is_pdf) {
+    if (!preview_web_.Available()) {
+      preview_web_.SetKind(NotesWebView::Kind::kViewer);
+      preview_web_.SetTheme(L"light");
+      if (!preview_web_.Create(hwnd_)) {
+        MistAlert(hwnd_, L"导出失败", L"无法启动 PDF 导出（WebView2 不可用）。", MistMsgTone::Warn);
+        return false;
+      }
+      RegisterDropOnSubtree(preview_web_.Host());
+    }
+    if (!preview_web_.Ready()) {
+      preview_web_.Show();
+      const DWORD start = GetTickCount();
+      MSG msg{};
+      while (!preview_web_.Ready() && GetTickCount() - start < 5000) {
+        while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
+          TranslateMessage(&msg);
+          DispatchMessageW(&msg);
+        }
+        Sleep(15);
+      }
+    }
+    preview_web_.SetPreview(md_text, base_dir);
+    const DWORD wait_start = GetTickCount();
+    MSG msg{};
+    while (GetTickCount() - wait_start < 450) {
+      while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
+        TranslateMessage(&msg);
+        DispatchMessageW(&msg);
+      }
+      Sleep(15);
+    }
+    std::wstring err;
+    if (!preview_web_.PrintToPdf(dst_file, &err)) {
+      MistAlert(hwnd_, L"导出失败", (L"PDF 导出失败：" + (err.empty() ? L"未知错误" : err)).c_str(), MistMsgTone::Danger);
+      return false;
+    }
+    std::wstring tip = L"已成功导出「" + title + L"」为 PDF 文档\n\n保存位置：\n" + dst_file;
+    MistAlert(hwnd_, L"导出成功", tip.c_str(), MistMsgTone::Info);
+    ShellExecuteW(nullptr, L"open", dst_file.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+    return true;
+  } else if (is_html) {
     std::wstring html_content = MarkdownToHtmlDocument(md_text, title, base_dir);
     for (const auto& im : images) {
       if (!im.exists || im.disk_path.empty()) {
@@ -7080,7 +7148,108 @@ void NotesWindow::TogglePreview() {
   PersistViewSettings();
 }
 
-void NotesWindow::ExportPdf() {
+void NotesWindow::ExportWord(const std::wstring& target_path) {
+  const std::wstring note_path = target_path.empty() ? path_ : target_path;
+  if (note_path.empty()) {
+    return;
+  }
+  std::wstring title = NoteDisplayName(note_path, false);
+  if (title.empty()) title = L"未命名笔记";
+
+  std::wstring safe_name = title;
+  for (auto& ch : safe_name) {
+    if (ch == L'\\' || ch == L'/' || ch == L':' || ch == L'*' || ch == L'?' ||
+        ch == L'"' || ch == L'<' || ch == L'>' || ch == L'|') {
+      ch = L'_';
+    }
+  }
+
+  wchar_t file[MAX_PATH] = {};
+  wcsncpy_s(file, (safe_name + L".docx").c_str(), _TRUNCATE);
+
+  OPENFILENAMEW ofn{};
+  ofn.lStructSize = sizeof(ofn);
+  ofn.hwndOwner = hwnd_;
+  ofn.lpstrFilter = L"Word 文档 (*.docx)\0*.docx\0所有文件 (*.*)\0*.*\0";
+  ofn.lpstrFile = file;
+  ofn.nMaxFile = MAX_PATH;
+  ofn.Flags = OFN_OVERWRITEPROMPT | OFN_NOCHANGEDIR;
+  ofn.lpstrDefExt = L"docx";
+  if (!GetSaveFileNameW(&ofn)) {
+    return;
+  }
+
+  std::wstring md_text;
+  const bool is_current = (!path_.empty() && _wcsicmp(NormalizePathKey(path_).c_str(),
+                                                      NormalizePathKey(note_path).c_str()) == 0);
+  if (is_current) {
+    if (wysiwyg_ && web_.Ready()) {
+      SyncFromWysiwyg();
+    }
+    md_text = CurrentPlainText();
+  } else {
+    if (IsOnlineNotePath(note_path)) {
+      const int id = OnlineNoteIdFromPath(note_path);
+      auto it = online_body_cache_.find(id);
+      if (it != online_body_cache_.end()) {
+        md_text = it->second.body;
+      }
+    } else if (GetFileAttributesW(note_path.c_str()) != INVALID_FILE_ATTRIBUTES) {
+      std::string bytes;
+      if (ReadBinaryFile(note_path, &bytes)) {
+        TextFileEncoding enc = TextFileEncoding::Utf8;
+        DecodeTextFileBytes(bytes, &md_text, &enc);
+      }
+    }
+  }
+
+  std::wstring base_dir = DirOfPath(note_path);
+  if (base_dir.empty() || base_dir == L".") base_dir = NoteBaseDir();
+
+  std::wstring err;
+  if (!ExportMarkdownToDocx(md_text, title, base_dir, file, &err)) {
+    MistAlert(hwnd_, L"导出 Word 失败",
+              (L"导出 Word 文档失败：" + (err.empty() ? L"未知错误" : err)).c_str(),
+              MistMsgTone::Danger);
+    return;
+  }
+
+  MistAlert(hwnd_, L"导出成功", (L"已成功导出 Word 文档：\n" + std::wstring(file)).c_str(),
+            MistMsgTone::Info);
+  ShellExecuteW(nullptr, L"open", file, nullptr, nullptr, SW_SHOWNORMAL);
+}
+
+void NotesWindow::ExportPdf(const std::wstring& target_path) {
+  const std::wstring note_path = target_path.empty() ? path_ : target_path;
+  if (note_path.empty()) {
+    return;
+  }
+  std::wstring title = NoteDisplayName(note_path, false);
+  if (title.empty()) title = L"未命名笔记";
+
+  std::wstring safe_name = title;
+  for (auto& ch : safe_name) {
+    if (ch == L'\\' || ch == L'/' || ch == L':' || ch == L'*' || ch == L'?' ||
+        ch == L'"' || ch == L'<' || ch == L'>' || ch == L'|') {
+      ch = L'_';
+    }
+  }
+
+  wchar_t file[MAX_PATH] = {};
+  wcsncpy_s(file, (safe_name + L".pdf").c_str(), _TRUNCATE);
+
+  OPENFILENAMEW ofn{};
+  ofn.lStructSize = sizeof(ofn);
+  ofn.hwndOwner = hwnd_;
+  ofn.lpstrFilter = L"PDF 文档 (*.pdf)\0*.pdf\0所有文件 (*.*)\0*.*\0";
+  ofn.lpstrFile = file;
+  ofn.nMaxFile = MAX_PATH;
+  ofn.Flags = OFN_OVERWRITEPROMPT | OFN_NOCHANGEDIR;
+  ofn.lpstrDefExt = L"pdf";
+  if (!GetSaveFileNameW(&ofn)) {
+    return;
+  }
+
   if (!preview_web_.Available()) {
     preview_web_.SetKind(NotesWebView::Kind::kViewer);
     preview_web_.SetTheme(L"light");
@@ -7091,18 +7260,7 @@ void NotesWindow::ExportPdf() {
     }
     RegisterDropOnSubtree(preview_web_.Host());
   }
-  wchar_t file[MAX_PATH] = L"note.pdf";
-  OPENFILENAMEW ofn{};
-  ofn.lStructSize = sizeof(ofn);
-  ofn.hwndOwner = hwnd_;
-  ofn.lpstrFilter = L"PDF\0*.pdf\0";
-  ofn.lpstrFile = file;
-  ofn.nMaxFile = MAX_PATH;
-  ofn.Flags = OFN_OVERWRITEPROMPT | OFN_NOCHANGEDIR;
-  ofn.lpstrDefExt = L"pdf";
-  if (!GetSaveFileNameW(&ofn)) {
-    return;
-  }
+
   if (!preview_web_.Ready()) {
     preview_web_.Show();
     const DWORD start = GetTickCount();
@@ -7115,7 +7273,45 @@ void NotesWindow::ExportPdf() {
       Sleep(15);
     }
   }
-  preview_web_.SetPreview(CurrentPlainText(), NoteBaseDir());
+
+  std::wstring md_text;
+  const bool is_current = (!path_.empty() && _wcsicmp(NormalizePathKey(path_).c_str(),
+                                                      NormalizePathKey(note_path).c_str()) == 0);
+  if (is_current) {
+    if (wysiwyg_ && web_.Ready()) {
+      SyncFromWysiwyg();
+    }
+    md_text = CurrentPlainText();
+  } else {
+    if (IsOnlineNotePath(note_path)) {
+      const int id = OnlineNoteIdFromPath(note_path);
+      auto it = online_body_cache_.find(id);
+      if (it != online_body_cache_.end()) {
+        md_text = it->second.body;
+      }
+    } else if (GetFileAttributesW(note_path.c_str()) != INVALID_FILE_ATTRIBUTES) {
+      std::string bytes;
+      if (ReadBinaryFile(note_path, &bytes)) {
+        TextFileEncoding enc = TextFileEncoding::Utf8;
+        DecodeTextFileBytes(bytes, &md_text, &enc);
+      }
+    }
+  }
+
+  std::wstring base_dir = DirOfPath(note_path);
+  if (base_dir.empty() || base_dir == L".") base_dir = NoteBaseDir();
+
+  preview_web_.SetPreview(md_text, base_dir);
+  const DWORD wait_start = GetTickCount();
+  MSG msg{};
+  while (GetTickCount() - wait_start < 450) {
+    while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
+      TranslateMessage(&msg);
+      DispatchMessageW(&msg);
+    }
+    Sleep(15);
+  }
+
   std::wstring err;
   if (!preview_web_.PrintToPdf(file, &err)) {
     MistAlert(hwnd_, L"导出 PDF",
@@ -7123,6 +7319,9 @@ void NotesWindow::ExportPdf() {
               MistMsgTone::Danger);
     return;
   }
+
+  MistAlert(hwnd_, L"导出成功", (L"已成功导出 PDF 文档：\n" + std::wstring(file)).c_str(),
+            MistMsgTone::Info);
   ShellExecuteW(nullptr, L"open", file, nullptr, nullptr, SW_SHOWNORMAL);
 }
 
@@ -11623,7 +11822,8 @@ LRESULT NotesWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
           ExportHtml();
           return 0;
         case kMenuPandoc:
-          ExportWithPandoc();
+        case kMenuExportWord:
+          ExportWord();
           return 0;
         case kMenuOpenWith:
           OpenWithShell();
