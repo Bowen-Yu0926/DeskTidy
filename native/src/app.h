@@ -298,6 +298,10 @@ class App {
   std::vector<std::thread> workers_;
   int band_restore_left_ = 0;
   bool band_restore_force_ = false;
+  ULONGLONG win_d_restore_deadline_ms_ = 0;
+  bool IsWinDRestoring() const {
+    return win_d_restore_deadline_ms_ != 0 && GetTickCount64() < win_d_restore_deadline_ms_;
+  }
   // Start of the current Win+D settle burst; 0 = no burst in flight. Used to
   // bound ExtendBandSettleIfTransitioning so a flapping probe cannot spin.
   ULONGLONG band_settle_started_ms_ = 0;

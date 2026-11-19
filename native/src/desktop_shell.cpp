@@ -504,7 +504,20 @@ bool IsShowDesktopActive() {
   // Only treat desktop FG as show-desktop when no restored non-shell window
   // sits above the DefView host (apps minimized / covered by Win+D).
   if (!IsExplorerDesktopForeground()) {
-    return false;
+    HWND fg = GetForegroundWindow();
+    if (fg && IsWindowAlive(fg)) {
+      DWORD fg_pid = 0;
+      GetWindowThreadProcessId(fg, &fg_pid);
+      if (fg_pid != GetCurrentProcessId() && !IsWindowDwmCloaked(fg) &&
+          !IsIconic(fg)) {
+        wchar_t fg_cls[64] = {};
+        GetClassNameW(fg, fg_cls, 64);
+        if (wcscmp(fg_cls, L"Shell_TrayWnd") != 0 &&
+            wcscmp(fg_cls, L"Shell_SecondaryTrayWnd") != 0) {
+          return false;
+        }
+      }
+    }
   }
   HWND anchor = host.host ? host.host : host.defview;
   if (!anchor || !IsWindowAlive(anchor)) {
@@ -851,6 +864,11 @@ void RaiseOverlayInDesktopBandWith(HWND hwnd, const DesktopBandState& state) {
   HWND insert_after = HWND_BOTTOM;
   if (state.fullscreen_cover) {
     insert_after = host.host ? host.host : HWND_BOTTOM;
+  } else if (state.show_desktop) {
+    // Win+D / Show-Desktop: All apps are minimized. Place overlays at the
+    // top of the standard desktop band so they sit reliably above DefView
+    // and desktop wallpaper, but never topmost (never above Shell_TrayWnd).
+    insert_after = HWND_TOP;
   } else {
     // One rule for the desktop band, regardless of show-desktop state:
     //
@@ -963,8 +981,8 @@ bool IsOverlayAboveDefView(HWND hwnd, const DefViewHost* cached) {
   // the desktop made the health check report success without looking at Z order
   // at all, which is the failure mode that hid buried fences. Callers that must
   // not repair during a switcher gate on QueryDesktopBandState() themselves.
-  for (HWND cur = GetWindow(hwnd, GW_HWNDPREV); cur;
-       cur = GetWindow(cur, GW_HWNDPREV)) {
+  for (HWND cur = GetWindow(hwnd, GW_HWNDNEXT); cur;
+       cur = GetWindow(cur, GW_HWNDNEXT)) {
     if (cur == host.defview || cur == host.host) {
       return true;  // overlay sits in front of DefView
     }

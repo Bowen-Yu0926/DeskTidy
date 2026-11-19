@@ -7741,7 +7741,10 @@ void App::RestoreDesktopChrome() {
   // below. Previously `show_desktop` here was computed with its own cover gate
   // while the reattach loop queried again, so the early-out and the raise could
   // disagree about whether Win+D was active.
-  const DesktopBandState restore_band = QueryDesktopBandState();
+  DesktopBandState restore_band = QueryDesktopBandState();
+  if (IsWinDRestoring()) {
+    restore_band.show_desktop = true;
+  }
   // IsAppsForegroundQuiet() already returns false whenever IsShowDesktopActive()
   // is true, so combining them with && double-negates and reports "not showing"
   // in exactly the case we care about. Trust the band state alone.
@@ -7759,7 +7762,7 @@ void App::RestoreDesktopChrome() {
   // band restores here only burns CPU and thrashes Z-order. This must come
   // before any `settling` logic: a stale force flag or leftover settle tick
   // would otherwise keep re-raising fences under a maximized Chrome window.
-  if (apps_quiet && !show_desktop) {
+  if (apps_quiet && !show_desktop && !IsWinDRestoring()) {
     // A normal app owns the foreground and the desktop is not showing: the
     // fences are supposed to be behind it, so stop re-seating. Do NOT zero
     // band_restore_left_ here — the opening tick of a real show-desktop
@@ -8516,6 +8519,7 @@ LRESULT CALLBACK App::TrayWndProc(HWND hwnd, UINT msg, WPARAM wparam,
       if (wparam) {
         MinimizeFullscreenCover();
         self->band_restore_force_ = true;
+        self->win_d_restore_deadline_ms_ = GetTickCount64() + 1500;
       }
       self->ScheduleDesktopBandRestore();
       return 0;
@@ -8532,9 +8536,9 @@ LRESULT CALLBACK App::TrayWndProc(HWND hwnd, UINT msg, WPARAM wparam,
                           PM_REMOVE)) {
       }
       if (IsExplorerDesktopForeground()) {
-        if (IsShowDesktopActive()) {
+        if (IsShowDesktopActive() || self->IsWinDRestoring()) {
           self->ScheduleDesktopBandRestore();
-        } else {
+        } else if (!self->IsWinDRestoring()) {
           self->SeatAllFencesUnderApps();
         }
       } else {
