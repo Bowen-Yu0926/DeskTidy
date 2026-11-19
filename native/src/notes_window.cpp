@@ -480,6 +480,9 @@ bool PathIsMarkdownFile(const std::wstring& path) {
 }
 
 bool IsOpenablePath(const std::wstring& path) {
+  if (IsOnlineNotePath(path)) {
+    return true;
+  }
   if (IsHostsPath(path)) {
     return true;
   }
@@ -2536,7 +2539,7 @@ void NotesWindow::Hide() {
 }
 
 std::wstring NotesWindow::NormalizePathKey(const std::wstring& path) {
-  if (path.empty()) {
+  if (path.empty() || IsOnlineNotePath(path)) {
     return path;
   }
   // GetFullPathNameW is a syscall, and this runs inside per-item loops (library
@@ -2808,6 +2811,12 @@ std::wstring NotesWindow::NoteDisplayName(const std::wstring& path,
         return L"☁ " + tab_states_[i].title_hint;
       }
       break;
+    }
+    const int id = OnlineNoteIdFromPath(path);
+    for (const auto& it : library_online_cache_) {
+      if (it.id == id && !it.title.empty()) {
+        return L"☁ " + it.title;
+      }
     }
     return L"☁ 在线笔记";
   }
@@ -3576,6 +3585,9 @@ void NotesWindow::LoadTabSession() {
     return std::string::npos;
   };
   auto looks_like_path = [](const std::string& unescaped) {
+    if (unescaped.rfind("online://", 0) == 0) {
+      return true;
+    }
     return unescaped.size() >= 3 &&
            ((unescaped[1] == ':' &&
              (unescaped[2] == '\\' || unescaped[2] == '/')) ||
@@ -8959,8 +8971,10 @@ void NotesWindow::ConvertPathToLocal(const std::wstring& path, int note_id) {
   }
   int id = note_id;
   std::wstring local_path = path;
-  if (IsOnlineNotePath(path)) {
-    id = OnlineNoteIdFromPath(path);
+  if (IsOnlineNotePath(path) || (path.empty() && id > 0)) {
+    if (IsOnlineNotePath(path)) {
+      id = OnlineNoteIdFromPath(path);
+    }
     // Materialize online:// into a library file, then mark unsynced.
     VaultHttpNote n;
     std::wstring body;
@@ -9102,9 +9116,18 @@ void NotesWindow::SyncRefreshFromCloud() {
       links.push_back(L);
     }
   }
+  std::vector<int> online_ids;
+  for (const auto& tp : tab_paths_) {
+    if (IsOnlineNotePath(tp)) {
+      const int oid = OnlineNoteIdFromPath(tp);
+      if (oid > 0 && std::find(online_ids.begin(), online_ids.end(), oid) == online_ids.end()) {
+        online_ids.push_back(oid);
+      }
+    }
+  }
   sync_cloud_busy_ = true;
   // Only hwnd captured (no `this`); result marshalled via WM_APP+86.
-  std::thread([hwnd = hwnd_, links = std::move(links)]() {
+  std::thread([hwnd = hwnd_, links = std::move(links), online_ids = std::move(online_ids)]() {
     auto* res = new SyncCloudResult();
     res->list_ok = VaultHttpListNotes(&res->list);
     if (res->list_ok) {
@@ -9114,6 +9137,21 @@ void NotesWindow::SyncRefreshFromCloud() {
           SyncCloudBody b;
           b.path = L.path;
           b.note_id = L.note_id;
+          b.title = n.title;
+          b.body = n.body.empty()
+                       ? (L"# " + (n.title.empty() ? std::wstring(L"未命名")
+                                                   : n.title) +
+                          L"\n\n")
+                       : n.body;
+          res->bodies.push_back(std::move(b));
+        }
+      }
+      for (int oid : online_ids) {
+        VaultHttpNote n;
+        if (VaultHttpGetNote(oid, &n)) {
+          SyncCloudBody b;
+          b.path = OnlineNotePathFromId(oid);
+          b.note_id = oid;
           b.title = n.title;
           b.body = n.body.empty()
                        ? (L"# " + (n.title.empty() ? std::wstring(L"未命名")
@@ -11636,6 +11674,24 @@ LRESULT NotesWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
       library_online_stale_ = false;
       int updated = 0;
       for (auto& b : res->bodies) {
+        if (IsOnlineNotePath(b.path)) {
+          online_body_cache_[b.note_id] = OnlineBodyCache{b.title, b.body};
+          if (_wcsicmp(path_.c_str(), b.path.c_str()) == 0) {
+            loading_ = true;
+            SetWindowTextW(edit_, b.body.c_str());
+            ApplyNativeTitleFromMarkdown(b.body);
+            loading_ = false;
+            dirty_ = false;
+            SyncCurrentTabTitleHint();
+            UpdateStatusBar();
+            RefreshGutter();
+            if (wysiwyg_) {
+              web_.SetMarkdown(b.body, NoteBaseDir());
+            }
+          }
+          ++updated;
+          continue;
+        }
         // Edited since the fetch started — keep the user's version instead of
         // clobbering it with the cloud copy (impossible in the old blocking
         // flow, which froze the UI for the whole fetch).
@@ -11696,17 +11752,14 @@ LRESULT NotesWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
       return 0;
     }
     case WM_APP + 89: {
-      // Online note body fetched on a worker (see Load()). Apply only if the
-      // tab that asked for it is still the current one.
+      // Online note body fetched on a worker (see Load()).
       std::unique_ptr<VaultHttpNote> n(reinterpret_cast<VaultHttpNote*>(lparam));
-      const int want_id = pending_online_load_id_;
       pending_online_load_id_ = -1;
-      if (!n || want_id <= 0 || !IsOnlineNotePath(path_) ||
-          OnlineNoteIdFromPath(path_) != want_id) {
+      if (!n || n->id <= 0) {
         return 0;
       }
       if (wparam == 0) {
-        if (status_) {
+        if (status_ && IsOnlineNotePath(path_) && OnlineNoteIdFromPath(path_) == n->id) {
           SetWindowTextW(status_, L"云端笔记加载失败，请检查网络或登录状态");
         }
         return 0;
@@ -11716,10 +11769,21 @@ LRESULT NotesWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
       if (!n->title.empty() && wide.rfind(L"# ", 0) != 0) {
         wide = L"# " + n->title + L"\n\n" + wide;
       }
-      online_body_cache_[want_id] = OnlineBodyCache{n->title, wide};
-      // The user may have started typing into the placeholder; never clobber
-      // that with the fetched body.
-      if (dirty_) {
+      online_body_cache_[n->id] = OnlineBodyCache{n->title, wide};
+      if (!IsOnlineNotePath(path_) || OnlineNoteIdFromPath(path_) != n->id) {
+        return 0;
+      }
+      std::wstring cur_plain = CurrentPlainText();
+      bool is_placeholder = LooksLikeEmptyMarkdownSeed(cur_plain) || cur_plain.empty();
+      if (!is_placeholder) {
+        std::wstring trimmed = cur_plain;
+        while (!trimmed.empty() && iswspace(trimmed.back())) trimmed.pop_back();
+        while (!trimmed.empty() && iswspace(trimmed.front())) trimmed.erase(trimmed.begin());
+        if (trimmed == L"#" || trimmed == (L"# " + n->title) || trimmed == (L"#" + n->title)) {
+          is_placeholder = true;
+        }
+      }
+      if (dirty_ && !is_placeholder) {
         return 0;
       }
       text_enc_ = TextFileEncoding::Utf8;
