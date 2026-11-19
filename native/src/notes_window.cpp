@@ -127,6 +127,7 @@ constexpr int kMenuCopyPath = 2158;
 constexpr int kTabCopyPath = 3105;
 constexpr int kTabCloseOthers = 3106;
 constexpr int kTabCloseRight = 3107;
+constexpr int kTabExport = 3108;
 constexpr int kMenuStrike = 2159;
 constexpr int kMenuBullet = 2160;
 constexpr int kMenuQuote = 2161;
@@ -411,6 +412,7 @@ constexpr int kSideRename = 3002;
 constexpr int kSideDelete = 3003;
 constexpr int kSideReveal = 3004;
 constexpr int kSidePin = 3006;
+constexpr int kSideExport = 3007;
 
 // Suffixes the editor can open (mirrors Python notepad.py NOTE_OPEN_SUFFIXES).
 bool IsOpenableSuffix(const std::wstring& lower) {
@@ -795,6 +797,67 @@ std::wstring SaveDataUrlToAssets(const std::wstring& assets_dir,
   const std::wstring leaf =
       slash == std::wstring::npos ? dest : dest.substr(slash + 1);
   return L"assets/" + leaf;
+}
+
+void ReplaceAllW(std::wstring& str, const std::wstring& from, const std::wstring& to) {
+  if (from.empty()) return;
+  size_t start_pos = 0;
+  while ((start_pos = str.find(from, start_pos)) != std::wstring::npos) {
+    str.replace(start_pos, from.length(), to);
+    start_pos += to.length();
+  }
+}
+
+void ReplaceAllA(std::string& str, const std::string& from, const std::string& to) {
+  if (from.empty()) return;
+  size_t start_pos = 0;
+  while ((start_pos = str.find(from, start_pos)) != std::string::npos) {
+    str.replace(start_pos, from.length(), to);
+    start_pos += to.length();
+  }
+}
+
+bool ReadBinaryFile(const std::wstring& path, std::string* out) {
+  if (!out) return false;
+  std::ifstream in(path, std::ios::binary);
+  if (!in) return false;
+  in.seekg(0, std::ios::end);
+  const std::streamoff len = in.tellg();
+  if (len < 0) return false;
+  in.seekg(0, std::ios::beg);
+  out->resize(static_cast<size_t>(len));
+  if (len > 0) in.read(out->data(), len);
+  return true;
+}
+
+std::wstring EncodeBase64(const std::string& bytes) {
+  static const char b64_table[] =
+      "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  std::string res;
+  res.reserve(((bytes.size() + 2) / 3) * 4);
+  for (size_t i = 0; i < bytes.size(); i += 3) {
+    uint32_t b = (static_cast<uint8_t>(bytes[i]) << 16);
+    if (i + 1 < bytes.size()) b |= (static_cast<uint8_t>(bytes[i + 1]) << 8);
+    if (i + 2 < bytes.size()) b |= static_cast<uint8_t>(bytes[i + 2]);
+    res.push_back(b64_table[(b >> 18) & 0x3F]);
+    res.push_back(b64_table[(b >> 12) & 0x3F]);
+    res.push_back((i + 1 < bytes.size()) ? b64_table[(b >> 6) & 0x3F] : '=');
+    res.push_back((i + 2 < bytes.size()) ? b64_table[b & 0x3F] : '=');
+  }
+  return WidenUtf8(res);
+}
+
+std::wstring GetImageMimeType(const std::wstring& filename) {
+  size_t dot = filename.find_last_of(L'.');
+  if (dot == std::wstring::npos) return L"image/png";
+  std::wstring ext = filename.substr(dot);
+  for (auto& c : ext) if (c >= L'A' && c <= L'Z') c = static_cast<wchar_t>(c - L'A' + L'a');
+  if (ext == L".jpg" || ext == L".jpeg") return L"image/jpeg";
+  if (ext == L".gif") return L"image/gif";
+  if (ext == L".webp") return L"image/webp";
+  if (ext == L".svg") return L"image/svg+xml";
+  if (ext == L".bmp") return L"image/bmp";
+  return L"image/png";
 }
 
 // Returns the directory of a file path (or "." for a bare name).
@@ -5714,6 +5777,7 @@ void NotesWindow::HandleTabContextMenu(int index, POINT screen_pt) {
   AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
   if (!vault) {
     AppendMenuW(m, MF_STRING, kTabRename, L"重命名");
+    AppendMenuW(m, MF_STRING, kTabExport, L"导出…");
     AppendMenuW(m, MF_STRING, kTabPin,
                 PathIsPinned(path) ? L"取消置顶" : L"置顶");
     AppendMenuW(m, MF_STRING, kTabLock, locked ? L"解锁" : L"锁定");
@@ -5747,6 +5811,8 @@ void NotesWindow::HandleTabContextMenu(int index, POINT screen_pt) {
     CopyPathToClipboard(copy);
   } else if (cmd == kTabRename) {
     RenameTabAt(index);
+  } else if (cmd == kTabExport) {
+    ExportNoteWithAssets(path);
   } else if (cmd == kTabDelete) {
     DeleteAndCloseTabAt(index, true);
   }
@@ -5850,48 +5916,288 @@ void NotesWindow::PreviewMarkdown() {
   PreviewMarkdownText(hwnd_, CurrentPlainText(), L"便签预览", NoteBaseDir());
 }
 
-void NotesWindow::ExportHtml() {
-  wchar_t file[MAX_PATH] = L"note.html";
-  OPENFILENAMEW ofn{};
-  ofn.lStructSize = sizeof(ofn);
-  ofn.hwndOwner = hwnd_;
-  ofn.lpstrFilter = L"HTML\0*.html\0";
-  ofn.lpstrFile = file;
-  ofn.nMaxFile = MAX_PATH;
-  ofn.Flags = OFN_OVERWRITEPROMPT | OFN_NOCHANGEDIR;
-  ofn.lpstrDefExt = L"html";
-  if (!GetSaveFileNameW(&ofn)) {
-    return;
+bool NotesWindow::ExportNoteWithAssets(const std::wstring& note_path) {
+  if (note_path.empty()) {
+    return false;
   }
-  // P1-21: full markdown body + P1-20 relative images via base_dir.
-  const std::wstring title =
-      path_.empty() ? L"DeskTidy" : TabLabel(path_);
-  const std::wstring html =
-      MarkdownToHtmlDocument(CurrentPlainText(), title, NoteBaseDir());
-  std::ofstream out(file, std::ios::binary);
-  if (!out) {
-    return;
+  std::wstring title = NoteDisplayName(note_path, false);
+  if (title.empty()) {
+    title = L"未命名笔记";
   }
-  out << NarrowUtf8(html);
-}
+  std::wstring base_dir = DirOfPath(note_path);
+  if (base_dir.empty() || base_dir == L".") {
+    base_dir = NoteBaseDir();
+  }
+  if (base_dir.empty()) {
+    base_dir = NotesLibraryDir(true);
+  }
 
-void NotesWindow::ExportMarkdown() {
-  wchar_t file[MAX_PATH] = L"note.md";
+  std::wstring md_text;
+  const bool is_current = (!path_.empty() && _wcsicmp(NormalizePathKey(path_).c_str(),
+                                                      NormalizePathKey(note_path).c_str()) == 0);
+  if (is_current) {
+    if (wysiwyg_ && web_.Ready()) {
+      SyncFromWysiwyg();
+    }
+    md_text = CurrentPlainText();
+  } else {
+    int tidx = -1;
+    for (size_t i = 0; i < tab_paths_.size(); ++i) {
+      if (_wcsicmp(NormalizePathKey(tab_paths_[i]).c_str(),
+                   NormalizePathKey(note_path).c_str()) == 0) {
+        tidx = static_cast<int>(i);
+        break;
+      }
+    }
+    if (IsOnlineNotePath(note_path)) {
+      const int id = OnlineNoteIdFromPath(note_path);
+      auto it = online_body_cache_.find(id);
+      if (it != online_body_cache_.end()) {
+        md_text = it->second.body;
+      }
+    } else if (GetFileAttributesW(note_path.c_str()) != INVALID_FILE_ATTRIBUTES) {
+      std::string bytes;
+      if (ReadBinaryFile(note_path, &bytes)) {
+        TextFileEncoding enc = TextFileEncoding::Utf8;
+        DecodeTextFileBytes(bytes, &md_text, &enc);
+      }
+    }
+
+  }
+
+  std::wstring safe_name = title;
+  for (auto& ch : safe_name) {
+    if (ch == L'\\' || ch == L'/' || ch == L':' || ch == L'*' || ch == L'?' ||
+        ch == L'"' || ch == L'<' || ch == L'>' || ch == L'|') {
+      ch = L'_';
+    }
+  }
+  if (safe_name.empty()) {
+    safe_name = L"未命名笔记";
+  }
+
+  wchar_t file_buf[MAX_PATH * 2] = {};
+  wcsncpy_s(file_buf, (safe_name + L".md").c_str(), _TRUNCATE);
+
   OPENFILENAMEW ofn{};
   ofn.lStructSize = sizeof(ofn);
   ofn.hwndOwner = hwnd_;
-  ofn.lpstrFilter = L"Markdown\0*.md\0";
-  ofn.lpstrFile = file;
-  ofn.nMaxFile = MAX_PATH;
+  ofn.lpstrFilter =
+      L"Markdown 文档 (包含图片资源) (*.md)\0*.md\0"
+      L"单文件网页 (含内嵌图片) (*.html)\0*.html\0"
+      L"纯文本 (*.txt)\0*.txt\0"
+      L"所有文件 (*.*)\0*.*\0";
+  ofn.lpstrFile = file_buf;
+  ofn.nMaxFile = static_cast<DWORD>(sizeof(file_buf) / sizeof(file_buf[0]));
   ofn.Flags = OFN_OVERWRITEPROMPT | OFN_NOCHANGEDIR;
   ofn.lpstrDefExt = L"md";
   if (!GetSaveFileNameW(&ofn)) {
-    return;
+    return false;
   }
-  std::ofstream out(file, std::ios::binary);
-  if (out) {
-    out << NarrowUtf8(CurrentPlainText());
+
+  const std::wstring dst_file = file_buf;
+  const std::wstring dst_dir = DirOfPath(dst_file);
+
+  struct ImgEntry {
+    std::wstring original_src;
+    std::wstring disk_path;
+    std::wstring leaf_name;
+    bool exists = false;
+  };
+  std::vector<ImgEntry> images;
+
+  auto probe_disk_path = [&](const std::wstring& src) -> std::wstring {
+    if (src.empty() || src.rfind(L"http://", 0) == 0 || src.rfind(L"https://", 0) == 0 ||
+        src.rfind(L"data:", 0) == 0 || src[0] == L'#') {
+      return L"";
+    }
+    std::wstring s = src;
+    if (s.rfind(L"file:///", 0) == 0) {
+      s = s.substr(8);
+      for (auto& c : s) if (c == L'/') c = L'\\';
+    }
+    std::wstring norm = s;
+    for (auto& c : norm) if (c == L'/') c = L'\\';
+
+    if (norm.size() >= 2 && norm[1] == L':') {
+      if (GetFileAttributesW(norm.c_str()) != INVALID_FILE_ATTRIBUTES) {
+        return norm;
+      }
+    }
+    std::wstring p1 = JoinPath(base_dir, norm);
+    if (GetFileAttributesW(p1.c_str()) != INVALID_FILE_ATTRIBUTES) {
+      return p1;
+    }
+    size_t sl = norm.find_last_of(L"\\/");
+    std::wstring leaf = (sl == std::wstring::npos) ? norm : norm.substr(sl + 1);
+    std::wstring p2 = JoinPath(JoinPath(base_dir, L"assets"), leaf);
+    if (GetFileAttributesW(p2.c_str()) != INVALID_FILE_ATTRIBUTES) {
+      return p2;
+    }
+    std::wstring p3 = JoinPath(JoinPath(NotesLibraryDir(true), L"assets"), leaf);
+    if (GetFileAttributesW(p3.c_str()) != INVALID_FILE_ATTRIBUTES) {
+      return p3;
+    }
+    return L"";
+  };
+
+  size_t pos = 0;
+  while ((pos = md_text.find(L"![", pos)) != std::wstring::npos) {
+    size_t alt_end = md_text.find(L"]", pos + 2);
+    if (alt_end != std::wstring::npos && alt_end + 1 < md_text.size() && md_text[alt_end + 1] == L'(') {
+      size_t src_end = md_text.find(L")", alt_end + 2);
+      if (src_end != std::wstring::npos) {
+        std::wstring raw_src = md_text.substr(alt_end + 2, src_end - (alt_end + 2));
+        size_t sp = raw_src.find(L' ');
+        if (sp != std::wstring::npos) {
+          raw_src = raw_src.substr(0, sp);
+        }
+        while (!raw_src.empty() && (raw_src.front() == L' ' || raw_src.front() == L'<' || raw_src.front() == L'"')) {
+          raw_src.erase(raw_src.begin());
+        }
+        while (!raw_src.empty() && (raw_src.back() == L' ' || raw_src.back() == L'>' || raw_src.back() == L'"')) {
+          raw_src.pop_back();
+        }
+        if (!raw_src.empty()) {
+          bool already = false;
+          for (const auto& im : images) {
+            if (im.original_src == raw_src) { already = true; break; }
+          }
+          if (!already) {
+            ImgEntry e;
+            e.original_src = raw_src;
+            e.disk_path = probe_disk_path(raw_src);
+            if (!e.disk_path.empty()) {
+              e.exists = true;
+              size_t sl = e.disk_path.find_last_of(L"\\/");
+              e.leaf_name = (sl == std::wstring::npos) ? e.disk_path : e.disk_path.substr(sl + 1);
+            }
+            images.push_back(e);
+          }
+        }
+        pos = src_end + 1;
+        continue;
+      }
+    }
+    pos += 2;
   }
+
+  pos = 0;
+  while ((pos = md_text.find(L"<img", pos)) != std::wstring::npos) {
+    size_t tag_end = md_text.find(L">", pos + 4);
+    if (tag_end == std::wstring::npos) break;
+    size_t src_pos = md_text.find(L"src=", pos);
+    if (src_pos != std::wstring::npos && src_pos < tag_end) {
+      wchar_t q = md_text[src_pos + 4];
+      if (q == L'"' || q == L'\'') {
+        size_t val_end = md_text.find(q, src_pos + 5);
+        if (val_end != std::wstring::npos && val_end < tag_end) {
+          std::wstring raw_src = md_text.substr(src_pos + 5, val_end - (src_pos + 5));
+          if (!raw_src.empty()) {
+            bool already = false;
+            for (const auto& im : images) {
+              if (im.original_src == raw_src) { already = true; break; }
+            }
+            if (!already) {
+              ImgEntry e;
+              e.original_src = raw_src;
+              e.disk_path = probe_disk_path(raw_src);
+              if (!e.disk_path.empty()) {
+                e.exists = true;
+                size_t sl = e.disk_path.find_last_of(L"\\/");
+                e.leaf_name = (sl == std::wstring::npos) ? e.disk_path : e.disk_path.substr(sl + 1);
+              }
+              images.push_back(e);
+            }
+          }
+        }
+      }
+    }
+    pos = tag_end + 1;
+  }
+
+  const bool is_html = (dst_file.size() >= 5 && _wcsicmp(dst_file.c_str() + dst_file.size() - 5, L".html") == 0) ||
+                       (dst_file.size() >= 4 && _wcsicmp(dst_file.c_str() + dst_file.size() - 4, L".htm") == 0);
+
+  int images_copied = 0;
+
+  if (is_html) {
+    std::wstring html_content = MarkdownToHtmlDocument(md_text, title, base_dir);
+    for (const auto& im : images) {
+      if (!im.exists || im.disk_path.empty()) {
+        continue;
+      }
+      std::string bytes;
+      if (ReadBinaryFile(im.disk_path, &bytes) && !bytes.empty()) {
+        std::wstring b64 = EncodeBase64(bytes);
+        std::wstring mime = GetImageMimeType(im.leaf_name);
+        std::wstring data_uri = L"data:" + mime + L";base64," + b64;
+
+        std::string raw_u8 = NarrowUtf8(im.original_src);
+        std::string data_u8 = NarrowUtf8(data_uri);
+        std::string html_u8 = NarrowUtf8(html_content);
+        std::string file_uri = ResolveImageSrc(raw_u8, base_dir);
+
+        ReplaceAllA(html_u8, file_uri, data_u8);
+        ReplaceAllA(html_u8, raw_u8, data_u8);
+
+        html_content = WidenUtf8(html_u8);
+        images_copied++;
+      }
+    }
+
+    std::ofstream out(dst_file, std::ios::binary);
+    if (!out) {
+      MistAlert(hwnd_, L"导出失败", (L"无法写入文件：" + dst_file).c_str(), MistMsgTone::Danger);
+      return false;
+    }
+    out << NarrowUtf8(html_content);
+  } else {
+    std::wstring target_assets_dir = JoinPath(dst_dir, L"assets");
+    if (!images.empty()) {
+      CreateDirectoryW(target_assets_dir.c_str(), nullptr);
+    }
+
+    std::wstring final_md = md_text;
+    for (const auto& im : images) {
+      if (!im.exists || im.disk_path.empty()) {
+        continue;
+      }
+      std::wstring target_img = JoinPath(target_assets_dir, im.leaf_name);
+      if (_wcsicmp(NormalizePathKey(im.disk_path).c_str(), NormalizePathKey(target_img).c_str()) != 0) {
+        CopyFileW(im.disk_path.c_str(), target_img.c_str(), FALSE);
+      }
+      images_copied++;
+
+      std::wstring norm_ref = L"assets/" + im.leaf_name;
+      if (im.original_src != norm_ref) {
+        ReplaceAllW(final_md, im.original_src, norm_ref);
+      }
+    }
+
+    std::ofstream out(dst_file, std::ios::binary);
+    if (!out) {
+      MistAlert(hwnd_, L"导出失败", (L"无法写入文件：" + dst_file).c_str(), MistMsgTone::Danger);
+      return false;
+    }
+    out << NarrowUtf8(final_md);
+  }
+
+  std::wstring tip = L"已成功导出「" + title + L"」";
+  if (images_copied > 0) {
+    tip += L"\n已完整打包 " + std::to_wstring(images_copied) + L" 张图片资源";
+  }
+  tip += L"\n\n保存位置：\n" + dst_file;
+  MistAlert(hwnd_, L"导出成功", tip.c_str(), MistMsgTone::Info);
+  return true;
+}
+
+void NotesWindow::ExportHtml() {
+  ExportNoteWithAssets(path_);
+}
+
+void NotesWindow::ExportMarkdown() {
+  ExportNoteWithAssets(path_);
 }
 
 void NotesWindow::ExportWithPandoc() {
@@ -10241,6 +10547,9 @@ void NotesWindow::HandleSidebarContextMenu(const POINT& pt) {
   AppendMenuW(m, MF_STRING | (is_file && !multi && !vault_locked ? MF_ENABLED
                                                                 : MF_GRAYED),
               kSideRename, L"重命名\tF2");
+  if (is_file && !multi) {
+    AppendMenuW(m, MF_STRING, kSideExport, L"导出…");
+  }
   // 锁定/账号库不出现「删除」；多选里若还有可删项则保留入口。
   if (is_file && any_deletable) {
     std::wstring del_label = L"删除\tDelete";
@@ -10261,6 +10570,8 @@ void NotesWindow::HandleSidebarContextMenu(const POINT& pt) {
     ToggleLockPath(path);
   } else if (cmd == kSideRename) {
     RenameSidebarSelected();
+  } else if (cmd == kSideExport) {
+    ExportNoteWithAssets(path);
   } else if (cmd == kSideDelete) {
     DeleteSidebarSelected();
   } else if (cmd == kSideReveal) {

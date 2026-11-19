@@ -63,32 +63,7 @@ std::string PathToFileUri(const std::wstring& abs_path) {
   return uri;
 }
 
-std::string ResolveImageSrc(const std::string& src,
-                            const std::wstring& base_dir) {
-  if (src.empty() || src.rfind("http://", 0) == 0 ||
-      src.rfind("https://", 0) == 0 || src.rfind("data:", 0) == 0 ||
-      src.rfind("file:", 0) == 0 || src[0] == '#') {
-    return src;
-  }
-  if (base_dir.empty()) {
-    return src;
-  }
-  std::wstring rel = WidenUtf8(src);
-  for (wchar_t& c : rel) {
-    if (c == L'/') {
-      c = L'\\';
-    }
-  }
-  const std::wstring full = JoinPath(base_dir, rel);
-  wchar_t canon[MAX_PATH * 4] = {};
-  const DWORD n =
-      GetFullPathNameW(full.c_str(), static_cast<DWORD>(MAX_PATH * 4), canon,
-                       nullptr);
-  if (n == 0 || n >= MAX_PATH * 4) {
-    return src;
-  }
-  return PathToFileUri(canon);
-}
+
 
 std::string InlineFormat(const std::string& line,
                          const std::wstring& base_dir) {
@@ -283,6 +258,33 @@ std::string ConvertMarkdown(const std::string& md,
 }
 
 }  // namespace
+
+std::string ResolveImageSrc(const std::string& src,
+                            const std::wstring& base_dir) {
+  if (src.empty() || src.rfind("http://", 0) == 0 ||
+      src.rfind("https://", 0) == 0 || src.rfind("data:", 0) == 0 ||
+      src.rfind("file:", 0) == 0 || src[0] == '#') {
+    return src;
+  }
+  if (base_dir.empty()) {
+    return src;
+  }
+  std::wstring rel = WidenUtf8(src);
+  for (wchar_t& c : rel) {
+    if (c == L'/') {
+      c = L'\\';
+    }
+  }
+  const std::wstring full = JoinPath(base_dir, rel);
+  wchar_t canon[MAX_PATH * 4] = {};
+  const DWORD n =
+      GetFullPathNameW(full.c_str(), static_cast<DWORD>(MAX_PATH * 4), canon,
+                       nullptr);
+  if (n == 0 || n >= MAX_PATH * 4) {
+    return src;
+  }
+  return PathToFileUri(canon);
+}
 
 std::wstring MarkdownToHtmlDocument(const std::wstring& md,
                                     const std::wstring& title,

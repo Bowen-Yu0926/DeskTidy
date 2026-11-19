@@ -20,3 +20,5 @@ bool PreviewMarkdownText(HWND owner, const std::wstring& md,
 // Handles headings/lists/links/tables/bold/italic/code/images; falls back to
 // plain text by stripping remaining tags.
 std::wstring HtmlToMarkdown(const std::wstring& html);
+
+std::string ResolveImageSrc(const std::string& src, const std::wstring& base_dir);

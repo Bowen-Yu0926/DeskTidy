@@ -122,6 +122,7 @@ class NotesWindow {
   void ExportMarkdown();
   void ExportHtml();
   void ExportPdf();
+  bool ExportNoteWithAssets(const std::wstring& target_path);
   void FindAgain(bool down);
   void ToggleOutline();
   void RebuildOutline();
