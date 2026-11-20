@@ -2129,8 +2129,7 @@ void App::DispatchHotkey(const std::string& id) {
   } else if (id == "screenshot" || id == "shot") {
     StartRegionCapture();
   } else if (id == "show_screenshot" || id == "fullscreen") {
-    // F2 /「显示贴图」: fill the desktop pin stack up to screenshot_max_pins
-    // from newest recent shots (settings「同时贴图最多 N 张」).
+    PruneClosedPins();
     int max_pins = prefs_.screenshot_max_pins;
     if (max_pins < 1) {
       max_pins = 1;
@@ -2138,35 +2137,47 @@ void App::DispatchHotkey(const std::string& id) {
     if (max_pins > 8) {
       max_pins = 8;
     }
-    // New clipboard image (external copy) can occupy one slot first.
-    PinClipboardImage();
-    int added = 0;
-    for (const auto& path : recent_shots_) {
-      if (static_cast<int>(pins_img_.size()) >= max_pins) {
-        break;
-      }
-      if (path.empty() || IsPathPinned(path)) {
-        continue;
-      }
-      const size_t before = pins_img_.size();
-      PinImage(path);
-      if (pins_img_.size() > before) {
-        ++added;
-      }
-    }
-    if (pins_img_.empty()) {
-      ShowToast(L"剪贴板中无图片，请先截图或复制图片 (F2贴图)");
-      return;
-    }
-    for (auto& p : pins_img_) {
-      if (p) {
-        p->Show();
+
+    // 1. 若剪贴板有全新的图片内容（来自外部复制），优先贴出剪贴板图片
+    bool pinned_one = PinClipboardImage();
+
+    // 2. 若剪贴板无新图，则在历史截图 recent_shots_ 中查找第一张尚未贴出的截图（从最新到较旧）
+    if (!pinned_one) {
+      for (const auto& path : recent_shots_) {
+        if (path.empty() || IsPathPinned(path)) {
+          continue;
+        }
+        if (GetFileAttributesW(path.c_str()) != INVALID_FILE_ATTRIBUTES) {
+          PinImage(path);
+          pinned_one = true;
+          break;  // 关键：单次仅贴出一张，依序贴出下一张历史截图
+        }
       }
     }
-    if (added > 0) {
-      ShowToast(L"已贴图 " + std::to_wstring(static_cast<int>(pins_img_.size())) +
-                L"/" + std::to_wstring(max_pins) + L" 张");
+
+    // 3. 若所有历史截图均已贴出或无可用截图
+    if (!pinned_one) {
+      if (pins_img_.empty()) {
+        ShowToast(L"剪贴板中无图片，请先截图或复制图片 (F2贴图)");
+        return;
+      } else {
+        // 桌面已有贴图且历史截图均已在屏幕上：置顶聚焦当前所有贴图并提示
+        for (auto& p : pins_img_) {
+          if (p) {
+            p->Show();
+          }
+        }
+        ShowToast(L"所有截图均已贴出 (" +
+                  std::to_wstring(static_cast<int>(pins_img_.size())) + L"/" +
+                  std::to_wstring(max_pins) + L" 张)");
+        return;
+      }
     }
+
+    // 贴出成功：PinImage() 内部已将新贴图 Show() 置顶并激活，无需重复抢焦
+    ShowToast(L"已贴图 " +
+              std::to_wstring(static_cast<int>(pins_img_.size())) + L"/" +
+              std::to_wstring(max_pins) + L" 张");
   } else if (id == "screen_record" || id == "record") {
     if (!prefs_.record_enabled && !IsScreenRecording()) {
       ShowToast(L"录屏未启用 — 请在设置 → 扩展功能中打开");
@@ -2568,11 +2579,44 @@ void App::PinImage(const std::wstring& path) {
     pins_img_.erase(pins_img_.begin());
   }
   auto img = std::make_unique<PinnedImage>();
-  if (!img->Create(instance_, path)) {
+  if (!img->Create(instance_, path, message_hwnd_)) {
     return;
   }
   img->Show();
   pins_img_.push_back(std::move(img));
+}
+
+void App::CleanStalePinFiles() {
+  const std::wstring dir = JoinPath(NativeDataDir(), L"pins");
+  WIN32_FIND_DATAW fd{};
+  HANDLE hFind = FindFirstFileW(JoinPath(dir, L"clip_pin_*.png").c_str(), &fd);
+  if (hFind == INVALID_HANDLE_VALUE) return;
+
+  struct FileItem {
+    std::wstring path;
+    FILETIME ft;
+  };
+  std::vector<FileItem> files;
+  do {
+    if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
+      files.push_back({JoinPath(dir, fd.cFileName), fd.ftLastWriteTime});
+    }
+  } while (FindNextFileW(hFind, &fd));
+  FindClose(hFind);
+
+  // 超过 20 个临时文件时，保留最新 20 个，其余未贴出的删除
+  if (files.size() > 20) {
+    std::sort(files.begin(), files.end(),
+              [](const FileItem& a, const FileItem& b) {
+                return CompareFileTime(&a.ft, &b.ft) < 0;  // 旧的在前
+              });
+    const size_t to_remove = files.size() - 20;
+    for (size_t i = 0; i < to_remove; ++i) {
+      if (!IsPathPinned(files[i].path)) {
+        DeleteFileW(files[i].path.c_str());
+      }
+    }
+  }
 }
 
 bool App::PinClipboardImage() {
@@ -2654,6 +2698,7 @@ bool App::PinClipboardImage() {
   }
 
   if (clip_bmp) {
+    CleanStalePinFiles();
     const std::wstring dir = JoinPath(NativeDataDir(), L"pins");
     CreateDirectoryW(dir.c_str(), nullptr);
     const ULONGLONG tick = GetTickCount64();
@@ -8560,6 +8605,9 @@ LRESULT CALLBACK App::TrayWndProc(HWND hwnd, UINT msg, WPARAM wparam,
     }
     case kMsgRevealPublic:
       self->RevealPublicFloatsNow();
+      return 0;
+    case kMsgPrunePins:
+      self->PruneClosedPins();
       return 0;
     case kMsgShellNotify: {
       // SHCNRF_NewDelivery: lock, then debounce a single membership refresh.

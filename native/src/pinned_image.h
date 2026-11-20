@@ -4,13 +4,15 @@
 
 #include <string>
 
+constexpr UINT kMsgPrunePins = WM_APP + 62;
+
 class PinnedImage {
  public:
   PinnedImage();
   ~PinnedImage();
 
-  bool Create(HINSTANCE instance, const std::wstring& path);
-  bool CreateFromHBitmap(HINSTANCE instance, HBITMAP hbmp, const std::wstring& cache_path = L"");
+  bool Create(HINSTANCE instance, const std::wstring& path, HWND owner = nullptr);
+  bool CreateFromHBitmap(HINSTANCE instance, HBITMAP hbmp, const std::wstring& cache_path = L"", HWND owner = nullptr);
   void Destroy();
   void Show();
   HWND Hwnd() const { return hwnd_; }
@@ -26,9 +28,12 @@ class PinnedImage {
   void CopyToClipboard();
   void Zoom(float factor, POINT anchor_screen);
   void ResetZoom();
+  int GetCloseBtnSize(int* out_margin = nullptr) const;
   bool InCloseButton(POINT client) const;
+  void FreeDoubleBuffer();
 
   HWND hwnd_ = nullptr;
+  HWND owner_ = nullptr;
   HBITMAP bmp_ = nullptr;
   HBITMAP scaled_bmp_ = nullptr;
   int cache_w_ = 0;
@@ -41,4 +46,10 @@ class PinnedImage {
   bool dragging_ = false;
   POINT drag_offset_{};
   bool close_hover_ = false;
+
+  HDC mem_dc_ = nullptr;
+  HBITMAP mem_bmp_ = nullptr;
+  HGDIOBJ old_mem_bmp_ = nullptr;
+  int mem_w_ = 0;
+  int mem_h_ = 0;
 };

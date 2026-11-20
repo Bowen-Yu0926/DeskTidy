@@ -17,7 +17,6 @@
 
 namespace {
 constexpr wchar_t kClass[] = L"DeskTidyNativePinImg";
-constexpr int kCloseSize = 24;
 bool g_reg = false;
 
 void EnsureGdiplus() {
@@ -70,10 +69,12 @@ PinnedImage::~PinnedImage() {
   Destroy();
 }
 
-bool PinnedImage::Create(HINSTANCE instance, const std::wstring& path) {
+bool PinnedImage::Create(HINSTANCE instance, const std::wstring& path,
+                         HWND owner) {
   Destroy();
   RegisterPinClass(instance);
   path_ = path;
+  owner_ = owner;
 
   EnsureGdiplus();
   Gdiplus::Bitmap src(path.c_str());
@@ -128,10 +129,12 @@ bool PinnedImage::Create(HINSTANCE instance, const std::wstring& path) {
 }
 
 bool PinnedImage::CreateFromHBitmap(HINSTANCE instance, HBITMAP hbmp,
-                                     const std::wstring& cache_path) {
+                                     const std::wstring& cache_path,
+                                     HWND owner) {
   Destroy();
   RegisterPinClass(instance);
   path_ = cache_path;
+  owner_ = owner;
 
   if (!hbmp) return false;
   BITMAP bm{};
@@ -176,11 +179,30 @@ bool PinnedImage::CreateFromHBitmap(HINSTANCE instance, HBITMAP hbmp,
   return true;
 }
 
+void PinnedImage::FreeDoubleBuffer() {
+  if (mem_dc_) {
+    if (old_mem_bmp_) {
+      SelectObject(mem_dc_, old_mem_bmp_);
+      old_mem_bmp_ = nullptr;
+    }
+    DeleteDC(mem_dc_);
+    mem_dc_ = nullptr;
+  }
+  if (mem_bmp_) {
+    DeleteObject(mem_bmp_);
+    mem_bmp_ = nullptr;
+  }
+  mem_w_ = 0;
+  mem_h_ = 0;
+}
+
 void PinnedImage::Destroy() {
   if (hwnd_) {
-    DestroyWindow(hwnd_);
+    HWND h = hwnd_;
     hwnd_ = nullptr;
+    DestroyWindow(h);
   }
+  FreeDoubleBuffer();
   if (scaled_bmp_) {
     DeleteObject(scaled_bmp_);
     scaled_bmp_ = nullptr;
@@ -190,6 +212,9 @@ void PinnedImage::Destroy() {
   if (bmp_) {
     DeleteObject(bmp_);
     bmp_ = nullptr;
+  }
+  if (owner_ && IsWindow(owner_)) {
+    PostMessageW(owner_, kMsgPrunePins, 0, 0);
   }
 }
 
@@ -240,6 +265,9 @@ void PinnedImage::Zoom(float factor, POINT anchor_screen) {
 
 void PinnedImage::ResetZoom() {
   if (!hwnd_ || orig_w_ <= 0 || orig_h_ <= 0) return;
+  if (zoom_ <= 0.0001f) {
+    zoom_ = 1.0f;
+  }
   RECT rc{};
   GetWindowRect(hwnd_, &rc);
   POINT center{rc.left + (rc.right - rc.left) / 2, rc.top + (rc.bottom - rc.top) / 2};
@@ -462,11 +490,34 @@ LRESULT PinnedImage::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
     }
     case WM_DESTROY:
       hwnd_ = nullptr;
+      if (owner_ && IsWindow(owner_)) {
+        PostMessageW(owner_, kMsgPrunePins, 0, 0);
+      }
       return 0;
     default:
       break;
   }
   return DefWindowProcW(hwnd_, msg, wparam, lparam);
+}
+
+int PinnedImage::GetCloseBtnSize(int* out_margin) const {
+  UINT dpi = 96;
+  if (hwnd_) {
+    HMODULE user32 = GetModuleHandleW(L"user32.dll");
+    if (user32) {
+      using GetDpiForWindowFn = UINT(WINAPI*)(HWND);
+      auto fn = reinterpret_cast<GetDpiForWindowFn>(
+          GetProcAddress(user32, "GetDpiForWindow"));
+      if (fn) {
+        dpi = fn(hwnd_);
+      }
+    }
+  }
+  if (dpi == 0) dpi = 96;
+  if (out_margin) {
+    *out_margin = MulDiv(4, static_cast<int>(dpi), 96);
+  }
+  return MulDiv(24, static_cast<int>(dpi), 96);
 }
 
 void PinnedImage::Paint(HDC hdc) {
@@ -499,20 +550,26 @@ void PinnedImage::Paint(HDC hdc) {
     cache_h_ = h;
   }
 
-  HDC mem_dc = CreateCompatibleDC(hdc);
-  HBITMAP mem_bmp = CreateCompatibleBitmap(hdc, w, h);
-  HGDIOBJ old_bmp = SelectObject(mem_dc, mem_bmp);
+  // 复用双缓冲 DC 和位图，避免重绘或鼠标滑动关闭按钮时反复申请/销毁 GDI 资源
+  if (!mem_dc_ || !mem_bmp_ || mem_w_ != w || mem_h_ != h) {
+    FreeDoubleBuffer();
+    mem_dc_ = CreateCompatibleDC(hdc);
+    mem_bmp_ = CreateCompatibleBitmap(hdc, w, h);
+    old_mem_bmp_ = SelectObject(mem_dc_, mem_bmp_);
+    mem_w_ = w;
+    mem_h_ = h;
+  }
 
   if (scaled_bmp_) {
     HDC src_dc = CreateCompatibleDC(hdc);
     HGDIOBJ old_src = SelectObject(src_dc, scaled_bmp_);
-    BitBlt(mem_dc, 0, 0, w, h, src_dc, 0, 0, SRCCOPY);
+    BitBlt(mem_dc_, 0, 0, w, h, src_dc, 0, 0, SRCCOPY);
     SelectObject(src_dc, old_src);
     DeleteDC(src_dc);
   }
 
   {
-    Gdiplus::Graphics g(mem_dc);
+    Gdiplus::Graphics g(mem_dc_);
     g.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
 
     // 精致微光边框：内圈半透明白，外圈微阴影
@@ -521,30 +578,30 @@ void PinnedImage::Paint(HDC hdc) {
     Gdiplus::Pen inner_pen(Gdiplus::Color(80, 255, 255, 255), 1.0f);
     g.DrawRectangle(&inner_pen, 1, 1, w - 3, h - 3);
 
-    // 右上角现代悬浮毛玻璃关闭按钮
-    const float btn_w = static_cast<float>(kCloseSize);
-    const float btn_h = static_cast<float>(kCloseSize);
-    const float bx = static_cast<float>(w - kCloseSize - 4);
-    const float by = 4.0f;
+    // 右上角现代悬浮毛玻璃关闭按钮（根据 DPI 动态缩放）
+    int margin = 4;
+    const int btn_sz = GetCloseBtnSize(&margin);
+    const float btn_w = static_cast<float>(btn_sz);
+    const float btn_h = static_cast<float>(btn_sz);
+    const float bx = static_cast<float>(w - btn_sz - margin);
+    const float by = static_cast<float>(margin);
 
     Gdiplus::SolidBrush btn_bg(close_hover_
         ? Gdiplus::Color(220, 239, 68, 68)     // hover 鲜艳红
         : Gdiplus::Color(140, 15, 23, 42));    // 平时半透明深色磨砂
     g.FillEllipse(&btn_bg, bx, by, btn_w, btn_h);
 
-    Gdiplus::Pen cross_pen(Gdiplus::Color(240, 255, 255, 255), 1.6f);
+    const float pen_thick = (std::max)(1.4f, btn_w * 0.07f);
+    Gdiplus::Pen cross_pen(Gdiplus::Color(240, 255, 255, 255), pen_thick);
     cross_pen.SetLineCap(Gdiplus::LineCapRound, Gdiplus::LineCapRound, Gdiplus::DashCapRound);
     const float cx = bx + btn_w * 0.5f;
     const float cy = by + btn_h * 0.5f;
-    const float s = 4.5f;
+    const float s = btn_w * 0.20f;
     g.DrawLine(&cross_pen, cx - s, cy - s, cx + s, cy + s);
     g.DrawLine(&cross_pen, cx + s, cy - s, cx - s, cy + s);
   }
 
-  BitBlt(hdc, 0, 0, w, h, mem_dc, 0, 0, SRCCOPY);
-  SelectObject(mem_dc, old_bmp);
-  DeleteObject(mem_bmp);
-  DeleteDC(mem_dc);
+  BitBlt(hdc, 0, 0, w, h, mem_dc_, 0, 0, SRCCOPY);
 }
 
 bool PinnedImage::InCloseButton(POINT client) const {
@@ -552,8 +609,10 @@ bool PinnedImage::InCloseButton(POINT client) const {
   RECT rc{};
   GetClientRect(hwnd_, &rc);
   const int w = rc.right - rc.left;
-  const int bx = w - kCloseSize - 4;
-  const int by = 4;
-  return client.x >= bx && client.x <= bx + kCloseSize &&
-         client.y >= by && client.y <= by + kCloseSize;
+  int margin = 4;
+  const int btn_sz = GetCloseBtnSize(&margin);
+  const int bx = w - btn_sz - margin;
+  const int by = margin;
+  return client.x >= bx && client.x <= bx + btn_sz &&
+         client.y >= by && client.y <= by + btn_sz;
 }

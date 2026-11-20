@@ -162,6 +162,7 @@ class App {
   void DispatchSettingsCommand(const std::wstring& id);
   void PinImage(const std::wstring& path);
   bool PinClipboardImage();
+  void CleanStalePinFiles();
   // True when an open pin already shows this file (case-insensitive).
   bool IsPathPinned(const std::wstring& path) const;
   // Drop pins whose window has closed (their objects stay in pins_img_).
