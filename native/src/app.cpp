@@ -8548,7 +8548,13 @@ LRESULT CALLBACK App::TrayWndProc(HWND hwnd, UINT msg, WPARAM wparam,
           self->SeatAllFencesUnderApps();
         }
       } else {
+        // Switching back from Win+D to a normal application window:
+        // Clear Win+D restore deadline immediately so a pending burst
+        // cannot keep lifting fences above the application!
+        self->win_d_restore_deadline_ms_ = 0;
+        self->band_restore_force_ = false;
         self->HideOffPageFences();
+        self->SeatAllFencesUnderApps();
       }
       return 0;
     }

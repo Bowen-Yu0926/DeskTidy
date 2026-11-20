@@ -531,9 +531,12 @@ bool NotesWebView::Create(HWND parent) {
                         ComPtr<ICoreWebView2_3> web3;
                         if (SUCCEEDED(web->QueryInterface(IID_PPV_ARGS(&web3))) &&
                             web3) {
-                          const std::wstring html = kind_ == Kind::kViewer
-                                                        ? FindViewerHtml()
-                                                        : FindWysiwygHtml();
+                          const std::wstring html =
+                              kind_ == Kind::kViewer
+                                  ? FindViewerHtml()
+                                  : (kind_ == Kind::kLibrary
+                                         ? FindLibraryHtml()
+                                         : FindWysiwygHtml());
                           const std::wstring folder = ParentDir(html);
                           if (!folder.empty()) {
                             web3->SetVirtualHostNameToFolderMapping(

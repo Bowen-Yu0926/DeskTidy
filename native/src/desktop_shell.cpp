@@ -864,11 +864,6 @@ void RaiseOverlayInDesktopBandWith(HWND hwnd, const DesktopBandState& state) {
   HWND insert_after = HWND_BOTTOM;
   if (state.fullscreen_cover) {
     insert_after = host.host ? host.host : HWND_BOTTOM;
-  } else if (state.show_desktop) {
-    // Win+D / Show-Desktop: All apps are minimized. Place overlays at the
-    // top of the standard desktop band so they sit reliably above DefView
-    // and desktop wallpaper, but never topmost (never above Shell_TrayWnd).
-    insert_after = HWND_TOP;
   } else {
     // One rule for the desktop band, regardless of show-desktop state:
     //
@@ -900,8 +895,10 @@ void RaiseOverlayInDesktopBandWith(HWND hwnd, const DesktopBandState& state) {
     // host's front neighbour: the window that sits directly above the desktop.
     //
     // When nothing is above the host (apps minimised by Win+D), that neighbour
-    // is null and the overlay belongs at the top of the normal band — above the
-    // desktop, below the WS_EX_TOPMOST taskbar. HWND_TOP is correct there.
+    // is null. Overlays belong directly above the desktop host (Progman/WorkerW),
+    // NEVER global HWND_TOP — elevating to HWND_TOP puts the overlays above all
+    // normal application windows, so switching back from Win+D to an app leaves
+    // fences covering the app!
     HWND host_top = host.host ? host.host : (host.defview ? host.defview : nullptr);
     HWND above_host = host_top ? GetWindow(host_top, GW_HWNDPREV) : nullptr;
     // Skip shell UI that covers the screen (Task View / Alt+Tab switcher,
@@ -921,7 +918,7 @@ void RaiseOverlayInDesktopBandWith(HWND hwnd, const DesktopBandState& state) {
       }
       break;
     }
-    insert_after = above_host ? above_host : HWND_TOP;
+    insert_after = above_host ? above_host : (host_top ? host_top : HWND_BOTTOM);
     // Deliberately NO "foreground app wins" override here.
     //
     // The overlay lives in the desktop band; a normal app window is above that

@@ -339,6 +339,7 @@ class NotesWindow {
   // attempts + backoff) must never freeze typing on the UI thread.
   void EnsureLibraryListFetch();
   void UpdateLibraryRailActiveOnly();
+  void DismissLibraryMenu();
   void HandleLibraryRailAction(const std::wstring& json);
   // JSON queued from library WebView; run off WebMessageReceived (Mist freezes).
   std::wstring pending_library_action_json_;

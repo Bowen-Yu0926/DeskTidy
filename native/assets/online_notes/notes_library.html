@@ -42,7 +42,7 @@
     position: relative;
     background: linear-gradient(90deg, #dbeafe 0 4px, var(--card) 4px);
     border: 1px solid #bfdbfe; border-radius: 10px;
-    padding: 10px 32px 10px 12px; margin-bottom: 8px; cursor: pointer;
+    padding: 10px 58px 10px 12px; margin-bottom: 8px; cursor: pointer;
     box-shadow: var(--shadow-sm);
   }
   .row.local {
@@ -62,15 +62,16 @@
     background: linear-gradient(90deg, #2F6FED 0 4px, var(--accent-soft) 4px);
   }
   .row-title {
-    display: flex; align-items: center; gap: 5px;
+    display: flex; align-items: center;
     font-weight: 600; min-width: 0;
   }
   .row-title-text {
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
   .cloud-icon {
+    position: absolute; top: 9px; right: 30px;
     flex-shrink: 0; display: inline-flex; align-items: center; justify-content: center;
-    width: 18px; height: 18px; padding: 0; border: 0; border-radius: 4px;
+    width: 20px; height: 20px; padding: 0; border: 0; border-radius: 4px;
     background: transparent; color: var(--accent); cursor: pointer;
     transition: color 0.15s ease, background 0.15s ease, opacity 0.15s ease;
   }
@@ -97,6 +98,10 @@
     cursor: pointer; letter-spacing: 1px;
   }
   .more:hover { background: rgba(15, 23, 42, 0.06); color: var(--text); }
+  #menu-backdrop {
+    display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+    z-index: 18; background: transparent;
+  }
   #menu {
     display: none; position: fixed; z-index: 20; min-width: 148px;
     background: #fff; border: 1px solid var(--border); border-radius: 8px;
@@ -109,8 +114,11 @@
   #menu button:hover { background: var(--accent-soft); }
   #menu button.danger { color: #b91c1c; }
   #menu button.danger:hover { background: #fef2f2; }
-  #menu .sep {
-    height: 1px; margin: 4px 6px; background: var(--border);
+  #menu .menu-title {
+    padding: 6px 10px 2px; font-size: 11px; font-weight: 700; color: var(--muted);
+  }
+  #menu .menu-sub {
+    padding-left: 18px; font-size: 12px;
   }
 </style>
 </head>
@@ -118,6 +126,7 @@
 <div id="wrap">
   <div id="list"><div id="empty">（笔记库为空）</div></div>
 </div>
+<div id="menu-backdrop"></div>
 <div id="menu"></div>
 <script>
   const state = {
@@ -156,11 +165,18 @@
   }
   function hideMenu() {
     const m = document.getElementById('menu');
-    m.style.display = 'none';
-    m.innerHTML = '';
+    const backdrop = document.getElementById('menu-backdrop');
+    if (m) {
+      m.style.display = 'none';
+      m.innerHTML = '';
+    }
+    if (backdrop) {
+      backdrop.style.display = 'none';
+    }
     menuCtx = null;
     menuOpen = false;
   }
+  window.hideMenu = hideMenu;
   function showMenuAt(x, y, it, kind) {
     const m = document.getElementById('menu');
     menuCtx = { it, kind };
@@ -175,6 +191,12 @@
     }
     if (hasPath) {
       if (html) html += '<div class="sep"></div>';
+      html += '<div class="menu-title">导出为</div>';
+      html += '<button type="button" class="menu-sub" data-act="export_docx">Word 文档 (*.docx)</button>';
+      html += '<button type="button" class="menu-sub" data-act="export_pdf">PDF 文档 (*.pdf)</button>';
+      html += '<button type="button" class="menu-sub" data-act="export_md">Markdown (*.md 含图片)</button>';
+      html += '<button type="button" class="menu-sub" data-act="export_html">单文件网页 (*.html)</button>';
+      html += '<div class="sep"></div>';
       html += '<button type="button" data-act="pin">' +
         (pinned ? '取消置顶' : '置顶') + '</button>';
       html += '<button type="button" data-act="lock">' +
@@ -189,6 +211,10 @@
     if (!html) {
       hideMenu();
       return;
+    }
+    const backdrop = document.getElementById('menu-backdrop');
+    if (backdrop) {
+      backdrop.style.display = 'block';
     }
     m.innerHTML = html;
     m.style.display = 'block';
@@ -242,8 +268,9 @@
     const cloudTip = cloud ? '已云同步（点击转本地）' : '本地文件（点击转云同步）';
     const cloudBadge = '<button type="button" class="cloud-icon" title="' + cloudTip + '">' + CLOUD_SVG + '</button>';
     return '<div class="' + cls + on + '" ' + data + '>'
+      + cloudBadge
       + more
-      + '<div class="row-title"><span class="row-title-text">' + esc(it.title || '未命名') + '</span>' + cloudBadge + '</div>'
+      + '<div class="row-title"><span class="row-title-text">' + esc(it.title || '未命名') + '</span></div>'
       + '<div class="row-meta">' + esc(meta) + '</div></div>';
   }
   function bindRow(el) {
@@ -331,7 +358,28 @@
     }
     box.querySelectorAll('.row').forEach(bindRow);
   }
+  const backdrop = document.getElementById('menu-backdrop');
+  if (backdrop) {
+    backdrop.addEventListener('pointerdown', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      hideMenu();
+    }, true);
+    backdrop.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      hideMenu();
+    }, true);
+  }
+  document.addEventListener('pointerdown', (e) => {
+    if (menuOpen && !e.target.closest('#menu')) {
+      hideMenu();
+    }
+  }, true);
   document.addEventListener('click', () => {
+    if (menuOpen) hideMenu();
+  });
+  window.addEventListener('blur', () => {
     if (menuOpen) hideMenu();
   });
   document.addEventListener('contextmenu', (e) => {

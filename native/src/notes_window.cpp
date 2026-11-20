@@ -4030,6 +4030,7 @@ void NotesWindow::SwitchToTab(int index, bool save_current) {
   }
   tab_index_ = index;
   path_ = incoming;
+  DismissLibraryMenu();
   HealRetargetPath(&path_);
   if (tabs_) {
     InvalidateRect(tabs_, nullptr, FALSE);
@@ -6210,6 +6211,13 @@ bool NotesWindow::ExportNoteWithAssets(const std::wstring& note_path,
       ch = L'_';
     }
   }
+  if (safe_name.size() >= 3 && _wcsicmp(safe_name.c_str() + safe_name.size() - 3, L".md") == 0) {
+    safe_name.resize(safe_name.size() - 3);
+  } else if (safe_name.size() >= 9 && _wcsicmp(safe_name.c_str() + safe_name.size() - 9, L".markdown") == 0) {
+    safe_name.resize(safe_name.size() - 9);
+  } else if (safe_name.size() >= 4 && _wcsicmp(safe_name.c_str() + safe_name.size() - 4, L".txt") == 0) {
+    safe_name.resize(safe_name.size() - 4);
+  }
   if (safe_name.empty()) {
     safe_name = L"未命名笔记";
   }
@@ -6971,6 +6979,7 @@ void NotesWindow::FocusActiveEditor(bool force) {
   }
   const bool want_wysiwyg =
       wysiwyg_ && web_.Available() && PathLooksMarkdown() && !toast_;
+  DismissLibraryMenu();
   if (want_wysiwyg && web_.ContentReady()) {
     web_.FocusEditor();
   } else if (edit_ && IsWindow(edit_) && IsWindowVisible(edit_)) {
@@ -7309,6 +7318,16 @@ void NotesWindow::ExportWord(const std::wstring& target_path) {
       ch = L'_';
     }
   }
+  if (safe_name.size() >= 3 && _wcsicmp(safe_name.c_str() + safe_name.size() - 3, L".md") == 0) {
+    safe_name.resize(safe_name.size() - 3);
+  } else if (safe_name.size() >= 9 && _wcsicmp(safe_name.c_str() + safe_name.size() - 9, L".markdown") == 0) {
+    safe_name.resize(safe_name.size() - 9);
+  } else if (safe_name.size() >= 4 && _wcsicmp(safe_name.c_str() + safe_name.size() - 4, L".txt") == 0) {
+    safe_name.resize(safe_name.size() - 4);
+  }
+  if (safe_name.empty()) {
+    safe_name = L"未命名笔记";
+  }
 
   wchar_t file[MAX_PATH] = {};
   wcsncpy_s(file, (safe_name + L".docx").c_str(), _TRUNCATE);
@@ -7379,6 +7398,16 @@ void NotesWindow::ExportPdf(const std::wstring& target_path) {
         ch == L'"' || ch == L'<' || ch == L'>' || ch == L'|') {
       ch = L'_';
     }
+  }
+  if (safe_name.size() >= 3 && _wcsicmp(safe_name.c_str() + safe_name.size() - 3, L".md") == 0) {
+    safe_name.resize(safe_name.size() - 3);
+  } else if (safe_name.size() >= 9 && _wcsicmp(safe_name.c_str() + safe_name.size() - 9, L".markdown") == 0) {
+    safe_name.resize(safe_name.size() - 9);
+  } else if (safe_name.size() >= 4 && _wcsicmp(safe_name.c_str() + safe_name.size() - 4, L".txt") == 0) {
+    safe_name.resize(safe_name.size() - 4);
+  }
+  if (safe_name.empty()) {
+    safe_name = L"未命名笔记";
   }
 
   wchar_t file[MAX_PATH] = {};
@@ -9264,6 +9293,13 @@ void NotesWindow::UpdateLibraryRailActiveOnly() {
   library_web_.EvalScript(script);
 }
 
+void NotesWindow::DismissLibraryMenu() {
+  if (library_web_.Host() && library_web_.Ready()) {
+    library_web_.EvalScript(
+        L"if(typeof window.hideMenu==='function')window.hideMenu();");
+  }
+}
+
 void NotesWindow::EnsureLibraryListFetch() {
   if (library_list_busy_) {
     library_list_refresh_pending_ = true;
@@ -9641,6 +9677,34 @@ void NotesWindow::HandleLibraryRailAction(const std::wstring& json) {
     const std::wstring path = LibJsonString(json, L"path");
     if (!path.empty()) {
       RevealPathInExplorer(path);
+    }
+    return;
+  }
+  if (id == L"export_docx") {
+    const std::wstring path = LibJsonString(json, L"path");
+    if (!path.empty()) {
+      ExportWord(path);
+    }
+    return;
+  }
+  if (id == L"export_pdf") {
+    const std::wstring path = LibJsonString(json, L"path");
+    if (!path.empty()) {
+      ExportPdf(path);
+    }
+    return;
+  }
+  if (id == L"export_md") {
+    const std::wstring path = LibJsonString(json, L"path");
+    if (!path.empty()) {
+      ExportMarkdown(path);
+    }
+    return;
+  }
+  if (id == L"export_html") {
+    const std::wstring path = LibJsonString(json, L"path");
+    if (!path.empty()) {
+      ExportHtml(path);
     }
     return;
   }
@@ -11212,6 +11276,7 @@ LRESULT CALLBACK NotesWindow::TabsProc(HWND hwnd, UINT msg, WPARAM wparam,
       InvalidateRect(hwnd, nullptr, FALSE);
       return 0;
     case WM_LBUTTONDOWN: {
+      self->DismissLibraryMenu();
       self->RelayoutTabChips();
       POINT pt{GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
       int zone = 0;
@@ -11365,6 +11430,10 @@ LRESULT CALLBACK NotesWindow::TitleEditProc(HWND hwnd, UINT msg, WPARAM wparam,
                                             LPARAM lparam) {
   auto* self = reinterpret_cast<NotesWindow*>(
       GetWindowLongPtrW(GetParent(hwnd), GWLP_USERDATA));
+  if (self && (msg == WM_LBUTTONDOWN || msg == WM_RBUTTONDOWN ||
+               msg == WM_SETFOCUS)) {
+    self->DismissLibraryMenu();
+  }
   if (self && msg == WM_KEYDOWN &&
       (wparam == VK_RETURN || wparam == VK_DOWN)) {
     // Typora: Enter / Down from title → body.
@@ -11420,6 +11489,10 @@ LRESULT CALLBACK NotesWindow::EditProc(HWND hwnd, UINT msg, WPARAM wparam,
                                         LPARAM lparam) {
   auto* self = reinterpret_cast<NotesWindow*>(
       GetWindowLongPtrW(GetParent(hwnd), GWLP_USERDATA));
+  if (self && (msg == WM_LBUTTONDOWN || msg == WM_RBUTTONDOWN ||
+               msg == WM_SETFOCUS)) {
+    self->DismissLibraryMenu();
+  }
   if (self && msg == WM_DROPFILES) {
     return SendMessageW(self->hwnd_, WM_DROPFILES, wparam, lparam);
   }
@@ -12369,13 +12442,21 @@ LRESULT NotesWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
       SetBkColor(hdc, rail_bg_);
       return reinterpret_cast<LRESULT>(rail_brush_ ? rail_brush_ : bg_brush_);
     }
+    case WM_LBUTTONDOWN:
+    case WM_RBUTTONDOWN:
+    case WM_NCLBUTTONDOWN:
+    case WM_NCRBUTTONDOWN:
+      DismissLibraryMenu();
+      break;
     case WM_ACTIVATE:
+      DismissLibraryMenu();
       if (LOWORD(wparam) != WA_INACTIVE && !IsIconic(hwnd_)) {
         FocusActiveEditor(false);
         return 0;
       }
       break;
     case WM_SETFOCUS:
+      DismissLibraryMenu();
       FocusActiveEditor(false);
       return 0;
     case WM_SIZE:
