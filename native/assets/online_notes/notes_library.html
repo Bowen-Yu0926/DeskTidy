@@ -61,6 +61,19 @@
     border-color: var(--accent);
     background: linear-gradient(90deg, #2F6FED 0 4px, var(--accent-soft) 4px);
   }
+  .match-hl {
+    background-color: #ffe066;
+    color: #172033;
+    font-weight: 700;
+    border-radius: 2px;
+    padding: 0 2px;
+    box-shadow: 0 0 0 1px rgba(234, 179, 8, 0.35);
+  }
+  .row.on .match-hl {
+    background-color: #facc15;
+    color: #0f172a;
+    box-shadow: 0 0 0 1px rgba(202, 138, 4, 0.45);
+  }
   .row-title {
     display: flex; align-items: center;
     font-weight: 600; min-width: 0;
@@ -152,13 +165,63 @@
       .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
       .replace(/"/g,'&quot;');
   }
+  function normKey(k) {
+    if (!k) return '';
+    return String(k).trim().replace(/\\/g, '/').toLowerCase();
+  }
+  function isKeyActive(key) {
+    if (!key || !state.active) return false;
+    return normKey(key) === normKey(state.active);
+  }
+  function highlightMatches(text, query) {
+    if (!text) return '';
+    const str = String(text);
+    if (!query || !query.trim()) {
+      return esc(str);
+    }
+    const q = query.trim();
+    // 收集所有词项：完整短语、空格分词，以及单个字符（保证拼音或子序列命中也能将匹配的文字标出）
+    const rawTokens = [q, ...q.split(/\s+/)].filter((t) => t.length > 0);
+    // 当查询字符多于1个且匹配不到整体时，分拆出字符进行单字高亮
+    if (q.length > 1) {
+      for (let i = 0; i < q.length; i++) {
+        const ch = q[i].trim();
+        if (ch) rawTokens.push(ch);
+      }
+    }
+    const tokens = Array.from(new Set(rawTokens));
+    // 长的在前，优先匹配更长的子串
+    tokens.sort((a, b) => b.length - a.length);
+    const escaped = tokens.map((t) => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+    if (!escaped.length) return esc(str);
+
+    const regex = new RegExp('(' + escaped.join('|') + ')', 'gi');
+    const parts = str.split(regex);
+    return parts.map((part) => {
+      if (!part) return '';
+      const isMatch = tokens.some((t) => t.toLowerCase() === part.toLowerCase());
+      return isMatch ? ('<mark class="match-hl">' + esc(part) + '</mark>') : esc(part);
+    }).join('');
+  }
+  function matchKeywords(title, q) {
+    if (!q) return true;
+    const t = String(title || '').toLowerCase();
+    if (t.indexOf(q) >= 0) return true;
+    const words = q.split(/\s+/).filter(Boolean);
+    if (words.length > 1 && words.every((w) => t.indexOf(w) >= 0)) return true;
+    let idx = 0;
+    for (let i = 0; i < t.length && idx < q.length; i++) {
+      if (t[i] === q[idx]) idx++;
+    }
+    return idx === q.length;
+  }
   function matchTitle(it) {
     const q = (state.query || '').trim().toLowerCase();
     if (!q) return true;
-    // Local rows arrive already full-text matched by the host; skip the
+    // Local & synced rows arrive already full-text matched by the host; skip the
     // title-only second pass so body hits are not dropped here.
-    if (it.kind === 'local' && state.local_matched) return true;
-    return String(it.title || '').toLowerCase().indexOf(q) >= 0;
+    if ((it.kind === 'local' || it.kind === 'synced') && state.local_matched) return true;
+    return matchKeywords(it.title, q);
   }
   function rowKind(it, fallback) {
     return (it && it.kind) ? it.kind : fallback;
@@ -254,10 +317,17 @@
     const key = (kind === 'online' && !it.path)
       ? ('online://' + it.id)
       : String(it.path || '');
-    const on = key && key === state.active ? ' on' : '';
+    const on = isKeyActive(key) ? ' on' : '';
     const cloud = kind === 'online' || kind === 'synced';
     const cls = cloud ? 'row' : 'row local';
-    const meta = cloud ? (it.updated_at || '已同步') : (it.folder || '本地库');
+    let rawMeta = '';
+    if (it.folder) {
+      rawMeta = it.folder;
+    } else if (cloud) {
+      rawMeta = it.updated_at || '已同步';
+    } else {
+      rawMeta = '本地库';
+    }
     let data = 'data-kind="' + esc(kind) + '"';
     if (it.path) data += ' data-path="' + esc(it.path) + '"';
     if (it.line != null && it.line >= 0) data += ' data-line="' + Number(it.line) + '"';
@@ -267,11 +337,15 @@
     const more = '<button type="button" class="more" title="更多">⋯</button>';
     const cloudTip = cloud ? '已云同步（点击转本地）' : '本地文件（点击转云同步）';
     const cloudBadge = '<button type="button" class="cloud-icon" title="' + cloudTip + '">' + CLOUD_SVG + '</button>';
+
+    const titleHtml = highlightMatches(it.title || '未命名', state.query);
+    const metaHtml = highlightMatches(rawMeta, state.query);
+
     return '<div class="' + cls + on + '" ' + data + '>'
       + cloudBadge
       + more
-      + '<div class="row-title"><span class="row-title-text">' + esc(it.title || '未命名') + '</span></div>'
-      + '<div class="row-meta">' + esc(meta) + '</div></div>';
+      + '<div class="row-title"><span class="row-title-text">' + titleHtml + '</span></div>'
+      + '<div class="row-meta">' + metaHtml + '</div></div>';
   }
   function bindRow(el) {
     const kind = el.dataset.kind || 'local';
@@ -285,6 +359,21 @@
       locked: el.dataset.locked === '1'
     };
     el.onclick = () => {
+      // 立即触发前端选中态，消除 IPC 延迟感
+      const myKey = it.path || (kind === 'online' ? ('online://' + it.id) : '');
+      state.active = myKey;
+      document.querySelectorAll('.row').forEach((r) => {
+        const rPath = r.dataset.path || '';
+        const rId = r.dataset.id || '';
+        const rKind = r.dataset.kind || '';
+        const rKey = (rKind === 'online' && !rPath) ? ('online://' + rId) : rPath;
+        if (normKey(rKey) === normKey(myKey)) {
+          r.classList.add('on');
+        } else {
+          r.classList.remove('on');
+        }
+      });
+
       if (kind === 'online' && !it.path) {
         post({ type: 'action', id: 'open_online', note_id: Number(it.id) });
       } else if (it.path) {

@@ -277,6 +277,46 @@ bool WideContains(const std::wstring& hay, const std::wstring& needle) {
   return hay.find(needle) != std::wstring::npos;
 }
 
+// 检查 haystack 是否按顺序包含 needle 中的各个字符（支持跳字模糊匹配）
+bool WideSubsequenceMatch(const std::wstring& hay, const std::wstring& needle) {
+  if (needle.empty()) return true;
+  if (hay.size() < needle.size()) return false;
+  size_t n_idx = 0;
+  for (size_t i = 0; i < hay.size() && n_idx < needle.size(); ++i) {
+    if (hay[i] == needle[n_idx]) {
+      ++n_idx;
+    }
+  }
+  return n_idx == needle.size();
+}
+
+// 检查是否满足关键词匹配：
+// 1. 连续包含完整 query
+// 2. 空格分词后，所有词均被包含
+// 3. 针对较短或单词查询（例如输入“产品答疑清单”匹配“产品答疑项清单”），支持字符子序列匹配
+bool WideMatchTokensOrFuzzy(const std::wstring& hay, const std::wstring& query,
+                           const std::vector<std::wstring>& tokens) {
+  if (hay.find(query) != std::wstring::npos) {
+    return true;
+  }
+  if (tokens.size() > 1) {
+    bool all_tokens = true;
+    for (const auto& t : tokens) {
+      if (hay.find(t) == std::wstring::npos) {
+        all_tokens = false;
+        break;
+      }
+    }
+    if (all_tokens) {
+      return true;
+    }
+  }
+  if (WideSubsequenceMatch(hay, query)) {
+    return true;
+  }
+  return false;
+}
+
 // find() restricted to [begin, end). std::wstring::find scans to the end of the
 // string, so a per-line search over a long document degenerates to
 // O(lines x size); compare at each candidate position instead.
@@ -603,6 +643,25 @@ std::vector<NoteSearchHit> SearchNotesLibrary(const std::wstring& dir,
     return hits;
   }
   const std::wstring q_low = case_sensitive ? q : WideLower(q);
+
+  std::vector<std::wstring> tokens;
+  {
+    std::wstring cur;
+    for (wchar_t c : q_low) {
+      if (c == L' ' || c == L'\t') {
+        if (!cur.empty()) {
+          tokens.push_back(cur);
+          cur.clear();
+        }
+      } else {
+        cur.push_back(c);
+      }
+    }
+    if (!cur.empty()) {
+      tokens.push_back(cur);
+    }
+  }
+
   for (const auto& path : ListNoteFiles(dir)) {
     if (static_cast<int>(hits.size()) >= max_hits) {
       break;
@@ -611,7 +670,7 @@ std::vector<NoteSearchHit> SearchNotesLibrary(const std::wstring& dir,
     const std::wstring name =
         slash == std::wstring::npos ? path : path.substr(slash + 1);
     const std::wstring name_low = case_sensitive ? name : WideLower(name);
-    if (WideContains(name_low, q_low)) {
+    if (WideMatchTokensOrFuzzy(name_low, q_low, tokens)) {
       hits.push_back({path, -1, name});
       if (static_cast<int>(hits.size()) >= max_hits) {
         break;
@@ -653,7 +712,20 @@ std::vector<NoteSearchHit> SearchNotesLibrary(const std::wstring& dir,
         // the document for every non-matching line, which made one search
         // O(lines x size) — ~2.5e9 comparisons on a 500 KB note.
         const size_t p = FindInRange(hay, q_low, j, hay_end);
-        hit = (p != std::wstring::npos);
+        if (p != std::wstring::npos) {
+          hit = true;
+        } else if (tokens.size() > 1) {
+          bool all_t = true;
+          for (const auto& t : tokens) {
+            if (FindInRange(hay, t, j, hay_end) == std::wstring::npos) {
+              all_t = false;
+              break;
+            }
+          }
+          if (all_t) {
+            hit = true;
+          }
+        }
       }
       if (hit) {
         hits.push_back(

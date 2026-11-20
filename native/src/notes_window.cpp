@@ -9387,6 +9387,19 @@ void NotesWindow::PushLibraryRailState(bool refresh_online) {
     if (IsVaultAccountsNotePath(p)) return true;
     return !locked_set.empty() && locked_set.count(NormalizePathKey(p)) > 0;
   };
+
+  std::map<std::wstring, const NoteSearchHit*> hit_map;
+  if (local_matched) {
+    for (const auto& hit : body_hits) {
+      std::wstring k = hit.path;
+      for (auto& c : k) {
+        if (c == L'/') c = L'\\';
+        if (c >= L'A' && c <= L'Z') c = static_cast<wchar_t>(c - L'A' + L'a');
+      }
+      hit_map[k] = &hit;
+    }
+  }
+
   // Synced local files (same path, sync attribute). Keys are normalized the
   // same way as the `key` lookups below (lowercase + backslash), otherwise a
   // link stored with forward slashes / different case silently misses.
@@ -9407,7 +9420,19 @@ void NotesWindow::PushLibraryRailState(bool refresh_online) {
         c = static_cast<wchar_t>(c - L'A' + L'a');
       }
     }
-    synced_keys.insert(std::move(nkey));
+    synced_keys.insert(nkey);
+
+    const NoteSearchHit* hit_ptr = nullptr;
+    if (local_matched) {
+      auto it_hit = hit_map.find(nkey);
+      if (it_hit != hit_map.end()) {
+        hit_ptr = it_hit->second;
+      } else {
+        // 在搜索模式下，如果该已同步文件未命中文件名或正文，则不列出
+        continue;
+      }
+    }
+
     if (!first_online) {
       json += L',';
     }
@@ -9418,7 +9443,23 @@ void NotesWindow::PushLibraryRailState(bool refresh_online) {
     json += JsonEscLib(L.path);
     json += L"\",\"title\":\"";
     json += JsonEscLib(NoteDisplayName(L.path, false));
-    json += L"\",\"updated_at\":\"已同步\",\"pinned\":";
+    json += L"\",\"updated_at\":\"已同步\"";
+    if (hit_ptr) {
+      std::wstring sub;
+      if (hit_ptr->line >= 0) {
+        sub = L"行 " + std::to_wstring(hit_ptr->line + 1) + L"：";
+      } else {
+        sub = L"文件名匹配";
+      }
+      if (!hit_ptr->preview.empty()) {
+        sub += hit_ptr->preview;
+      }
+      json += L",\"folder\":\"";
+      json += JsonEscLib(sub);
+      json += L"\",\"line\":";
+      json += std::to_wstring(hit_ptr->line);
+    }
+    json += L",\"pinned\":";
     json += fast_is_pinned(L.path) ? L"true" : L"false";
     json += L",\"locked\":";
     json += fast_is_locked(L.path) ? L"true" : L"false";
@@ -9598,18 +9639,18 @@ void NotesWindow::HandleLibraryRailAction(const std::wstring& json) {
       if (json.find(needle) != std::wstring::npos) {
         const int line = LibJsonInt(json, L"line");
         if (line >= 0) {
-          // Same as OpenSidebarResult: leave WYSIWYG so the RichEdit caret
-          // jump is visible (P1-19).
-          if (wysiwyg_) {
-            wysiwyg_ = false;
-            ApplyWysiwygVisibility();
-            LayoutClient();
+          if (!PathLooksMarkdown()) {
+            if (wysiwyg_) {
+              wysiwyg_ = false;
+              ApplyWysiwygVisibility();
+              LayoutClient();
+            }
+            if (preview_ && preview_web_.Host()) {
+              preview_web_.Hide();
+            }
+            pending_goto_line_ = line;
+            PostMessageW(hwnd_, WM_APP + 60, 0, 0);
           }
-          if (preview_ && preview_web_.Host()) {
-            preview_web_.Hide();
-          }
-          pending_goto_line_ = line;
-          PostMessageW(hwnd_, WM_APP + 60, 0, 0);
         }
       }
     }
@@ -10426,19 +10467,18 @@ void NotesWindow::OpenSidebarResult(int index) {
   if (hit.line < 0) {
     return;
   }
-  // Leave preview/WYSIWYG so the RichEdit caret jump is visible (P1-19).
-  if (wysiwyg_) {
-    wysiwyg_ = false;
-    ApplyWysiwygVisibility();
-    LayoutClient();
+  if (!PathLooksMarkdown()) {
+    if (wysiwyg_) {
+      wysiwyg_ = false;
+      ApplyWysiwygVisibility();
+      LayoutClient();
+    }
+    if (preview_ && preview_web_.Host()) {
+      preview_web_.Hide();
+    }
+    pending_goto_line_ = hit.line;
+    PostMessageW(hwnd_, WM_APP + 60, 0, 0);
   }
-  if (preview_ && preview_web_.Host()) {
-    preview_web_.Hide();
-  }
-  // SwitchToTab restores a saved caret after Load — jump once more deferred
-  // so the search hit wins over the session caret.
-  pending_goto_line_ = hit.line;
-  PostMessageW(hwnd_, WM_APP + 60, 0, 0);
 }
 
 void NotesWindow::RebuildSidebar() {
