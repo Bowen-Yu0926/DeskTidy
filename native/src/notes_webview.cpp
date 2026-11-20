@@ -252,6 +252,18 @@ double JsonDoubleField(const std::wstring& json, const wchar_t* key,
   return _wtof(json.c_str() + p);
 }
 
+bool JsonBoolField(const std::wstring& json, const wchar_t* key, bool fallback) {
+  const std::wstring needle = std::wstring(L"\"") + key + L"\"";
+  size_t p = json.find(needle);
+  if (p == std::wstring::npos) return fallback;
+  p = json.find(L':', p + needle.size());
+  if (p == std::wstring::npos) return fallback;
+  while (p < json.size() && (json[p] == L':' || json[p] == L' ' || json[p] == L'\t')) ++p;
+  if (json.compare(p, 4, L"true") == 0) return true;
+  if (json.compare(p, 5, L"false") == 0) return false;
+  return fallback;
+}
+
 bool PathExists(const std::wstring& path) {
   const DWORD attr = GetFileAttributesW(path.c_str());
   return attr != INVALID_FILE_ATTRIBUTES;
@@ -969,6 +981,13 @@ void NotesWebView::OnWebMessage(const std::wstring& json) {
                                  JsonEscape(rel_url) + L"\"}";
       web->PostWebMessageAsJson(reply.c_str());
     }
+  } else if (type == L"contextMenu") {
+    if (on_context_menu) {
+      POINT pt{};
+      GetCursorPos(&pt);
+      const bool has_sel = JsonBoolField(json, L"hasSelection", false);
+      on_context_menu(pt, has_sel);
+    }
   }
 }
 
@@ -1320,6 +1339,13 @@ bool NotesWebView::PrintToPdf(const std::wstring& path, std::wstring* err) {
     return false;
   }
   return true;
+}
+
+void NotesWebView::ExecCommand(const std::wstring& cmd) {
+  auto* web = static_cast<ICoreWebView2*>(webview_);
+  if (!web) return;
+  std::wstring msg = L"{\"type\":\"execCommand\",\"command\":\"" + JsonEscape(cmd) + L"\"}";
+  web->PostWebMessageAsJson(msg.c_str());
 }
 
 namespace {

@@ -71,9 +71,13 @@ class NotesWebView {
   // Export the current page to PDF via ICoreWebView2_7. Returns false and fills
   // `err` on failure.
   bool PrintToPdf(const std::wstring& path, std::wstring* err);
+  // Send execCommand to webview (copy, cut, paste, undo, redo, selectAll)
+  void ExecCommand(const std::wstring& cmd);
 
   HWND Host() const { return host_; }
 
+  // Context menu requested from webview.
+  std::function<void(POINT screen_pt, bool has_selection)> on_context_menu;
   // Invoked with the document scroll ratio (0..1) whenever the page scrolls.
   std::function<void(double)> on_scroll;
   // WYSIWYG document changed (Toast `changed` message with markdown).

@@ -126,10 +126,6 @@ constexpr int kMenuEncUtf8 = 2155;
 constexpr int kMenuEncUtf8Bom = 2156;
 constexpr int kMenuEncAcp = 2157;
 constexpr int kMenuCopyPath = 2158;
-constexpr int kTabCopyPath = 3105;
-constexpr int kTabCloseOthers = 3106;
-constexpr int kTabCloseRight = 3107;
-constexpr int kTabExport = 3108;
 constexpr int kMenuStrike = 2159;
 constexpr int kMenuBullet = 2160;
 constexpr int kMenuQuote = 2161;
@@ -287,12 +283,13 @@ int LibJsonInt(const std::wstring& json, const wchar_t* key) {
   return _wtoi(json.c_str() + p);
 }
 constexpr int kEditCtxUndo = 3201;
-constexpr int kEditCtxCut = 3202;
-constexpr int kEditCtxCopy = 3203;
-constexpr int kEditCtxPaste = 3204;
-constexpr int kEditCtxSelectAll = 3205;
-constexpr int kEditCtxFind = 3206;
-constexpr int kEditCtxGoto = 3207;
+constexpr int kEditCtxRedo = 3202;
+constexpr int kEditCtxCut = 3203;
+constexpr int kEditCtxCopy = 3204;
+constexpr int kEditCtxPaste = 3205;
+constexpr int kEditCtxSelectAll = 3206;
+constexpr int kEditCtxFind = 3207;
+constexpr int kEditCtxGoto = 3208;
 constexpr int kOutlineId = 2002;
 constexpr int kSidebarRefreshId = 2009;
 constexpr int kModeStripId = 2010;
@@ -316,10 +313,18 @@ constexpr int kSidebarResultsId = 2007;
 constexpr int kStatusId = 2008;
 constexpr int kTabRename = 3101;
 constexpr int kTabPin = 3102;
-constexpr int kTabLock = 3108;
 constexpr int kTabReveal = 3103;
 constexpr int kTabDelete = 3104;
 constexpr int kTabClose = 3105;
+constexpr int kTabCloseOthers = 3106;
+constexpr int kTabCloseRight = 3107;
+constexpr int kTabLock = 3108;
+constexpr int kTabCopyPath = 3109;
+constexpr int kTabExport = 3110;
+constexpr int kTabExportWord = 3111;
+constexpr int kTabExportPdf = 3112;
+constexpr int kTabExportHtml = 3113;
+constexpr int kTabExportMd = 3114;
 constexpr UINT_PTR kPreviewTimer = 1;
 constexpr UINT_PTR kScrollTimer = 2;
 constexpr UINT_PTR kSidebarSearchTimer = 3;
@@ -415,6 +420,10 @@ constexpr int kSideDelete = 3003;
 constexpr int kSideReveal = 3004;
 constexpr int kSidePin = 3006;
 constexpr int kSideExport = 3007;
+constexpr int kSideExportWord = 3008;
+constexpr int kSideExportPdf = 3009;
+constexpr int kSideExportHtml = 3010;
+constexpr int kSideExportMd = 3011;
 
 // Suffixes the editor can open (mirrors Python notepad.py NOTE_OPEN_SUFFIXES).
 bool IsOpenableSuffix(const std::wstring& lower) {
@@ -1256,6 +1265,9 @@ bool NotesWindow::Create(HINSTANCE instance) {
     SyncCurrentTabTitleHint();
   };
   web_.on_save = [this]() { Save(true); };
+  web_.on_context_menu = [this](POINT pt, bool has_sel) {
+    HandleWysiwygContextMenu(pt, has_sel);
+  };
   web_.on_font_prefs = [this](const std::wstring& face, int pt) {
     // Toolbar owns the live style; only persist host prefs (avoid re-Eval loop).
     std::wstring next = face;
@@ -5807,6 +5819,17 @@ void NotesWindow::HandleEditContextMenu(POINT screen_pt) {
   AppendMenuW(m, MF_STRING, kEditCtxPaste, L"粘贴\tCtrl+V");
   AppendMenuW(m, MF_STRING, kEditCtxSelectAll, L"全选\tCtrl+A");
   AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
+
+  HMENU exp = CreatePopupMenu();
+  AppendMenuW(exp, MF_STRING, kTabExportWord, L"Word 文档 (*.docx)…");
+  AppendMenuW(exp, MF_STRING, kTabExportPdf, L"PDF 文档 (*.pdf)…");
+  AppendMenuW(exp, MF_STRING, kTabExportHtml, L"HTML 网页 (*.html)…");
+  AppendMenuW(exp, MF_STRING, kTabExportMd, L"Markdown (含图片) (*.md)…");
+  AppendMenuW(exp, MF_SEPARATOR, 0, nullptr);
+  AppendMenuW(exp, MF_STRING, kTabExport, L"更多导出选项…");
+  AppendMenuW(m, MF_POPUP, reinterpret_cast<UINT_PTR>(exp), L"导出");
+
+  AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
   AppendMenuW(m, MF_STRING, kEditCtxFind, L"查找…\tCtrl+F");
   AppendMenuW(m, MF_STRING, kEditCtxGoto, L"转到行…\tCtrl+G");
   const int cmd =
@@ -5832,11 +5855,98 @@ void NotesWindow::HandleEditContextMenu(POINT screen_pt) {
     case kEditCtxSelectAll:
       SendMessageW(edit_, EM_SETSEL, 0, -1);
       break;
+    case kTabExportWord:
+      ExportWord(path_);
+      break;
+    case kTabExportPdf:
+      ExportPdf(path_);
+      break;
+    case kTabExportHtml:
+      ExportHtml(path_);
+      break;
+    case kTabExportMd:
+      ExportMarkdown(path_);
+      break;
+    case kTabExport:
+      ExportNoteWithAssets(path_);
+      break;
     case kEditCtxFind:
       ShowFind(false);
       break;
     case kEditCtxGoto:
       PromptGotoLine();
+      break;
+    default:
+      break;
+  }
+}
+
+void NotesWindow::HandleWysiwygContextMenu(POINT screen_pt, bool has_sel) {
+  HMENU m = CreatePopupMenu();
+  AppendMenuW(m, MF_STRING, kEditCtxUndo, L"撤销\tCtrl+Z");
+  AppendMenuW(m, MF_STRING, kEditCtxRedo, L"重做\tCtrl+Y");
+  AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
+  AppendMenuW(m, MF_STRING | (has_sel ? MF_ENABLED : MF_GRAYED), kEditCtxCut,
+              L"剪切\tCtrl+X");
+  AppendMenuW(m, MF_STRING | (has_sel ? MF_ENABLED : MF_GRAYED), kEditCtxCopy,
+              L"复制\tCtrl+C");
+  AppendMenuW(m, MF_STRING, kEditCtxPaste, L"粘贴\tCtrl+V");
+  AppendMenuW(m, MF_STRING, kEditCtxSelectAll, L"全选\tCtrl+A");
+  AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
+
+  HMENU exp = CreatePopupMenu();
+  AppendMenuW(exp, MF_STRING, kTabExportWord, L"Word 文档 (*.docx)…");
+  AppendMenuW(exp, MF_STRING, kTabExportPdf, L"PDF 文档 (*.pdf)…");
+  AppendMenuW(exp, MF_STRING, kTabExportHtml, L"HTML 网页 (*.html)…");
+  AppendMenuW(exp, MF_STRING, kTabExportMd, L"Markdown (含图片) (*.md)…");
+  AppendMenuW(exp, MF_SEPARATOR, 0, nullptr);
+  AppendMenuW(exp, MF_STRING, kTabExport, L"更多导出选项…");
+  AppendMenuW(m, MF_POPUP, reinterpret_cast<UINT_PTR>(exp), L"导出");
+
+  AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
+  AppendMenuW(m, MF_STRING, kEditCtxFind, L"查找与替换…\tCtrl+F");
+
+  const int cmd =
+      TrackPopupMenu(m, TPM_RETURNCMD | TPM_NONOTIFY, screen_pt.x, screen_pt.y,
+                     0, hwnd_, nullptr);
+  DestroyMenu(m);
+
+  switch (cmd) {
+    case kEditCtxUndo:
+      web_.ExecCommand(L"undo");
+      break;
+    case kEditCtxRedo:
+      web_.ExecCommand(L"redo");
+      break;
+    case kEditCtxCut:
+      web_.ExecCommand(L"cut");
+      break;
+    case kEditCtxCopy:
+      web_.ExecCommand(L"copy");
+      break;
+    case kEditCtxPaste:
+      web_.ExecCommand(L"paste");
+      break;
+    case kEditCtxSelectAll:
+      web_.ExecCommand(L"selectAll");
+      break;
+    case kTabExportWord:
+      ExportWord(path_);
+      break;
+    case kTabExportPdf:
+      ExportPdf(path_);
+      break;
+    case kTabExportHtml:
+      ExportHtml(path_);
+      break;
+    case kTabExportMd:
+      ExportMarkdown(path_);
+      break;
+    case kTabExport:
+      ExportNoteWithAssets(path_);
+      break;
+    case kEditCtxFind:
+      ShowFind(false);
       break;
     default:
       break;
@@ -5888,7 +5998,15 @@ void NotesWindow::HandleTabContextMenu(int index, POINT screen_pt) {
   AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
   if (!vault) {
     AppendMenuW(m, MF_STRING, kTabRename, L"重命名");
-    AppendMenuW(m, MF_STRING, kTabExport, L"导出…");
+    HMENU exp = CreatePopupMenu();
+    AppendMenuW(exp, MF_STRING, kTabExportWord, L"Word 文档 (*.docx)…");
+    AppendMenuW(exp, MF_STRING, kTabExportPdf, L"PDF 文档 (*.pdf)…");
+    AppendMenuW(exp, MF_STRING, kTabExportHtml, L"HTML 网页 (*.html)…");
+    AppendMenuW(exp, MF_STRING, kTabExportMd, L"Markdown (含图片) (*.md)…");
+    AppendMenuW(exp, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(exp, MF_STRING, kTabExport, L"更多导出选项…");
+    AppendMenuW(m, MF_POPUP, reinterpret_cast<UINT_PTR>(exp), L"导出");
+
     AppendMenuW(m, MF_STRING, kTabPin,
                 PathIsPinned(path) ? L"取消置顶" : L"置顶");
     AppendMenuW(m, MF_STRING, kTabLock, locked ? L"解锁" : L"锁定");
@@ -5922,6 +6040,14 @@ void NotesWindow::HandleTabContextMenu(int index, POINT screen_pt) {
     CopyPathToClipboard(copy);
   } else if (cmd == kTabRename) {
     RenameTabAt(index);
+  } else if (cmd == kTabExportWord) {
+    ExportWord(path);
+  } else if (cmd == kTabExportPdf) {
+    ExportPdf(path);
+  } else if (cmd == kTabExportHtml) {
+    ExportHtml(path);
+  } else if (cmd == kTabExportMd) {
+    ExportMarkdown(path);
   } else if (cmd == kTabExport) {
     ExportNoteWithAssets(path);
   } else if (cmd == kTabDelete) {
@@ -6027,7 +6153,8 @@ void NotesWindow::PreviewMarkdown() {
   PreviewMarkdownText(hwnd_, CurrentPlainText(), L"便签预览", NoteBaseDir());
 }
 
-bool NotesWindow::ExportNoteWithAssets(const std::wstring& note_path) {
+bool NotesWindow::ExportNoteWithAssets(const std::wstring& note_path,
+                                      const std::wstring& default_ext) {
   if (note_path.empty()) {
     return false;
   }
@@ -6087,8 +6214,24 @@ bool NotesWindow::ExportNoteWithAssets(const std::wstring& note_path) {
     safe_name = L"未命名笔记";
   }
 
+  std::wstring def_ext = default_ext.empty() ? L"docx" : default_ext;
+  if (!def_ext.empty() && def_ext[0] == L'.') {
+    def_ext = def_ext.substr(1);
+  }
+
+  DWORD filter_index = 1;
+  if (_wcsicmp(def_ext.c_str(), L"pdf") == 0) {
+    filter_index = 2;
+  } else if (_wcsicmp(def_ext.c_str(), L"md") == 0) {
+    filter_index = 3;
+  } else if (_wcsicmp(def_ext.c_str(), L"html") == 0 || _wcsicmp(def_ext.c_str(), L"htm") == 0) {
+    filter_index = 4;
+  } else if (_wcsicmp(def_ext.c_str(), L"txt") == 0) {
+    filter_index = 5;
+  }
+
   wchar_t file_buf[MAX_PATH * 2] = {};
-  wcsncpy_s(file_buf, (safe_name + L".md").c_str(), _TRUNCATE);
+  wcsncpy_s(file_buf, (safe_name + L"." + def_ext).c_str(), _TRUNCATE);
 
   OPENFILENAMEW ofn{};
   ofn.lStructSize = sizeof(ofn);
@@ -6103,7 +6246,8 @@ bool NotesWindow::ExportNoteWithAssets(const std::wstring& note_path) {
   ofn.lpstrFile = file_buf;
   ofn.nMaxFile = static_cast<DWORD>(sizeof(file_buf) / sizeof(file_buf[0]));
   ofn.Flags = OFN_OVERWRITEPROMPT | OFN_NOCHANGEDIR;
-  ofn.lpstrDefExt = L"docx";
+  ofn.nFilterIndex = filter_index;
+  ofn.lpstrDefExt = def_ext.c_str();
   if (!GetSaveFileNameW(&ofn)) {
     return false;
   }
@@ -6363,12 +6507,14 @@ bool NotesWindow::ExportNoteWithAssets(const std::wstring& note_path) {
   return true;
 }
 
-void NotesWindow::ExportHtml() {
-  ExportNoteWithAssets(path_);
+void NotesWindow::ExportHtml(const std::wstring& target_path) {
+  const std::wstring note_path = target_path.empty() ? path_ : target_path;
+  ExportNoteWithAssets(note_path, L"html");
 }
 
-void NotesWindow::ExportMarkdown() {
-  ExportNoteWithAssets(path_);
+void NotesWindow::ExportMarkdown(const std::wstring& target_path) {
+  const std::wstring note_path = target_path.empty() ? path_ : target_path;
+  ExportNoteWithAssets(note_path, L"md");
 }
 
 void NotesWindow::ExportWithPandoc() {
@@ -10855,7 +11001,14 @@ void NotesWindow::HandleSidebarContextMenu(const POINT& pt) {
                                                                 : MF_GRAYED),
               kSideRename, L"重命名\tF2");
   if (is_file && !multi) {
-    AppendMenuW(m, MF_STRING, kSideExport, L"导出…");
+    HMENU exp = CreatePopupMenu();
+    AppendMenuW(exp, MF_STRING, kSideExportWord, L"Word 文档 (*.docx)…");
+    AppendMenuW(exp, MF_STRING, kSideExportPdf, L"PDF 文档 (*.pdf)…");
+    AppendMenuW(exp, MF_STRING, kSideExportHtml, L"HTML 网页 (*.html)…");
+    AppendMenuW(exp, MF_STRING, kSideExportMd, L"Markdown (含图片) (*.md)…");
+    AppendMenuW(exp, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(exp, MF_STRING, kSideExport, L"更多导出选项…");
+    AppendMenuW(m, MF_POPUP, reinterpret_cast<UINT_PTR>(exp), L"导出");
   }
   // 锁定/账号库不出现「删除」；多选里若还有可删项则保留入口。
   if (is_file && any_deletable) {
@@ -10877,6 +11030,14 @@ void NotesWindow::HandleSidebarContextMenu(const POINT& pt) {
     ToggleLockPath(path);
   } else if (cmd == kSideRename) {
     RenameSidebarSelected();
+  } else if (cmd == kSideExportWord) {
+    ExportWord(path);
+  } else if (cmd == kSideExportPdf) {
+    ExportPdf(path);
+  } else if (cmd == kSideExportHtml) {
+    ExportHtml(path);
+  } else if (cmd == kSideExportMd) {
+    ExportMarkdown(path);
   } else if (cmd == kSideExport) {
     ExportNoteWithAssets(path);
   } else if (cmd == kSideDelete) {

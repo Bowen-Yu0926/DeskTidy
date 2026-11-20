@@ -119,11 +119,12 @@ class NotesWindow {
   // Jump caret to 0-based line (P1-19 search hit).
   void GotoLine(int line0);
   void PreviewMarkdown();
-  void ExportMarkdown();
-  void ExportHtml();
+  void ExportMarkdown(const std::wstring& target_path = L"");
+  void ExportHtml(const std::wstring& target_path = L"");
   void ExportPdf(const std::wstring& target_path = L"");
   void ExportWord(const std::wstring& target_path = L"");
-  bool ExportNoteWithAssets(const std::wstring& target_path);
+  bool ExportNoteWithAssets(const std::wstring& target_path,
+                            const std::wstring& default_ext = L"docx");
   void FindAgain(bool down);
   void ToggleOutline();
   void RebuildOutline();
@@ -235,6 +236,7 @@ class NotesWindow {
   bool SyncFilenameToTitle();
   void ScheduleSyncFilenameToTitle();
   void HandleEditContextMenu(POINT screen_pt);
+  void HandleWysiwygContextMenu(POINT pt, bool has_sel);
   void ActivateNextTab(bool forward);
   void HandleTabContextMenu(int index, POINT screen_pt);
   // Prompt rename for open tab (right-click or double-click on chip body).

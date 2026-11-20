@@ -1860,9 +1860,40 @@
           signalDirty();
           scheduleChangePost();
         } catch (err) {}
+      } else if (msg.type === "execCommand") {
+        try {
+          var cmd = String(msg.command || "");
+          if (cmd === "selectAll") {
+            document.execCommand("selectAll");
+          } else if (cmd === "undo") {
+            try { document.execCommand("undo"); } catch (e) {}
+          } else if (cmd === "redo") {
+            try { document.execCommand("redo"); } catch (e) {}
+          } else if (cmd) {
+            document.execCommand(cmd);
+          }
+        } catch (err) {}
       }
     });
   }
+
+  // Forward right-click context menu to native host (with export, undo/redo, clipboard actions).
+  window.addEventListener("contextmenu", function (e) {
+    e.preventDefault();
+    var sel = window.getSelection ? window.getSelection() : null;
+    var hasSel = false;
+    if (sel && !sel.isCollapsed) {
+      try {
+        hasSel = sel.toString().length > 0;
+      } catch (err) {
+        hasSel = false;
+      }
+    }
+    post({
+      type: "contextMenu",
+      hasSelection: !!hasSel
+    });
+  }, true);
 
   // Scroll reporting (host keeps the preview pane in sync).
   var suppressScrollEmit = false;
