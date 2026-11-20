@@ -42,6 +42,71 @@ std::string XmlEscape(const std::string& s) {
   return out;
 }
 
+std::string DecodeHtmlEntities(const std::string& in) {
+  std::string out;
+  out.reserve(in.size());
+  size_t i = 0;
+  while (i < in.size()) {
+    if (in[i] == '&') {
+      size_t semi = in.find(';', i + 1);
+      if (semi != std::string::npos && semi - i <= 10) {
+        std::string ent = in.substr(i, semi - i + 1);
+        if (ent == "&#x20;" || ent == "&#32;" || ent == "&nbsp;") {
+          out.push_back(' ');
+          i = semi + 1;
+          continue;
+        }
+        if (ent == "&lt;") {
+          out.push_back('<');
+          i = semi + 1;
+          continue;
+        }
+        if (ent == "&gt;") {
+          out.push_back('>');
+          i = semi + 1;
+          continue;
+        }
+        if (ent == "&quot;") {
+          out.push_back('"');
+          i = semi + 1;
+          continue;
+        }
+        if (ent == "&apos;") {
+          out.push_back('\'');
+          i = semi + 1;
+          continue;
+        }
+        if (ent == "&amp;") {
+          out.push_back('&');
+          i = semi + 1;
+          continue;
+        }
+        if (ent.size() >= 4 && ent[1] == '#') {
+          long code = 0;
+          if (ent[2] == 'x' || ent[2] == 'X') {
+            code = strtol(ent.c_str() + 3, nullptr, 16);
+          } else {
+            code = strtol(ent.c_str() + 2, nullptr, 10);
+          }
+          if (code > 0 && code < 128) {
+            out.push_back(static_cast<char>(code));
+            i = semi + 1;
+            continue;
+          } else if (code >= 128 && code <= 0x10FFFF) {
+            wchar_t wc = static_cast<wchar_t>(code);
+            std::wstring ws(1, wc);
+            out += NarrowUtf8(ws);
+            i = semi + 1;
+            continue;
+          }
+        }
+      }
+    }
+    out.push_back(in[i++]);
+  }
+  return out;
+}
+
 std::wstring ProbeImagePath(const std::wstring& src, const std::wstring& base_dir) {
   if (src.empty() || src.rfind(L"http://", 0) == 0 || src.rfind(L"https://", 0) == 0 ||
       src.rfind(L"data:", 0) == 0 || src[0] == L'#') {
@@ -229,6 +294,24 @@ bool ExportMarkdownToDocx(const std::wstring& md_text,
     return false;
   }
 
+  // Clean title extensions (.md, .markdown, .txt)
+  std::wstring clean_title = title;
+  for (auto& ch : clean_title) {
+    if (ch == L'\\' || ch == L'/' || ch == L':' || ch == L'*' || ch == L'?' ||
+        ch == L'"' || ch == L'<' || ch == L'>' || ch == L'|') {
+      ch = L'_';
+    }
+  }
+  if (clean_title.size() >= 3 && _wcsicmp(clean_title.c_str() + clean_title.size() - 3, L".md") == 0) {
+    clean_title.resize(clean_title.size() - 3);
+  } else if (clean_title.size() >= 9 && _wcsicmp(clean_title.c_str() + clean_title.size() - 9, L".markdown") == 0) {
+    clean_title.resize(clean_title.size() - 9);
+  } else if (clean_title.size() >= 4 && _wcsicmp(clean_title.c_str() + clean_title.size() - 4, L".txt") == 0) {
+    clean_title.resize(clean_title.size() - 4);
+  }
+  while (!clean_title.empty() && (clean_title.front() == L' ' || clean_title.front() == L'\t')) clean_title.erase(clean_title.begin());
+  while (!clean_title.empty() && (clean_title.back() == L' ' || clean_title.back() == L'\t')) clean_title.pop_back();
+
   // 1. Prepare temp directory
   wchar_t sys_tmp[MAX_PATH] = {};
   GetTempPathW(MAX_PATH, sys_tmp);
@@ -345,10 +428,38 @@ bool ExportMarkdownToDocx(const std::wstring& md_text,
     doc << "  <w:body>\n";
 
     // Document Title (Heading 1) if provided
-    if (!title.empty()) {
+    // Check if the first non-empty markdown line is already an H1 identical to clean_title.
+    // If so, do not duplicate the top title.
+    bool skip_top_title = clean_title.empty();
+    if (!skip_top_title) {
+      std::istringstream peek_stream(NarrowUtf8(md_text));
+      std::string peek_line;
+      while (std::getline(peek_stream, peek_line)) {
+        while (!peek_line.empty() && (peek_line.back() == '\r' || peek_line.back() == '\n')) {
+          peek_line.pop_back();
+        }
+        peek_line = DecodeHtmlEntities(peek_line);
+        while (!peek_line.empty() && (peek_line.front() == ' ' || peek_line.front() == '\t')) peek_line.erase(peek_line.begin());
+        while (!peek_line.empty() && (peek_line.back() == ' ' || peek_line.back() == '\t')) peek_line.pop_back();
+        if (peek_line.empty()) continue;
+
+        if (peek_line.rfind("# ", 0) == 0) {
+          std::string h1 = peek_line.substr(2);
+          while (!h1.empty() && (h1.front() == ' ' || h1.front() == '\t')) h1.erase(h1.begin());
+          while (!h1.empty() && (h1.back() == ' ' || h1.back() == '\t')) h1.pop_back();
+          std::wstring w_h1 = WidenUtf8(h1);
+          if (_wcsicmp(w_h1.c_str(), clean_title.c_str()) == 0) {
+            skip_top_title = true;
+          }
+        }
+        break;
+      }
+    }
+
+    if (!skip_top_title) {
       doc << "    <w:p><w:pPr><w:spacing w:before=\"240\" w:after=\"200\"/><w:jc w:val=\"left\"/></w:pPr>";
       doc << "<w:r><w:rPr><w:rFonts w:ascii=\"Calibri\" w:hAnsi=\"Calibri\" w:eastAsia=\"Microsoft YaHei\"/><w:b/><w:bCs/><w:sz w:val=\"44\"/><w:szCs w:val=\"44\"/><w:color w:val=\"20242A\"/></w:rPr>";
-      doc << "<w:t>" << XmlEscape(NarrowUtf8(title)) << "</w:t></w:r></w:p>\n";
+      doc << "<w:t>" << XmlEscape(NarrowUtf8(clean_title)) << "</w:t></w:r></w:p>\n";
     }
 
     // Split markdown into lines
@@ -388,6 +499,9 @@ bool ExportMarkdownToDocx(const std::wstring& md_text,
         doc << "    <w:p><w:pPr><w:spacing w:after=\"120\"/></w:pPr></w:p>\n";
         continue;
       }
+
+      // Decode HTML entities (e.g. &#x20;, &#32;, &nbsp;)
+      line = DecodeHtmlEntities(line);
 
       // Headings
       if (line[0] == '#') {
@@ -519,32 +633,90 @@ bool ExportMarkdownToDocx(const std::wstring& md_text,
   // 7. Repack directory into target .docx
   DeleteFileW(dst_docx_path.c_str());
 
-  // Escape single quotes for PowerShell script
-  std::wstring ps_src = tmp_root;
-  std::wstring ps_dst = dst_docx_path;
-  for (auto& c : ps_src) if (c == L'/') c = L'\\';
-  for (auto& c : ps_dst) if (c == L'/') c = L'\\';
+  std::wstring temp_zip = tmp_root + L".zip";
+  DeleteFileW(temp_zip.c_str());
 
-  std::wstring cmd = L"powershell.exe -NoProfile -NonInteractive -WindowStyle Hidden -Command \""
-                     L"[Reflection.Assembly]::LoadWithPartialName('System.IO.Compression.FileSystem') | Out-Null; "
-                     L"[IO.Compression.ZipFile]::CreateFromDirectory('" + ps_src + L"', '" + ps_dst + L"', [IO.Compression.CompressionLevel]::Optimal, $false)\"";
+  bool packed = false;
 
-  STARTUPINFOW si{};
-  si.cb = sizeof(si);
-  PROCESS_INFORMATION pi{};
-  const BOOL ok = CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, FALSE,
-                                 CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi);
-  if (!ok) {
-    if (err) *err = L"无法启动压缩程序打包 DOCX 文件。";
-    RemoveDirectoryRecursive(tmp_root);
+  // 7.1 Try Windows native tar.exe (fast, ~30ms, no PowerShell / Defender stalls)
+  wchar_t sys_dir[MAX_PATH] = {};
+  GetSystemDirectoryW(sys_dir, MAX_PATH);
+  std::wstring tar_exe = std::wstring(sys_dir) + L"\\tar.exe";
+  if (GetFileAttributesW(tar_exe.c_str()) != INVALID_FILE_ATTRIBUTES) {
+    std::wstring tar_cmd = L"\"" + tar_exe + L"\" -a -c -f \"" + temp_zip + L"\" -C \"" + tmp_root + L"\" \"[Content_Types].xml\" \"_rels\" \"word\"";
+    STARTUPINFOW si{};
+    si.cb = sizeof(si);
+    PROCESS_INFORMATION pi{};
+    if (CreateProcessW(nullptr, tar_cmd.data(), nullptr, nullptr, FALSE,
+                       CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
+      WaitForSingleObject(pi.hProcess, 10000);
+      CloseHandle(pi.hThread);
+      CloseHandle(pi.hProcess);
+
+      // Verify temp_zip exists, size > 0 and has PK\x03\x04 zip header
+      WIN32_FILE_ATTRIBUTE_DATA fad{};
+      if (GetFileAttributesExW(temp_zip.c_str(), GetFileExInfoStandard, &fad)) {
+        const ULONGLONG sz = (static_cast<ULONGLONG>(fad.nFileSizeHigh) << 32) | fad.nFileSizeLow;
+        if (sz >= 100) {
+          HANDLE hFile = CreateFileW(temp_zip.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr);
+          if (hFile != INVALID_HANDLE_VALUE) {
+            char magic[4] = {};
+            DWORD read_bytes = 0;
+            if (ReadFile(hFile, magic, 4, &read_bytes, nullptr) && read_bytes == 4) {
+              if (magic[0] == 'P' && magic[1] == 'K' && magic[2] == 0x03 && magic[3] == 0x04) {
+                packed = true;
+              }
+            }
+            CloseHandle(hFile);
+          }
+        }
+      }
+    }
+  }
+
+  // 7.2 Fallback to PowerShell if tar.exe is unavailable or failed
+  if (!packed) {
+    DeleteFileW(temp_zip.c_str());
+    std::wstring ps_src = tmp_root;
+    std::wstring ps_dst = temp_zip;
+    for (auto& c : ps_src) if (c == L'/') c = L'\\';
+    for (auto& c : ps_dst) if (c == L'/') c = L'\\';
+
+    std::wstring cmd = L"powershell.exe -NoProfile -NonInteractive -WindowStyle Hidden -Command \""
+                       L"[Reflection.Assembly]::LoadWithPartialName('System.IO.Compression.FileSystem') | Out-Null; "
+                       L"[IO.Compression.ZipFile]::CreateFromDirectory('" + ps_src + L"', '" + ps_dst + L"', [IO.Compression.CompressionLevel]::Optimal, $false)\"";
+
+    STARTUPINFOW si{};
+    si.cb = sizeof(si);
+    PROCESS_INFORMATION pi{};
+    if (CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, FALSE,
+                       CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
+      WaitForSingleObject(pi.hProcess, 15000);
+      CloseHandle(pi.hThread);
+      CloseHandle(pi.hProcess);
+      if (GetFileAttributesW(temp_zip.c_str()) != INVALID_FILE_ATTRIBUTES) {
+        packed = true;
+      }
+    }
+  }
+
+  RemoveDirectoryRecursive(tmp_root);
+
+  if (!packed || GetFileAttributesW(temp_zip.c_str()) == INVALID_FILE_ATTRIBUTES) {
+    DeleteFileW(temp_zip.c_str());
+    if (err) *err = L"无法完成 DOCX 压缩打包。";
     return false;
   }
 
-  WaitForSingleObject(pi.hProcess, 30000);
-  CloseHandle(pi.hThread);
-  CloseHandle(pi.hProcess);
-
-  RemoveDirectoryRecursive(tmp_root);
+  // Move or copy temp_zip to dst_docx_path
+  if (!MoveFileExW(temp_zip.c_str(), dst_docx_path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_COPY_ALLOWED)) {
+    if (!CopyFileW(temp_zip.c_str(), dst_docx_path.c_str(), FALSE)) {
+      DeleteFileW(temp_zip.c_str());
+      if (err) *err = L"无法将打包文件写入目标 DOCX 路径。";
+      return false;
+    }
+    DeleteFileW(temp_zip.c_str());
+  }
 
   // Validate output file
   const DWORD attr = GetFileAttributesW(dst_docx_path.c_str());

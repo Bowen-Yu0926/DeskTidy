@@ -6391,11 +6391,11 @@ bool NotesWindow::ExportNoteWithAssets(const std::wstring& note_path,
 
   if (is_docx) {
     std::wstring err;
-    if (!ExportMarkdownToDocx(md_text, title, base_dir, dst_file, &err)) {
+    if (!ExportMarkdownToDocx(md_text, safe_name, base_dir, dst_file, &err)) {
       MistAlert(hwnd_, L"导出失败", (L"导出 Word 文档失败：" + (err.empty() ? L"未知错误" : err)).c_str(), MistMsgTone::Danger);
       return false;
     }
-    std::wstring tip = L"已成功导出「" + title + L"」为 Word 文档";
+    std::wstring tip = L"已成功导出「" + safe_name + L"」为 Word 文档";
     if (!images.empty()) {
       tip += L"\n已完整内嵌 " + std::to_wstring(images.size()) + L" 张图片资源";
     }

@@ -41,11 +41,11 @@ int main() {
     bmp.Save(img_path.c_str(), &pngClsid, nullptr);
   }
 
-  // 2. 准备 Markdown 测试文本
+  // 2. 准备 Markdown 测试文本（包含实体字符与标题）
   std::wstring md =
-      L"# 一级标题：DeskTidy 测试\n\n"
+      L"# 测试笔记标题.md\n\n"
       L"## 二级标题：特性展示\n\n"
-      L"这是一段普通的正文内容，包含 **加粗文字**，*斜体文字*，以及 `inline_code()` 和 ~~删除线~~。\n\n"
+      L"这是一段普通的正文内容，&#x20;包含 HTML 实体空格&#32;测试&nbsp;以及 **加粗文字**，*斜体文字*，以及 `inline_code()` 和 ~~删除线~~。\n\n"
       L"> 这是引用的段落文字，应当有左侧竖线和缩进格式。\n\n"
       L"- 无序列表项目一\n"
       L"- 无序列表项目二\n\n"
@@ -65,7 +65,7 @@ int main() {
   DeleteFileW(docx_out.c_str());
 
   std::wstring err;
-  bool ok = ExportMarkdownToDocx(md, L"测试笔记标题", work_dir, docx_out, &err);
+  bool ok = ExportMarkdownToDocx(md, L"测试笔记标题.md", work_dir, docx_out, &err);
   if (!ok) {
     printf("FAIL: ExportMarkdownToDocx failed: %ls\n", err.c_str());
     return 1;
