@@ -44,6 +44,10 @@ constexpr FenceStylePreset kPresets[] = {
     // 8. 静谧黛灰（极简高级商务金属冷灰）
     {"slate", L"静谧灰", RGB(42, 54, 70), RGB(148, 163, 184),
      RGB(255, 255, 255), 148, 13, false},
+
+    // 9. 液态玻璃屏（超通透晶莹液态毛玻璃，高折射高光双层边框与灵动胶囊）
+    {"liquid_glass", L"液态玻璃", RGB(255, 255, 255), RGB(255, 255, 255),
+     RGB(255, 255, 255), 20, 16, false},
 };
 
 }  // namespace
@@ -69,6 +73,7 @@ std::string NormalizeFenceStyleId(const std::string& id) {
     }
   }
   // 历史与扩展旧预设向前兼容映射至 8 款新预设
+  if (id == "liquid_glass" || id == "glass" || id == "liquid" || id == "acrylic_glass") return "liquid_glass";
   if (id == "cyberpunk" || id == "sky") return "navy";
   if (id == "graphite" || id == "dark" || id == "black") return "obsidian";
   if (id == "latte" || id == "peach") return "sunset";

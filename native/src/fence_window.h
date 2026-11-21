@@ -737,4 +737,5 @@ class FenceWindow {
   BYTE panel_chrome_alpha_ = 0;
   bool panel_chrome_light_ = false;
   int panel_chrome_radius_ = -1;
+  std::string panel_chrome_style_;
 };

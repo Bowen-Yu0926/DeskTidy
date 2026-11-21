@@ -813,6 +813,8 @@ void App::WireFence(FenceWindow* fence) {
   fence->SetOnPathsDroppedAt(
       [this](FenceWindow* f, const std::vector<std::wstring>& paths,
              int at) -> DWORD {
+        LogLine(L"[app] OnPathsDroppedAt fence=%s paths=%zu at=%d",
+                f ? f->Id().c_str() : "(null)", paths.size(), at);
         // Virtual fence: SetPin + insert order. Portal: real import only —
         // pin_order does not apply (Fences Folder Portal).
         // Alt / Ctrl+Shift: land .lnk on Desktop then pin the shortcut at the
@@ -1054,6 +1056,9 @@ bool App::Init(HINSTANCE instance) {
   // P1-12: drive the floating drop hint from the OLE drag loop.
   SetPinDragMoveFn([this](POINT cursor, const PinDragHint& hint) {
     UpdatePinDragHint(cursor, hint);
+  });
+  SetPinDragEndFn([this]() {
+    HidePinDragHint();
   });
 
   // P1-29/P1-30: migrate Python settings/hotkeys/prefs/first_run BEFORE loading
@@ -3917,7 +3922,7 @@ void App::SetPageBarStyle(const std::wstring& style_id) {
   SaveAppPrefs(prefs_);
   const auto* opt = FenceStyleById(id);
   if (opt) {
-    page_bar_.ApplyStyle(opt->background, opt->accent, opt->title);
+    page_bar_.ApplyStyle(opt->background, opt->accent, opt->title, id);
     ShowToast(std::wstring(L"已更新页签颜色：") + opt->name);
   } else {
     ShowToast(L"已更新页签颜色");
@@ -4649,6 +4654,14 @@ void App::SeatAllFencesUnderApps() {
     RaiseOverlayInDesktopBandWith(hwnd, band);
     return healed;
   };
+  // Seat public_host first as the lowest overlay in the desktop band,
+  // so that fences, dock, and widgets float safely above public floats.
+  if (public_visible_ && public_host_.Hwnd() && public_host_.HasItems()) {
+    if (seat(public_host_.Hwnd()) && IsWindowVisible(public_host_.Hwnd()) &&
+        !IsIconic(public_host_.Hwnd())) {
+      public_host_.RefreshLayer();
+    }
+  }
   for (auto& fence : fences_) {
     if (!fence || !fence->Hwnd()) {
       continue;
@@ -4689,12 +4702,6 @@ void App::SeatAllFencesUnderApps() {
     if (seat(page_bar_.Hwnd()) && IsWindowVisible(page_bar_.Hwnd()) &&
         !IsIconic(page_bar_.Hwnd())) {
       page_bar_.RefreshLayer();
-    }
-  }
-  if (public_visible_ && public_host_.Hwnd() && public_host_.HasItems()) {
-    if (seat(public_host_.Hwnd()) && IsWindowVisible(public_host_.Hwnd()) &&
-        !IsIconic(public_host_.Hwnd())) {
-      public_host_.RefreshLayer();
     }
   }
   // Honor the user's show/hide-icons intent (Ctrl+Shift+H). Do not force
@@ -4985,7 +4992,7 @@ void App::ApplyChromeTheme() {
     bar_style = &DefaultFenceStyle();
   }
   page_bar_.ApplyStyle(bar_style->background, bar_style->accent,
-                       bar_style->title);
+                       bar_style->title, bar_style_id);
 
   const FenceStylePreset* style = FenceStyleById(prefs_.theme_id);
   if (!style) {
@@ -7879,6 +7886,17 @@ void App::RestoreDesktopChrome() {
     }
     return false;
   };
+  // Seat public_host first as the lowest overlay in the desktop band,
+  // so that fences, dock, and widgets float safely above public floats.
+  if (public_visible_ && public_host_.Hwnd() && public_host_.HasItems()) {
+    const bool need_present = reattach(public_host_.Hwnd());
+    if (need_present && IsWindowVisible(public_host_.Hwnd()) &&
+        !IsIconic(public_host_.Hwnd())) {
+      public_host_.RefreshLayer();
+    }
+  } else if (public_host_.Hwnd() && IsWindowVisible(public_host_.Hwnd())) {
+    public_host_.Hide();
+  }
   for (auto& fence : fences_) {
     if (!fence) {
       continue;
@@ -7943,21 +7961,6 @@ void App::RestoreDesktopChrome() {
         !IsIconic(page_bar_.Hwnd())) {
       page_bar_.RefreshLayer();
     }
-  }
-  // public_visible_ is the organized-mode flag, not "the layer has content".
-  // reattach() unconditionally ShowWindow()s, so seating an empty layer here
-  // resurrected the float host that RebuildPublicItems had just hidden — the
-  // icon stayed on screen after it was moved into a fence until the next
-  // rebuild. Enforce the same invariant the other seat sites use: the float
-  // layer is visible only while it has slots to draw.
-  if (public_visible_ && public_host_.Hwnd() && public_host_.HasItems()) {
-    const bool need_present = reattach(public_host_.Hwnd());
-    if (need_present && IsWindowVisible(public_host_.Hwnd()) &&
-        !IsIconic(public_host_.Hwnd())) {
-      public_host_.RefreshLayer();
-    }
-  } else if (public_host_.Hwnd() && IsWindowVisible(public_host_.Hwnd())) {
-    public_host_.Hide();
   }
   show_desktop_seated_ = show_desktop;
 }
@@ -8750,6 +8753,7 @@ LRESULT CALLBACK App::TrayWndProc(HWND hwnd, UINT msg, WPARAM wparam,
         return 0;
       }
       if (wparam == kTimerOverlayRefresh) {
+
         // Re-upload visible overlays a few times after boot so hybrid-GPU
         // (Optimus / AMD switchable) machines that lost the initial layered
         // blit recover without a desktop click.

@@ -56,7 +56,9 @@ class PageBar {
   int AnchorY() const { return anchor_y_; }
   // X2: absolute dpi/96 rescale of chip / slot / font (design sheet @ 96 DPI).
   void ScaleForDpi(int old_dpi, int new_dpi);
-  void ApplyStyle(COLORREF background, COLORREF accent, COLORREF title);
+  void ApplyStyle(COLORREF background, COLORREF accent, COLORREF title,
+                  const std::string& style_id = "");
+  bool IsLiquidGlass() const { return style_id_ == "liquid_glass"; }
   using StyleFn = std::function<void(const std::string&)>;
   void SetOnSetStyle(StyleFn fn) { on_set_style_ = std::move(fn); }
   void SetOnPage(PageFn fn) { on_page_ = std::move(fn); }
@@ -170,6 +172,7 @@ class PageBar {
   int hover_index_ = -1;
   POINT drag_grab_{};
   POINT press_pt_{};
+  std::string style_id_ = "navy";
   COLORREF bg_ = RGB(24, 26, 32);
   COLORREF accent_ = RGB(70, 130, 200);
   COLORREF title_ = RGB(230, 230, 230);

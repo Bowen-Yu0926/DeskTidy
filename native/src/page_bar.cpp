@@ -391,10 +391,13 @@ void PageBar::SetPage(int page) {
 }
 
 void PageBar::ApplyStyle(COLORREF background, COLORREF accent,
-                          COLORREF title) {
+                          COLORREF title, const std::string& style_id) {
   bg_ = background;
   accent_ = accent;
   title_ = title;
+  if (!style_id.empty()) {
+    style_id_ = style_id;
+  }
   if (hwnd_) {
     Paint(nullptr);
   }
@@ -1085,56 +1088,127 @@ void PageBar::Paint(HDC) {
       const float card_rad =
           (std::min)(14.f * font_scale_, (std::min)(card_w, card_h) * 0.22f);
 
-      Gdiplus::GraphicsPath shade;
-      for (int s = 3; s >= 1; --s) {
-        const float o = static_cast<float>(s) * 1.4f;
-        add_round_rect(&shade, card_x - o * 0.2f, card_y + o * 0.55f,
-                       card_w + o * 0.35f, card_h + o * 0.25f,
-                       card_rad + o * 0.15f);
-        Gdiplus::SolidBrush brush(
-            Gdiplus::Color(static_cast<BYTE>(10 + s * 8), 15, 23, 42));
-        g.FillPath(&brush, &shade);
+      if (!IsLiquidGlass()) {
+        Gdiplus::GraphicsPath shade;
+        for (int s = 3; s >= 1; --s) {
+          const float o = static_cast<float>(s) * 1.4f;
+          add_round_rect(&shade, card_x - o * 0.2f, card_y + o * 0.55f,
+                         card_w + o * 0.35f, card_h + o * 0.25f,
+                         card_rad + o * 0.15f);
+          Gdiplus::SolidBrush brush(
+              Gdiplus::Color(static_cast<BYTE>(10 + s * 8), 15, 23, 42));
+          g.FillPath(&brush, &shade);
+        }
+      } else {
+        // Pure Liquid Glass: subtle ambient white outer glow (zero dark shade)
+        Gdiplus::GraphicsPath glow_path;
+        add_round_rect(&glow_path, card_x - 1.f, card_y - 0.5f,
+                       card_w + 2.f, card_h + 1.f, card_rad + 1.f);
+        Gdiplus::SolidBrush glow_b(Gdiplus::Color(16, 255, 255, 255));
+        g.FillPath(&glow_b, &glow_path);
       }
 
       Gdiplus::GraphicsPath card;
       add_round_rect(&card, card_x, card_y, card_w, card_h, card_rad);
       auto clamp_b = [](int v) -> BYTE { return static_cast<BYTE>((std::max)(0, (std::min)(255, v))); };
-      Gdiplus::Color card_top = is_light
-          ? Gdiplus::Color(235, 246, 248, 252)
-          : Gdiplus::Color(230, clamp_b(br + 12), clamp_b(bg + 12), clamp_b(bb + 15));
-      Gdiplus::Color card_bot = is_light
-          ? Gdiplus::Color(245, 230, 236, 246)
-          : Gdiplus::Color(245, clamp_b(br - 4), clamp_b(bg - 4), clamp_b(bb - 4));
-      Gdiplus::LinearGradientBrush fill(
-          Gdiplus::PointF(card_x, card_y),
-          Gdiplus::PointF(card_x, card_y + card_h),
-          card_top, card_bot);
-      g.FillPath(&fill, &card);
-      Gdiplus::Pen rim(Gdiplus::Color(is_light ? 120 : 85, ar, ag, ab), 1.f);
-      g.DrawPath(&rim, &card);
+
+      if (IsLiquidGlass()) {
+        // Pure Crystal Liquid Glass: completely transparent (100% shows wallpaper without dark tint)
+        Gdiplus::Color card_top(16, 255, 255, 255);
+        Gdiplus::Color card_bot(5, 255, 255, 255);
+        Gdiplus::LinearGradientBrush fill(
+            Gdiplus::PointF(card_x, card_y),
+            Gdiplus::PointF(card_x, card_y + card_h),
+            card_top, card_bot);
+        g.FillPath(&fill, &card);
+
+        // Specular gloss sheen across the top-left curve
+        const float sheen_h = (std::min)(card_h * 0.38f, 95.f * font_scale_);
+        g.SetClip(&card);
+        Gdiplus::LinearGradientBrush sheen(
+            Gdiplus::PointF(card_x, card_y),
+            Gdiplus::PointF(card_x + card_w * 0.35f, card_y + sheen_h),
+            Gdiplus::Color(42, 255, 255, 255),
+            Gdiplus::Color(0, 255, 255, 255));
+        g.FillRectangle(&sheen, card_x, card_y, card_w, sheen_h);
+        g.ResetClip();
+
+        // High-refraction luminous white glass rim (specular highlight contours the card cleanly)
+        Gdiplus::LinearGradientBrush rim_b(
+            Gdiplus::PointF(card_x, card_y),
+            Gdiplus::PointF(card_x + card_w, card_y + card_h),
+            Gdiplus::Color(195, 255, 255, 255),
+            Gdiplus::Color(65, 255, 255, 255));
+        Gdiplus::Pen rim(&rim_b, 1.25f);
+        g.DrawPath(&rim, &card);
+
+        // 1px inner refraction rim
+        Gdiplus::GraphicsPath inner_card;
+        add_round_rect(&inner_card, card_x + 1.f, card_y + 1.f, card_w - 2.f, card_h - 2.f,
+                       (std::max)(1.f, card_rad - 1.f));
+        Gdiplus::LinearGradientBrush inner_b(
+            Gdiplus::PointF(card_x, card_y),
+            Gdiplus::PointF(card_x, card_y + card_h),
+            Gdiplus::Color(35, 255, 255, 255),
+            Gdiplus::Color(4, 255, 255, 255));
+        Gdiplus::Pen inner_rim(&inner_b, 1.0f);
+        g.DrawPath(&inner_rim, &inner_card);
+      } else {
+        Gdiplus::Color card_top = is_light
+            ? Gdiplus::Color(235, 246, 248, 252)
+            : Gdiplus::Color(230, clamp_b(br + 12), clamp_b(bg + 12), clamp_b(bb + 15));
+        Gdiplus::Color card_bot = is_light
+            ? Gdiplus::Color(245, 230, 236, 246)
+            : Gdiplus::Color(245, clamp_b(br - 4), clamp_b(bg - 4), clamp_b(bb - 4));
+        Gdiplus::LinearGradientBrush fill(
+            Gdiplus::PointF(card_x, card_y),
+            Gdiplus::PointF(card_x, card_y + card_h),
+            card_top, card_bot);
+        g.FillPath(&fill, &card);
+        Gdiplus::Pen rim(Gdiplus::Color(is_light ? 120 : 85, ar, ag, ab), 1.f);
+        g.DrawPath(&rim, &card);
+      }
       if (expand_t_ < 0.55f) {
         const float nose_alpha = 140.f + expand_t_ * 100.f;
-        Gdiplus::SolidBrush glow(Gdiplus::Color(
-            static_cast<BYTE>(nose_alpha * 0.4f), ar, ag, ab));
-        g.FillRectangle(&glow,
-                        Gdiplus::RectF(card_x, card_y + card_rad - 2.f,
-                                       5.f * font_scale_,
-                                       card_h - card_rad * 2.f + 4.f));
-        Gdiplus::SolidBrush nose(Gdiplus::Color(
-            static_cast<BYTE>(nose_alpha), ar, ag, ab));
-        g.FillRectangle(&nose,
-                        Gdiplus::RectF(card_x + 1.f, card_y + card_rad,
-                                       2.5f * font_scale_,
-                                       card_h - card_rad * 2.f));
+        if (IsLiquidGlass()) {
+          Gdiplus::SolidBrush glow(Gdiplus::Color(
+              static_cast<BYTE>(nose_alpha * 0.25f), 255, 255, 255));
+          g.FillRectangle(&glow,
+                          Gdiplus::RectF(card_x, card_y + card_rad - 2.f,
+                                         5.f * font_scale_,
+                                         card_h - card_rad * 2.f + 4.f));
+          Gdiplus::SolidBrush nose(Gdiplus::Color(
+              static_cast<BYTE>(nose_alpha * 0.85f), 255, 255, 255));
+          g.FillRectangle(&nose,
+                          Gdiplus::RectF(card_x + 1.f, card_y + card_rad,
+                                         2.2f * font_scale_,
+                                         card_h - card_rad * 2.f));
+        } else {
+          Gdiplus::SolidBrush glow(Gdiplus::Color(
+              static_cast<BYTE>(nose_alpha * 0.4f), ar, ag, ab));
+          g.FillRectangle(&glow,
+                          Gdiplus::RectF(card_x, card_y + card_rad - 2.f,
+                                         5.f * font_scale_,
+                                         card_h - card_rad * 2.f + 4.f));
+          Gdiplus::SolidBrush nose(Gdiplus::Color(
+              static_cast<BYTE>(nose_alpha), ar, ag, ab));
+          g.FillRectangle(&nose,
+                          Gdiplus::RectF(card_x + 1.f, card_y + card_rad,
+                                         2.5f * font_scale_,
+                                         card_h - card_rad * 2.f));
+        }
       }
+
+
 
       const int first_util = FirstUtilityIndex();
       if (first_util > 0 && expand_t_ > 0.35f) {
         const float dy =
             static_cast<float>(SlotTop(first_util)) - SeparatorGap() * 0.5f;
         Gdiplus::Pen sep(
-            is_light ? Gdiplus::Color(48, 100, 116, 139)
-                     : Gdiplus::Color(55, 148, 163, 184),
+            IsLiquidGlass() ? Gdiplus::Color(45, 255, 255, 255)
+                            : (is_light ? Gdiplus::Color(48, 100, 116, 139)
+                                        : Gdiplus::Color(55, 148, 163, 184)),
             1.f);
         g.DrawLine(&sep, card_x + pad_x * 0.7f, dy,
                    card_x + card_w - pad_x * 0.7f, dy);
@@ -1271,15 +1345,29 @@ void PageBar::Paint(HDC) {
           add_round_rect(&dp, dot_x, dot_y, dot_w, dot_h, dot_w * 0.5f);
           const BYTE da = static_cast<BYTE>((on ? 245.f : 115.f) * peek_alpha);
           Gdiplus::SolidBrush db(
-              on ? Gdiplus::Color(da, ar, ag, ab)
-                 : (is_light ? Gdiplus::Color(da, 100, 116, 139)
-                             : Gdiplus::Color(da, 148, 163, 184)));
+              IsLiquidGlass()
+                  ? (on ? Gdiplus::Color(da, 255, 255, 255)
+                        : Gdiplus::Color(static_cast<BYTE>(da * 0.65f), 255, 255, 255))
+                  : (on ? Gdiplus::Color(da, ar, ag, ab)
+                        : (is_light ? Gdiplus::Color(da, 100, 116, 139)
+                                    : Gdiplus::Color(da, 148, 163, 184))));
           g.FillPath(&db, &dp);
         }
 
         const float rad = (std::min)(9.5f * font_scale_, bh * 0.44f);
         Gdiplus::Color fill_c;
-        if (on) {
+        if (IsLiquidGlass()) {
+          if (on) {
+            // Active: luminous semi-transparent frosted pill
+            fill_c = Gdiplus::Color(52, 255, 255, 255);
+          } else if (hover) {
+            // Hover: frosted white glass pill (100% matches user reference image!)
+            fill_c = Gdiplus::Color(36, 255, 255, 255);
+          } else {
+            // Normal: 100% transparent! No background color at all
+            fill_c = Gdiplus::Color(0, 0, 0, 0);
+          }
+        } else if (on) {
           fill_c = is_light
                        ? Gdiplus::Color(255, MixChannel(236, ar, 0.20f),
                                         MixChannel(240, ag, 0.20f),
@@ -1304,7 +1392,15 @@ void PageBar::Paint(HDC) {
           Gdiplus::SolidBrush body(fill_c);
           g.FillPath(&body, &row);
         }
-        if (on || hover) {
+        if (IsLiquidGlass()) {
+          if (on) {
+            Gdiplus::Pen rim(Gdiplus::Color(160, 255, 255, 255), 1.0f);
+            g.DrawPath(&rim, &row);
+          } else if (hover) {
+            Gdiplus::Pen rim(Gdiplus::Color(95, 255, 255, 255), 1.0f);
+            g.DrawPath(&rim, &row);
+          }
+        } else if (on || hover) {
           Gdiplus::Pen rim(Gdiplus::Color(on ? 125 : 65, ar, ag, ab), 1.f);
           g.DrawPath(&rim, &row);
         }
@@ -1315,7 +1411,9 @@ void PageBar::Paint(HDC) {
           add_round_rect(&rail_p, cx + 3.5f * font_scale_,
                          cy + (bh - rail_h) * 0.5f, rail_w, rail_h,
                          rail_w * 0.5f);
-          Gdiplus::SolidBrush rail(Gdiplus::Color(240, ar, ag, ab));
+          Gdiplus::SolidBrush rail(
+              IsLiquidGlass() ? Gdiplus::Color(245, 255, 255, 255)
+                              : Gdiplus::Color(240, ar, ag, ab));
           g.FillPath(&rail, &rail_p);
         }
         const float icon_sz = std::round(11.f * font_scale_);
@@ -1329,24 +1427,34 @@ void PageBar::Paint(HDC) {
         const float text_x = icon_x + icon_sz + std::round(5.f * font_scale_);
         const float text_w =
             (cx + bw) - text_x - side - lock_reserve;
-        const Gdiplus::Color ink_c =
-            is_light ? (on ? Gdiplus::Color(255, MixChannel(15, ar, 0.55f),
+        const Gdiplus::Color ink_c = IsLiquidGlass()
+            ? (on ? Gdiplus::Color(255, 255, 255, 255)
+                  : (utility ? Gdiplus::Color(220, 215, 230, 245)
+                             : Gdiplus::Color(255, 255, 255, 255)))
+            : (is_light ? (on ? Gdiplus::Color(255, MixChannel(15, ar, 0.55f),
                                             MixChannel(23, ag, 0.55f),
                                             MixChannel(42, ab, 0.55f))
                            : (utility ? Gdiplus::Color(220, 71, 85, 105)
                                       : Gdiplus::Color(255, 26, 35, 50)))
                      : (on ? Gdiplus::Color(255, 255, 255, 255)
                            : (utility ? Gdiplus::Color(210, 148, 163, 184)
-                                      : Gdiplus::Color(245, 241, 245, 249)));
-        const Gdiplus::Color icon_c =
-            on ? Gdiplus::Color(245, ar, ag, ab)
+                                      : Gdiplus::Color(245, 241, 245, 249))));
+        const Gdiplus::Color icon_c = IsLiquidGlass()
+            ? Gdiplus::Color(255, 255, 255, 255)
+            : (on ? Gdiplus::Color(245, ar, ag, ab)
                : Gdiplus::Color(static_cast<BYTE>(ink_c.GetA() * 0.82f),
-                                ink_c.GetR(), ink_c.GetG(), ink_c.GetB());
+                                ink_c.GetR(), ink_c.GetG(), ink_c.GetB()));
         Gdiplus::SolidBrush ink(ink_c);
         const Gdiplus::Font& font =
             on ? *font_on_ : (utility ? *font_util_ : *font_page_);
         if (expand_t_ > 0.32f && text_w > 8.f) {
           draw_slot_icon(s, icon_x, icon_y, icon_sz, icon_c, on);
+          if (IsLiquidGlass()) {
+            // Subtle ambient text drop shadow to stay super crisp across light/busy wallpapers
+            Gdiplus::SolidBrush shadow_ink(Gdiplus::Color(105, 0, 0, 0));
+            g.DrawString(s.label.c_str(), -1, &font,
+                         Gdiplus::RectF(text_x, cy + 1.f, text_w, bh), fmt_, &shadow_ink);
+          }
           g.DrawString(s.label.c_str(), -1, &font,
                        Gdiplus::RectF(text_x, cy, text_w, bh), fmt_, &ink);
         }
@@ -1393,16 +1501,25 @@ void PageBar::Paint(HDC) {
           }
         };
 
-        // Multi-layer soft ambient drop shadow (eliminates hard dark rim)
-        for (int layer = 2; layer >= 1; --layer) {
-          const float ox = static_cast<float>(layer) * 0.9f * font_scale_;
-          const float oy = static_cast<float>(layer) * 1.1f * font_scale_;
-          Gdiplus::GraphicsPath shadow;
-          make_tab_path(&shadow, tab_cx - ox * 0.6f, tab_cy + oy,
-                        tab_bw + ox * 0.6f, tab_bh, rad + ox * 0.2f, true);
-          const BYTE sa = static_cast<BYTE>((on ? 15 : 9) * (3 - layer));
-          Gdiplus::SolidBrush shade(Gdiplus::Color(sa, 15, 23, 42));
-          g.FillPath(&shade, &shadow);
+        // Multi-layer soft ambient drop shadow (disabled for pure liquid glass)
+        if (!IsLiquidGlass()) {
+          for (int layer = 2; layer >= 1; --layer) {
+            const float ox = static_cast<float>(layer) * 0.9f * font_scale_;
+            const float oy = static_cast<float>(layer) * 1.1f * font_scale_;
+            Gdiplus::GraphicsPath shadow;
+            make_tab_path(&shadow, tab_cx - ox * 0.6f, tab_cy + oy,
+                          tab_bw + ox * 0.6f, tab_bh, rad + ox * 0.2f, true);
+            const BYTE sa = static_cast<BYTE>((on ? 15 : 9) * (3 - layer));
+            Gdiplus::SolidBrush shade(Gdiplus::Color(sa, 15, 23, 42));
+            g.FillPath(&shade, &shadow);
+          }
+        } else {
+          // Pure white ambient rim glow
+          Gdiplus::GraphicsPath glow_path;
+          make_tab_path(&glow_path, tab_cx - 0.8f, tab_cy - 0.5f,
+                        tab_bw + 0.8f, tab_bh + 1.f, rad + 0.5f, true);
+          Gdiplus::SolidBrush glow_b(Gdiplus::Color(14, 255, 255, 255));
+          g.FillPath(&glow_b, &glow_path);
         }
 
         Gdiplus::GraphicsPath path;
@@ -1413,7 +1530,21 @@ void PageBar::Paint(HDC) {
         auto clamp_b = [](int v) -> BYTE {
           return static_cast<BYTE>((std::max)(0, (std::min)(255, v)));
         };
-        if (is_light) {
+        if (IsLiquidGlass()) {
+          if (on) {
+            // Active tab: semi-transparent crystal white highlight (NO blue solid block)
+            top = Gdiplus::Color(52, 255, 255, 255);
+            bottom = Gdiplus::Color(28, 255, 255, 255);
+          } else if (hover) {
+            // Hover tab: frosted white glass pill
+            top = Gdiplus::Color(38, 255, 255, 255);
+            bottom = Gdiplus::Color(18, 255, 255, 255);
+          } else {
+            // Normal tab: 100% transparent! Zero background color
+            top = Gdiplus::Color(0, 0, 0, 0);
+            bottom = Gdiplus::Color(0, 0, 0, 0);
+          }
+        } else if (is_light) {
           if (on) {
             top = Gdiplus::Color(254, 255, 255, 255);
             bottom = Gdiplus::Color(252, MixChannel(245, ar, 0.12f),
@@ -1442,15 +1573,25 @@ void PageBar::Paint(HDC) {
             bottom = Gdiplus::Color(196, clamp_b(br - 2), clamp_b(bg - 2), clamp_b(bb));
           }
         }
-        Gdiplus::LinearGradientBrush body(
-            Gdiplus::PointF(tab_cx, tab_cy),
-            Gdiplus::PointF(tab_cx, tab_cy + tab_bh), top, bottom);
-        g.FillPath(&body, &path);
+        if (top.GetA() > 0 || bottom.GetA() > 0) {
+          Gdiplus::LinearGradientBrush body(
+              Gdiplus::PointF(tab_cx, tab_cy),
+              Gdiplus::PointF(tab_cx, tab_cy + tab_bh), top, bottom);
+          g.FillPath(&body, &path);
+        }
 
         // Open-right border path (no vertical seam along the screen edge)
         Gdiplus::GraphicsPath border_path;
         make_tab_path(&border_path, tab_cx, tab_cy, tab_bw, tab_bh, rad, false);
-        if (on) {
+        if (IsLiquidGlass()) {
+          Gdiplus::LinearGradientBrush rim_b(
+              Gdiplus::PointF(tab_cx, tab_cy),
+              Gdiplus::PointF(tab_cx + tab_bw, tab_cy + tab_bh),
+              Gdiplus::Color(on ? 195 : (hover ? 140 : 85), 255, 255, 255),
+              Gdiplus::Color(on ? 70 : (hover ? 45 : 25), 255, 255, 255));
+          Gdiplus::Pen rim(&rim_b, 1.25f);
+          g.DrawPath(&rim, &border_path);
+        } else if (on) {
           Gdiplus::Pen rim(
               Gdiplus::Color(is_light ? 150 : 180, ar, ag, ab), 1.15f);
           g.DrawPath(&rim, &border_path);
@@ -1476,7 +1617,9 @@ void PageBar::Paint(HDC) {
           const float pill_y = tab_cy + (tab_bh - pill_h) * 0.5f;
           Gdiplus::GraphicsPath pill;
           add_round_rect(&pill, pill_x, pill_y, pill_w, pill_h, pill_w * 0.5f);
-          Gdiplus::SolidBrush pill_brush(Gdiplus::Color(250, ar, ag, ab));
+          Gdiplus::SolidBrush pill_brush(
+              IsLiquidGlass() ? Gdiplus::Color(250, 255, 255, 255)
+                              : Gdiplus::Color(250, ar, ag, ab));
           g.FillPath(&pill_brush, &pill);
         }
 
@@ -1485,10 +1628,11 @@ void PageBar::Paint(HDC) {
             (std::min)(1.f, (std::max)(0.f, (0.32f - expand_t_) / 0.26f));
         if (peek_fade > 0.05f) {
           const BYTE pa = static_cast<BYTE>((on ? 245.f : 175.f) * peek_fade);
-          const Gdiplus::Color peek_c =
-              on ? Gdiplus::Color(pa, ar, ag, ab)
-                 : (is_light ? Gdiplus::Color(pa, 51, 65, 85)
-                             : Gdiplus::Color(pa, 203, 213, 225));
+          const Gdiplus::Color peek_c = IsLiquidGlass()
+              ? Gdiplus::Color(pa, 255, 255, 255)
+              : (on ? Gdiplus::Color(pa, ar, ag, ab)
+                    : (is_light ? Gdiplus::Color(pa, 51, 65, 85)
+                                : Gdiplus::Color(pa, 203, 213, 225)));
           const float peek_zone_x =
               tab_cx + (on ? std::round(9.f * font_scale_)
                            : std::round(4.f * font_scale_));
@@ -1525,7 +1669,9 @@ void PageBar::Paint(HDC) {
               on ? *font_on_ : (utility ? *font_util_ : *font_page_);
           const BYTE ink_a = static_cast<BYTE>(255.f * text_fade);
           Gdiplus::Color ink_c;
-          if (is_light) {
+          if (IsLiquidGlass()) {
+            ink_c = Gdiplus::Color(ink_a, 255, 255, 255);
+          } else if (is_light) {
             if (on) {
               ink_c = Gdiplus::Color(ink_a, MixChannel(15, ar, 0.55f),
                                      MixChannel(23, ag, 0.55f),
@@ -1548,11 +1694,18 @@ void PageBar::Paint(HDC) {
               ink_c = Gdiplus::Color(static_cast<BYTE>(225.f * text_fade), 214, 224, 238);
             }
           }
-          const Gdiplus::Color icon_c =
-              on ? Gdiplus::Color(ink_a, ar, ag, ab)
-                 : Gdiplus::Color(static_cast<BYTE>(ink_c.GetA() * 0.85f),
-                                  ink_c.GetR(), ink_c.GetG(), ink_c.GetB());
+          const Gdiplus::Color icon_c = IsLiquidGlass()
+              ? Gdiplus::Color(ink_a, 255, 255, 255)
+              : (on ? Gdiplus::Color(ink_a, ar, ag, ab)
+                    : Gdiplus::Color(static_cast<BYTE>(ink_c.GetA() * 0.85f),
+                                     ink_c.GetR(), ink_c.GetG(), ink_c.GetB()));
           draw_slot_icon(s, icon_x, icon_y, icon_sz, icon_c, on);
+          if (IsLiquidGlass()) {
+            // Subtle ambient text drop shadow to stay ultra sharp
+            Gdiplus::SolidBrush shadow_ink(Gdiplus::Color(static_cast<BYTE>(105.f * text_fade), 0, 0, 0));
+            g.DrawString(s.label.c_str(), -1, &font,
+                         Gdiplus::RectF(text_x, tab_cy + 1.f, text_w, tab_bh), fmt_, &shadow_ink);
+          }
           Gdiplus::SolidBrush ink(ink_c);
           g.DrawString(s.label.c_str(), -1, &font,
                        Gdiplus::RectF(text_x, tab_cy, text_w, tab_bh), fmt_, &ink);
@@ -1563,10 +1716,11 @@ void PageBar::Paint(HDC) {
           const float lh = std::round(4.6f * font_scale_);
           const float lx = tab_cx + tab_bw - std::round(12.f * font_scale_);
           const float ly = tab_cy + (tab_bh - (lh + 3.2f * font_scale_)) * 0.5f;
-          const Gdiplus::Color lock_c =
-              on ? Gdiplus::Color(200, ar, ag, ab)
-                 : (is_light ? Gdiplus::Color(150, 100, 116, 139)
-                             : Gdiplus::Color(160, 165, 180, 202));
+          const Gdiplus::Color lock_c = IsLiquidGlass()
+              ? Gdiplus::Color(static_cast<BYTE>(190.f * text_fade), 255, 255, 255)
+              : (on ? Gdiplus::Color(200, ar, ag, ab)
+                    : (is_light ? Gdiplus::Color(150, 100, 116, 139)
+                                : Gdiplus::Color(160, 165, 180, 202)));
           Gdiplus::Pen shackle(lock_c, (std::max)(1.f, 1.1f * font_scale_));
           g.DrawArc(&shackle,
                     Gdiplus::RectF(lx + 1.f * font_scale_, ly,

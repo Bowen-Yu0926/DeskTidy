@@ -90,6 +90,7 @@ const std::vector<UiThemeOption>& AllUiThemes() {
       {"aurora", L"极光绿（360清新翡翠薄荷）"},
       {"sunset", L"落霞金（360暖阳轻奢琥珀）"},
       {"midnight", L"幻夜紫（360神秘暗夜紫晶）"},
+      {"liquid_glass", L"液态玻璃（晶莹通透超清毛玻璃）"},
   };
   return kThemes;
 }
@@ -112,6 +113,9 @@ std::string NormalizeUiTheme(const std::string& id) {
   }
   if (id == "lavender" || id == "purple") {
     return "midnight";
+  }
+  if (id == "liquid_glass" || id == "glass" || id == "liquid") {
+    return "liquid_glass";
   }
   for (const auto& t : AllUiThemes()) {
     if (id == t.id) {

@@ -771,6 +771,8 @@ void PublicHost::SetItems(std::vector<DesktopItem> items) {
       }
     }
     if (all_icons) {
+      Layout();
+      ApplyVisibility();
       return;
     }
   }
@@ -3134,6 +3136,7 @@ void PublicHost::BeginOleDrag() {
   if (paths.empty()) {
     return;
   }
+  LogLine(L"[public] BeginOleDrag START paths=%zu first=%s", paths.size(), paths[0].c_str());
   POINT drag_start_screen = drag_press_;
   if (hwnd_) {
     ClientToScreen(hwnd_, &drag_start_screen);
@@ -3165,6 +3168,8 @@ void PublicHost::BeginOleDrag() {
   POINT pt{};
   GetCursorPos(&pt);
   HWND under = WindowFromPoint(pt);
+  LogLine(L"[public] BeginOleDrag FINISHED dropped=%d escaped=%d pt=(%d,%d) under=0x%p",
+          dropped ? 1 : 0, drag_escaped ? 1 : 0, pt.x, pt.y, under);
   for (HWND cur = under; cur; cur = GetParent(cur)) {
     if (cur == marquee_hwnd_) {
       dropped = false;
@@ -3280,6 +3285,7 @@ void PublicHost::BeginOleDrag() {
     }
     if (!dropped && !modifier_landed && !drag_escaped) {
       if (paths.size() == 1 && over_desktop_blank(pt)) {
+        LogLine(L"[public] UpsertFloatPlacement path=%s pt=(%d,%d)", p.c_str(), pt.x, pt.y);
         UpsertFloatPlacement(&placements_, p, current_page_, pt);
         placements_dirty = true;
       } else if (paths.size() > 1 && over_desktop_blank(pt)) {
@@ -3344,7 +3350,15 @@ LRESULT PublicHost::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
     POINT pt{GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
     POINT client = pt;
     ScreenToClient(hwnd_, &client);
-    if (HitTest(client.x, client.y) >= 0) {
+    const int hit = HitTest(client.x, client.y);
+    static ULONGLONG s_last_nchittest_log = 0;
+    ULONGLONG now = GetTickCount64();
+    if (hit >= 0 || (now - s_last_nchittest_log > 1000)) {
+      s_last_nchittest_log = now;
+      LogLine(L"[public] NCHITTEST screen=(%d,%d) client=(%d,%d) hit=%d slots=%zu",
+              pt.x, pt.y, client.x, client.y, hit, slots_.size());
+    }
+    if (hit >= 0) {
       return HTCLIENT;
     }
     // Invariant: Never intercept clicks outside the work area (e.g. taskbar, multi-mon borders)
@@ -3396,7 +3410,11 @@ LRESULT PublicHost::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
   }
   switch (msg) {
     case WM_MOUSEACTIVATE:
-      return MA_NOACTIVATEANDEAT;
+      // Desktop overlay invariant: never activate or change Z-order on click,
+      // keeping public floats strictly below all app windows, prompts, and dialogs.
+      // MA_NOACTIVATE, never MA_NOACTIVATEANDEAT. ANDEAT discards the mouse message
+      // which prevents WM_LBUTTONDOWN / selection / drag / double-click from firing.
+      return MA_NOACTIVATE;
     case WM_PAINT: {
       PAINTSTRUCT ps{};
       BeginPaint(hwnd_, &ps);
@@ -3412,6 +3430,7 @@ LRESULT PublicHost::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
       const int x = GET_X_LPARAM(lparam);
       const int y = GET_Y_LPARAM(lparam);
       drag_from_ = HitTest(x, y);
+      LogLine(L"[public] LBUTTONDOWN pt=(%d,%d) drag_from=%d", x, y, drag_from_);
       drag_moved_ = false;
       drag_press_ = {x, y};
       rubber_ = false;

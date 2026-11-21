@@ -750,7 +750,8 @@ void FenceWindow::PresentLayered() {
       panel_chrome_bg_ == bg_ && panel_chrome_accent_ == accent_ &&
       panel_chrome_alpha_ == panel_alpha_ &&
       panel_chrome_light_ == light_panel_ &&
-      panel_chrome_radius_ == radius && panel_chrome_.size() == nbytes;
+      panel_chrome_radius_ == radius && panel_chrome_style_ == style_id_ &&
+      panel_chrome_.size() == nbytes;
   if (chrome_hit) {
     std::memcpy(bits, panel_chrome_.data(), nbytes);
   } else {
@@ -765,97 +766,166 @@ void FenceWindow::PresentLayered() {
     const int rw = (std::max)(1, w - 1);
     const int rh = (std::max)(1, h - 1);
 
-    // 360-style glossy vertical frosted acrylic wash
-    const BYTE r_val = GetRValue(bg_);
-    const BYTE g_val = GetGValue(bg_);
-    const BYTE b_val = GetBValue(bg_);
-    const BYTE top_a = static_cast<BYTE>((std::min)(255, static_cast<int>(a) + 10));
-    const BYTE top_r = static_cast<BYTE>((std::max)(0, (std::min)(255, static_cast<int>(r_val) + (light_panel_ ? -3 : 8))));
-    const BYTE top_g = static_cast<BYTE>((std::max)(0, (std::min)(255, static_cast<int>(g_val) + (light_panel_ ? -3 : 8))));
-    const BYTE top_b = static_cast<BYTE>((std::max)(0, (std::min)(255, static_cast<int>(b_val) + (light_panel_ ? -3 : 12))));
-    Gdiplus::LinearGradientBrush fill(
-        Gdiplus::Point(0, 0), Gdiplus::Point(0, rh),
-        Gdiplus::Color(top_a, top_r, top_g, top_b),
-        Gdiplus::Color(a, r_val, g_val, b_val));
+    const bool is_liquid = (style_id_ == "liquid_glass");
+    const int header_h = S(kHeaderH0);
+    const bool rounded = rr > 2 && rr < rw && rr < rh;
 
     Gdiplus::GraphicsPath path;
-    if (rr > 2 && rr < rw && rr < rh) {
+    if (rounded) {
       path.AddArc(0, 0, rr, rr, 180, 90);
       path.AddArc(rw - rr, 0, rr, rr, 270, 90);
       path.AddArc(rw - rr, rh - rr, rr, rr, 0, 90);
       path.AddArc(0, rh - rr, rr, rr, 90, 90);
       path.CloseFigure();
-      g.FillPath(&fill, &path);
-    } else {
-      g.FillRectangle(&fill, 0, 0, rw, rh);
     }
-    // Soft header wash only (Fences-style: no left accent stripe).
-    const int header_h = S(kHeaderH0);
-    const bool rounded = rr > 2 && rr < rw && rr < rh;
-    {
-      // Glossy vertical gradient wash for frosted glass depth
-      Gdiplus::LinearGradientBrush wash(
-          Gdiplus::Point(0, 0), Gdiplus::Point(0, header_h),
-          Gdiplus::Color(light_panel_ ? 75 : 38, 255, 255, 255),
-          Gdiplus::Color(light_panel_ ? 35 : 16, 255, 255, 255));
+
+    if (is_liquid) {
+      // Liquid Glass: completely transparent crystal glass (100% shows wallpaper without dark tint)
+      Gdiplus::Color card_top(16, 255, 255, 255);
+      Gdiplus::Color card_bot(5, 255, 255, 255);
+      Gdiplus::LinearGradientBrush fill(
+          Gdiplus::Point(0, 0), Gdiplus::Point(0, rh),
+          card_top, card_bot);
+      if (rounded) {
+        g.FillPath(&fill, &path);
+      } else {
+        g.FillRectangle(&fill, 0, 0, rw, rh);
+      }
+
+      // Top specular gloss sheen across the upper glass curve
+      const int sheen_h = (std::min)(header_h + S(40), rh / 2);
       if (rounded) {
         g.SetClip(&path);
-        g.FillRectangle(&wash, 0, 0, rw, header_h);
-        g.ResetClip();
-      } else {
-        g.FillRectangle(&wash, 0, 0, rw, header_h);
       }
-    }
+      Gdiplus::LinearGradientBrush sheen(
+          Gdiplus::Point(0, 0), Gdiplus::Point(rw * 0.35f, sheen_h),
+          Gdiplus::Color(42, 255, 255, 255),
+          Gdiplus::Color(0, 255, 255, 255));
+      g.FillRectangle(&sheen, 0, 0, rw, sheen_h);
+      if (rounded) {
+        g.ResetClip();
+      }
 
-    // Luminous separator bar between header and content (融入强调色微光，柔和通透)
-    const BYTE ar = GetRValue(accent_);
-    const BYTE ag = GetGValue(accent_);
-    const BYTE ab = GetBValue(accent_);
-    if (h > header_h + 2) {
-      Gdiplus::Color mid_col = light_panel_
-          ? Gdiplus::Color(40, 15, 23, 42)
-          : Gdiplus::Color(60, static_cast<BYTE>((235 * 3 + ar) / 4),
-                               static_cast<BYTE>((245 * 3 + ag) / 4),
-                               static_cast<BYTE>((255 * 3 + ab) / 4));
-      Gdiplus::Color trans_col(0, mid_col.GetR(), mid_col.GetG(), mid_col.GetB());
-      Gdiplus::LinearGradientBrush sep(
-          Gdiplus::Point(0, header_h), Gdiplus::Point(rw, header_h),
-          trans_col, trans_col);
-      Gdiplus::Color colors[3] = {trans_col, mid_col, trans_col};
-      Gdiplus::REAL positions[3] = {0.0f, 0.5f, 1.0f};
-      sep.SetInterpolationColors(colors, positions, 3);
-      Gdiplus::Pen sep_pen(&sep, 1.0f);
-      g.DrawLine(&sep_pen, 0, header_h, rw, header_h);
-    }
+      // High-refraction pure white glass rim
+      Gdiplus::LinearGradientBrush rim_b(
+          Gdiplus::Point(0, 0), Gdiplus::Point(rw, rh),
+          Gdiplus::Color(195, 255, 255, 255),
+          Gdiplus::Color(65, 255, 255, 255));
+      Gdiplus::Pen edge(&rim_b, 1.2f);
+      if (rounded) {
+        g.DrawPath(&edge, &path);
+      } else {
+        g.DrawRectangle(&edge, 0, 0, rw - 1, rh - 1);
+      }
 
-    // Subtle specular inner rim along the very top edge (360/Fluent 晶润高光)
-    {
-      Gdiplus::Color rim_mid = light_panel_
-          ? Gdiplus::Color(80, 255, 255, 255)
-          : Gdiplus::Color(95, 255, 255, 255);
-      Gdiplus::Color rim_ends(0, 255, 255, 255);
-      Gdiplus::LinearGradientBrush top_rim(
-          Gdiplus::Point(0, 1), Gdiplus::Point(rw, 1),
-          rim_ends, rim_ends);
-      Gdiplus::Color rim_colors[3] = {rim_ends, rim_mid, rim_ends};
-      Gdiplus::REAL rim_pos[3] = {0.0f, 0.5f, 1.0f};
-      top_rim.SetInterpolationColors(rim_colors, rim_pos, 3);
-      Gdiplus::Pen rim_pen(&top_rim, 1.0f);
-      const int inset = rounded ? radius : 2;
-      g.DrawLine(&rim_pen, inset, 1, rw - inset, 1);
-    }
+      // 1px inner refraction rim
+      if (rounded) {
+        Gdiplus::GraphicsPath inner_path;
+        const int irr = (std::max)(1, rr - 2);
+        inner_path.AddArc(1, 1, irr, irr, 180, 90);
+        inner_path.AddArc(rw - 1 - irr, 1, irr, irr, 270, 90);
+        inner_path.AddArc(rw - 1 - irr, rh - 1 - irr, irr, irr, 0, 90);
+        inner_path.AddArc(1, rh - 1 - irr, irr, irr, 90, 90);
+        inner_path.CloseFigure();
+        Gdiplus::LinearGradientBrush inner_b(
+            Gdiplus::Point(0, 0), Gdiplus::Point(rw, rh),
+            Gdiplus::Color(35, 255, 255, 255),
+            Gdiplus::Color(4, 255, 255, 255));
+        Gdiplus::Pen inner_pen(&inner_b, 1.0f);
+        g.DrawPath(&inner_pen, &inner_path);
+      }
 
-    // 现代精致微光光晕边框（融入 preset accent 强调色微光，通透柔和，告别发硬白框）
-    Gdiplus::Color edge_col = light_panel_
-        ? Gdiplus::Color(45, 15, 23, 42)
-        : Gdiplus::Color(55, static_cast<BYTE>((255 * 7 + ar * 3) / 10),
-                             static_cast<BYTE>((255 * 7 + ag * 3) / 10),
-                             static_cast<BYTE>((255 * 7 + ab * 3) / 10));
-    Gdiplus::Pen edge(edge_col, 1.0f);
-    if (rr > 2 && rr < rw && rr < rh) {
-      g.DrawPath(&edge, &path);
+      // Luminous fine separator line between header and content
+      if (h > header_h + 2) {
+        Gdiplus::Pen sep(Gdiplus::Color(40, 255, 255, 255), 1.0f);
+        g.DrawLine(&sep, rounded ? radius : 0, header_h,
+                   rounded ? (rw - radius) : rw, header_h);
+      }
     } else {
-      g.DrawRectangle(&edge, 0, 0, rw - 1, rh - 1);
+      // 360-style glossy vertical frosted acrylic wash
+      const BYTE r_val = GetRValue(bg_);
+      const BYTE g_val = GetGValue(bg_);
+      const BYTE b_val = GetBValue(bg_);
+      const BYTE top_a = static_cast<BYTE>((std::min)(255, static_cast<int>(a) + 10));
+      const BYTE top_r = static_cast<BYTE>((std::max)(0, (std::min)(255, static_cast<int>(r_val) + (light_panel_ ? -3 : 8))));
+      const BYTE top_g = static_cast<BYTE>((std::max)(0, (std::min)(255, static_cast<int>(g_val) + (light_panel_ ? -3 : 8))));
+      const BYTE top_b = static_cast<BYTE>((std::max)(0, (std::min)(255, static_cast<int>(b_val) + (light_panel_ ? -3 : 12))));
+      Gdiplus::LinearGradientBrush fill(
+          Gdiplus::Point(0, 0), Gdiplus::Point(0, rh),
+          Gdiplus::Color(top_a, top_r, top_g, top_b),
+          Gdiplus::Color(a, r_val, g_val, b_val));
+
+      if (rounded) {
+        g.FillPath(&fill, &path);
+      } else {
+        g.FillRectangle(&fill, 0, 0, rw, rh);
+      }
+
+      // Soft header wash only (Fences-style: no left accent stripe).
+      {
+        Gdiplus::LinearGradientBrush wash(
+            Gdiplus::Point(0, 0), Gdiplus::Point(0, header_h),
+            Gdiplus::Color(light_panel_ ? 75 : 38, 255, 255, 255),
+            Gdiplus::Color(light_panel_ ? 35 : 16, 255, 255, 255));
+        if (rounded) {
+          g.SetClip(&path);
+          g.FillRectangle(&wash, 0, 0, rw, header_h);
+          g.ResetClip();
+        } else {
+          g.FillRectangle(&wash, 0, 0, rw, header_h);
+        }
+      }
+
+      // Luminous separator bar between header and content
+      const BYTE ar = GetRValue(accent_);
+      const BYTE ag = GetGValue(accent_);
+      const BYTE ab = GetBValue(accent_);
+      if (h > header_h + 2) {
+        Gdiplus::Color mid_col = light_panel_
+            ? Gdiplus::Color(40, 15, 23, 42)
+            : Gdiplus::Color(60, static_cast<BYTE>((235 * 3 + ar) / 4),
+                                 static_cast<BYTE>((245 * 3 + ag) / 4),
+                                 static_cast<BYTE>((255 * 3 + ab) / 4));
+        Gdiplus::Color trans_col(0, mid_col.GetR(), mid_col.GetG(), mid_col.GetB());
+        Gdiplus::LinearGradientBrush sep(
+            Gdiplus::Point(0, header_h), Gdiplus::Point(rw, header_h),
+            trans_col, trans_col);
+        Gdiplus::Color colors[3] = {trans_col, mid_col, trans_col};
+        Gdiplus::REAL positions[3] = {0.0f, 0.5f, 1.0f};
+        sep.SetInterpolationColors(colors, positions, 3);
+        Gdiplus::Pen sep_pen(&sep, 1.0f);
+        g.DrawLine(&sep_pen, 0, header_h, rw, header_h);
+      }
+
+      // Subtle specular inner rim along the very top edge
+      {
+        Gdiplus::Color rim_mid = light_panel_
+            ? Gdiplus::Color(80, 255, 255, 255)
+            : Gdiplus::Color(95, 255, 255, 255);
+        Gdiplus::Color rim_ends(0, 255, 255, 255);
+        Gdiplus::LinearGradientBrush top_rim(
+            Gdiplus::Point(0, 1), Gdiplus::Point(rw, 1),
+            rim_ends, rim_ends);
+        Gdiplus::Color rim_colors[3] = {rim_ends, rim_mid, rim_ends};
+        Gdiplus::REAL rim_pos[3] = {0.0f, 0.5f, 1.0f};
+        top_rim.SetInterpolationColors(rim_colors, rim_pos, 3);
+        Gdiplus::Pen rim_pen(&top_rim, 1.0f);
+        const int inset = rounded ? radius : 2;
+        g.DrawLine(&rim_pen, inset, 1, rw - inset, 1);
+      }
+
+      // Modern subtle glow edge
+      Gdiplus::Color edge_col = light_panel_
+          ? Gdiplus::Color(45, 15, 23, 42)
+          : Gdiplus::Color(55, static_cast<BYTE>((255 * 7 + ar * 3) / 10),
+                               static_cast<BYTE>((255 * 7 + ag * 3) / 10),
+                               static_cast<BYTE>((255 * 7 + ab * 3) / 10));
+      Gdiplus::Pen edge(edge_col, 1.0f);
+      if (rounded) {
+        g.DrawPath(&edge, &path);
+      } else {
+        g.DrawRectangle(&edge, 0, 0, rw - 1, rh - 1);
+      }
     }
     panel_chrome_.resize(nbytes);
     std::memcpy(panel_chrome_.data(), bits, nbytes);
@@ -866,6 +936,7 @@ void FenceWindow::PresentLayered() {
     panel_chrome_alpha_ = panel_alpha_;
     panel_chrome_light_ = light_panel_;
     panel_chrome_radius_ = radius;
+    panel_chrome_style_ = style_id_;
   }
   SetGraphicsMode(mem, GM_COMPATIBLE);
 
@@ -1896,11 +1967,11 @@ bool FenceWindow::TitleLabelRect(RECT* out) const {
   consider(lock_rc);
   consider(dissolve_rc);
   chrome_right = (std::max)(0, chrome_right - 6);
+  const int title_top = S(6);
+  const int title_px = S(13);
   const int title_left =
       (portal_up_rc.right > portal_up_rc.left) ? portal_up_rc.right + 4
                                                : S(6);
-  const int title_top = S(6);
-  const int title_px = S(13);
   out->left = title_left;
   out->top = title_top;
   out->right = chrome_right;
@@ -7049,8 +7120,10 @@ void FenceWindow::Paint(HDC hdc) {
   EnsureFonts(title_px, font_px, S(11));
   EnsureFooterFormat();
   Gdiplus::SolidBrush title_brush(
-      Gdiplus::Color(255, GetRValue(title_color_), GetGValue(title_color_),
-                     GetBValue(title_color_)));
+      style_id_ == "liquid_glass"
+          ? Gdiplus::Color(255, 255, 255, 255)
+          : Gdiplus::Color(255, GetRValue(title_color_), GetGValue(title_color_),
+                         GetBValue(title_color_)));
   Gdiplus::StringFormat title_fmt;
   title_fmt.SetAlignment(Gdiplus::StringAlignmentCenter);
   title_fmt.SetLineAlignment(Gdiplus::StringAlignmentNear);
@@ -7107,7 +7180,30 @@ void FenceWindow::Paint(HDC hdc) {
                     90.f);
         path.AddArc(rf.X, rf.GetBottom() - rad, rad, rad, 90.f, 90.f);
         path.CloseFigure();
-        if (on) {
+        if (style_id_ == "liquid_glass") {
+          if (on) {
+            Gdiplus::Color c_top(52, 255, 255, 255);
+            Gdiplus::Color c_bot(26, 255, 255, 255);
+            Gdiplus::LinearGradientBrush chip(
+                Gdiplus::PointF(rf.X, rf.Y),
+                Gdiplus::PointF(rf.X, rf.GetBottom()), c_top, c_bot);
+            g.FillPath(&chip, &path);
+            Gdiplus::Pen rim(Gdiplus::Color(180, 255, 255, 255), 1.0f);
+            g.DrawPath(&rim, &path);
+            const float bar_w = (std::max)(12.f, rf.Width * 0.36f);
+            const float bar_x = rf.X + (rf.Width - bar_w) * 0.5f;
+            const float bar_y = rf.GetBottom() - 2.5f;
+            Gdiplus::Pen bar_pen(Gdiplus::Color(250, 255, 255, 255), 2.0f);
+            bar_pen.SetStartCap(Gdiplus::LineCapRound);
+            bar_pen.SetEndCap(Gdiplus::LineCapRound);
+            g.DrawLine(&bar_pen, bar_x, bar_y, bar_x + bar_w, bar_y);
+          } else if (hov) {
+            Gdiplus::SolidBrush chip(Gdiplus::Color(36, 255, 255, 255));
+            g.FillPath(&chip, &path);
+            Gdiplus::Pen hpen(Gdiplus::Color(90, 255, 255, 255), 1.0f);
+            g.DrawPath(&hpen, &path);
+          }
+        } else if (on) {
           Gdiplus::Color c_top = light_panel_
               ? Gdiplus::Color(240, 255, 255, 255)
               : Gdiplus::Color(115,
@@ -7414,30 +7510,41 @@ void FenceWindow::Paint(HDC hdc) {
 
   // Pre-build caption brushes once per Present (avoid per-cell GDI+ churn).
   Gdiplus::SolidBrush name_brush_normal(
-      Gdiplus::Color(255, GetRValue(caption_color_), GetGValue(caption_color_),
-                     GetBValue(caption_color_)));
+      style_id_ == "liquid_glass"
+          ? Gdiplus::Color(255, 255, 255, 255)
+          : Gdiplus::Color(255, GetRValue(caption_color_), GetGValue(caption_color_),
+                         GetBValue(caption_color_)));
   Gdiplus::SolidBrush name_brush_cut(
       Gdiplus::Color(kCutOpacity, GetRValue(caption_color_),
                      GetGValue(caption_color_), GetBValue(caption_color_)));
   Gdiplus::SolidBrush cap_shadow(
-      Gdiplus::Color(light_panel_ ? 48 : 96,
-                     light_panel_ ? 255 : 0, light_panel_ ? 255 : 0,
-                     light_panel_ ? 255 : 0));
+      style_id_ == "liquid_glass"
+          ? Gdiplus::Color(105, 0, 0, 0)
+          : Gdiplus::Color(light_panel_ ? 48 : 96,
+                         light_panel_ ? 255 : 0, light_panel_ ? 255 : 0,
+                         light_panel_ ? 255 : 0));
 
   // Selection / focus / hover chrome brushes + pens, built once per Present.
   // PaintSelectionChrome used to allocate a SolidBrush + Pen per cell.
-  Gdiplus::SolidBrush chrome_sel_brush(Gdiplus::Color(
-      110, GetRValue(accent_), GetGValue(accent_), GetBValue(accent_)));
-  Gdiplus::Pen chrome_sel_pen(Gdiplus::Color(
-      220, GetRValue(accent_), GetGValue(accent_), GetBValue(accent_)), 1.5f);
-  Gdiplus::SolidBrush chrome_focus_brush(Gdiplus::Color(
-      36, GetRValue(accent_), GetGValue(accent_), GetBValue(accent_)));
-  Gdiplus::Pen chrome_focus_pen(Gdiplus::Color(
-      110, GetRValue(accent_), GetGValue(accent_), GetBValue(accent_)), 1.5f);
-  Gdiplus::SolidBrush chrome_hover_brush(Gdiplus::Color(
-      48, GetRValue(accent_), GetGValue(accent_), GetBValue(accent_)));
-  Gdiplus::Pen chrome_hover_pen(Gdiplus::Color(
-      90, GetRValue(accent_), GetGValue(accent_), GetBValue(accent_)), 1.5f);
+  const bool is_liquid_glass = (style_id_ == "liquid_glass");
+  Gdiplus::SolidBrush chrome_sel_brush(
+      is_liquid_glass ? Gdiplus::Color(52, 255, 255, 255)
+                      : Gdiplus::Color(110, GetRValue(accent_), GetGValue(accent_), GetBValue(accent_)));
+  Gdiplus::Pen chrome_sel_pen(
+      is_liquid_glass ? Gdiplus::Color(160, 255, 255, 255)
+                      : Gdiplus::Color(220, GetRValue(accent_), GetGValue(accent_), GetBValue(accent_)), 1.5f);
+  Gdiplus::SolidBrush chrome_focus_brush(
+      is_liquid_glass ? Gdiplus::Color(25, 255, 255, 255)
+                      : Gdiplus::Color(36, GetRValue(accent_), GetGValue(accent_), GetBValue(accent_)));
+  Gdiplus::Pen chrome_focus_pen(
+      is_liquid_glass ? Gdiplus::Color(70, 255, 255, 255)
+                      : Gdiplus::Color(110, GetRValue(accent_), GetGValue(accent_), GetBValue(accent_)), 1.5f);
+  Gdiplus::SolidBrush chrome_hover_brush(
+      is_liquid_glass ? Gdiplus::Color(36, 255, 255, 255)
+                      : Gdiplus::Color(48, GetRValue(accent_), GetGValue(accent_), GetBValue(accent_)));
+  Gdiplus::Pen chrome_hover_pen(
+      is_liquid_glass ? Gdiplus::Color(95, 255, 255, 255)
+                      : Gdiplus::Color(90, GetRValue(accent_), GetGValue(accent_), GetBValue(accent_)), 1.5f);
   chrome_sel_pen.SetLineJoin(Gdiplus::LineJoinRound);
   chrome_focus_pen.SetLineJoin(Gdiplus::LineJoinRound);
   chrome_hover_pen.SetLineJoin(Gdiplus::LineJoinRound);

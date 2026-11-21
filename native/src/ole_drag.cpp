@@ -1,4 +1,5 @@
 #include "ole_drag.h"
+#include "log.h"
 
 #include <CommCtrl.h>
 #include <ShlObj.h>
@@ -35,6 +36,7 @@ CLIPFORMAT PinTransferFormat() {
 }
 
 PinDragMoveFn g_pin_move_fn;
+PinDragEndFn g_pin_end_fn;
 std::function<bool(POINT)> g_public_sink_hit_fn;
 bool g_last_drag_escaped = false;
 bool g_over_pin_target = false;
@@ -186,6 +188,9 @@ class SimpleDropSource : public IDropSource {
   HRESULT STDMETHODCALLTYPE QueryContinueDrag(BOOL escape,
                                               DWORD key_state) override {
     if (escape) {
+      if (g_pin_end_fn) {
+        g_pin_end_fn();
+      }
       g_last_drag_escaped = true;
       g_desktop_unpin_requested = false;
       return DRAGDROP_S_CANCEL;
@@ -193,13 +198,16 @@ class SimpleDropSource : public IDropSource {
     // Explorer: left- or right-button drag; drop when neither button is down
     // (right-drag sinks show Copy/Move/Create-shortcut menu).
     if ((key_state & (MK_LBUTTON | MK_RBUTTON)) == 0) {
-      // Pin / float drag released over desktop/public → cancel OLE so Explorer
-      // never sees same-folder CF_HDROP (「源和目标文件名相同」). Pin caller
-      // unpins; float caller keeps prior seats (no rewrite).
+      if (g_pin_end_fn) {
+        g_pin_end_fn();
+      }
+      POINT pt{};
+      GetCursorPos(&pt);
+      const bool unpin_zone = IsPointOverDesktopUnpinZone(pt);
+      LogLine(L"[ole_drag] QueryContinueDrag RELEASE pt=(%d,%d) pin=%d float=%d unpin=%d",
+              pt.x, pt.y, g_pin_drag_active ? 1 : 0, g_float_drag_active ? 1 : 0, unpin_zone ? 1 : 0);
       if (g_pin_drag_active || g_float_drag_active) {
-        POINT pt{};
-        GetCursorPos(&pt);
-        if (IsPointOverDesktopUnpinZone(pt)) {
+        if (unpin_zone) {
           g_desktop_unpin_requested = g_pin_drag_active;
           return DRAGDROP_S_CANCEL;
         }
@@ -210,7 +218,7 @@ class SimpleDropSource : public IDropSource {
     POINT pt{};
     GetCursorPos(&pt);
     MoveDragGhost(pt);
-    if (g_pin_move_fn) {
+    if (g_pin_drag_active && g_pin_move_fn) {
       PinDragHint hint;
       hint.over_target = g_over_pin_target;
       hint.invalid = g_over_pin_invalid;
@@ -863,6 +871,9 @@ void EndOleDragVisual() {
     DeleteObject(g_drag_img_bmp);
     g_drag_img_bmp = nullptr;
   }
+  if (g_pin_end_fn) {
+    g_pin_end_fn();
+  }
 }
 
 IDataObject* CreateShellDataObject(const std::vector<std::wstring>& paths) {
@@ -1022,6 +1033,7 @@ bool ShellDoDragFiles(const std::vector<std::wstring>& paths,
 }
 
 void SetPinDragMoveFn(PinDragMoveFn fn) { g_pin_move_fn = std::move(fn); }
+void SetPinDragEndFn(PinDragEndFn fn) { g_pin_end_fn = std::move(fn); }
 bool LastShellDragWasEscaped() { return g_last_drag_escaped; }
 void SetPublicDropSinkHitFn(std::function<bool(POINT)> fn) {
   g_public_sink_hit_fn = std::move(fn);
@@ -1312,6 +1324,7 @@ HRESULT STDMETHODCALLTYPE PathDropTarget::DragEnter(IDataObject* data,
                                                     DWORD key_state,
                                                     POINTL pt,
                                                     DWORD* effect) {
+  LogLine(L"[ole_drag] DragEnter hwnd=0x%p pt=(%d,%d)", hwnd_, pt.x, pt.y);
   g_over_pin_target = false;
   g_over_pin_invalid = false;
   pin_mode_ = false;
@@ -1409,6 +1422,7 @@ HRESULT STDMETHODCALLTYPE PathDropTarget::DragLeave() {
 HRESULT STDMETHODCALLTYPE PathDropTarget::Drop(IDataObject* data,
                                                DWORD key_state, POINTL pt,
                                                DWORD* effect) {
+  LogLine(L"[ole_drag] Drop hwnd=0x%p pt=(%d,%d) pin_mode=%d", hwnd_, pt.x, pt.y, pin_mode_ ? 1 : 0);
   if (pin_mode_) {
     std::wstring src;
     std::vector<std::wstring> paths;

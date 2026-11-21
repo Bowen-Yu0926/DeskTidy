@@ -35,6 +35,7 @@ std::string NormalizeFenceStyleId(const std::string& id);
 // contract the hand-picked presets follow.
 // ---------------------------------------------------------------------------
 constexpr char kChameleonStyleId[] = "chameleon";
+constexpr char kLiquidGlassStyleId[] = "liquid_glass";
 
 // Recompute the cached chameleon palette from the current wallpaper. Call
 // after a wallpaper change so the next paint picks up the new colours.

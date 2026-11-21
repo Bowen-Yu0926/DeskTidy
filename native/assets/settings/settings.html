@@ -909,6 +909,7 @@
                 <option value="midnight">幻夜紫</option>
                 <option value="rose">暮色红</option>
                 <option value="slate">静谧灰</option>
+                <option value="liquid_glass">液态玻璃</option>
                 <option value="chameleon">跟随壁纸</option>
               </select>
             </label>
@@ -1337,6 +1338,7 @@
     slate:    { bg: '#2A3646', chip: 'linear-gradient(135deg, #64748B 0%, #1E293B 100%)', accent: '#94A3B8', text: '#FFFFFF', name: '静谧灰' },
     // Chameleon: colours are derived from the wallpaper at paint time, so the
     // chip is a neutral preview and the label explains the behaviour.
+    liquid_glass: { bg: '#0F172A', chip: 'linear-gradient(135deg, rgba(255,255,255,0.92) 0%, rgba(96,165,250,0.65) 45%, rgba(15,23,42,0.85) 100%)', accent: '#60A5FA', text: '#FFFFFF', name: '液态玻璃' },
     chameleon:{ bg: '#2A3646', chip: 'conic-gradient(from 210deg, #2563EB, #10B981, #F59E0B, #EC4899, #8B5CF6, #2563EB)', accent: '#94A3B8', text: '#FFFFFF', name: '跟随壁纸' }
   };
 
@@ -1345,7 +1347,7 @@
   // if it never does) so the control never renders a raw internal id.
   const UI_THEME_NAMES = {
     obsidian: '曜石黑', navy: '深海蓝', mica: '云母白',
-    aurora: '极光绿', sunset: '落霞金', midnight: '幻夜紫'
+    aurora: '极光绿', sunset: '落霞金', midnight: '幻夜紫', liquid_glass: '液态玻璃'
   };
 
   const state = {

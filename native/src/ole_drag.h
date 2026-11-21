@@ -45,6 +45,9 @@ bool PinDragOverDesktopUnpinZone(POINT pt);
 using PinDragMoveFn = std::function<void(POINT cursor, const PinDragHint&)>;
 // Install a per-move callback invoked from IDropSource::QueryContinueDrag.
 void SetPinDragMoveFn(PinDragMoveFn fn);
+using PinDragEndFn = std::function<void()>;
+// Install a completion callback invoked when pin drag ends.
+void SetPinDragEndFn(PinDragEndFn fn);
 
 // How CF_HDROP effects are advertised to the OLE source (Explorer).
 // VirtualPin never MOVE (pin-only must not delete the source). LINK is still
