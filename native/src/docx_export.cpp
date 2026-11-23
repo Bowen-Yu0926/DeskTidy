@@ -649,7 +649,11 @@ bool ExportMarkdownToDocx(const std::wstring& md_text,
     PROCESS_INFORMATION pi{};
     if (CreateProcessW(nullptr, tar_cmd.data(), nullptr, nullptr, FALSE,
                        CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
-      WaitForSingleObject(pi.hProcess, 10000);
+      const DWORD wait_res = WaitForSingleObject(pi.hProcess, 10000);
+      if (wait_res == WAIT_TIMEOUT) {
+        TerminateProcess(pi.hProcess, 1);
+        WaitForSingleObject(pi.hProcess, 1000);
+      }
       CloseHandle(pi.hThread);
       CloseHandle(pi.hProcess);
 
@@ -691,7 +695,11 @@ bool ExportMarkdownToDocx(const std::wstring& md_text,
     PROCESS_INFORMATION pi{};
     if (CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, FALSE,
                        CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
-      WaitForSingleObject(pi.hProcess, 15000);
+      const DWORD wait_res = WaitForSingleObject(pi.hProcess, 15000);
+      if (wait_res == WAIT_TIMEOUT) {
+        TerminateProcess(pi.hProcess, 1);
+        WaitForSingleObject(pi.hProcess, 1000);
+      }
       CloseHandle(pi.hThread);
       CloseHandle(pi.hProcess);
       if (GetFileAttributesW(temp_zip.c_str()) != INVALID_FILE_ATTRIBUTES) {

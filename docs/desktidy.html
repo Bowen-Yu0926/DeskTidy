@@ -290,13 +290,16 @@
       overflow: hidden;
       text-align: center;
     }
-    .pet-card img {
-      display: block;
-      width: 100%;
-      max-height: 280px;
-      object-fit: contain;
-      background: linear-gradient(180deg, #f7faff, #eef3f9);
-      padding: 1rem 0.5rem 0.4rem;
+    .pet-art {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      height: 168px;
+      font-size: 64px;
+      line-height: 1;
+      background:
+        radial-gradient(120px 120px at 50% 45%, rgba(42, 111, 219, 0.14), transparent 70%),
+        linear-gradient(180deg, #f7faff, #eef3f9);
     }
     .pet-card figcaption {
       margin: 0;
@@ -654,14 +657,14 @@
       </div>
       <div class="pet-showcase">
         <figure class="pet-card">
-          <img src="/images/pet-hoodie.png" alt="卫衣少年桌面宠物素材" width="480" height="480" loading="lazy" />
+          <div class="pet-art" aria-hidden="true">🧑‍💻</div>
           <figcaption>
             <strong>卫衣少年</strong>
             <span>默认形象。等待时会在「玩手机」和「睡觉」之间轮流切换，更有生活感。</span>
           </figcaption>
         </figure>
         <figure class="pet-card">
-          <img src="/images/pet-voyage.png" alt="出海少女桌面宠物素材" width="480" height="480" loading="lazy" />
+          <div class="pet-art" aria-hidden="true">⛵️</div>
           <figcaption>
             <strong>出海少女</strong>
             <span>另一套可选形象，互动动作同样支持摸摸、等待、跌落等。</span>

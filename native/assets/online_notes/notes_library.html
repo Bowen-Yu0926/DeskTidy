@@ -133,6 +133,9 @@
   #menu .menu-sub {
     padding-left: 18px; font-size: 12px;
   }
+  #menu .sep {
+    height: 1px; background: var(--border); margin: 4px 6px;
+  }
 </style>
 </head>
 <body>
@@ -330,6 +333,7 @@
     }
     let data = 'data-kind="' + esc(kind) + '"';
     if (it.path) data += ' data-path="' + esc(it.path) + '"';
+    if (it.title) data += ' data-title="' + esc(it.title) + '"';
     if (it.line != null && it.line >= 0) data += ' data-line="' + Number(it.line) + '"';
     if (it.id) data += ' data-id="' + esc(it.id) + '"';
     if (it.pinned) data += ' data-pinned="1"';
@@ -354,7 +358,7 @@
       path: el.dataset.path || '',
       id: el.dataset.id || 0,
       line: (el.dataset.line != null && el.dataset.line !== '') ? Number(el.dataset.line) : -1,
-      title: '',
+      title: el.dataset.title || '',
       pinned: el.dataset.pinned === '1',
       locked: el.dataset.locked === '1'
     };

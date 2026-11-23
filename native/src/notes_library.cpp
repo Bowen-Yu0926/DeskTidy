@@ -670,8 +670,10 @@ std::vector<NoteSearchHit> SearchNotesLibrary(const std::wstring& dir,
     const std::wstring name =
         slash == std::wstring::npos ? path : path.substr(slash + 1);
     const std::wstring name_low = case_sensitive ? name : WideLower(name);
+    bool name_matched = false;
     if (WideMatchTokensOrFuzzy(name_low, q_low, tokens)) {
       hits.push_back({path, -1, name});
+      name_matched = true;
       if (static_cast<int>(hits.size()) >= max_hits) {
         break;
       }
@@ -728,10 +730,18 @@ std::vector<NoteSearchHit> SearchNotesLibrary(const std::wstring& dir,
         }
       }
       if (hit) {
-        hits.push_back(
-            {path, line_no, PreviewOf(text.substr(i, text_end - i))});
-        if (static_cast<int>(hits.size()) >= max_hits) {
-          return hits;
+        if (name_matched) {
+          // If the file name already matched and was pushed as line -1,
+          // update that entry with the richer content preview and line number
+          // instead of pushing a duplicate card for the same file.
+          hits.back().line = line_no;
+          hits.back().preview = PreviewOf(text.substr(i, text_end - i));
+        } else {
+          hits.push_back(
+              {path, line_no, PreviewOf(text.substr(i, text_end - i))});
+          if (static_cast<int>(hits.size()) >= max_hits) {
+            return hits;
+          }
         }
         break;  // one content hit per file
       }
