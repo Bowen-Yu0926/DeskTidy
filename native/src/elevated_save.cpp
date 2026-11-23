@@ -15,6 +15,7 @@
 namespace {
 
 constexpr wchar_t kPendingName[] = L"elevated_save_pending.json";
+constexpr wchar_t kHostsName[] = L"hosts";
 constexpr double kPendingMaxAgeS = 3600.0;
 constexpr int kSeSuccessThreshold = 32;
 
@@ -153,6 +154,29 @@ std::wstring NormalizePath(const std::wstring& path) {
     return path;
   }
   return buf;
+}
+
+bool IsHostsTarget(const std::wstring& path) {
+  const size_t slash = path.find_last_of(L"\\/");
+  const std::wstring name =
+      slash == std::wstring::npos ? path : path.substr(slash + 1);
+  return _wcsicmp(name.c_str(), kHostsName) == 0;
+}
+
+// RichEdit 可能把 CRLF 规范成 LF/CR；提权写回 hosts 时统一恢复 CRLF。
+std::wstring HostsTextForWrite(const std::wstring& text) {
+  std::wstring out;
+  out.reserve(text.size() + 16);
+  for (wchar_t c : text) {
+    if (c == L'\r') {
+      continue;
+    }
+    if (c == L'\n') {
+      out.push_back(L'\r');
+    }
+    out.push_back(c);
+  }
+  return out;
 }
 
 bool PathsEqual(const std::wstring& a, const std::wstring& b) {
@@ -360,7 +384,15 @@ bool ConsumeElevatedPending(const std::wstring& target) {
     return false;
   }
   const std::wstring dest = NormalizePath(target);
-  const std::wstring text = WidenUtf8(text_u8);
+  std::wstring text = WidenUtf8(text_u8);
+
+  // hosts 必须保持系统友好的无 BOM UTF-8/ASCII 文本：带 BOM 的 hosts 首行
+  // 会被部分 Windows 网络解析组件视为无效并导致后续打开/解析异常。
+  // 换行统一为 CRLF。
+  const bool hosts = IsHostsTarget(dest);
+  if (hosts) {
+    text = HostsTextForWrite(text);
+  }
 
   TextFileEncoding enc = TextFileEncoding::Utf8;
   {
@@ -372,6 +404,10 @@ bool ConsumeElevatedPending(const std::wstring& target) {
       if (!DecodeTextFileBytes(raw, &decoded, &enc)) {
         LogLine(L"[elevated] refuse rewrite: unknown encoding");
         return false;
+      }
+      // hosts 固定用无 BOM UTF-8；既有 BOM 也要去掉。
+      if (hosts) {
+        enc = TextFileEncoding::Utf8;
       }
     }
   }
@@ -390,14 +426,15 @@ bool ConsumeElevatedPending(const std::wstring& target) {
   return true;
 }
 
-bool RelaunchDeskNoteElevated(const std::wstring& target) {
+bool RelaunchDeskNoteElevated(const std::wstring& target, bool reopen) {
   const std::wstring exe = DeskNoteExePath();
   if (exe.empty() ||
       GetFileAttributesW(exe.c_str()) == INVALID_FILE_ATTRIBUTES) {
     return false;
   }
   const std::wstring norm = NormalizePath(target);
-  std::wstring params = L"--elevated-save \"";
+  std::wstring params = reopen ? L"--elevated-save-reopen \""
+                               : L"--elevated-save \"";
   params += norm;
   params += L"\"";
 
@@ -409,7 +446,7 @@ bool RelaunchDeskNoteElevated(const std::wstring& target) {
           params.c_str());
   const INT_PTR rc = reinterpret_cast<INT_PTR>(
       ShellExecuteW(nullptr, L"runas", exe.c_str(), params.c_str(), cwd.c_str(),
-                    SW_SHOWNORMAL));
+                    SW_HIDE));
   LogLine(L"[elevated] ShellExecuteW rc=%lld", static_cast<long long>(rc));
   return rc > kSeSuccessThreshold;
 }

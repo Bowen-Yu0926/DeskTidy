@@ -8,6 +8,7 @@
 #include <ShlObj.h>
 #include <winhttp.h>
 
+#include <algorithm>
 #include <atomic>
 #include <cstdio>
 #include <string>
@@ -77,19 +78,42 @@ bool RunCapture(const std::wstring& exe, const std::wstring& args,
     return false;
   }
   CloseHandle(wr);
+  // ffmpeg 能力探测走 UI 线程。同步 ReadFile 在进程卡住时会无限等待；
+  // 用 PeekNamedPipe + 短休眠轮询，超时后强杀子进程并报告探测失败。
+  constexpr DWORD kProbeTimeoutMs = 15000;
+  const ULONGLONG deadline = GetTickCount64() + kProbeTimeoutMs;
+  bool timed_out = false;
   char chunk[4096];
   DWORD read = 0;
   for (;;) {
-    if (!ReadFile(rd, chunk, sizeof(chunk), &read, nullptr) || read == 0) {
+    DWORD avail = 0;
+    if (!PeekNamedPipe(rd, nullptr, 0, nullptr, &avail, nullptr)) {
+      break;
+    }
+    if (avail == 0) {
+      if (WaitForSingleObject(pi.hProcess, 0) == WAIT_OBJECT_0) {
+        break;  // 进程已退出且管道已排空
+      }
+      if (GetTickCount64() >= deadline) {
+        timed_out = true;
+        TerminateProcess(pi.hProcess, 1);
+        WaitForSingleObject(pi.hProcess, 1000);
+        break;
+      }
+      Sleep(10);
+      continue;
+    }
+    if (!ReadFile(rd, chunk, (std::min)(static_cast<DWORD>(sizeof(chunk)), avail),
+                  &read, nullptr) || read == 0) {
       break;
     }
     out->append(chunk, read);
   }
-  WaitForSingleObject(pi.hProcess, 15000);
+  WaitForSingleObject(pi.hProcess, 1000);
   CloseHandle(rd);
   CloseHandle(pi.hThread);
   CloseHandle(pi.hProcess);
-  return true;
+  return !timed_out;
 }
 
 }  // namespace

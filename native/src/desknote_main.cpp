@@ -25,6 +25,7 @@ HWND g_msg = nullptr;
 struct CmdParse {
   std::vector<std::wstring> paths;
   std::wstring elev_save_target;
+  bool elev_reopen = false;
 };
 
 CmdParse ParseCmd() {
@@ -39,7 +40,8 @@ CmdParse ParseCmd() {
   // argv[0] is the executable path.
   for (int i = 1; i < argc; ++i) {
     const std::wstring a = argv[i] ? argv[i] : L"";
-    if (a == L"--elevated-save") {
+    if (a == L"--elevated-save" || a == L"--elevated-save-reopen") {
+      out.elev_reopen = (a == L"--elevated-save-reopen");
       if (i + 1 < argc && argv[i + 1]) {
         out.elev_save_target = argv[++i];
       }
@@ -162,11 +164,17 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     PurgeOrphanElevatedPending();
   }
 
-  // When relaunched with --elevated-save, the predecessor un-elevated process
-  // is in the middle of exiting and releasing the mutex. Retry briefly before giving up.
+  // 提权助手只写盘：原窗口保持存活并占用单实例锁，助手不能抢锁、
+  // 建窗口或转发 --open，否则会干扰原窗口恢复。
+  if (elev_save) {
+    LogLine(L"[elevated] helper write done ok=%d", elev_save_ok ? 1 : 0);
+    LogShutdown();
+    return elev_save_ok ? 0 : 1;
+  }
+  PurgeOrphanElevatedPending();
+
   bool lock_acquired = false;
-  const int max_retries = elev_save ? 40 : 1;
-  for (int i = 0; i < max_retries; ++i) {
+  for (int i = 0; i < 1; ++i) {
     if (AcquireDeskNoteInstanceLock()) {
       lock_acquired = true;
       break;
@@ -175,13 +183,6 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
   }
 
   if (!lock_acquired) {
-    if (elev_save) {
-      LogLine(L"[elevated] lock reacquire timed out; notify predecessor instance");
-      std::wstring action = L"--open\n" + cmd.elev_save_target;
-      ForwardToDeskNote(action);
-      LogShutdown();
-      return 0;
-    }
     std::wstring action = L"--focus";
     if (!cmd.paths.empty()) {
       action = L"--open";
@@ -230,14 +231,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     // DeskNote 作为独立笔记视窗，保持独立素雅浅色高对比度，不与全局主题联动
   }
 
-  if (elev_save) {
-    notes.OpenPaths({cmd.elev_save_target});
-    MistAlert(notes.Hwnd(), L"保存",
-              elev_save_ok
-                  ? (L"已以管理员权限保存：\n" + cmd.elev_save_target).c_str()
-                  : (L"以管理员权限保存失败：\n" + cmd.elev_save_target).c_str(),
-              elev_save_ok ? MistMsgTone::Info : MistMsgTone::Warn);
-  } else if (cmd.paths.empty()) {
+  if (cmd.paths.empty()) {
     notes.Present();
   } else {
     notes.OpenPaths(cmd.paths);

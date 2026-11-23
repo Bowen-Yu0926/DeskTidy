@@ -31,6 +31,8 @@ class NotesWindow {
   void ApplyUiTheme(const std::string& ui_theme);
   // When true, WM_CLOSE destroys the window and posts quit (standalone DeskNote).
   void SetQuitOnClose(bool quit) { quit_on_close_ = quit; }
+  // 提权交接进程只负责落盘，随后退出；禁止退出前自动保存以免覆盖目标。
+  void SetElevatedSaveOnly(bool value) { in_elevated_save_ = value; }
   HWND Hwnd() const { return hwnd_; }
   // Global shortcuts (work even when focus is not on the editor).
   bool TranslateAccel(MSG* msg) const;

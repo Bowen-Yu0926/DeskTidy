@@ -127,7 +127,7 @@ add_executable(deskNote WIN32
   src/notes_cloud_sync.cpp
   ${ARGON2_SOURCES}
   src/log.cpp
-  src/version.rc
+  src/desknote_version.rc
   src/toast.cpp
   src/desknote_icon.rc
 )

@@ -42,9 +42,11 @@
 #include <cstdio>
 #include <cstring>
 #include <cwctype>
+#include <atomic>
 #include <fstream>
 #include <functional>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <regex>
 #include <sstream>
@@ -63,6 +65,14 @@ namespace {
 bool IsVaultAccountsNotePath(const std::wstring&) { return false; }
 
 constexpr wchar_t kClassName[] = L"DeskTidyNativeNotes";
+// 提权写盘完成后，由原普通权限窗口恢复并重新加载目标文件。
+constexpr UINT kMsgElevatedSaveDone = WM_APP + 90;
+struct ElevatedSaveDone {
+  std::wstring target;
+  LONG caret = 0;
+  int first_visible_line = 0;
+  bool typed_text_mode = false;
+};
 constexpr int kEditId = 2001;
 constexpr int kTitleEditId = 2012;
 constexpr int kFontFaceId = 2020;
@@ -474,6 +484,34 @@ std::wstring FileBaseName(const std::wstring& path) {
 
 bool IsHostsPath(const std::wstring& path) {
   return _wcsicmp(FileBaseName(path).c_str(), L"hosts") == 0;
+}
+
+// RichEdit 会把 CRLF 规范成 LF（有时只留 CR）；比较内容时统一当作 \n，
+// 真正写回时仍用 CRLF，保持系统 hosts 的单字节/双字节文本语义。
+std::wstring NormalizeNewlinesForCompare(const std::wstring& s) {
+  std::wstring out;
+  out.reserve(s.size());
+  for (wchar_t c : s) {
+    if (c != L'\r') {
+      out.push_back(c);
+    }
+  }
+  return out;
+}
+
+std::wstring HostsTextForWrite(const std::wstring& text) {
+  std::wstring out;
+  out.reserve(text.size() + 16);
+  for (wchar_t c : text) {
+    if (c == L'\r') {
+      continue;
+    }
+    if (c == L'\n') {
+      out.push_back(L'\r');
+    }
+    out.push_back(c);
+  }
+  return out;
 }
 
 // Typora-class chrome (title strip / WW / title→filename) — .md only.
@@ -4904,6 +4942,14 @@ void NotesWindow::Load() {
   bookmarks_.clear();
   loading_ = true;
   dirty_ = false;
+  // 提权实例启动时临时持有 hosts 文件；其它标签的标题提示位不代表它们
+  // 有未保存内容，不要因为这种残留状态把非 Markdown 文件误判为 dirty。
+  if (IsHostsPath(path_) && !IsCurrentProcessElevated()) {
+    for (auto& st : tab_states_) {
+      st.title_hint.clear();
+    }
+    SchedulePersistTabs();
+  }
   if (IsOnlineNotePath(path_)) {
     const int id = OnlineNoteIdFromPath(path_);
     std::wstring wide = L"# \n\n";
@@ -5006,6 +5052,7 @@ void NotesWindow::Load() {
   }
   loading_ = false;
   dirty_ = false;
+  // 打开 hosts 不再弹提示：保存时的提权确认已说明后续行为，避免同一流程弹两次。
   SyncCurrentTabTitleHint();
   UpdateStatusBar();
   RefreshGutter();
@@ -5025,17 +5072,8 @@ bool NotesWindow::OfferElevatedSave(const std::wstring& path,
     return true;
   }
   in_elevated_save_ = true;
-  if (!MistConfirm(
-          hwnd_, L"保存",
-          (L"「" + path +
-           L"」受系统保护，无法直接保存。\n\n"
-           L"是否以管理员权限重启 DeskNote 并保存？\n"
-           L"（将弹出 UAC 确认框，重启后自动保存该文件）")
-              .c_str(),
-          MistMsgTone::Warn)) {
-    in_elevated_save_ = false;
-    return true;
-  }
+  // UAC 授权框本身就是明确确认，不再额外弹应用内确认框，避免保存时出现两次提示。
+  // 用户在 UAC 里点“否”时，RelaunchDeskNoteElevated 会返回 false 并走取消分支。
   if (!WriteElevatedPending(path, text)) {
     in_elevated_save_ = false;
     MistAlert(hwnd_, L"笔记", L"无法准备提权保存的暂存内容。",
@@ -5044,36 +5082,58 @@ bool NotesWindow::OfferElevatedSave(const std::wstring& path,
   }
   PersistTabs();
   PersistViewSettings();
-  ReleaseDeskNoteInstanceLock();
-  if (!RelaunchDeskNoteElevated(path)) {
+  // 提权实例会用 OpenPaths 打开目标；若保留旧标签，其自动保存会把旧内容
+  // 覆盖回刚写好的系统文件，用户看到的现象就是“提权后修改不生效”。
+  // 这里把会话收敛到目标文件，其它标签仍留在磁盘上，用户可再次打开。
+  tab_paths_.assign(1, NormalizePathKey(path));
+  tab_index_ = 0;
+  path_ = tab_paths_.front();
+  PersistTabs();
+  // 写 pending 后启动提权助手；原普通权限窗口保持存活，由下面的监听线程
+  // 等待 pending 消失后再自行恢复并重载。不让提权进程启动新的 DeskNote，
+  // 避免子进程继承管理员令牌并抢占单实例。
+  if (!RelaunchDeskNoteElevated(path, /*reopen=*/false)) {
     ClearElevatedPending();
     in_elevated_save_ = false;
-    if (!AcquireDeskNoteInstanceLock()) {
-      LogLine(L"[elevated] mutex reacquire failed; exiting");
-      dirty_ = false;
-      if (quit_on_close_) {
-        PostQuitMessage(0);
-      } else {
-        Destroy();
-      }
-      return true;
-    }
     MistAlert(hwnd_, L"保存",
               L"已取消提权保存（UAC 未确认）。\n"
-              L"可尝试以管理员身份运行 DeskNote 后重试。",
+              L"文件未被修改，可重试或手动以管理员身份运行 DeskNote。",
               MistMsgTone::Warn);
     return true;
   }
+  const std::wstring pending_path = ElevatedPendingPath();
+  const HWND notify_hwnd = hwnd_;
+  const std::wstring notify_target = NormalizePathKey(path);
+  // 先记下当前插入点和首可见行；提权助手写完后只恢复视图，不做整文件重载，
+  // 否则光标会跳回文档开头。
+  LONG caret = 0;
+  int first_visible_line = 0;
+  if (edit_) {
+    CHARRANGE cr{};
+    SendMessageW(edit_, EM_EXGETSEL, 0, reinterpret_cast<LPARAM>(&cr));
+    caret = cr.cpMin;
+    first_visible_line = static_cast<int>(
+        SendMessageW(edit_, EM_GETFIRSTVISIBLELINE, 0, 0));
+  }
+  const bool typed_text_mode = !wysiwyg_;
+  std::thread([pending_path, notify_hwnd, notify_target, caret,
+               first_visible_line, typed_text_mode]() {
+    const DWORD deadline = GetTickCount() + 30000;
+    while (GetTickCount() < deadline) {
+      if (GetFileAttributesW(pending_path.c_str()) == INVALID_FILE_ATTRIBUTES) {
+        break;
+      }
+      Sleep(100);
+    }
+    auto* payload = new ElevatedSaveDone{notify_target, caret,
+                                         first_visible_line, typed_text_mode};
+    if (!notify_hwnd || !IsWindow(notify_hwnd) ||
+        !PostMessageW(notify_hwnd, kMsgElevatedSaveDone, 0,
+                      reinterpret_cast<LPARAM>(payload))) {
+      delete payload;
+    }
+  }).detach();
   dirty_ = false;
-  if (hwnd_) {
-    ShowWindow(hwnd_, SW_HIDE);
-  }
-  if (quit_on_close_) {
-    DestroyWindow(hwnd_);
-    PostQuitMessage(0);
-  } else {
-    Destroy();
-  }
   return true;
 }
 
@@ -5162,7 +5222,18 @@ void NotesWindow::Save(bool authoritative_pull, bool push_cloud) {
     return;
   }
   HealRetargetPath(&path_);
-  const std::wstring plain = CurrentPlainText();
+  const bool writing_hosts = IsHostsPath(path_) && !IsOnlineNotePath(path_);
+  // hosts 不是 Markdown：RichEdit 中保存的是正文，不能再拼上标题栏文本。
+  const std::wstring plain =
+      writing_hosts && edit_
+          ? [&] {
+              const int len = GetWindowTextLengthW(edit_);
+              std::wstring wide(static_cast<size_t>(len) + 1, L'\0');
+              GetWindowTextW(edit_, wide.data(), len + 1);
+              wide.resize(static_cast<size_t>(len));
+              return wide;
+            }()
+          : CurrentPlainText();
   if (IsOnlineNotePath(path_)) {
     const int id = OnlineNoteIdFromPath(path_);
     if (id <= 0) {
@@ -5234,18 +5305,46 @@ void NotesWindow::Save(bool authoritative_pull, bool push_cloud) {
       }
     }
     std::string bytes;
-    if (!EncodeTextFileBytes(plain, text_enc_, &bytes)) {
+    // hosts 等非笔记文本文件按原字节回写：RichEdit 会把 CRLF 规范成 LF，
+    // 把解码后的文本再编码一次会悄悄改变系统文件的换行和 BOM。
+    // 先比较规范化内容，只有确有修改时才写入。
+    bool content_changed = true;
+    std::string original_bytes;
+    if (writing_hosts && ReadBinaryFile(path_, &original_bytes)) {
+      // hosts 里可能有中文注释，按 UTF-8 写回并在缺 BOM 时补上，避免 Windows
+      // 应用按 ANSI 解读导致乱码；CRLF 仍由 HostsTextForWrite 统一保证。
+      text_enc_ = TextFileEncoding::Utf8Bom;
+      const std::wstring desired = HostsTextForWrite(plain);
+      std::wstring original_text;
+      if (DecodeTextFileBytes(original_bytes, &original_text, nullptr) &&
+          NormalizeNewlinesForCompare(original_text) ==
+              NormalizeNewlinesForCompare(desired)) {
+        content_changed = false;  // 仅换行差异：RichEdit 规范化，不是用户修改。
+      } else {
+        // 确有修改时把用户内容按本机 ANSI 编码写回，保持系统 hosts 的单字节
+        // 文本语义；避免把整份 CRLF 文件按 UTF-8 重写后引入双重 CR。
+        if (!EncodeTextFileBytes(desired, TextFileEncoding::Utf8Bom, &bytes)) {
+          MistAlert(hwnd_, L"保存失败", L"无法按 UTF-8 编码写回 hosts 文件。",
+                    MistMsgTone::Warn);
+          return;
+        }
+      }
+    }
+    if (content_changed && bytes.empty() &&
+        !EncodeTextFileBytes(plain, text_enc_, &bytes)) {
       MistAlert(hwnd_, L"保存失败",
                 L"无法按原编码写回文件（字符无法映射到 ANSI/GBK）。",
                 MistMsgTone::Warn);
       return;
     }
-    if (!WriteFileBytes(path_, bytes.data(), bytes.size())) {
-      if (LastWriteWasAccessDenied() && OfferElevatedSave(path_, plain)) {
+    if (content_changed) {
+      if (!WriteFileBytes(path_, bytes.data(), bytes.size())) {
+        if (LastWriteWasAccessDenied() && OfferElevatedSave(path_, plain)) {
+          return;
+        }
+        MistAlert(hwnd_, L"笔记", L"保存失败。", MistMsgTone::Warn);
         return;
       }
-      MistAlert(hwnd_, L"笔记", L"保存失败。", MistMsgTone::Warn);
-      return;
     }
     // Synced attribute: local write done; cloud push is async (skip on tab switch).
     if (push_cloud && PathIsCloudSynced(path_) && !IsOnlineNotePath(path_) &&
@@ -12558,6 +12657,47 @@ LRESULT NotesWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
       if (refreshed) {
         PushLibraryRailState(false);
       }
+      return 0;
+    }
+    case kMsgElevatedSaveDone: {
+      // 提权助手已经写完目标文件：恢复原窗口，只把焦点/视图还给用户，
+      // 不重新读取文件（那会把光标重置到开头，也可能把刚保存的内容覆盖）。
+      auto* payload = reinterpret_cast<ElevatedSaveDone*>(lparam);
+      if (!payload) {
+        return 0;
+      }
+      std::unique_ptr<ElevatedSaveDone> done(payload);
+      in_elevated_save_ = false;
+      if (hwnd_) {
+        ShowWindow(hwnd_, SW_SHOWMAXIMIZED);
+      }
+      if (edit_) {
+        const int total = static_cast<int>(
+            SendMessageW(edit_, EM_GETLINECOUNT, 0, 0));
+        GETTEXTLENGTHEX tl{};
+        tl.flags = GTL_DEFAULT | GTL_NUMCHARS;
+        tl.codepage = 1200;
+        const LRESULT len = SendMessageW(
+            edit_, EM_GETTEXTLENGTHEX, reinterpret_cast<WPARAM>(&tl), 0);
+        const LONG caret = len > 0 ? (std::min)(done->caret,
+                                               static_cast<LONG>(len))
+                                   : done->caret;
+        CHARRANGE cr{caret, caret};
+        SendMessageW(edit_, EM_EXSETSEL, 0, reinterpret_cast<LPARAM>(&cr));
+        const int first = (std::min)(done->first_visible_line,
+                                     (std::max)(0, total - 1));
+        const int cur = static_cast<int>(
+            SendMessageW(edit_, EM_GETFIRSTVISIBLELINE, 0, 0));
+        if (first != cur) {
+          SendMessageW(edit_, EM_LINESCROLL, 0, first - cur);
+        }
+        SendMessageW(edit_, EM_SCROLLCARET, 0, 0);
+        if (done->typed_text_mode) {
+          SetFocus(edit_);
+        }
+      }
+      RefreshTitle();
+      UpdateStatusBar();
       return 0;
     }
     case WM_APP + 86: {

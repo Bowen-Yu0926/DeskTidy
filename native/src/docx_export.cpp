@@ -650,6 +650,7 @@ bool ExportMarkdownToDocx(const std::wstring& md_text,
     if (CreateProcessW(nullptr, tar_cmd.data(), nullptr, nullptr, FALSE,
                        CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
       const DWORD wait_res = WaitForSingleObject(pi.hProcess, 10000);
+      const bool finished = wait_res == WAIT_OBJECT_0;
       if (wait_res == WAIT_TIMEOUT) {
         TerminateProcess(pi.hProcess, 1);
         WaitForSingleObject(pi.hProcess, 1000);
@@ -657,21 +658,24 @@ bool ExportMarkdownToDocx(const std::wstring& md_text,
       CloseHandle(pi.hThread);
       CloseHandle(pi.hProcess);
 
-      // Verify temp_zip exists, size > 0 and has PK\x03\x04 zip header
-      WIN32_FILE_ATTRIBUTE_DATA fad{};
-      if (GetFileAttributesExW(temp_zip.c_str(), GetFileExInfoStandard, &fad)) {
-        const ULONGLONG sz = (static_cast<ULONGLONG>(fad.nFileSizeHigh) << 32) | fad.nFileSizeLow;
-        if (sz >= 100) {
-          HANDLE hFile = CreateFileW(temp_zip.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr);
-          if (hFile != INVALID_HANDLE_VALUE) {
-            char magic[4] = {};
-            DWORD read_bytes = 0;
-            if (ReadFile(hFile, magic, 4, &read_bytes, nullptr) && read_bytes == 4) {
-              if (magic[0] == 'P' && magic[1] == 'K' && magic[2] == 0x03 && magic[3] == 0x04) {
-                packed = true;
+      // 超时被强杀的 tar 可能留下半个 zip；必须等进程正常退出才接受产物。
+      if (finished) {
+        // Verify temp_zip exists, size > 0 and has PK\x03\x04 zip header
+        WIN32_FILE_ATTRIBUTE_DATA fad{};
+        if (GetFileAttributesExW(temp_zip.c_str(), GetFileExInfoStandard, &fad)) {
+          const ULONGLONG sz = (static_cast<ULONGLONG>(fad.nFileSizeHigh) << 32) | fad.nFileSizeLow;
+          if (sz >= 100) {
+            HANDLE hFile = CreateFileW(temp_zip.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr);
+            if (hFile != INVALID_HANDLE_VALUE) {
+              char magic[4] = {};
+              DWORD read_bytes = 0;
+              if (ReadFile(hFile, magic, 4, &read_bytes, nullptr) && read_bytes == 4) {
+                if (magic[0] == 'P' && magic[1] == 'K' && magic[2] == 0x03 && magic[3] == 0x04) {
+                  packed = true;
+                }
               }
+              CloseHandle(hFile);
             }
-            CloseHandle(hFile);
           }
         }
       }
@@ -696,13 +700,15 @@ bool ExportMarkdownToDocx(const std::wstring& md_text,
     if (CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, FALSE,
                        CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
       const DWORD wait_res = WaitForSingleObject(pi.hProcess, 15000);
+      const bool finished = wait_res == WAIT_OBJECT_0;
       if (wait_res == WAIT_TIMEOUT) {
         TerminateProcess(pi.hProcess, 1);
         WaitForSingleObject(pi.hProcess, 1000);
       }
       CloseHandle(pi.hThread);
       CloseHandle(pi.hProcess);
-      if (GetFileAttributesW(temp_zip.c_str()) != INVALID_FILE_ATTRIBUTES) {
+      // 与 tar 分支一致：被强杀的 PowerShell 可能留下截断的 zip。
+      if (finished && GetFileAttributesW(temp_zip.c_str()) != INVALID_FILE_ATTRIBUTES) {
         packed = true;
       }
     }

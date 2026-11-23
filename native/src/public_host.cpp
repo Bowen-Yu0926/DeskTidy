@@ -3351,13 +3351,9 @@ LRESULT PublicHost::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
     POINT client = pt;
     ScreenToClient(hwnd_, &client);
     const int hit = HitTest(client.x, client.y);
-    static ULONGLONG s_last_nchittest_log = 0;
-    ULONGLONG now = GetTickCount64();
-    if (hit >= 0 || (now - s_last_nchittest_log > 1000)) {
-      s_last_nchittest_log = now;
-      LogLine(L"[public] NCHITTEST screen=(%d,%d) client=(%d,%d) hit=%d slots=%zu",
-              pt.x, pt.y, client.x, client.y, hit, slots_.size());
-    }
+    // 高频鼠标移动会每秒触发数百次命中测试；逐次写磁盘日志会阻塞桌面 UI
+    // 线程并让日志快速轮转。这里完全移除逐次日志，仅在拖拽开始等低频
+    // 入口保留诊断信息（见 LBUTTONDOWN / BeginOleDrag）。
     if (hit >= 0) {
       return HTCLIENT;
     }

@@ -15,8 +15,10 @@ void PurgeOrphanElevatedPending();
 // Returns false when payload missing/mismatched or the write fails.
 bool ConsumeElevatedPending(const std::wstring& target);
 
-// ShellExecuteW("runas") deskNote.exe --elevated-save "<target>".
-bool RelaunchDeskNoteElevated(const std::wstring& target);
+// ShellExecuteW("runas") deskNote.exe --elevated-save[-reopen] "<target>".
+// reopen=true asks the elevated helper to relaunch a normal DeskNote window
+// with the saved target after the handoff completes.
+bool RelaunchDeskNoteElevated(const std::wstring& target, bool reopen = false);
 
 // True when current process runs with elevated (admin) token.
 bool IsCurrentProcessElevated();
