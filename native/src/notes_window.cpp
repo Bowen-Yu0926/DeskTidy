@@ -6426,14 +6426,17 @@ bool NotesWindow::ExportNoteWithAssets(const std::wstring& note_path,
       }
     }
     preview_web_.SetPreview(md_text, base_dir);
-    const DWORD wait_start = GetTickCount();
-    MSG msg{};
-    while (GetTickCount() - wait_start < 450) {
-      while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
-        TranslateMessage(&msg);
-        DispatchMessageW(&msg);
+    // 等预览真正渲染完成（mermaid 图表与图片都是异步的），超时再退回固定延时。
+    if (!preview_web_.WaitRendered(5000)) {
+      const DWORD wait_start = GetTickCount();
+      MSG msg{};
+      while (GetTickCount() - wait_start < 450) {
+        while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
+          TranslateMessage(&msg);
+          DispatchMessageW(&msg);
+        }
+        Sleep(15);
       }
-      Sleep(15);
     }
     std::wstring err;
     if (!preview_web_.PrintToPdf(dst_file, &err)) {
@@ -7477,14 +7480,21 @@ void NotesWindow::ExportPdf(const std::wstring& target_path) {
   if (base_dir.empty() || base_dir == L".") base_dir = NoteBaseDir();
 
   preview_web_.SetPreview(md_text, base_dir);
-  const DWORD wait_start = GetTickCount();
-  MSG msg{};
-  while (GetTickCount() - wait_start < 450) {
-    while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
-      TranslateMessage(&msg);
-      DispatchMessageW(&msg);
+  // Wait for the preview to actually finish painting (mermaid diagrams are
+  // rendered async, images load async). A fixed delay made large notes export
+  // blank / missing images.
+  if (!preview_web_.WaitRendered(5000)) {
+    // Timed out — keep the old fixed delay as a fallback so the export still
+    // goes through with whatever the page managed to paint.
+    const DWORD wait_start = GetTickCount();
+    MSG msg{};
+    while (GetTickCount() - wait_start < 450) {
+      while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
+        TranslateMessage(&msg);
+        DispatchMessageW(&msg);
+      }
+      Sleep(15);
     }
-    Sleep(15);
   }
 
   std::wstring err;

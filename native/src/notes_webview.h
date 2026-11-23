@@ -66,6 +66,10 @@ class NotesWebView {
   // Preview viewer (kViewer).
   // `base_dir` is the note's directory, used to resolve relative images.
   void SetPreview(const std::wstring& md, const std::wstring& base_dir);
+  // Wait until the preview finished rendering the last SetPreview (mermaid
+  // diagrams + images). Returns false on timeout — the caller should then fall
+  // back to a plain delay rather than exporting a half-painted document.
+  bool WaitRendered(DWORD timeout_ms = 5000);
   void SetScrollRatio(double ratio);
   double RequestScrollRatio(DWORD timeout_ms = 800);
   // Export the current page to PDF via ICoreWebView2_7. Returns false and fills
@@ -137,6 +141,10 @@ class NotesWebView {
   void PushLibraryData();
   bool got_scroll_ = false;
   double scroll_ratio_ = 0.0;
+  // Render handshake: SetPreview bumps render_token_ and the page reports back
+  // with the same token once mermaid + images settled.
+  unsigned render_token_ = 0;
+  unsigned render_done_token_ = 0;
   bool print_done_ = false;
   bool print_ok_ = false;
   void* controller_ = nullptr;  // ICoreWebView2Controller*

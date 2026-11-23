@@ -894,6 +894,15 @@ void NotesWebView::OnWebMessage(const std::wstring& json) {
   const std::wstring type = JsonStringField(json, L"type");
   if (type == L"ready" || type == L"previewReady") {
     OnReady();
+  } else if (type == L"rendered") {
+    // The preview finished rendering the document sent with this token.
+    // Ignore replies for older renders — a stale one must not unblock a wait
+    // that belongs to the current document.
+    const unsigned token =
+        static_cast<unsigned>(JsonDoubleField(json, L"token", 0.0));
+    if (token != 0 && token == render_token_) {
+      render_done_token_ = token;
+    }
   } else if (type == L"dirty") {
     // setMarkdown / PullMarkdown / post-Save Toast churn — ignore so a
     // freshly saved or seeded note does not stick on the unsaved disc.
@@ -1197,9 +1206,14 @@ void NotesWebView::SetPreview(const std::wstring& md,
   }
   const std::wstring theme =
       theme_.empty() ? L"light" : theme_;
+  // Bump the token so the page's `rendered` reply can be matched to this exact
+  // render — a stale reply from a previous document must not unblock the wait.
+  ++render_token_;
+  render_done_token_ = 0;
   const std::wstring json =
       L"{\"type\":\"set\",\"theme\":\"" + theme + L"\",\"baseUrl\":\"" +
-      JsonEscape(base) + L"\",\"md\":\"" + JsonEscape(md) + L"\"}";
+      JsonEscape(base) + L"\",\"md\":\"" + JsonEscape(md) +
+      L"\",\"token\":" + std::to_wstring(render_token_) + L"}";
   web->PostWebMessageAsJson(json.c_str());
 }
 
@@ -1262,6 +1276,23 @@ void PumpWebViewWaitMessages(HWND parent) {
   }
 }
 }  // namespace
+
+bool NotesWebView::WaitRendered(DWORD timeout_ms) {
+  auto* web = static_cast<ICoreWebView2*>(webview_);
+  if (!web || !ready_) {
+    return false;
+  }
+  if (render_token_ == 0) {
+    return false;  // Nothing was pushed yet — caller falls back to a delay.
+  }
+  const DWORD start = GetTickCount();
+  while (render_done_token_ != render_token_ &&
+         GetTickCount() - start < timeout_ms) {
+    PumpWebViewWaitMessages(parent_);
+    Sleep(5);
+  }
+  return render_done_token_ == render_token_;
+}
 
 double NotesWebView::RequestScrollRatio(DWORD timeout_ms) {
   auto* web = static_cast<ICoreWebView2*>(webview_);

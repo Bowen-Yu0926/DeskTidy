@@ -242,10 +242,34 @@
     post({ type: "scroll", ratio: el.scrollTop / max });
   }
 
+  // 图片是异步加载的：PrintToPdf 若在 load 之前触发，导出的 PDF 会缺图。
+  // 等所有图片 settle（加载完成或报错），最多等 3s。
+  function waitForImages(root) {
+    var imgs = root.querySelectorAll("img");
+    if (!imgs.length) return Promise.resolve();
+    var pending = [];
+    for (var i = 0; i < imgs.length; i++) {
+      var im = imgs[i];
+      if (im.complete) continue;
+      pending.push(
+        new Promise(function (res) {
+          im.addEventListener("load", res, { once: true });
+          im.addEventListener("error", res, { once: true });
+        })
+      );
+    }
+    if (!pending.length) return Promise.resolve();
+    return Promise.race([
+      Promise.all(pending),
+      new Promise(function (res) { setTimeout(res, 3000); }),
+    ]);
+  }
+
   window.__desknoteSetMarkdown = function (md, opts) {
     opts = opts || {};
     setTheme(opts.theme);
     mermaidId = 0;
+    var token = opts.token || 0;
     var raw = String(md || "");
     var text = stripFrontMatter(raw);
     text = preprocessFootnotes(text);
@@ -271,6 +295,9 @@
         });
       }
     } catch (e) {}
+    // mermaid.run() 是 async：必须 await，否则图表还没画出来就 report，
+    // 宿主侧随即 PrintToPdf 会导出空白/缺图的 PDF。
+    var mermaidDone = Promise.resolve();
     try {
       if (window.mermaid) {
         mermaid.initialize({
@@ -279,9 +306,35 @@
           theme: document.body.classList.contains("theme-dark") ? "dark" : "default",
         });
         var nodes = root.querySelectorAll(".mermaid");
-        if (nodes.length) mermaid.run({ nodes: Array.prototype.slice.call(nodes) });
+        if (nodes.length) {
+          mermaidDone = mermaid
+            .run({ nodes: Array.prototype.slice.call(nodes) })
+            .catch(function () {});
+        }
       }
     } catch (e2) {}
+    Promise.resolve(mermaidDone)
+      .then(function () { return waitForImages(root); })
+      .then(function () {
+        // 再等一帧让 SVG / 图片的最终布局生效。不能只用 requestAnimationFrame：
+        // WebView 被隐藏（后台页签、预览面板不可见）时 rAF 永远不触发，会导致
+        // 导出卡到超时。这里 race 一个 rAF 与短延时，任一先到即继续。
+        var rafDone = false;
+        return new Promise(function (res) {
+          try {
+            requestAnimationFrame(function () {
+              rafDone = true;
+              setTimeout(res, 0);
+            });
+          } catch (e3) {}
+          setTimeout(function () {
+            if (!rafDone) res();
+          }, 120);
+        });
+      })
+      .then(function () {
+        post({ type: "rendered", token: token });
+      });
   };
 
   window.__desknoteSetScrollRatio = function (ratio) {
@@ -335,6 +388,7 @@
             window.__desknoteSetMarkdown(msg.md || "", {
               theme: msg.theme || "",
               baseUrl: msg.baseUrl || "",
+              token: msg.token || 0,
             });
           } catch (err) {
             var root = document.getElementById("content");
@@ -342,6 +396,8 @@
               root.textContent =
                 "预览渲染失败：" + (err && err.message ? err.message : String(err));
             }
+            // 渲染失败也要回报，否则宿主侧会一直等到超时。
+            post({ type: "rendered", token: msg.token || 0 });
           }
         } else if (msg.type === "scrollTo") {
           window.__desknoteSetScrollRatio(msg.ratio);
