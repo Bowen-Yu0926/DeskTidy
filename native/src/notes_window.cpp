@@ -9645,10 +9645,14 @@ void NotesWindow::PushLibraryRailState(bool refresh_online) {
   }  // if (VaultCloudEnabled())
   // Pure remote rows only when never bound locally. After「转本地」sync=false
   // + pending_deletes must NOT reappear here (was leaking as online:// ghosts).
+  // If a bound local file was deleted on disk, do not suppress the online item.
   // Set-based: the old per-item nested scans were O(online × links).
   std::set<int> linked_ids;
   for (const auto& L : cloud_sync_.links) {
-    linked_ids.insert(L.note_id);
+    if (L.sync && !L.path.empty() &&
+        GetFileAttributesW(L.path.c_str()) != INVALID_FILE_ATTRIBUTES) {
+      linked_ids.insert(L.note_id);
+    }
   }
   std::set<int> pending_delete_ids;
   for (const auto& d : cloud_sync_.pending_deletes) {
@@ -12927,6 +12931,7 @@ LRESULT NotesWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
       delete res;
       SaveNoteCloudSync(cloud_sync_);
       RebuildSidebar();
+      PushLibraryRailState(false);
       if (status_) {
         SetWindowTextW(
             status_,
