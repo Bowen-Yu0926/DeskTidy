@@ -28,9 +28,9 @@ namespace {
 
 constexpr wchar_t kHost[] = L"api.github.com";
 constexpr wchar_t kPath[] =
-    L"/repos/Bowen-Yu0926/DeskTidy-Releases/releases/latest";
+    L"/repos/Bowen-Yu0926/DeskTidy/releases/latest";
 constexpr wchar_t kReleasesPage[] =
-    L"https://github.com/Bowen-Yu0926/DeskTidy-Releases/releases/latest";
+    L"https://github.com/Bowen-Yu0926/DeskTidy/releases/latest";
 constexpr const wchar_t* kInstallerPrefix = L"DeskTidy_Setup_";
 
 std::vector<int> ParseVersion(const std::wstring& raw) {

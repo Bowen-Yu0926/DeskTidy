@@ -149,6 +149,7 @@
     query: '',
     active: '',
     logged_in: false,
+    cloud_enabled: false,
     local_matched: false,
     online: [],
     local: []
@@ -250,10 +251,12 @@
     const pinned = !!(it && (it.pinned === true || it.pinned === 'true'));
     const locked = !!(it && (it.locked === true || it.locked === 'true'));
     let html = '';
-    if (kind === 'local') {
-      html += '<button type="button" data-act="to_cloud">转云</button>';
-    } else if (kind === 'synced' || kind === 'online') {
-      html += '<button type="button" data-act="to_local">转本地</button>';
+    if (state.cloud_enabled) {
+      if (kind === 'local') {
+        html += '<button type="button" data-act="to_cloud">转云</button>';
+      } else if (kind === 'synced' || kind === 'online') {
+        html += '<button type="button" data-act="to_local">转本地</button>';
+      }
     }
     if (hasPath) {
       if (html) html += '<div class="sep"></div>';
@@ -322,7 +325,8 @@
       : String(it.path || '');
     const on = isKeyActive(key) ? ' on' : '';
     const cloud = kind === 'online' || kind === 'synced';
-    const cls = cloud ? 'row' : 'row local';
+    const showCloud = state.cloud_enabled && cloud;
+    const cls = showCloud ? 'row' : 'row local';
     let rawMeta = '';
     if (it.folder) {
       rawMeta = it.folder;
@@ -340,7 +344,9 @@
     if (it.locked) data += ' data-locked="1"';
     const more = '<button type="button" class="more" title="更多">⋯</button>';
     const cloudTip = cloud ? '已云同步（点击转本地）' : '本地文件（点击转云同步）';
-    const cloudBadge = '<button type="button" class="cloud-icon" title="' + cloudTip + '">' + CLOUD_SVG + '</button>';
+    const cloudBadge = state.cloud_enabled
+      ? '<button type="button" class="cloud-icon" title="' + cloudTip + '">' + CLOUD_SVG + '</button>'
+      : '';
 
     const titleHtml = highlightMatches(it.title || '未命名', state.query);
     const metaHtml = highlightMatches(rawMeta, state.query);
@@ -417,9 +423,12 @@
     const box = document.getElementById('list');
     const online = (state.online || []).filter(matchTitle);
     const local = (state.local || []).filter(matchTitle);
-    const hasOnlineBlock = online.length > 0 || state.logged_in;
+    const hasOnlineBlock = state.cloud_enabled &&
+      (online.length > 0 || state.logged_in);
     let html = '';
-    if (!hasOnlineBlock) {
+    if (!state.cloud_enabled) {
+      html += '<div class="hint">云服务未启用 — 本地笔记功能可正常使用</div>';
+    } else if (!hasOnlineBlock) {
       html += '<div class="hint">未登录云账号 — <a id="login-link">登录后可转云与同步</a></div>';
     } else {
       html += '<div class="sec">在线笔记</div>';
@@ -487,6 +496,7 @@
     if (m.query != null) state.query = m.query || '';
     if (m.active != null) state.active = m.active || '';
     if (m.logged_in != null) state.logged_in = !!m.logged_in;
+    if (m.cloud_enabled != null) state.cloud_enabled = !!m.cloud_enabled;
     if (m.local_matched != null) state.local_matched = !!m.local_matched;
     if (Array.isArray(m.online)) state.online = m.online;
     if (Array.isArray(m.local)) state.local = m.local;

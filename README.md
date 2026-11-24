@@ -2,7 +2,7 @@
 
 Windows 桌面整理工具：分区、分页、钉选整理、布局快照、截图/录屏、云端账号库、DeskNote 便签。
 
-公开仓库与安装包：[github.com/Bowen-Yu0926/DeskTidy](https://github.com/Bowen-Yu0926/DeskTidy) · [Releases](https://github.com/Bowen-Yu0926/DeskTidy-Releases)
+公开仓库与安装包：[github.com/Bowen-Yu0926/DeskTidy](https://github.com/Bowen-Yu0926/DeskTidy) · [Releases](https://github.com/Bowen-Yu0926/DeskTidy)
 
 > 本分支以 **`native/` Win32 实现** 为准。原 Python / PyQt 应用代码已移除。
 
@@ -19,6 +19,8 @@ build.bat
 数据目录：`%LOCALAPPDATA%\DeskTidyNative\`
 
 说明见 [docs/cpp-greenfield.md](docs/cpp-greenfield.md) 与 [native/README.md](native/README.md)。
+
+第三方组件许可证见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)；发版流程见 [docs/RELEASING.md](docs/RELEASING.md)。
 
 ## 仓库结构
 

@@ -1,0 +1,96 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      notes:
+        description: 'Release notes (optional)'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+
+jobs:
+  build-release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Verify tag matches VERSION
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}"
+          if ($tag -notmatch '^v(\d+\.\d+\.\d+)$') {
+            throw "Tag must look like v4.0.51, got: $tag"
+          }
+          $expected = $Matches[1]
+          $version = (Get-Content -Raw VERSION).Trim()
+          if ($version -ne $expected) {
+            throw "Tag $tag does not match VERSION ($version). Run scripts/bump_version.py first."
+          }
+          Write-Host "release version: $version"
+
+      - name: Install Inno Setup 6
+        shell: pwsh
+        run: |
+          choco install innosetup -y --no-progress
+          $iscc = @(
+            "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
+            "${env:ProgramFiles}\Inno Setup 6\ISCC.exe"
+          ) | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $iscc) { throw 'Inno Setup 6 compiler not found after install' }
+          Write-Host "ISCC=$iscc"
+
+      - name: Build installer
+        shell: cmd
+        run: scripts\build_native_installer.bat
+
+      - name: Verify installer artifact
+        shell: pwsh
+        run: |
+          $version = (Get-Content -Raw VERSION).Trim()
+          $setup = "dist\DeskTidy_Setup_$version.exe"
+          if (-not (Test-Path $setup)) { throw "Missing $setup" }
+          $hash = (Get-FileHash -Algorithm SHA256 $setup).Hash.ToLower()
+          Write-Host "setup=$setup size=$((Get-Item $setup).Length) sha256=$hash"
+          "$hash  DeskTidy_Setup_$version.exe" | Set-Content -Path "$setup.sha256" -Encoding ascii
+
+      - name: Create GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: |
+          if (-not $env:GH_TOKEN) { throw 'GH_TOKEN secret is required' }
+          $version = (Get-Content -Raw VERSION).Trim()
+          $tag = "v$version"
+          $notes = "${{ github.event.inputs.notes }}"
+          if (-not $notes) { $notes = "DeskTidy $version" }
+          $assets = @("dist\DeskTidy_Setup_$version.exe", "dist\DeskTidy_Setup_$version.exe.sha256")
+          $repo = "Bowen-Yu0926/DeskTidy"
+          $existing = gh release view $tag --repo $repo 2>$null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload $tag @assets --repo $repo --clobber
+            gh release edit $tag --repo $repo --title "DeskTidy $version" --notes $notes
+          } else {
+            gh release create $tag @assets --repo $repo --title "DeskTidy $version" --notes $notes
+          }
+          if ($LASTEXITCODE -ne 0) { throw 'GitHub release upload failed' }
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: DeskTidy-installer
+          path: |
+            dist/DeskTidy_Setup_*.exe
+            dist/DeskTidy_Setup_*.exe.sha256
+          retention-days: 14

@@ -3,6 +3,7 @@
 #include "brand_mark.h"
 #include "paths_util.h"
 #include "rule_store.h"
+#include "vault_http.h"
 
 #include <objbase.h>
 #ifndef interface
@@ -664,6 +665,8 @@ std::wstring SettingsWindow::BuildStateJson() const {
   json += flag(ext_.search_include_hidden);
   json += L",\"search_threads\":";
   json += std::to_wstring(ext_.search_threads);
+  json += L",\"cloud_enabled\":";
+  json += flag(VaultCloudEnabled());
   json += L",\"pet_auto_wander\":";
   json += flag(ext_.pet_auto_wander);
   json += L",\"pet_show_bubbles\":";
@@ -1393,6 +1396,11 @@ void SettingsWindow::SetCurrentPage(int page, bool push) {
 }
 
 bool SettingsWindow::ApplyExtToggleLocal(const std::wstring& id, bool value) {
+  if (id == L"cloud_enabled") {
+    VaultSetCloudEnabled(value);
+    ext_.cloud_enabled = value;
+    return true;
+  }
   if (id == L"minutes_on_bar" || id == L"minutes_enabled") {
     // Single UI switch drives both prefs (enable ≡ show on page bar).
     ext_.minutes_enabled = value;

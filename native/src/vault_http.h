@@ -5,6 +5,13 @@
 #include <string>
 #include <vector>
 
+// Cloud service master switch. OFF by default: with cloud disabled, every
+// VaultHttp* call becomes a no-op and no network request is attempted, while
+// all local features (notes, fences, search, snapshots, export, …) keep working.
+// Persisted in %LocalAppData%\DeskTidyNative\cloud_enabled.json.
+bool VaultCloudEnabled();
+void VaultSetCloudEnabled(bool enabled);
+
 // WinHTTP client for DeskTidy vault API (enc_ver:0 plaintext + enc_ver:1 ZK).
 // Default base: https://chromhome.kdns.fr/api/ (Cloudflare-fronted).
 // Session: %LocalAppData%\DeskTidy\account_vault_session.json (NativeDataDir).

@@ -12,6 +12,7 @@
 #include <cwctype>
 #include <fstream>
 #include <initializer_list>
+#include <iterator>
 #include <mutex>
 #include <sstream>
 #include <string>
@@ -25,7 +26,31 @@ namespace {
 
 constexpr wchar_t kDefaultBase[] =
     L"https://chromhome.kdns.fr/api/";
+constexpr wchar_t kCloudFlagName[] = L"cloud_enabled.json";
 constexpr wchar_t kUserAgent[] = L"Mozilla/5.0 DeskTidy-Vault/1";
+
+std::wstring CloudFlagPath() {
+  return JoinPath(NativeDataDir(), kCloudFlagName);
+}
+
+bool VaultCloudEnabled() {
+  // Off unless the user explicitly opts in by creating the flag file.
+  std::ifstream in(CloudFlagPath(), std::ios::binary);
+  if (!in) {
+    return false;
+  }
+  std::string body((std::istreambuf_iterator<char>(in)),
+                   std::istreambuf_iterator<char>());
+  return body.find("true") != std::string::npos;
+}
+
+void VaultSetCloudEnabled(bool enabled) {
+  if (enabled) {
+    AtomicWriteUtf8File(CloudFlagPath(), "{\"enabled\":true}\n", false);
+  } else {
+    DeleteFileW(CloudFlagPath().c_str());
+  }
+}
 
 std::wstring SessionPath() {
   return JoinPath(NativeDataDir(), L"account_vault_session.json");
@@ -534,6 +559,9 @@ class VaultClient {
 
   bool Request(const wchar_t* method, const std::wstring& rel_path,
                const std::string* body_utf8, bool auth, HttpResponse* out) {
+    if (!VaultCloudEnabled()) {
+      return false;
+    }
     if (!EnsureSession()) {
       return false;
     }
@@ -566,7 +594,7 @@ class VaultClient {
   bool RawRequest(const wchar_t* method, const std::wstring& url,
                   const std::string* body_utf8, bool auth, HttpResponse* out,
                   bool send_cookie) {
-    if (!out || !EnsureSession()) {
+    if (!out || !EnsureSession() || !VaultCloudEnabled()) {
       return false;
     }
     UrlParts parts;
@@ -806,11 +834,18 @@ std::wstring VaultHttpGetApiBase() {
   return NormalizeBase(LoadSession().api_base);
 }
 
-bool VaultHttpLoggedIn() { return !LoadSession().token.empty(); }
+bool VaultHttpLoggedIn() {
+  return VaultCloudEnabled() && !LoadSession().token.empty();
+}
 
-std::wstring VaultHttpSessionLogin() { return LoadSession().login; }
+std::wstring VaultHttpSessionLogin() {
+  return VaultCloudEnabled() ? LoadSession().login : std::wstring();
+}
 
 bool VaultHttpImportPythonSessionIfNeeded() {
+  if (!VaultCloudEnabled()) {
+    return false;
+  }
   if (VaultHttpLoggedIn()) {
     return true;
   }

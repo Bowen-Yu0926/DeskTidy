@@ -446,6 +446,8 @@ export function createDeskNoteEditor(options) {
     // 1. Prevent headings inside list items (and sync .in-list-item on top bar).
     // 2. Move the caret right after newly uploaded/inserted inline images so
     //    consecutive pastes/insertions land side-by-side on the same line.
+    // 3. Undo GFM email autolinks (plain "name@example.com" becoming a blue
+    //    mailto link). Explicit Markdown links keep their link mark.
     const guardKey = new PluginKey('DESKNOTE_GUARD')
     const guardPlugin = new Plugin({
       key: guardKey,
@@ -462,6 +464,30 @@ export function createDeskNoteEditor(options) {
       appendTransaction(trs, oldState, newState) {
         const pType = newState.schema.nodes.paragraph
         let fixTr = null
+
+        // Undo GFM autolink for bare email addresses. remark-gfm turns
+        // "name@example.com" into a mailto: link while typing; DeskNote treats
+        // plain email text as text. Only strip when the visible text equals the
+        // mailto target (the exact shape of an autolink), so an explicit
+        // [label](mailto:...) link is left alone.
+        if (trs.some((tr) => tr.docChanged)) {
+          const linkMark = newState.schema.marks.link
+          if (linkMark) {
+            newState.doc.descendants((node, pos) => {
+              if (!node.isText || !node.marks || !node.marks.length) return
+              const mark = node.marks.find(
+                (m) => m.type === linkMark &&
+                  typeof m.attrs.href === 'string' &&
+                  m.attrs.href.toLowerCase().startsWith('mailto:') &&
+                  m.attrs.href.slice(7) === node.text,
+              )
+              if (!mark) return
+              if (!fixTr) fixTr = newState.tr
+              fixTr.removeMark(pos, pos + node.nodeSize, mark.type)
+            })
+          }
+          if (fixTr) return fixTr
+        }
 
         // Normalize any heading that ended up inside a list_item into a paragraph.
         if (pType && trsHaveHeadingInListItem(trs, oldState.doc, newState.doc)) {

@@ -29,8 +29,8 @@ INSTALLER_BAT = ROOT / "scripts" / "build_native_installer.bat"
 BUMP_PY = ROOT / "scripts" / "bump_version.py"
 UPLOAD_BYETHOST_PY = ROOT / "scripts" / "upload_byethost.py"
 UPLOAD_CF_PY = ROOT / "scripts" / "upload_cloudflare_pages.py"
-RELEASES_REPO = "Bowen-Yu0926/DeskTidy-Releases"
-DOWNLOAD_HOST = "https://github.com/Bowen-Yu0926/DeskTidy-Releases/releases/download"
+RELEASES_REPO = "Bowen-Yu0926/DeskTidy"
+DOWNLOAD_HOST = "https://github.com/Bowen-Yu0926/DeskTidy/releases/download"
 
 
 def run(cmd: list[str] | str, *, dry_run: bool, shell: bool = False) -> None:
@@ -120,7 +120,7 @@ def update_download_links(version: str, *, dry_run: bool) -> None:
     text = DESKTIDY_HTML.read_text(encoding="utf-8")
     url = f"{DOWNLOAD_HOST}/v{version}/DeskTidy_Setup_{version}.exe"
     updated = re.sub(
-        r"https://github\.com/Bowen-Yu0926/DeskTidy-Releases/releases/download/v[\d.]+/DeskTidy_Setup_[\d.]+\.exe",
+        r"https://github\.com/Bowen-Yu0926/DeskTidy/releases/download/v[\d.]+/DeskTidy_Setup_[\d.]+\.exe",
         url,
         text,
     )

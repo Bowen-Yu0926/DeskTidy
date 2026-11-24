@@ -8,7 +8,7 @@
 
 #define MyAppName "DeskTidy"
 #define MyAppPublisher "DeskTidy"
-#define MyAppURL "https://github.com/Bowen-Yu0926/DeskTidy-Releases"
+#define MyAppURL "https://github.com/Bowen-Yu0926/DeskTidy"
 #define MyAppExeName "desktidy_native.exe"
 #define SourceDir ".."
 

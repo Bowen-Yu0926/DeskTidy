@@ -4864,7 +4864,7 @@ void App::PromptAvailableUpdate(const std::wstring& latest,
   if (answer == MistMsgResult::No) {
     ShellExecuteW(nullptr, L"open",
                   html_url.empty()
-                      ? L"https://github.com/Bowen-Yu0926/DeskTidy-Releases/releases/latest"
+                      ? L"https://github.com/Bowen-Yu0926/DeskTidy/releases/latest"
                       : html_url.c_str(),
                   nullptr, nullptr, SW_SHOWNORMAL);
   } else if (answer == MistMsgResult::Yes) {
@@ -9204,13 +9204,13 @@ LRESULT CALLBACK App::TrayWndProc(HWND hwnd, UINT msg, WPARAM wparam,
                 L"DeskTidy 桌面整理" + channel_tag +
                 L"\n版本 " + NativeDisplayVersion() +
                 L"\n目录 " + NativeExeDir() +
-                L"\n\n官网 / 发布页：\ngithub.com/Bowen-Yu0926/DeskTidy-Releases\n\n"
+                L"\n\n官网 / 发布页：\ngithub.com/Bowen-Yu0926/DeskTidy\n\n"
                 L"「是」打开发布页\n「否」打开使用说明";
             if (MistConfirm(hwnd, L"关于 DeskTidy", about_msg.c_str(),
                             MistMsgTone::Info)) {
               ShellExecuteW(
                   nullptr, L"open",
-                  L"https://github.com/Bowen-Yu0926/DeskTidy-Releases/releases/latest",
+                  L"https://github.com/Bowen-Yu0926/DeskTidy/releases/latest",
                   nullptr, nullptr, SW_SHOWNORMAL);
             } else {
               ShowAppHelp(self->settings_.Hwnd());
