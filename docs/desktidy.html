@@ -278,7 +278,7 @@
 
     .pet-showcase {
       display: grid;
-      grid-template-columns: 1fr 1fr;
+      grid-template-columns: repeat(3, 1fr);
       gap: 0.9rem;
       margin: 0 0 1.25rem;
     }
@@ -294,12 +294,16 @@
       display: flex;
       align-items: center;
       justify-content: center;
-      height: 168px;
-      font-size: 64px;
-      line-height: 1;
+      height: 220px;
       background:
-        radial-gradient(120px 120px at 50% 45%, rgba(42, 111, 219, 0.14), transparent 70%),
+        radial-gradient(120px 120px at 50% 45%, rgba(42, 111, 219, 0.10), transparent 70%),
         linear-gradient(180deg, #f7faff, #eef3f9);
+    }
+    .pet-art img {
+      max-height: 100%;
+      width: auto;
+      object-fit: contain;
+      display: block;
     }
     .pet-card figcaption {
       margin: 0;
@@ -439,7 +443,7 @@
         <h1>把桌面收拾成<br /><span class="soft">自己的工作台</span></h1>
         <p class="lead">
           DeskTidy 用分区把图标<strong>钉选</strong>分类显示——文件仍留在系统桌面，路径不变。
-          再配上分页布局、截图录屏、搜索、云端账号管理与笔记，让桌面既干净又好用。
+          再配上分页布局、截图录屏、搜索、笔记，以及可按需开启的云端账号管理，让桌面既干净又好用。
         </p>
         <div class="cta-row">
           <a class="btn btn-primary" href="#download">下载 DeskTidy</a>
@@ -463,14 +467,14 @@
       <div class="block-head">
         <p class="comment">/* get the installer */</p>
         <h2>下载 DeskTidy</h2>
-        <p>Windows 安装包，安装后即可使用桌面分区、分页、截图录屏、云端账号管理与 DeskNote。</p>
+        <p>Windows 安装包，安装后即可使用桌面分区、分页、截图录屏与 DeskNote；云端账号管理为可选功能。</p>
       </div>
       <div class="download-card">
         <div>
           <h3 style="margin:0 0 0.35rem;font-family:Fraunces,serif;font-size:1.35rem;">DeskTidy Setup</h3>
           <p style="margin:0;color:var(--ink-soft);">安装包体积约 230 MB（含 DeskNote 与录屏组件）。分区只钉选显示，不挪动你的文件。</p>
           <div class="meta">
-            <span class="chip">v4.0.42</span>
+            <span class="chip">v4.0.51</span>
             <span class="chip">Windows 10 / 11</span>
             <span class="chip">x64</span>
           </div>
@@ -593,11 +597,11 @@
     <section class="block" id="vault">
       <div class="block-head">
         <p class="comment">/* accounts, synced */</p>
-        <h2>账号管理：桌面浮标，云端同步</h2>
+        <h2>账号管理：桌面浮标（可选云服务）</h2>
         <p>
-          在侧栏「账号管理」启用后，桌面会出现独立的「账」圆标（不在分页栏上）。
+          云服务默认关闭；如需云端同步，可在设置中开启。启用后桌面会出现独立的「账」圆标（不在分页栏上）。
           单击在浮标旁打开清单：名称、账号、密码、网址可增删改；双击字段即可复制。
-          用手机号或邮箱注册登录后，换设备也能拉回同一份清单。
+          登录云账号后，换设备也能拉回同一份清单；不开启云服务时，所有本地整理功能照常使用。
         </p>
       </div>
       <div class="feature-grid">
@@ -615,7 +619,7 @@
         </article>
         <article class="feature">
           <h3>按需开启</h3>
-          <p>默认关闭。服务器不可达时会提示并自动关掉，避免卡住 DeskTidy。</p>
+          <p>云服务默认关闭，开启需手动确认；关闭时零网络连接，本地整理与笔记完全可用。</p>
         </article>
       </div>
     </section>
@@ -651,23 +655,30 @@
         <p class="comment">/* a tiny desk buddy */</p>
         <h2>桌面宠物：陪着你收拾桌面</h2>
         <p>
-          在扩展里打开后，宠物会停在桌面上：可以摸摸、等待、睡觉、甩出去跌落；
-          也能把图标拖到它身上，揉成纸团丢进回收站。形象与大小可在设置里改。
+          在扩展里打开后，宠物会停在桌面上：内置卫衣少年、出海少女、白衣剑仙三套形象，
+          可以摸摸、等待、睡觉、甩出去跌落；也能把图标拖到它身上，揉成纸团丢进回收站。形象与大小可在设置里改。
         </p>
       </div>
       <div class="pet-showcase">
         <figure class="pet-card">
-          <div class="pet-art" aria-hidden="true">🧑‍💻</div>
+          <div class="pet-art" aria-hidden="true"><img src="images/pet-hoodie.png" alt="" loading="lazy" /></div>
           <figcaption>
             <strong>卫衣少年</strong>
-            <span>默认形象。等待时会在「玩手机」和「睡觉」之间轮流切换，更有生活感。</span>
+            <span>默认形象。摸摸会开心回应；等待时在「玩手机」和「睡觉」之间轮流切换，拖拽揪领后松开跌落。</span>
           </figcaption>
         </figure>
         <figure class="pet-card">
-          <div class="pet-art" aria-hidden="true">⛵️</div>
+          <div class="pet-art" aria-hidden="true"><img src="images/pet-voyage.png" alt="" loading="lazy" /></div>
           <figcaption>
             <strong>出海少女</strong>
-            <span>另一套可选形象，互动动作同样支持摸摸、等待、跌落等。</span>
+            <span>救生衣草帽造型。摸摸、等待时刷手机、跌落都支持；拖拽拎起后松手落地。</span>
+          </figcaption>
+        </figure>
+        <figure class="pet-card">
+          <div class="pet-art" aria-hidden="true"><img src="images/pet-xianjian.png" alt="" loading="lazy" /></div>
+          <figcaption>
+            <strong>白衣剑仙</strong>
+            <span>摸摸会颔首浅笑、衣袂轻扬；可倚树打盹、失足踉跄，拖拽拎起后从容落地。</span>
           </figcaption>
         </figure>
       </div>
@@ -728,7 +739,7 @@
     <!-- /HELP_MANUAL -->
 
     <footer>
-      <div>DeskTidy · Windows 桌面整理助手 · v4.0.42</div>
+      <div>DeskTidy · Windows 桌面整理助手 · v4.0.51</div>
       <div><a href="#download">下载安装包</a> · 介绍 + 使用手册合一</div>
     </footer>
     </div>
