@@ -19,11 +19,25 @@ if not exist build (
   )
 )
 
-cmake --build build --config Release
+if "%~1"=="--release-only" (
+  cmake --build build --config Release --target desktidy_native deskNote
+) else (
+  cmake --build build --config Release
+)
 if errorlevel 1 exit /b 1
+
+if not exist "build\Release\desktidy_native.exe" (
+  echo [!] desktidy_native.exe missing after build
+  exit /b 1
+)
+if not exist "build\Release\deskNote.exe" (
+  echo [!] deskNote.exe missing after build
+  exit /b 1
+)
 
 echo.
 echo Built: build\Release\desktidy_native.exe
 echo Run:   build\Release\desktidy_native.exe
 echo Hotkeys: tray -^> modify chords / hotkeys.json
+echo Usage: build.bat [--release-only]  (--release-only skips test targets)
 exit /b 0

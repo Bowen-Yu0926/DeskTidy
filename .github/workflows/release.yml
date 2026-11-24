@@ -93,7 +93,7 @@ jobs:
 
       - name: Build installer
         shell: cmd
-        run: scripts\build_native_installer.bat
+        run: scripts\build_native_installer.bat --release-only
 
       - name: Verify installer artifact
         shell: pwsh

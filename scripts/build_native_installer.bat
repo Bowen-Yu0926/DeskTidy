@@ -9,7 +9,7 @@ echo.
 cd /d "%~dp0.."
 
 echo [1/3] Building desktidy_native.exe + deskNote.exe ...
-call native\build.bat
+call native\build.bat %*
 if errorlevel 1 (
   echo Native build failed.
   exit /b 1
