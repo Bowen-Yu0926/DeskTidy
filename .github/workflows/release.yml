@@ -10,6 +10,11 @@ on:
         description: 'Release notes (optional)'
         required: false
         default: ''
+      bump_patch:
+        description: 'Automatically bump patch version (4.0.51 -> 4.0.52) before building'
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: write
@@ -26,18 +31,32 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Verify tag matches VERSION
+      - name: Resolve release version
         shell: pwsh
         run: |
-          $tag = "${{ github.ref_name }}"
-          if ($tag -notmatch '^v(\d+\.\d+\.\d+)$') {
-            throw "Tag must look like v4.0.51, got: $tag"
+          $manual = "${{ github.event_name }}" -eq "workflow_dispatch"
+          $bump = "${{ github.event.inputs.bump_patch }}" -eq "true"
+          if ($manual -and $bump) {
+            python scripts/bump_version.py --bump
+            if ($LASTEXITCODE -ne 0) { throw 'bump_version.py failed' }
           }
-          $expected = $Matches[1]
+
           $version = (Get-Content -Raw VERSION).Trim()
-          if ($version -ne $expected) {
-            throw "Tag $tag does not match VERSION ($version). Run scripts/bump_version.py first."
+          if ($version -notmatch '^\d+\.\d+\.\d+$') {
+            throw "VERSION must look like 4.0.51, got: $version"
           }
+
+          if (-not $manual) {
+            $tag = "${{ github.ref_name }}"
+            if ($tag -notmatch '^v(\d+\.\d+\.\d+)$') {
+              throw "Tag must look like v4.0.51, got: $tag"
+            }
+            if ($Matches[1] -ne $version) {
+              throw "Tag $tag does not match VERSION ($version). Run scripts/bump_version.py first."
+            }
+          }
+
+          "RELEASE_VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           Write-Host "release version: $version"
 
       - name: Install Inno Setup 6
@@ -53,12 +72,18 @@ jobs:
 
       - name: Build installer
         shell: cmd
-        run: scripts\build_native_installer.bat
+        run: |
+          scripts\build_native_installer.bat
+          if errorlevel 1 exit /b 1
+          if not exist "dist\DeskTidy_Setup_%RELEASE_VERSION%.exe" (
+            echo Missing dist\DeskTidy_Setup_%RELEASE_VERSION%.exe
+            exit /b 1
+          )
 
       - name: Verify installer artifact
         shell: pwsh
         run: |
-          $version = (Get-Content -Raw VERSION).Trim()
+          $version = $env:RELEASE_VERSION
           $setup = "dist\DeskTidy_Setup_$version.exe"
           if (-not (Test-Path $setup)) { throw "Missing $setup" }
           $hash = (Get-FileHash -Algorithm SHA256 $setup).Hash.ToLower()
@@ -71,7 +96,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
         run: |
           if (-not $env:GH_TOKEN) { throw 'GH_TOKEN secret is required' }
-          $version = (Get-Content -Raw VERSION).Trim()
+          $version = $env:RELEASE_VERSION
           $tag = "v$version"
           $notes = "${{ github.event.inputs.notes }}"
           if (-not $notes) { $notes = "DeskTidy $version" }
