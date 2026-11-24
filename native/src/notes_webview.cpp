@@ -890,6 +890,16 @@ void NotesWebView::OnReady() {
   SetMarkdown(md, base);
 }
 
+bool NotesWebView::SetHandshakeActive() const {
+  if (!applying_set_) {
+    return false;
+  }
+  if (applying_set_deadline_ != 0 && GetTickCount64() >= applying_set_deadline_) {
+    return false;
+  }
+  return true;
+}
+
 void NotesWebView::OnWebMessage(const std::wstring& json) {
   const std::wstring type = JsonStringField(json, L"type");
   if (type == L"ready" || type == L"previewReady") {
@@ -906,7 +916,7 @@ void NotesWebView::OnWebMessage(const std::wstring& json) {
   } else if (type == L"dirty") {
     // setMarkdown / PullMarkdown / post-Save Toast churn — ignore so a
     // freshly saved or seeded note does not stick on the unsaved disc.
-    if (applying_set_ || pulling_md_ ||
+    if (SetHandshakeActive() || pulling_md_ ||
         (quiet_dirty_until_ != 0 &&
          GetTickCount64() < quiet_dirty_until_)) {
       return;
@@ -917,7 +927,7 @@ void NotesWebView::OnWebMessage(const std::wstring& json) {
       on_changed();
     }
   } else if (type == L"md" || type == L"changed") {
-    if (pulling_md_ || applying_set_) {
+    if (pulling_md_ || SetHandshakeActive()) {
       // Pull owns pending_md_; SetMarkdown owns it until contentReady — a late
       // debounce must not MarkDirty after Ctrl+S (glyph stuck on disc).
     } else {
@@ -960,6 +970,7 @@ void NotesWebView::OnWebMessage(const std::wstring& json) {
   } else if (type == L"contentReady") {
     content_ready_ = true;
     applying_set_ = false;
+    applying_set_deadline_ = 0;
     if (on_content_ready) {
       on_content_ready();
     }
@@ -1135,6 +1146,7 @@ void NotesWebView::SetMarkdown(const std::wstring& md,
   // Keep cache coherent so SyncFromWysiwyg / Save can skip PullMarkdown IPC.
   pending_md_ = md;
   applying_set_ = true;
+  applying_set_deadline_ = GetTickCount64() + 5000;
   const std::wstring base = SetAssetBaseDir(base_dir);
   auto* web = static_cast<ICoreWebView2*>(webview_);
   if (!web || !ready_) {
@@ -1144,6 +1156,7 @@ void NotesWebView::SetMarkdown(const std::wstring& md,
     }
     // Not painted yet — cache is already the new doc; allow later changed.
     applying_set_ = false;
+    applying_set_deadline_ = 0;
     return;
   }
   const std::wstring theme =

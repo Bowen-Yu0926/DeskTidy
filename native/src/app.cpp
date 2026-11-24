@@ -812,7 +812,7 @@ void App::WireFence(FenceWindow* fence) {
   });
   fence->SetOnPathsDroppedAt(
       [this](FenceWindow* f, const std::vector<std::wstring>& paths,
-             int at) -> DWORD {
+             int at, DWORD proposed) -> DWORD {
         LogLine(L"[app] OnPathsDroppedAt fence=%s paths=%zu at=%d",
                 f ? f->Id().c_str() : "(null)", paths.size(), at);
         // Virtual fence: SetPin + insert order. Portal: real import only —
@@ -876,13 +876,14 @@ void App::WireFence(FenceWindow* fence) {
           (void)land;
           return DROPEFFECT_COPY;
         }
-        const DWORD eff = OnPathsDropped(f, paths);
+        const DWORD eff = OnPathsDropped(f, paths, proposed);
         SchedulePersistLayouts();
         return eff;
       });
   fence->SetOnPathsDropped(
-      [this](FenceWindow* f, const std::vector<std::wstring>& paths) -> DWORD {
-        return OnPathsDropped(f, paths);
+      [this](FenceWindow* f, const std::vector<std::wstring>& paths,
+             DWORD proposed) -> DWORD {
+        return OnPathsDropped(f, paths, proposed);
       });
   fence->SetOnDragDone([this](FenceWindow*) { RefreshDesktopIcons(); });
   fence->SetOnPinDrop([this](FenceWindow* f, const std::wstring& src,
@@ -5272,6 +5273,7 @@ void App::OpenLayoutEditor() {
   AppState state;
   state.current_page = current_page_;
   state.page_names = page_names_;
+  state.page_locked = page_locked_;
   state.dock_visible = dock_visible_;
   state.pet_visible = pet_visible_;
   for (const auto& fence : fences_) {
@@ -5285,6 +5287,14 @@ void App::OpenLayoutEditor() {
   page_names_ = state.page_names;
   NormalizePageNames(&page_names_);
   current_page_ = state.current_page;
+  // 编辑器只是布局工具，不能因为一次 OK 就把用户设置的页面锁定清空。
+  if (!state.page_locked.empty()) {
+    page_locked_ = state.page_locked;
+  }
+  if (static_cast<int>(page_locked_.size()) <
+      static_cast<int>(page_names_.size())) {
+    page_locked_.resize(page_names_.size(), false);
+  }
   for (auto& fence : fences_) {
     if (fence) {
       fence->Destroy();
@@ -5434,10 +5444,12 @@ void App::RefreshOrganizeSettingsPage() {
 }
 
 DWORD App::OnPathsDropped(FenceWindow* fence,
-                          const std::vector<std::wstring>& paths) {
+                          const std::vector<std::wstring>& paths,
+                          DWORD proposed_effect) {
   // Drag: portal → Explorer default (same-drive move / cross-drive copy);
   // plain fence → pin only (no file movement), dedup via SetPin overwrite.
-  return HandleIncomingPaths(fence, paths, /*paste=*/false, /*move=*/false);
+  return HandleIncomingPaths(fence, paths, /*paste=*/false, /*move=*/false,
+                             proposed_effect);
 }
 
 void App::OnPathsCreated(FenceWindow* fence,
@@ -5677,7 +5689,7 @@ void App::OnPathsPasted(FenceWindow* fence,
 
 DWORD App::HandleIncomingPaths(FenceWindow* fence,
                                const std::vector<std::wstring>& paths,
-                               bool paste, bool move) {
+                               bool paste, bool move, DWORD proposed_effect) {
   if (!fence || paths.empty()) {
     return DROPEFFECT_NONE;
   }
@@ -5796,13 +5808,22 @@ DWORD App::HandleIncomingPaths(FenceWindow* fence,
       }
       continue;
     }
-    // Drag (non-paste): Explorer modifiers + same-volume default MOVE.
+    // Drag (non-paste): honor the effect advertised by the drop target
+    // (Ctrl/Shift/Alt or same-volume default), then fall back to Explorer
+    // same-volume MOVE / cross-volume COPY when no explicit proposal exists.
     bool should_move = paste ? move : SameVolume(src, dest_dir);
     if (!paste) {
-      if (ctrl) {
+      if (proposed_effect == DROPEFFECT_LINK) {
+        should_move = false;
+      } else if (proposed_effect == DROPEFFECT_COPY) {
+        should_move = false;
+      } else if (proposed_effect == DROPEFFECT_MOVE) {
+        should_move = true;
+      }
+      if (ctrl && !shift) {
         should_move = false;
       }
-      if (shift) {
+      if (shift && !ctrl) {
         should_move = true;
       }
     }

@@ -222,16 +222,7 @@ std::string PathToPngDataUrl(const std::wstring& path) {
   return url;
 }
 
-std::string EscapeJson(const std::string& s) {
-  std::string out;
-  for (char c : s) {
-    if (c == '\\' || c == '"') {
-      out.push_back('\\');
-    }
-    out.push_back(c);
-  }
-  return out;
-}
+std::string EscapeJson(const std::string& s) { return EscapeJsonUtf8(s); }
 
 std::wstring StripJsonExt(const std::wstring& path) {
   const std::wstring suf = L".json";
@@ -316,10 +307,7 @@ bool IsSidecarName(const std::wstring& file) {
 // Pins (path → fence id) sidecar, same JSON shape as pins.json so restore can
 // reuse the parser. This captures each fence's virtual_items (pinned paths).
 bool SavePinsToPath(const std::wstring& path, const PinMap& pins) {
-  std::ofstream out(path, std::ios::binary);
-  if (!out) {
-    return false;
-  }
+  std::ostringstream out;
   out << "{\n  \"pins\": {\n";
   size_t i = 0;
   for (const auto& kv : pins) {
@@ -331,7 +319,7 @@ bool SavePinsToPath(const std::wstring& path, const PinMap& pins) {
     out << "\n";
   }
   out << "  }\n}\n";
-  return true;
+  return AtomicWriteUtf8File(path, out.str(), false);
 }
 
 bool LoadPinsFromPath(const std::wstring& path, PinMap* pins) {
@@ -883,13 +871,48 @@ bool LoadSnapshot(const std::wstring& path, AppState* out) {
   if (!out || path.empty()) {
     return false;
   }
-  if (!CopyFileW(path.c_str(), LayoutFilePath().c_str(), FALSE)) {
+  // 先完整解析快照文件，再替换现行 layout.json。直接 CopyFileW 到目标路径的
+  // 话，破损/截断的快照会先把用户当前布局冲掉，随后解析失败只剩默认值。
+  std::string snapshot_json;
+  {
+    std::ifstream in(path, std::ios::binary);
+    if (!in) {
+      return false;
+    }
+    std::ostringstream ss;
+    ss << in.rdbuf();
+    snapshot_json = ss.str();
+  }
+  if (snapshot_json.empty() ||
+      snapshot_json.find('{') == std::string::npos ||
+      snapshot_json.find('}') == std::string::npos) {
     return false;
   }
+  const std::wstring layout = LayoutFilePath();
+  const std::wstring tmp = AtomicTempPathFor(layout);
+  {
+    std::ofstream out_file(tmp, std::ios::binary | std::ios::trunc);
+    if (!out_file) {
+      return false;
+    }
+    out_file << snapshot_json;
+    out_file.flush();
+    if (!out_file) {
+      DeleteFileW(tmp.c_str());
+      return false;
+    }
+  }
+  AppState parsed =
+      LoadAppStateFromPath(tmp, /*inject_defaults=*/false);
   // Faithful restore: do NOT inject defaults / HealFenceLayouts / migrate
   // kinds — that rewrote「其他」and resized fences away from the snapshot.
   // Profiles for the current display fingerprint still apply inside the load.
-  *out = LoadAppStateFromPath(LayoutFilePath(), /*inject_defaults=*/false);
+  if (!MoveFileExW(tmp.c_str(), layout.c_str(),
+                   MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+    DeleteFileW(tmp.c_str());
+    return false;
+  }
+  *out = std::move(parsed);
   // Restore pinned content distribution from the sidecar when present.
   PinMap pins;
   if (LoadPinsFromPath(PinsSidecarPath(path), &pins)) {

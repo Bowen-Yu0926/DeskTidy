@@ -69,6 +69,9 @@ constexpr wchar_t kClassName[] = L"DeskTidyNativeNotes";
 constexpr UINT kMsgElevatedSaveDone = WM_APP + 90;
 struct ElevatedSaveDone {
   std::wstring target;
+  unsigned request_id = 0;
+  bool ok = false;
+  int target_tab = -1;
   LONG caret = 0;
   int first_visible_line = 0;
   bool typed_text_mode = false;
@@ -4942,6 +4945,11 @@ void NotesWindow::Load() {
   bookmarks_.clear();
   loading_ = true;
   dirty_ = false;
+  // 全文统计缓存按文档失效：否则切到长度/哈希相同的另一篇（尤其是两个
+  // 空草稿）后会一直显示上一篇的字数。
+  status_full_text_dirty_ = true;
+  status_stats_hash_ = 0;
+  status_stats_len_ = 0;
   // 提权实例启动时临时持有 hosts 文件；其它标签的标题提示位不代表它们
   // 有未保存内容，不要因为这种残留状态把非 Markdown 文件误判为 dirty。
   if (IsHostsPath(path_) && !IsCurrentProcessElevated()) {
@@ -5063,6 +5071,8 @@ bool NotesWindow::OfferElevatedSave(const std::wstring& path,
   if (in_elevated_save_) {
     return true;
   }
+  static std::atomic<unsigned> s_request_id{0};
+  const unsigned request_id = ++s_request_id;
   if (IsCurrentProcessElevated()) {
     MistAlert(hwnd_, L"保存",
               (L"当前已处于管理员权限，但仍无法写入文件：\n" + path +
@@ -5080,20 +5090,25 @@ bool NotesWindow::OfferElevatedSave(const std::wstring& path,
               MistMsgTone::Warn);
     return true;
   }
+  // 保存本次会话，UAC 确认成功后再收敛标签；取消时原样恢复。
+  const std::vector<std::wstring> saved_tab_paths = tab_paths_;
+  const std::vector<TabState> saved_tab_states = tab_states_;
+  const int saved_tab_index = tab_index_;
+  const std::wstring saved_path = path_;
   PersistTabs();
   PersistViewSettings();
-  // 提权实例会用 OpenPaths 打开目标；若保留旧标签，其自动保存会把旧内容
-  // 覆盖回刚写好的系统文件，用户看到的现象就是“提权后修改不生效”。
-  // 这里把会话收敛到目标文件，其它标签仍留在磁盘上，用户可再次打开。
-  tab_paths_.assign(1, NormalizePathKey(path));
-  tab_index_ = 0;
-  path_ = tab_paths_.front();
-  PersistTabs();
   // 写 pending 后启动提权助手；原普通权限窗口保持存活，由下面的监听线程
-  // 等待 pending 消失后再自行恢复并重载。不让提权进程启动新的 DeskNote，
+  // 等待结果文件出现后再自行恢复。不让提权进程启动新的 DeskNote，
   // 避免子进程继承管理员令牌并抢占单实例。
-  if (!RelaunchDeskNoteElevated(path, /*reopen=*/false)) {
+  if (!RelaunchDeskNoteElevated(path, request_id, /*reopen=*/false)) {
     ClearElevatedPending();
+    ClearElevatedResult();
+    tab_paths_ = saved_tab_paths;
+    tab_states_ = saved_tab_states;
+    tab_index_ = saved_tab_index;
+    path_ = saved_path;
+    RebuildTabControl();
+    PersistTabs();
     in_elevated_save_ = false;
     MistAlert(hwnd_, L"保存",
               L"已取消提权保存（UAC 未确认）。\n"
@@ -5101,9 +5116,17 @@ bool NotesWindow::OfferElevatedSave(const std::wstring& path,
               MistMsgTone::Warn);
     return true;
   }
-  const std::wstring pending_path = ElevatedPendingPath();
+  // 提权实例只写盘；若保留其它标签，其自动保存可能把旧内容覆盖回刚写好的
+  // 系统文件。这里把会话收敛到目标文件，其它标签仍留在磁盘上，用户可再次打开。
+  tab_paths_.assign(1, NormalizePathKey(path));
+  tab_index_ = 0;
+  path_ = tab_paths_.front();
+  EnsureTabStates();
+  RebuildTabControl();
+  PersistTabs();
   const HWND notify_hwnd = hwnd_;
   const std::wstring notify_target = NormalizePathKey(path);
+  const int notify_tab = tab_index_;
   // 先记下当前插入点和首可见行；提权助手写完后只恢复视图，不做整文件重载，
   // 否则光标会跳回文档开头。
   LONG caret = 0;
@@ -5116,21 +5139,28 @@ bool NotesWindow::OfferElevatedSave(const std::wstring& path,
         SendMessageW(edit_, EM_GETFIRSTVISIBLELINE, 0, 0));
   }
   const bool typed_text_mode = !wysiwyg_;
-  std::thread([pending_path, notify_hwnd, notify_target, caret,
+  std::thread([notify_hwnd, notify_target, request_id, notify_tab, caret,
                first_visible_line, typed_text_mode]() {
-    const DWORD deadline = GetTickCount() + 30000;
-    while (GetTickCount() < deadline) {
-      if (GetFileAttributesW(pending_path.c_str()) == INVALID_FILE_ATTRIBUTES) {
+    const ULONGLONG deadline = GetTickCount64() + 30000;
+    bool ok = false;
+    while (GetTickCount64() < deadline) {
+      if (ReadElevatedResult(notify_target, request_id, &ok)) {
         break;
       }
       Sleep(100);
     }
-    auto* payload = new ElevatedSaveDone{notify_target, caret,
+    auto* payload = new ElevatedSaveDone{notify_target, request_id, ok,
+                                         notify_tab, caret,
                                          first_visible_line, typed_text_mode};
     if (!notify_hwnd || !IsWindow(notify_hwnd) ||
         !PostMessageW(notify_hwnd, kMsgElevatedSaveDone, 0,
                       reinterpret_cast<LPARAM>(payload))) {
       delete payload;
+    }
+    // 只清理与本次请求完全匹配的结果文件：重试同一目标时不能误删新结果。
+    bool current_ok = false;
+    if (ReadElevatedResult(notify_target, request_id, &current_ok)) {
+      ClearElevatedResult();
     }
   }).detach();
   dirty_ = false;
@@ -5240,6 +5270,13 @@ void NotesWindow::Save(bool authoritative_pull, bool push_cloud) {
       MistAlert(hwnd_, L"保存", L"无效的在线笔记。", MistMsgTone::Warn);
       return;
     }
+    // 正文还在后台拉取时：用户还没看到真实内容，不能把占位符 "# \n\n"
+    // 当成编辑上传，也不能把占位符写进缓存挡住随后到达的真实正文。
+    if (pending_online_load_id_ == id) {
+      MistAlert(hwnd_, L"保存", L"云端正文仍在加载，请稍候再保存。",
+                MistMsgTone::Info);
+      return;
+    }
     std::wstring title = NativeTitleText();
     if (title.empty()) {
       title = TabLabel(path_);
@@ -5311,9 +5348,8 @@ void NotesWindow::Save(bool authoritative_pull, bool push_cloud) {
     bool content_changed = true;
     std::string original_bytes;
     if (writing_hosts && ReadBinaryFile(path_, &original_bytes)) {
-      // hosts 里可能有中文注释，按 UTF-8 写回并在缺 BOM 时补上，避免 Windows
-      // 应用按 ANSI 解读导致乱码；CRLF 仍由 HostsTextForWrite 统一保证。
-      text_enc_ = TextFileEncoding::Utf8Bom;
+      // hosts 固定无 BOM UTF-8 + CRLF（与提权写回路径一致，BOM 会破坏解析）。
+      text_enc_ = TextFileEncoding::Utf8;
       const std::wstring desired = HostsTextForWrite(plain);
       std::wstring original_text;
       if (DecodeTextFileBytes(original_bytes, &original_text, nullptr) &&
@@ -5321,9 +5357,8 @@ void NotesWindow::Save(bool authoritative_pull, bool push_cloud) {
               NormalizeNewlinesForCompare(desired)) {
         content_changed = false;  // 仅换行差异：RichEdit 规范化，不是用户修改。
       } else {
-        // 确有修改时把用户内容按本机 ANSI 编码写回，保持系统 hosts 的单字节
-        // 文本语义；避免把整份 CRLF 文件按 UTF-8 重写后引入双重 CR。
-        if (!EncodeTextFileBytes(desired, TextFileEncoding::Utf8Bom, &bytes)) {
+        // 确有修改时按无 BOM UTF-8 写回。
+        if (!EncodeTextFileBytes(desired, TextFileEncoding::Utf8, &bytes)) {
           MistAlert(hwnd_, L"保存失败", L"无法按 UTF-8 编码写回 hosts 文件。",
                     MistMsgTone::Warn);
           return;
@@ -9748,18 +9783,18 @@ void NotesWindow::HandleLibraryRailAction(const std::wstring& json) {
       if (json.find(needle) != std::wstring::npos) {
         const int line = LibJsonInt(json, L"line");
         if (line >= 0) {
-          if (!PathLooksMarkdown()) {
-            if (wysiwyg_) {
-              wysiwyg_ = false;
-              ApplyWysiwygVisibility();
-              LayoutClient();
-            }
-            if (preview_ && preview_web_.Host()) {
-              preview_web_.Hide();
-            }
-            pending_goto_line_ = line;
-            PostMessageW(hwnd_, WM_APP + 60, 0, 0);
+          if (PathLooksMarkdown() && wysiwyg_) {
+            // Markdown 默认打开在只读预览/WYSIWYG；跳行依赖 RichEdit 行号，
+            // 先切到源码编辑模式再 GotoLine。
+            wysiwyg_ = false;
+            ApplyWysiwygVisibility();
+            LayoutClient();
           }
+          if (preview_ && preview_web_.Host()) {
+            preview_web_.Hide();
+          }
+          pending_goto_line_ = line;
+          PostMessageW(hwnd_, WM_APP + 60, 0, 0);
         }
       }
     }
@@ -10060,6 +10095,10 @@ struct SyncCloudBody {
   int note_id = 0;
   std::wstring title;
   std::wstring body;
+  // File identity at fetch start: if the local copy changed while the cloud
+  // request was in flight, the user's edit wins and the cloud body is skipped.
+  ULONGLONG local_size = 0;
+  ULONGLONG local_mtime = 0;
 };
 struct SyncCloudResult {
   bool list_ok = false;
@@ -10111,6 +10150,16 @@ void NotesWindow::SyncRefreshFromCloud() {
           b.path = L.path;
           b.note_id = L.note_id;
           b.title = n.title;
+          WIN32_FILE_ATTRIBUTE_DATA fad{};
+          if (GetFileAttributesExW(L.path.c_str(), GetFileExInfoStandard,
+                                   &fad)) {
+            b.local_size = (static_cast<ULONGLONG>(fad.nFileSizeHigh) << 32) |
+                           fad.nFileSizeLow;
+            b.local_mtime =
+                (static_cast<ULONGLONG>(fad.ftLastWriteTime.dwHighDateTime)
+                 << 32) |
+                fad.ftLastWriteTime.dwLowDateTime;
+          }
           b.body = n.body.empty()
                        ? (L"# " + (n.title.empty() ? std::wstring(L"未命名")
                                                    : n.title) +
@@ -12136,7 +12185,10 @@ LRESULT NotesWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
           if (title.empty()) {
             title = L"未命名";
           }
-          std::wstring body = web_.PullMarkdown(300);
+          // WYSIWYG 之外 web_ 里可能留着上一篇笔记的缓存；只有当前确实处于
+          // WYSIWYG 模式时才用它，否则一律读 RichEdit 正文。
+          std::wstring body = wysiwyg_ && web_.Ready() ? web_.PullMarkdown(300)
+                                                       : std::wstring();
           if (body.empty() && edit_) {
             const int len = GetWindowTextLengthW(edit_);
             if (len > 0) {
@@ -12671,7 +12723,45 @@ LRESULT NotesWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
       if (hwnd_) {
         ShowWindow(hwnd_, SW_SHOWMAXIMIZED);
       }
-      if (edit_) {
+      // 等待期间用户可能切换了标签：只给目标标签恢复光标/滚动，
+      // 但全局提权状态总要解除，否则之后所有保存都被挡住。
+      const bool target_current =
+          _wcsicmp(NormalizePathKey(path_).c_str(), done->target.c_str()) == 0;
+      if (!done->ok) {
+        // 等待期间可能已经切换标签：必须恢复目标标签自己的 dirty 状态，
+        // 否则切回去会按“已保存”从磁盘重载旧内容，吞掉用户编辑。
+        const int n = static_cast<int>(tab_paths_.size());
+        bool target_restored = false;
+        if (done->target_tab >= 0 && done->target_tab < n &&
+            _wcsicmp(NormalizePathKey(
+                         tab_paths_[static_cast<size_t>(done->target_tab)])
+                         .c_str(),
+                     done->target.c_str()) == 0) {
+          // dirty_ is per-active-tab; switch back so the edited buffer is the
+          // live one again, then mark it unsaved. Otherwise returning to this
+          // tab later would reload the old on-disk body and lose the edit.
+          if (done->target_tab != tab_index_) {
+            SwitchToTab(done->target_tab, /*save_current=*/false);
+          }
+          dirty_ = true;
+          EnsureTabStates();
+          TabState& st = tab_states_[static_cast<size_t>(done->target_tab)];
+          st.caret = done->caret;
+          st.first_visible_line = done->first_visible_line;
+          target_restored = true;
+        }
+        if (!target_restored) {
+          dirty_ = true;
+        }
+        RefreshCurrentTabLabel();
+        RefreshTitle();
+        MistAlert(hwnd_, L"保存失败",
+                  L"提权写入未完成，文件未被修改。请检查权限或安全软件后重试。",
+                  MistMsgTone::Warn);
+        UpdateStatusBar();
+        return 0;
+      }
+      if (target_current && edit_) {
         const int total = static_cast<int>(
             SendMessageW(edit_, EM_GETLINECOUNT, 0, 0));
         GETTEXTLENGTHEX tl{};
@@ -12744,9 +12834,30 @@ LRESULT NotesWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
           continue;
         }
         // Edited since the fetch started — keep the user's version instead of
-        // clobbering it with the cloud copy (impossible in the old blocking
-        // flow, which froze the UI for the whole fetch).
-        if (_wcsicmp(path_.c_str(), b.path.c_str()) == 0 && dirty_) {
+        // clobbering it with the cloud copy. Two independent guards:
+        //   1) file fingerprint taken at fetch start (covers edits made in a
+        //      different, now-inactive tab that were autosaved meanwhile);
+        //   2) active tab's dirty flag (covers unsaved edits not yet on disk).
+        const bool active_dirty =
+            _wcsicmp(path_.c_str(), b.path.c_str()) == 0 && dirty_;
+        bool local_changed = false;
+        if (!b.path.empty() && b.local_mtime != 0) {
+          WIN32_FILE_ATTRIBUTE_DATA now{};
+          if (!GetFileAttributesExW(b.path.c_str(), GetFileExInfoStandard,
+                                    &now)) {
+            local_changed = true;  // deleted / renamed while fetching
+          } else {
+            const ULONGLONG size =
+                (static_cast<ULONGLONG>(now.nFileSizeHigh) << 32) |
+                now.nFileSizeLow;
+            const ULONGLONG mtime =
+                (static_cast<ULONGLONG>(now.ftLastWriteTime.dwHighDateTime)
+                 << 32) |
+                now.ftLastWriteTime.dwLowDateTime;
+            local_changed = size != b.local_size || mtime != b.local_mtime;
+          }
+        }
+        if (active_dirty || local_changed) {
           continue;
         }
         if (AtomicWriteUtf8File(b.path, NarrowUtf8(b.body), false)) {

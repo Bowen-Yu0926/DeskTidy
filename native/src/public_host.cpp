@@ -1065,7 +1065,15 @@ void PublicHost::Layout() {
       ++next;
     }
     if (next >= candidates.size()) {
-      assigned[i] = candidates.back();
+      // Never alias the last candidate: it may already be claimed by a saved
+      // position, and reusing it makes two icons overlap. Extend the grid to
+      // the right of the last cell so every slot owns a distinct seat.
+      RECT extra = candidates.back();
+      OffsetRect(&extra, step_x, 0);
+      candidates.push_back(extra);
+      used.push_back(0);
+      used[next] = 1;
+      assigned[i] = candidates[next++];
       continue;
     }
     used[next] = 1;

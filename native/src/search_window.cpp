@@ -1027,9 +1027,9 @@ void SearchWindow::Show() {
   if (!web_available_) {
     CreateWebView();
   }
-  // Fresh open: no drive chips selected (avoid sticky C: from prior session /
-  // settings "search all drives").
-  selected_drives_.clear();
+  // Permission to scan all drives comes from Options/all_drives (SetOptions).
+  // Do not clear a preselected drive set here — doing so silently downgraded
+  // the persistent "search all drives" setting to user-folder-only scanning.
   ShowWindow(hwnd_, SW_SHOW);
   SetWindowPos(hwnd_, HWND_TOPMOST, 0, 0, 0, 0,
                SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);

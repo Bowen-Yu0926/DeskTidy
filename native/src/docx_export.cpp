@@ -655,11 +655,15 @@ bool ExportMarkdownToDocx(const std::wstring& md_text,
         TerminateProcess(pi.hProcess, 1);
         WaitForSingleObject(pi.hProcess, 1000);
       }
+      // 超时被强杀的 tar 可能留下半个 zip；必须正常退出且退出码为 0 才接受产物。
+      DWORD exit_code = 1;
+      if (wait_res == WAIT_OBJECT_0) {
+        GetExitCodeProcess(pi.hProcess, &exit_code);
+      }
       CloseHandle(pi.hThread);
       CloseHandle(pi.hProcess);
 
-      // 超时被强杀的 tar 可能留下半个 zip；必须等进程正常退出才接受产物。
-      if (finished) {
+      if (finished && exit_code == 0) {
         // Verify temp_zip exists, size > 0 and has PK\x03\x04 zip header
         WIN32_FILE_ATTRIBUTE_DATA fad{};
         if (GetFileAttributesExW(temp_zip.c_str(), GetFileExInfoStandard, &fad)) {
@@ -705,11 +709,32 @@ bool ExportMarkdownToDocx(const std::wstring& md_text,
         TerminateProcess(pi.hProcess, 1);
         WaitForSingleObject(pi.hProcess, 1000);
       }
+      DWORD exit_code = 1;
+      if (wait_res == WAIT_OBJECT_0) {
+        GetExitCodeProcess(pi.hProcess, &exit_code);
+      }
       CloseHandle(pi.hThread);
       CloseHandle(pi.hProcess);
-      // 与 tar 分支一致：被强杀的 PowerShell 可能留下截断的 zip。
-      if (finished && GetFileAttributesW(temp_zip.c_str()) != INVALID_FILE_ATTRIBUTES) {
-        packed = true;
+      // 与 tar 分支一致：强杀或非零退出码都可能留下截断的 zip；
+      // 接受前同样验证存在、大小和 PK\x03\x04 头。
+      if (finished && exit_code == 0) {
+        WIN32_FILE_ATTRIBUTE_DATA fad{};
+        if (GetFileAttributesExW(temp_zip.c_str(), GetFileExInfoStandard, &fad)) {
+          const ULONGLONG sz = (static_cast<ULONGLONG>(fad.nFileSizeHigh) << 32) | fad.nFileSizeLow;
+          if (sz >= 100) {
+            HANDLE hFile = CreateFileW(temp_zip.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr);
+            if (hFile != INVALID_HANDLE_VALUE) {
+              char magic[4] = {};
+              DWORD read_bytes = 0;
+              if (ReadFile(hFile, magic, 4, &read_bytes, nullptr) && read_bytes == 4) {
+                if (magic[0] == 'P' && magic[1] == 'K' && magic[2] == 0x03 && magic[3] == 0x04) {
+                  packed = true;
+                }
+              }
+              CloseHandle(hFile);
+            }
+          }
+        }
       }
     }
   }

@@ -626,6 +626,7 @@ void AddPage() {
   }
   g_state->page_names.push_back(
       NextPageName(g_state->page_names.size() + 1));
+  g_state->page_locked.push_back(false);
   SwitchPage(static_cast<int>(g_state->page_names.size()) - 1);
 }
 
@@ -673,6 +674,14 @@ void DeletePage(int page) {
     }
   }
   g_state->page_names.erase(g_state->page_names.begin() + page);
+  // Page indices shift after deletion — page_locked must be reindexed too,
+  // otherwise a lock from the deleted page sticks to an unrelated page.
+  if (page < static_cast<int>(g_state->page_locked.size())) {
+    g_state->page_locked.erase(g_state->page_locked.begin() + page);
+  }
+  if (g_state->page_locked.size() < g_state->page_names.size()) {
+    g_state->page_locked.resize(g_state->page_names.size(), false);
+  }
   if (g_state->current_page == page) {
     g_state->current_page = 0;
   } else if (g_state->current_page > page) {

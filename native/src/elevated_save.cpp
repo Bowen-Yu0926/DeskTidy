@@ -15,9 +15,11 @@
 namespace {
 
 constexpr wchar_t kPendingName[] = L"elevated_save_pending.json";
+constexpr wchar_t kResultName[] = L"elevated_save_result.json";
 constexpr wchar_t kHostsName[] = L"hosts";
 constexpr double kPendingMaxAgeS = 3600.0;
 constexpr int kSeSuccessThreshold = 32;
+constexpr INT_PTR kSeCanceled = 1223;  // ERROR_CANCELLED from UAC "No"
 
 DWORD g_last_write_err = 0;
 
@@ -197,17 +199,23 @@ double NowUnixS() {
   return static_cast<double>(uli.QuadPart - kEpochDiff) / 10000000.0;
 }
 
-bool ReadPendingFile(std::string* json) {
+bool ReadFileUtf8(const std::wstring& path, std::string* json) {
   if (!json) {
     return false;
   }
-  std::ifstream in(ElevatedPendingPath(), std::ios::binary);
+  std::ifstream in(path, std::ios::binary);
   if (!in) {
     return false;
   }
   json->assign(std::istreambuf_iterator<char>(in),
                std::istreambuf_iterator<char>());
   return !json->empty();
+}
+
+bool ReadPendingFile(std::string* json) { return ReadFileUtf8(ElevatedPendingPath(), json); }
+
+bool ReadPendingFileEx(const std::wstring& path, std::string* json) {
+  return ReadFileUtf8(path, json);
 }
 
 // In-place direct write fallback for system-protected paths (like hosts)
@@ -266,6 +274,65 @@ bool DirectWriteFileBytes(const std::wstring& path, const void* data, size_t siz
 
 std::wstring ElevatedPendingPath() {
   return JoinPath(NativeDataDir(), kPendingName);
+}
+
+std::wstring ElevatedResultPath() {
+  return JoinPath(NativeDataDir(), kResultName);
+}
+
+bool WriteElevatedResult(const std::wstring& target, unsigned request_id,
+                         bool ok) {
+  const std::string target_u8 = NarrowUtf8(NormalizePath(target));
+  std::string json = "{\n  \"target\": \"";
+  json += EscapeJsonUtf8(target_u8);
+  json += "\",\n  \"request\": ";
+  json += std::to_string(request_id);
+  json += ",\n  \"ok\": ";
+  json += ok ? "true" : "false";
+  json += "\n}\n";
+  return AtomicWriteUtf8File(ElevatedResultPath(), json, false);
+}
+
+bool ReadElevatedResult(const std::wstring& target, unsigned request_id,
+                        bool* ok) {
+  std::string json;
+  if (!ReadPendingFileEx(ElevatedResultPath(), &json)) {
+    return false;
+  }
+  std::string result_target;
+  if (!ExtractJsonStringField(json, "target", &result_target) ||
+      !PathsEqual(WidenUtf8(result_target), target)) {
+    return false;
+  }
+  if (request_id != 0) {
+    double found_id = 0;
+    if (!ExtractJsonNumberField(json, "request", &found_id) ||
+        static_cast<unsigned>(found_id) != request_id) {
+      return false;
+    }
+  }
+  size_t pos = json.find("\"ok\"");
+  if (pos == std::string::npos) {
+    return false;
+  }
+  pos = json.find(':', pos + 4);
+  if (pos == std::string::npos) {
+    return false;
+  }
+  const size_t t = json.find("true", pos + 1);
+  const size_t f = json.find("false", pos + 1);
+  if (t == std::string::npos && f == std::string::npos) {
+    return false;
+  }
+  if (ok) {
+    *ok = t != std::string::npos && (f == std::string::npos || t < f);
+  }
+  return true;
+}
+
+bool ClearElevatedResult() {
+  return DeleteFileW(ElevatedResultPath().c_str()) != 0 ||
+         GetLastError() == ERROR_FILE_NOT_FOUND;
 }
 
 bool IsCurrentProcessElevated() {
@@ -426,7 +493,8 @@ bool ConsumeElevatedPending(const std::wstring& target) {
   return true;
 }
 
-bool RelaunchDeskNoteElevated(const std::wstring& target, bool reopen) {
+bool RelaunchDeskNoteElevated(const std::wstring& target, unsigned request_id,
+                              bool reopen) {
   const std::wstring exe = DeskNoteExePath();
   if (exe.empty() ||
       GetFileAttributesW(exe.c_str()) == INVALID_FILE_ATTRIBUTES) {
@@ -436,7 +504,8 @@ bool RelaunchDeskNoteElevated(const std::wstring& target, bool reopen) {
   std::wstring params = reopen ? L"--elevated-save-reopen \""
                                : L"--elevated-save \"";
   params += norm;
-  params += L"\"";
+  params += L"\" ";
+  params += std::to_wstring(request_id);
 
   const size_t slash = exe.find_last_of(L"\\/");
   const std::wstring cwd =
@@ -448,5 +517,10 @@ bool RelaunchDeskNoteElevated(const std::wstring& target, bool reopen) {
       ShellExecuteW(nullptr, L"runas", exe.c_str(), params.c_str(), cwd.c_str(),
                     SW_HIDE));
   LogLine(L"[elevated] ShellExecuteW rc=%lld", static_cast<long long>(rc));
+  // ShellExecuteW returns >32 even for ERROR_CANCELLED (1223). Treat user
+  // denial as a launch failure so the caller restores its original state.
+  if (rc == kSeCanceled) {
+    return false;
+  }
   return rc > kSeSuccessThreshold;
 }

@@ -86,6 +86,13 @@ bool RunCapture(const std::wstring& exe, const std::wstring& args,
   char chunk[4096];
   DWORD read = 0;
   for (;;) {
+    // 必须在每轮循环检查：持续输出 stderr 的进程永远走不到 avail==0 分支。
+    if (GetTickCount64() >= deadline) {
+      timed_out = true;
+      TerminateProcess(pi.hProcess, 1);
+      WaitForSingleObject(pi.hProcess, 1000);
+      break;
+    }
     DWORD avail = 0;
     if (!PeekNamedPipe(rd, nullptr, 0, nullptr, &avail, nullptr)) {
       break;
@@ -93,12 +100,6 @@ bool RunCapture(const std::wstring& exe, const std::wstring& args,
     if (avail == 0) {
       if (WaitForSingleObject(pi.hProcess, 0) == WAIT_OBJECT_0) {
         break;  // 进程已退出且管道已排空
-      }
-      if (GetTickCount64() >= deadline) {
-        timed_out = true;
-        TerminateProcess(pi.hProcess, 1);
-        WaitForSingleObject(pi.hProcess, 1000);
-        break;
       }
       Sleep(10);
       continue;

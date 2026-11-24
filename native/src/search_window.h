@@ -41,7 +41,14 @@ class SearchWindow {
     if (options_.threads > 64) {
       options_.threads = 64;
     }
-    // Do not auto-select drive chips (esp. C:) from prefs — user picks explicitly.
+    // "Search all drives" is a persistent preference: preselect every fixed
+    // drive so a fresh Show() actually scans them. Users can still narrow the
+    // selection with drive chips for a single search.
+    if (options_.all_drives) {
+      selected_drives_ = EnumFixedDriveLetters();
+    } else {
+      selected_drives_.clear();
+    }
   }
   void SetOnPathReplaced(
       std::function<void(const std::wstring&, const std::wstring&)> fn) {

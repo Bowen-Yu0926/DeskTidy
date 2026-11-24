@@ -31,8 +31,9 @@ struct FenceMoveTarget {
 class FenceWindow {
  public:
   using MovedFn = std::function<void(FenceWindow*)>;
-  using PathsFn =
-      std::function<DWORD(FenceWindow*, const std::vector<std::wstring>&)>;
+  using PathsFn = std::function<DWORD(FenceWindow*,
+                                      const std::vector<std::wstring>&,
+                                      DWORD proposed_effect)>;
   using DragDoneFn = std::function<void(FenceWindow*)>;
   // `drop` = screen seat for drag-unpin; nullptr = menu unpin (auto-pack).
   using UnpinFn = std::function<void(FenceWindow*, const std::wstring& path,
@@ -71,7 +72,8 @@ class FenceWindow {
   // Drop-at with insertion index (F1): index < 0 means append.
   // Returns the OLE effect actually applied (NONE if the drop was a no-op).
   using DropAtFn = std::function<DWORD(FenceWindow*,
-                                       const std::vector<std::wstring>&, int)>;
+                                       const std::vector<std::wstring>&, int,
+                                       DWORD proposed_effect)>;
   // Per-fence icon zoom changed (F4): zoom_percent in [70, 160].
   using ZoomFn = std::function<void(FenceWindow*, int zoom_percent)>;
   // Fired when a fence finishes a move (drag-end); app snaps + resolves

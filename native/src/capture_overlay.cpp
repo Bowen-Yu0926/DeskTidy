@@ -354,7 +354,7 @@ bool SaveBitmapToFile(HBITMAP bmp, const std::wstring& path) {
     c = static_cast<wchar_t>(towlower(c));
   }
   const wchar_t* mime = L"image/png";
-  if (ext == L".jpg" || ext == L".jpeg") {
+  if (ext == L".jpg" || ext == L".jpeg" || ext == L".jfif") {
     mime = L"image/jpeg";
   } else if (ext == L".bmp") {
     mime = L"image/bmp";
@@ -389,8 +389,8 @@ std::wstring ShowSaveAsDialog() {
   ofn.lStructSize = sizeof(ofn);
   ofn.lpstrFile = file;
   ofn.nMaxFile = MAX_PATH;
-  ofn.lpstrFilter = L"PNG 图片\0*.png\0JPEG 图片\0*.jpg;*.jpeg\0";
-  ofn.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST;
+  ofn.lpstrFilter = L"PNG 图片\0*.png\0JPEG 图片\0*.jpg;*.jpeg;*.jfif\0位图\0*.bmp\0";
+  ofn.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
   ofn.lpstrDefExt = L"png";
   if (GetSaveFileNameW(&ofn)) {
     return file;

@@ -114,6 +114,10 @@ class NotesWebView {
   void NavigateHome();
   void OnReady();
   void OnWebMessage(const std::wstring& json);
+  // True only while a SetMarkdown handshake is legitimately in flight.
+  // Falls back to false after 5s so a page that never posts contentReady
+  // cannot suppress dirty/changed posts forever.
+  bool SetHandshakeActive() const;
   static LRESULT CALLBACK HostProc(HWND, UINT, WPARAM, LPARAM);
   LRESULT HandleHost(UINT msg, WPARAM wparam, LPARAM lparam);
 
@@ -128,6 +132,10 @@ class NotesWebView {
   // After SetMarkdown, ignore in-flight `changed` bodies from the previous
   // document until Toast posts contentReady for the new set.
   bool applying_set_ = false;
+  // Deadline for the set handshake: contentReady normally clears applying_set_,
+  // but a page navigation / crashed bundle never posts it. Without a timeout
+  // every later `changed`/`dirty` post is discarded and edits are silently lost.
+  ULONGLONG applying_set_deadline_ = 0;
   // After AckClean / Save: drop Toast dirty/changed so the tab check sticks.
   ULONGLONG quiet_dirty_until_ = 0;
   std::wstring theme_ = L"light";

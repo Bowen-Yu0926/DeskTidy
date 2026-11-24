@@ -1459,7 +1459,13 @@ HRESULT STDMETHODCALLTYPE PathDropTarget::Drop(IDataObject* data,
   const DWORD proposed =
       paths.empty() ? DROPEFFECT_NONE
                     : ResolveFileEffect(key_state, allowed, sample);
-  // AIGC START
+  const bool pin_source = HasPinTransfer(data);
+  // A pin drag carries a private DeskTidyPinTransfer format plus CF_HDROP for
+  // Explorer. A virtual fence↔fence transfer only re-point pins — no file is
+  // physically moved. Returning MOVE here would tell Explorer to delete the
+  // source files even though the app never touched them. Only report MOVE if
+  // the source file is actually gone (e.g. a physical move/recycle sink).
+  const bool virtual_pin_move = pin_source && proposed == DROPEFFECT_MOVE;
   // Ask the sink what actually happened — never advertise MOVE/COPY if the
   // handler no-oped (desktop self-drop skip, recycle fail, portal import fail).
   DWORD actual = proposed;
@@ -1467,6 +1473,19 @@ HRESULT STDMETHODCALLTYPE PathDropTarget::Drop(IDataObject* data,
     actual = on_drop_(paths, proposed);
   } else if (paths.empty()) {
     actual = DROPEFFECT_NONE;
+  }
+  if (virtual_pin_move && (actual & DROPEFFECT_MOVE) != 0) {
+    bool any_gone = false;
+    for (const auto& p : paths) {
+      if (!p.empty() && GetFileAttributesW(p.c_str()) == INVALID_FILE_ATTRIBUTES) {
+        any_gone = true;
+        break;
+      }
+    }
+    if (!any_gone) {
+      LogLine(L"[ole_drag] pin source MOVE downgraded to COPY (no files moved)");
+      actual = DROPEFFECT_COPY;
+    }
   }
   if (effect) {
     *effect = actual;

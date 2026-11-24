@@ -116,6 +116,18 @@ int main() {
   ClearElevatedPending();
   printf("OK: elevated pending JSON round-trip fixture\n");
 
+  // 4c. 结果文件：助手按目标写回成功/失败，原窗口按目标读取。
+  const std::wstring result_target = L"C:\\Windows\\System32\\drivers\\etc\\hosts";
+  CHECK(WriteElevatedResult(result_target, 42, false));
+  bool result_ok = true;
+  CHECK(ReadElevatedResult(result_target, 42, &result_ok));
+  CHECK(!result_ok);
+  CHECK(!ReadElevatedResult(L"C:\\should\\not\\match", 42, &result_ok));
+  CHECK(!ReadElevatedResult(result_target, 43, &result_ok));
+  CHECK(ClearElevatedResult());
+  CHECK(!ReadElevatedResult(result_target, 42, &result_ok));
+  printf("OK: elevated result round-trip\n");
+
   // 5. 受保护路径访问测试（当前进程非管理员运行下写入 hosts 应报 ACCESS_DENIED）
   if (!IsCurrentProcessElevated()) {
     wchar_t windir[MAX_PATH] = {};

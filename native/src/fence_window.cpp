@@ -1181,7 +1181,8 @@ bool FenceWindow::NameMatchesFilter(const std::wstring& name) const {
 void FenceWindow::BeginFilter() {
   if (!hwnd_ || collapsed_) {
     return;
-  }  if (filter_edit_) {
+  }
+  if (filter_edit_) {
     SetFocus(filter_edit_);
     SendMessageW(filter_edit_, EM_SETSEL, 0, -1);
     return;
@@ -1584,8 +1585,8 @@ bool FenceWindow::Create(HINSTANCE instance, const FenceLayout& layout) {
   portal_path_ = layout.portal_path;
   collapsed_ = layout.collapsed;
   auto_hide_ = layout.auto_hide;
-  position_locked_ = false;
-  content_locked_ = false;
+  position_locked_ = layout.position_locked;
+  content_locked_ = layout.content_locked;
   label_lines_ = (std::min)(3, (std::max)(1, layout.label_lines));
   cell_scale_ = (std::min)(150, (std::max)(85, layout.cell_scale));
   fade_on_idle_ = layout.fade_on_idle;
@@ -1768,10 +1769,10 @@ void FenceWindow::EnsureDropTarget() {
               // F1: derive insertion index from the drop point (cursor is still
               // at the drop location when PathDropTarget::Drop fires).
               const int at = InsertIndexAt(pt.x, pt.y);
-              return on_paths_dropped_at_(this, paths, at);
+              return on_paths_dropped_at_(this, paths, at, proposed);
             }
             if (on_paths_dropped_) {
-              return on_paths_dropped_(this, paths);
+              return on_paths_dropped_(this, paths, proposed);
             }
             return proposed;
           },
@@ -2178,12 +2179,10 @@ bool FenceWindow::Show() {
   // Callers (SetPage / RestoreDesktopChrome) already filter VisibleOnPage for
   // the *current* app page. Do not gate on page_ alone — that is only the
   // primary membership and no-op'd multi-page / soft-park restores.
-  // Fence-level show: clear hide on every membership page (Fences parity —
-  // Hide must not resurrect when switching to another pages_ entry).
+  // 只恢复窗口可见性与当前页的缺省几何：每页独立的 visible 标志是用户
+  // 在布局编辑器里设置的，不能被切页/Win+D 的 Show() 全部重置为 true。
+  // 全局 Hide() 仍会清掉所有页的 visible，所以显式隐藏语义不变。
   visible_ = true;
-  for (auto& kv : page_geometries_) {
-    kv.second.visible = true;
-  }
   if (page_geometries_.find(page_) == page_geometries_.end()) {
     FencePageGeometry geo = GeometryForPage(page_);
     geo.visible = true;

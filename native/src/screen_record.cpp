@@ -210,10 +210,7 @@ void WriteRecordState() {
   if (g_proc_pid == 0 || g_out_path.empty()) {
     return;
   }
-  std::ofstream out(RecordStatePath(), std::ios::binary);
-  if (!out) {
-    return;
-  }
+  std::ostringstream out;
   out << "{\n  \"pid\": " << g_proc_pid << ",\n  \"output\": \""
       << JsonEscapeUtf8(NarrowUtf8(g_out_path)) << "\",\n  \"exe\": \""
       << JsonEscapeUtf8(NarrowUtf8(g_cmd.ff)) << "\",\n  \"create_time_ms\": "
@@ -228,6 +225,9 @@ void WriteRecordState() {
     out << "\"" << JsonEscapeUtf8(NarrowUtf8(g_segments[i])) << "\"";
   }
   out << "]\n}\n";
+  // 每 2 秒心跳重写一次；普通 ofstream 在进程被杀时可能留下 0 字节文件，
+  // 使崩溃恢复读不到正在录制的进程。走统一原子写。
+  AtomicWriteUtf8File(RecordStatePath(), out.str(), false);
 }
 
 bool ReadRecordState(DWORD* pid, std::wstring* output, std::wstring* exe,

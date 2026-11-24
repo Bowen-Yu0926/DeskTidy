@@ -25,6 +25,7 @@ HWND g_msg = nullptr;
 struct CmdParse {
   std::vector<std::wstring> paths;
   std::wstring elev_save_target;
+  unsigned elev_request_id = 0;
   bool elev_reopen = false;
 };
 
@@ -44,6 +45,9 @@ CmdParse ParseCmd() {
       out.elev_reopen = (a == L"--elevated-save-reopen");
       if (i + 1 < argc && argv[i + 1]) {
         out.elev_save_target = argv[++i];
+      }
+      if (i + 1 < argc && argv[i + 1]) {
+        out.elev_request_id = wcstoul(argv[++i], nullptr, 10);
       }
       continue;
     }
@@ -158,16 +162,26 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
   const bool elev_save = !cmd.elev_save_target.empty();
   if (elev_save) {
     elev_save_ok = ConsumeElevatedPending(cmd.elev_save_target);
-    LogLine(L"[elevated] consume target=%s ok=%s", cmd.elev_save_target.c_str(),
+    WriteElevatedResult(cmd.elev_save_target, cmd.elev_request_id,
+                        elev_save_ok);
+    LogLine(L"[elevated] consume target=%s req=%u ok=%s",
+            cmd.elev_save_target.c_str(), cmd.elev_request_id,
             elev_save_ok ? L"yes" : L"no");
   } else {
     PurgeOrphanElevatedPending();
+    // Never clear a result while another instance's helper save is in flight:
+    // the result file is shared and the waiting window needs to read it.
   }
 
   // 提权助手只写盘：原窗口保持存活并占用单实例锁，助手不能抢锁、
   // 建窗口或转发 --open，否则会干扰原窗口恢复。
   if (elev_save) {
     LogLine(L"[elevated] helper write done ok=%d", elev_save_ok ? 1 : 0);
+    // --elevated-save-reopen: write-only helper hands the saved file back to a
+    // normal (non-elevated) DeskNote instance before exiting.
+    if (elev_save_ok && cmd.elev_reopen) {
+      LaunchOrFocusDeskNote({cmd.elev_save_target});
+    }
     LogShutdown();
     return elev_save_ok ? 0 : 1;
   }

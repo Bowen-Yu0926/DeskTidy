@@ -228,7 +228,8 @@ class App {
   void ShowTrayBalloon(const std::wstring& title, const std::wstring& text);
   COLORREF TrayAccentColor() const;
   DWORD OnPathsDropped(FenceWindow* fence,
-                       const std::vector<std::wstring>& paths);
+                       const std::vector<std::wstring>& paths,
+                       DWORD proposed_effect = DROPEFFECT_NONE);
   void OnPathsPasted(FenceWindow* fence, const std::vector<std::wstring>& paths,
                      bool move, bool as_link = false);
   // Shell New on a virtual fence: pin the landed Desktop path (no FO_COPY).
@@ -246,7 +247,7 @@ class App {
   // for portal imports). Paste callers may ignore the return.
   DWORD HandleIncomingPaths(FenceWindow* fence,
                             const std::vector<std::wstring>& paths, bool paste,
-                            bool move);
+                            bool move, DWORD proposed_effect = DROPEFFECT_NONE);
   void RebuildDockItems();
   void WireFence(FenceWindow* fence);
   // heal_geometry: true after display change; false when applying a snapshot

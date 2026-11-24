@@ -44,8 +44,7 @@ bool FileExists(const std::wstring& path) {
 }
 
 void WriteMarker() {
-  std::ofstream out(MarkerPath(), std::ios::binary);
-  out << "ok\n";
+  AtomicWriteUtf8File(MarkerPath(), "ok\n", false);
 }
 
 bool FindNumber(const std::string& body, const char* key, int* out) {
