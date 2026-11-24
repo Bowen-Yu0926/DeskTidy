@@ -409,8 +409,9 @@ class NotesWindow {
   int gutter_width_ = 44;
   int pending_goto_line_ = -1;  // P1-19: deferred after SwitchToTab caret restore
   // Online note whose body is being fetched on a worker; the placeholder is
-  // shown meanwhile and WM_APP+89 fills it in.
-  int pending_online_load_id_ = -1;
+  // IDs of online notes whose bodies are still being fetched. Multiple tabs
+  // can be loaded concurrently; a single id would let one fetch clobber another.
+  std::set<int> pending_online_load_ids_;
   bool quit_on_close_ = false;
   bool toast_ = false;
   bool wysiwyg_ = false;

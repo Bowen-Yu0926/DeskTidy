@@ -21,7 +21,11 @@ permissions:
 
 jobs:
   build-release:
-    runs-on: windows-latest
+    # Use the Windows Server 2022 image: it ships with VS2022, which matches
+    # the fixed "Visual Studio 17 2022" CMake generator in native/build.bat.
+    # windows-latest currently maps to a VS2026-only image where CMake cannot
+    # find the VS2022 generator.
+    runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
         with:

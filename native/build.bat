@@ -13,6 +13,7 @@ if errorlevel 1 (
 if not exist build (
   cmake -S . -B build -G "Visual Studio 17 2022" -A x64
   if errorlevel 1 (
+    rmdir /s /q build 2>nul
     echo Trying default generator...
     cmake -S . -B build
     if errorlevel 1 exit /b 1

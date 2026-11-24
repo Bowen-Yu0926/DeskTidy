@@ -54,7 +54,10 @@ class NotesWebView {
   void SetCachedMarkdown(const std::wstring& md,
                          const std::wstring& base_dir = std::wstring());
   // Round-trip get (slow). Prefer CachedMarkdown when the cache is authoritative.
-  std::wstring PullMarkdown(DWORD timeout_ms = 1500);
+  // expected_first_line: when non-empty, a pulled body whose first line differs
+  // is from a stale document still rendered in the WebView; it is discarded.
+  std::wstring PullMarkdown(DWORD timeout_ms = 1500,
+                            const std::wstring& expected_first_line = std::wstring());
   // After a successful Save: clear Toast mdDirty + cancel debounced `changed`
   // so the tab glyph can flip disc → check (Typora / VS Code).
   void AckClean();

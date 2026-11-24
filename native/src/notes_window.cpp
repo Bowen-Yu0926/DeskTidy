@@ -4977,7 +4977,7 @@ void NotesWindow::Load() {
       // sleeps (up to ~45 s with a dead server); running it here froze the whole
       // window — no paint, no input — on the first open of an online note.
       // Render the placeholder now and fill the body in when WM_APP+89 lands.
-      pending_online_load_id_ = id;
+      pending_online_load_ids_.insert(id);
       std::thread([hwnd = hwnd_, id]() {
         auto* n = new VaultHttpNote;
         const bool ok = VaultHttpGetNote(id, n);
@@ -5232,7 +5232,11 @@ void NotesWindow::Save(bool authoritative_pull, bool push_cloud) {
     if (need_pull) {
       // Short pull: cache is kept warm by Toast `changed`. Long 1500ms waits
       // made Ctrl+S feel stuck before the tab could flip to ✓.
-      from_toast = web_.PullMarkdown(cache_warm ? 250 : 500);
+      // Pass the host cache as the expected body: if the WebView is still
+      // rendering a different (previous) note, the pull is rejected instead
+      // of cross-writing that note's body under this tab's cloud id.
+      from_toast = web_.PullMarkdown(cache_warm ? 250 : 500,
+                                     web_.CachedMarkdown());
     }
     if (from_toast.empty()) {
       from_toast = web_.CachedMarkdown();
@@ -5275,7 +5279,7 @@ void NotesWindow::Save(bool authoritative_pull, bool push_cloud) {
     }
     // 正文还在后台拉取时：用户还没看到真实内容，不能把占位符 "# \n\n"
     // 当成编辑上传，也不能把占位符写进缓存挡住随后到达的真实正文。
-    if (pending_online_load_id_ == id) {
+    if (pending_online_load_ids_.count(id) != 0) {
       MistAlert(hwnd_, L"保存", L"云端正文仍在加载，请稍候再保存。",
                 MistMsgTone::Info);
       return;
@@ -12231,8 +12235,9 @@ LRESULT NotesWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
           }
           // WYSIWYG 之外 web_ 里可能留着上一篇笔记的缓存；只有当前确实处于
           // WYSIWYG 模式时才用它，否则一律读 RichEdit 正文。
-          std::wstring body = wysiwyg_ && web_.Ready() ? web_.PullMarkdown(300)
-                                                       : std::wstring();
+          std::wstring body = wysiwyg_ && web_.Ready()
+                                  ? web_.PullMarkdown(300, web_.CachedMarkdown())
+                                  : std::wstring();
           if (body.empty() && edit_) {
             const int len = GetWindowTextLengthW(edit_);
             if (len > 0) {
@@ -12960,10 +12965,10 @@ LRESULT NotesWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
     case WM_APP + 89: {
       // Online note body fetched on a worker (see Load()).
       std::unique_ptr<VaultHttpNote> n(reinterpret_cast<VaultHttpNote*>(lparam));
-      pending_online_load_id_ = -1;
       if (!n || n->id <= 0) {
         return 0;
       }
+      pending_online_load_ids_.erase(n->id);
       if (wparam == 0) {
         if (status_ && IsOnlineNotePath(path_) && OnlineNoteIdFromPath(path_) == n->id) {
           SetWindowTextW(status_, L"云端笔记加载失败，请检查网络或登录状态");

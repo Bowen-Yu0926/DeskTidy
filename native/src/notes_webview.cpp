@@ -1450,11 +1450,13 @@ std::wstring JsonUnquote(const std::wstring& s) {
 }
 }  // namespace
 
-std::wstring NotesWebView::PullMarkdown(DWORD timeout_ms) {
+std::wstring NotesWebView::PullMarkdown(
+    DWORD timeout_ms, const std::wstring& expected_first_line) {
   auto* web = static_cast<ICoreWebView2*>(webview_);
   if (!web || !ready_) {
     return pending_md_;
   }
+  const std::wstring cache_before = pending_md_;
   got_md_ = false;
   pulling_md_ = true;
   // ExecuteScript alone — dual get+postMessage doubled IPC on every Save/tab.
@@ -1476,6 +1478,28 @@ std::wstring NotesWebView::PullMarkdown(DWORD timeout_ms) {
     Sleep(5);
   }
   pulling_md_ = false;
+  // Stale-document guard: the WebView renders asynchronously on tab switch. A
+  // pull can therefore return the previous note's body while path_/title are
+  // already the current note — that cross-writes one note's content into
+  // another (title stays correct, body is wrong). If the caller told us which
+  // first line to expect and the pulled body has a different non-empty first
+  // line, reject it and keep the host cache instead.
+  if (!expected_first_line.empty() && !cache_before.empty()) {
+    auto first_line = [](const std::wstring& s) {
+      const size_t e = s.find_first_of(L"\r\n");
+      return e == std::wstring::npos ? s : s.substr(0, e);
+    };
+    const std::wstring expected_head = first_line(expected_first_line);
+    const std::wstring pulled_head = first_line(pending_md_);
+    const std::wstring cached_head = first_line(cache_before);
+    // Reject a pull whose first line matches neither the host cache nor the
+    // caller's expected title: this is a stale document from before a tab
+    // switch, which would otherwise be saved under the current note's id.
+    if (!pulled_head.empty() && pulled_head != cached_head &&
+        (!expected_head.empty() && pulled_head != expected_head)) {
+      pending_md_ = cache_before;
+    }
+  }
   return pending_md_;
 }
 
