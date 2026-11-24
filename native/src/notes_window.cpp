@@ -4775,6 +4775,10 @@ void NotesWindow::DeleteAndCloseTabAt(int index, bool ask_confirm) {
   EnsureTabStates();
   const bool deleting_current = (index == tab_index_);
   const std::wstring path = tab_paths_[static_cast<size_t>(index)];
+  if (IsOnlineNotePath(path)) {
+    DeleteOnlineNote(OnlineNoteIdFromPath(path), NoteDisplayName(path, false));
+    return;
+  }
   if (PathIsLocked(path)) {
     NotifyTabDeleteLocked();
     return;
@@ -6209,6 +6213,10 @@ void NotesWindow::RenameTabAt(int index) {
   if (path.empty()) {
     return;
   }
+  if (IsOnlineNotePath(path)) {
+    RenameOnlineNote(OnlineNoteIdFromPath(path), NoteDisplayName(path, false));
+    return;
+  }
   std::wstring name = path;
   const size_t slash = path.find_last_of(L"\\/");
   if (slash != std::wstring::npos) {
@@ -6334,6 +6342,11 @@ bool NotesWindow::ExportNoteWithAssets(const std::wstring& note_path,
       auto it = online_body_cache_.find(id);
       if (it != online_body_cache_.end()) {
         md_text = it->second.body;
+      } else {
+        VaultHttpNote vn;
+        if (VaultHttpGetNote(id, &vn)) {
+          md_text = vn.body;
+        }
       }
     } else if (GetFileAttributesW(note_path.c_str()) != INVALID_FILE_ATTRIBUTES) {
       std::string bytes;
@@ -7502,6 +7515,11 @@ void NotesWindow::ExportWord(const std::wstring& target_path) {
       auto it = online_body_cache_.find(id);
       if (it != online_body_cache_.end()) {
         md_text = it->second.body;
+      } else {
+        VaultHttpNote vn;
+        if (VaultHttpGetNote(id, &vn)) {
+          md_text = vn.body;
+        }
       }
     } else if (GetFileAttributesW(note_path.c_str()) != INVALID_FILE_ATTRIBUTES) {
       std::string bytes;
@@ -7607,6 +7625,11 @@ void NotesWindow::ExportPdf(const std::wstring& target_path) {
       auto it = online_body_cache_.find(id);
       if (it != online_body_cache_.end()) {
         md_text = it->second.body;
+      } else {
+        VaultHttpNote vn;
+        if (VaultHttpGetNote(id, &vn)) {
+          md_text = vn.body;
+        }
       }
     } else if (GetFileAttributesW(note_path.c_str()) != INVALID_FILE_ATTRIBUTES) {
       std::string bytes;
@@ -9666,13 +9689,20 @@ void NotesWindow::PushLibraryRailState(bool refresh_online) {
       json += L',';
     }
     first_online = false;
+    const std::wstring online_path = OnlineNotePathFromId(n.id);
     json += L"{\"kind\":\"online\",\"id\":";
     json += std::to_wstring(n.id);
-    json += L",\"title\":\"";
+    json += L",\"path\":\"";
+    json += JsonEscLib(online_path);
+    json += L"\",\"title\":\"";
     json += JsonEscLib(n.title);
     json += L"\",\"updated_at\":\"";
     json += JsonEscLib(n.updated_at);
-    json += L"\"}";
+    json += L"\",\"pinned\":";
+    json += fast_is_pinned(online_path) ? L"true" : L"false";
+    json += L",\"locked\":";
+    json += fast_is_locked(online_path) ? L"true" : L"false";
+    json += L"}";
   }
   json += L"],\"local\":[";
   bool first_local = true;
@@ -9873,6 +9903,11 @@ void NotesWindow::HandleLibraryRailAction(const std::wstring& json) {
   }
   if (id == L"rename") {
     const std::wstring path = LibJsonString(json, L"path");
+    const int note_id = LibJsonInt(json, L"note_id");
+    if (note_id > 0 && (path.empty() || IsOnlineNotePath(path))) {
+      RenameOnlineNote(note_id, LibJsonString(json, L"title"));
+      return;
+    }
     if (path.empty() || IsVaultAccountsNotePath(path)) {
       return;
     }
@@ -9894,6 +9929,11 @@ void NotesWindow::HandleLibraryRailAction(const std::wstring& json) {
   }
   if (id == L"delete") {
     const std::wstring path = LibJsonString(json, L"path");
+    const int note_id = LibJsonInt(json, L"note_id");
+    if (note_id > 0 && (path.empty() || IsOnlineNotePath(path))) {
+      DeleteOnlineNote(note_id, LibJsonString(json, L"title"));
+      return;
+    }
     if (path.empty()) {
       return;
     }
@@ -10130,6 +10170,181 @@ void NotesWindow::ConvertPathToLocal(const std::wstring& path, int note_id) {
   if (status_) {
     SetWindowTextW(status_, L"已转本地；云端副本将在 24 小时后删除");
   }
+}
+
+void NotesWindow::RenameOnlineNote(int note_id,
+                                   const std::wstring& fallback_title) {
+  if (note_id <= 0) {
+    return;
+  }
+  std::wstring cur_title = fallback_title;
+  if (cur_title.empty()) {
+    for (const auto& n : library_online_cache_) {
+      if (n.id == note_id) {
+        cur_title = n.title;
+        break;
+      }
+    }
+  }
+  const std::wstring online_path = OnlineNotePathFromId(note_id);
+  if (cur_title.empty()) {
+    cur_title = NoteDisplayName(online_path, false);
+  }
+  const std::wstring new_title =
+      PromptText(hwnd_, L"重命名云端笔记", L"新名称：", cur_title);
+  if (new_title.empty() || new_title == cur_title) {
+    return;
+  }
+
+  for (auto& n : library_online_cache_) {
+    if (n.id == note_id) {
+      n.title = new_title;
+      break;
+    }
+  }
+  auto it_b = online_body_cache_.find(note_id);
+  std::wstring body;
+  if (it_b != online_body_cache_.end()) {
+    it_b->second.title = new_title;
+    body = it_b->second.body;
+  }
+
+  if (!path_.empty() && _wcsicmp(NormalizePathKey(path_).c_str(),
+                                 NormalizePathKey(online_path).c_str()) == 0) {
+    SetNativeTitleText(new_title);
+    RefreshTitle();
+  }
+  RebuildTabControl();
+  PushLibraryRailState(false);
+
+  std::thread([hwnd = hwnd_, note_id, new_title, body]() {
+    if (!VaultHttpLoggedIn()) {
+      return;
+    }
+    std::wstring send_body = body;
+    if (send_body.empty()) {
+      VaultHttpNote cur;
+      if (VaultHttpGetNote(note_id, &cur)) {
+        send_body = cur.body;
+      }
+    }
+    VaultHttpNote updated;
+    if (VaultHttpUpdateNote(note_id, new_title, send_body, &updated)) {
+      if (hwnd && IsWindow(hwnd)) {
+        PostMessageW(hwnd, WM_APP + 86, 0, 0);
+      }
+    }
+  }).detach();
+}
+
+void NotesWindow::DeleteOnlineNote(int note_id,
+                                   const std::wstring& fallback_title) {
+  if (note_id <= 0) {
+    return;
+  }
+  const std::wstring online_path = OnlineNotePathFromId(note_id);
+  if (PathIsLocked(online_path)) {
+    NotifyTabDeleteLocked();
+    return;
+  }
+  std::wstring title = fallback_title;
+  if (title.empty()) {
+    for (const auto& n : library_online_cache_) {
+      if (n.id == note_id) {
+        title = n.title;
+        break;
+      }
+    }
+  }
+  if (title.empty()) {
+    title = NoteDisplayName(online_path, false);
+  }
+  if (title.empty()) {
+    title = L"在线笔记";
+  }
+
+  const std::wstring prompt =
+      L"确定要从云端删除笔记「" + title + L"」吗？\n删除后不可恢复。";
+  if (!MistConfirm(hwnd_, L"删除云端笔记", prompt.c_str(), MistMsgTone::Danger)) {
+    return;
+  }
+
+  const std::wstring norm_target = NormalizePathKey(online_path);
+  const std::wstring cur_key = NormalizePathKey(path_);
+  bool current_gone = false;
+  if (!cur_key.empty() && _wcsicmp(norm_target.c_str(), cur_key.c_str()) == 0) {
+    current_gone = true;
+    dirty_ = false;
+  }
+
+  auto erase_path = [](std::vector<std::wstring>* list, const std::wstring& p) {
+    const std::wstring key = NormalizePathKey(p);
+    for (size_t i = 0; i < list->size(); ++i) {
+      if (_wcsicmp(NormalizePathKey((*list)[i]).c_str(), key.c_str()) == 0) {
+        list->erase(list->begin() + static_cast<ptrdiff_t>(i));
+        return true;
+      }
+    }
+    return false;
+  };
+  erase_path(&pinned_paths_, online_path);
+  erase_path(&locked_paths_, online_path);
+
+  for (size_t i = 0; i < tab_paths_.size(); ++i) {
+    if (_wcsicmp(NormalizePathKey(tab_paths_[i]).c_str(), norm_target.c_str()) == 0) {
+      if (i < tab_states_.size()) {
+        tab_states_.erase(tab_states_.begin() + static_cast<ptrdiff_t>(i));
+      }
+      tab_paths_.erase(tab_paths_.begin() + static_cast<ptrdiff_t>(i));
+      if (tab_index_ >= static_cast<int>(i) && tab_index_ > 0) {
+        --tab_index_;
+      }
+      break;
+    }
+  }
+
+  online_body_cache_.erase(note_id);
+  cloud_sync_.links.erase(
+      std::remove_if(cloud_sync_.links.begin(), cloud_sync_.links.end(),
+                     [note_id](const auto& L) { return L.note_id == note_id; }),
+      cloud_sync_.links.end());
+  SaveNoteCloudSync(cloud_sync_);
+
+  library_online_cache_.erase(
+      std::remove_if(library_online_cache_.begin(), library_online_cache_.end(),
+                     [note_id](const auto& it) { return it.id == note_id; }),
+      library_online_cache_.end());
+
+  if (current_gone) {
+    if (!tab_paths_.empty()) {
+      if (tab_index_ >= static_cast<int>(tab_paths_.size())) {
+        tab_index_ = static_cast<int>(tab_paths_.size()) - 1;
+      }
+      SwitchToTab(tab_index_, false);
+    } else {
+      path_.clear();
+      if (edit_) {
+        SetWindowTextW(edit_, L"");
+      }
+      SetNativeTitleText(L"");
+      RefreshTitle();
+      UpdatePreview();
+    }
+  }
+  RebuildTabControl();
+  PersistTabs();
+  PushLibraryRailState(false);
+
+  std::thread([hwnd = hwnd_, note_id]() {
+    if (!VaultHttpLoggedIn()) {
+      return;
+    }
+    if (VaultHttpDeleteNote(note_id)) {
+      if (hwnd && IsWindow(hwnd)) {
+        PostMessageW(hwnd, WM_APP + 86, 0, 0);
+      }
+    }
+  }).detach();
 }
 
 namespace {

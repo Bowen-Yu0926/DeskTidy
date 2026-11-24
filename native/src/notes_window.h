@@ -352,6 +352,8 @@ class NotesWindow {
   bool ShowAccountLoginDialog();
   void ConvertPathToCloud(const std::wstring& path);
   void ConvertPathToLocal(const std::wstring& path, int note_id);
+  void RenameOnlineNote(int note_id, const std::wstring& fallback_title);
+  void DeleteOnlineNote(int note_id, const std::wstring& fallback_title);
   void SyncRefreshFromCloud();
   bool PathIsCloudSynced(const std::wstring& path) const;
   void LoadAndSweepCloudSync();

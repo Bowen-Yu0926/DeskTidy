@@ -258,22 +258,22 @@
         html += '<button type="button" data-act="to_local">转本地</button>';
       }
     }
+    if (html) html += '<div class="sep"></div>';
+    html += '<div class="menu-title">导出为</div>';
+    html += '<button type="button" class="menu-sub" data-act="export_docx">Word 文档 (*.docx)</button>';
+    html += '<button type="button" class="menu-sub" data-act="export_pdf">PDF 文档 (*.pdf)</button>';
+    html += '<button type="button" class="menu-sub" data-act="export_md">Markdown (*.md 含图片)</button>';
+    html += '<button type="button" class="menu-sub" data-act="export_html">单文件网页 (*.html)</button>';
+    html += '<div class="sep"></div>';
+    html += '<button type="button" data-act="pin">' +
+      (pinned ? '取消置顶' : '置顶') + '</button>';
+    html += '<button type="button" data-act="lock">' +
+      (locked ? '解锁' : '锁定') + '</button>';
+    html += '<button type="button" data-act="rename">重命名</button>';
+    if (!locked) {
+      html += '<button type="button" class="danger" data-act="delete">删除</button>';
+    }
     if (hasPath) {
-      if (html) html += '<div class="sep"></div>';
-      html += '<div class="menu-title">导出为</div>';
-      html += '<button type="button" class="menu-sub" data-act="export_docx">Word 文档 (*.docx)</button>';
-      html += '<button type="button" class="menu-sub" data-act="export_pdf">PDF 文档 (*.pdf)</button>';
-      html += '<button type="button" class="menu-sub" data-act="export_md">Markdown (*.md 含图片)</button>';
-      html += '<button type="button" class="menu-sub" data-act="export_html">单文件网页 (*.html)</button>';
-      html += '<div class="sep"></div>';
-      html += '<button type="button" data-act="pin">' +
-        (pinned ? '取消置顶' : '置顶') + '</button>';
-      html += '<button type="button" data-act="lock">' +
-        (locked ? '解锁' : '锁定') + '</button>';
-      html += '<button type="button" data-act="rename">重命名</button>';
-      if (!locked) {
-        html += '<button type="button" class="danger" data-act="delete">删除</button>';
-      }
       html += '<div class="sep"></div>';
       html += '<button type="button" data-act="reveal">在资源管理器中显示</button>';
     }
@@ -302,11 +302,13 @@
       btn.onclick = (e) => {
         e.stopPropagation();
         const act = btn.getAttribute('data-act');
+        const fallbackPath = (it && it.id && kind === 'online') ? ('online://' + it.id) : '';
         const payload = {
           type: 'action',
           id: act,
-          path: (it && it.path) || '',
-          note_id: Number((it && it.id) || 0)
+          path: (it && it.path) || fallbackPath,
+          note_id: Number((it && it.id) || 0),
+          title: (it && it.title) || ''
         };
         post(payload);
         hideMenu();
@@ -435,7 +437,7 @@
       if (!online.length) {
         html += '<div class="hint">暂无在线笔记；本地文件可通过 ⋯ → 转云</div>';
       } else {
-        html += online.map((it) => rowHtml(it, 'synced')).join('');
+        html += online.map((it) => rowHtml(it, 'online')).join('');
       }
       if (!state.logged_in) {
         html += '<div class="hint"><a id="login-link">登录云账号</a> 后可同步刷新</div>';
