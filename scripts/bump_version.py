@@ -96,10 +96,21 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Increment patch (or jump 3.x→4.0.0). Default is keep current.",
     )
+    parser.add_argument(
+        "--version",
+        dest="explicit_version",
+        default="",
+        help="Explicitly set version (e.g. 4.0.52).",
+    )
     args = parser.parse_args(argv)
 
     current = read_current()
-    version = bump_version(current) if args.bump else current
+    if args.explicit_version:
+        version = args.explicit_version.strip().lstrip("vV")
+    elif args.bump:
+        version = bump_version(current)
+    else:
+        version = current
     # Normalize & keep files in sync even when not bumping.
     major, minor, patch = parse_version(version)
     version = format_version(major, minor, patch)

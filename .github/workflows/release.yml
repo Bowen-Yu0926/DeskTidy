@@ -55,8 +55,12 @@ jobs:
             if ($tag -notmatch '^v(\d+\.\d+\.\d+)$') {
               throw "Tag must look like v4.0.51, got: $tag"
             }
-            if ($Matches[1] -ne $version) {
-              throw "Tag $tag does not match VERSION ($version). Run scripts/bump_version.py first."
+            $tagVersion = $Matches[1]
+            if ($tagVersion -ne $version) {
+              Write-Host "Tag $tag specifies version $tagVersion, but repo VERSION is $version. Auto-syncing..."
+              python scripts/bump_version.py --version $tagVersion
+              if ($LASTEXITCODE -ne 0) { throw 'bump_version.py failed' }
+              $version = $tagVersion
             }
           }
 
