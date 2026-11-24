@@ -10186,7 +10186,7 @@ void NotesWindow::SyncRefreshFromCloud() {
     if (res->list_ok) {
       for (const auto& L : links) {
         VaultHttpNote n;
-        if (VaultHttpGetNote(L.note_id, &n)) {
+        if (VaultHttpGetNote(L.note_id, &n) && n.id == L.note_id) {
           SyncCloudBody b;
           b.path = L.path;
           b.note_id = L.note_id;

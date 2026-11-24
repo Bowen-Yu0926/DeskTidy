@@ -271,7 +271,27 @@ NoteCloudSyncStore LoadNoteCloudSync() {
         link.note_id = JsonIntAfter(json, obj, end, "note_id");
         link.sync = JsonBoolAfter(json, obj, end, "sync");
         if (!link.path.empty() && link.note_id > 0) {
-          store.links.push_back(std::move(link));
+          // Dedupe on load: each local path must own at most one link, and each
+          // note_id must be bound to exactly one local file. A duplicated
+          // binding is how sync can cross-write one note's body into another's
+          // file (the reported "谷歌邮箱备用码 ↔ 产品问题清单" mix-up).
+          bool dup_path = false;
+          for (const auto& prev : store.links) {
+            if (_wcsicmp(prev.path.c_str(), link.path.c_str()) == 0) {
+              dup_path = true;
+              break;
+            }
+          }
+          bool dup_id = false;
+          for (const auto& prev : store.links) {
+            if (prev.note_id == link.note_id) {
+              dup_id = true;
+              break;
+            }
+          }
+          if (!dup_path && !dup_id) {
+            store.links.push_back(std::move(link));
+          }
         }
       } else {
         NoteCloudPendingDelete pd;
@@ -345,13 +365,24 @@ void NoteCloudUpsertLink(NoteCloudSyncStore* store, const std::wstring& path,
   if (!store || path.empty() || note_id <= 0) {
     return;
   }
+  const std::wstring norm = NormPath(path);
+  // A note_id must map to exactly one local file, otherwise sync can push one
+  // file's body into the other's cloud note (content cross-write). Re-bind by
+  // dropping any other path that currently claims this note_id.
+  for (auto it = store->links.begin(); it != store->links.end();) {
+    if (it->note_id == note_id && it->path != norm) {
+      it = store->links.erase(it);
+      continue;
+    }
+    ++it;
+  }
   if (auto* L = FindNoteCloudLinkMut(store, path)) {
     L->note_id = note_id;
     L->sync = sync;
     return;
   }
   NoteCloudLink L;
-  L.path = NormPath(path);
+  L.path = norm;
   L.note_id = note_id;
   L.sync = sync;
   store->links.push_back(std::move(L));
