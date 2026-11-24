@@ -33,25 +33,6 @@ std::wstring CloudFlagPath() {
   return JoinPath(NativeDataDir(), kCloudFlagName);
 }
 
-bool VaultCloudEnabled() {
-  // Off unless the user explicitly opts in by creating the flag file.
-  std::ifstream in(CloudFlagPath(), std::ios::binary);
-  if (!in) {
-    return false;
-  }
-  std::string body((std::istreambuf_iterator<char>(in)),
-                   std::istreambuf_iterator<char>());
-  return body.find("true") != std::string::npos;
-}
-
-void VaultSetCloudEnabled(bool enabled) {
-  if (enabled) {
-    AtomicWriteUtf8File(CloudFlagPath(), "{\"enabled\":true}\n", false);
-  } else {
-    DeleteFileW(CloudFlagPath().c_str());
-  }
-}
-
 std::wstring SessionPath() {
   return JoinPath(NativeDataDir(), L"account_vault_session.json");
 }
@@ -823,6 +804,25 @@ std::string MakeCredBodyZk(const std::wstring& title, const std::wstring& user,
 }
 
 }  // namespace
+
+bool VaultCloudEnabled() {
+  // Off unless the user explicitly opts in by creating the flag file.
+  std::ifstream in(CloudFlagPath(), std::ios::binary);
+  if (!in) {
+    return false;
+  }
+  std::string body((std::istreambuf_iterator<char>(in)),
+                   std::istreambuf_iterator<char>());
+  return body.find("true") != std::string::npos;
+}
+
+void VaultSetCloudEnabled(bool enabled) {
+  if (enabled) {
+    AtomicWriteUtf8File(CloudFlagPath(), "{\"enabled\":true}\n", false);
+  } else {
+    DeleteFileW(CloudFlagPath().c_str());
+  }
+}
 
 void VaultHttpSetApiBase(const std::wstring& api_base) {
   Session s = LoadSession();
