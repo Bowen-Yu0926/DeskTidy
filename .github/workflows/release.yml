@@ -72,13 +72,7 @@ jobs:
 
       - name: Build installer
         shell: cmd
-        run: |
-          scripts\build_native_installer.bat
-          if errorlevel 1 exit /b 1
-          if not exist "dist\DeskTidy_Setup_%RELEASE_VERSION%.exe" (
-            echo Missing dist\DeskTidy_Setup_%RELEASE_VERSION%.exe
-            exit /b 1
-          )
+        run: scripts\build_native_installer.bat
 
       - name: Verify installer artifact
         shell: pwsh
