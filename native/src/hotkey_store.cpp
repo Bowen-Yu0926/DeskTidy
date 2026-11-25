@@ -280,12 +280,18 @@ std::vector<HotkeyDef> LoadHotkeys() {
         continue;
       }
       if (FindStringField(obj, "chord", &chord)) {
+        if (chord.empty()) {
+          // Explicit unbind from settings (Delete/Backspace) must persist;
+          // otherwise the default hotkey silently returns on every restart.
+          d.modifiers = 0;
+          d.vk = 0;
+          continue;
+        }
         UINT mods = 0, vk = 0;
         if (ParseHotkey(WidenUtf8(chord), &mods, &vk) && vk != 0) {
           d.modifiers = mods;
           d.vk = vk;
         }
-        // Empty / unbound chord in file: keep DefaultHotkeys() (notes = Ctrl+Shift+N).
       }
     }
   }

@@ -200,7 +200,11 @@ void HotkeyRelay::Stop() {
     sock_ = INVALID_SOCKET;
   }
   if (thread_) {
-    WaitForSingleObject(thread_, 2000);
+    // closesocket() does not reliably unblock select/recv on another thread.
+    // The worker uses only an atomic stop flag and its own local socket copy
+    // after Start(), so a late wake cannot touch this object's members. Wait
+    // briefly for a clean exit, then close the handle.
+    WaitForSingleObject(thread_, 5000);
     CloseHandle(thread_);
     thread_ = nullptr;
   }
@@ -265,6 +269,11 @@ bool HotkeyRelay::LaunchHelper() {
 }
 
 void HotkeyRelay::ServeLoop() {
+  // Snapshot members once at startup. The wait in Stop() covers the bounded
+  // select/recv, but a late wake must not dereference members of a destroyed
+  // object if shutdown is delayed by a hung shell extension.
+  const HWND notify_hwnd = notify_hwnd_;
+  const UINT notify_msg = notify_msg_;
   while (InterlockedCompareExchange(&stop_, 0, 0) == 0) {
     const SOCKET s = sock_;
     if (s == INVALID_SOCKET) {
@@ -295,7 +304,7 @@ void HotkeyRelay::ServeLoop() {
     char buf[256]{};
     const int n = recv(client, buf, sizeof(buf) - 1, 0);
     closesocket(client);
-    if (n <= 0 || !notify_hwnd_ || !notify_msg_) {
+    if (n <= 0 || !notify_hwnd || !notify_msg) {
       continue;
     }
     buf[n] = 0;
@@ -309,7 +318,7 @@ void HotkeyRelay::ServeLoop() {
       continue;
     }
     auto* heap = new std::string(std::move(action));
-    if (!PostMessageW(notify_hwnd_, notify_msg_, 0,
+    if (!PostMessageW(notify_hwnd, notify_msg, 0,
                       reinterpret_cast<LPARAM>(heap))) {
       delete heap;
     }

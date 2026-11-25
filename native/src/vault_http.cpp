@@ -196,19 +196,26 @@ bool JsonOkTrue(const std::string& json) {
   if (p == std::string::npos) {
     return false;
   }
-  const size_t c = json.find(':', p);
+  size_t c = json.find(':', p + 4);
   if (c == std::string::npos) {
     return false;
   }
-  const size_t t = json.find("true", c);
-  const size_t f = json.find("false", c);
-  if (t == std::string::npos) {
+  ++c;
+  while (c < json.size() &&
+         (json[c] == ' ' || json[c] == '\t' || json[c] == '\r' ||
+          json[c] == '\n')) {
+    ++c;
+  }
+  // Only inspect the literal immediately after "ok":. The old code searched
+  // the whole remainder for "true"/"false", so {"ok":false,"msg":"...true..."}
+  // was treated as success (and vice versa).
+  if (json.compare(c, 4, "true") == 0) {
+    return true;
+  }
+  if (json.compare(c, 5, "false") == 0) {
     return false;
   }
-  if (f != std::string::npos && f < t) {
-    return false;
-  }
-  return true;
+  return false;
 }
 
 std::vector<BYTE> HexToBytes(const std::string& hex) {

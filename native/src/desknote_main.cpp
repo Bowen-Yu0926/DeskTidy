@@ -188,7 +188,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
   PurgeOrphanElevatedPending();
 
   bool lock_acquired = false;
-  for (int i = 0; i < 1; ++i) {
+  for (int i = 0; i < 40; ++i) {
     if (AcquireDeskNoteInstanceLock()) {
       lock_acquired = true;
       break;
@@ -205,9 +205,18 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
         action += p;
       }
     }
-    ForwardToDeskNote(action);
+    // The owning process can hold the mutex before its hidden IPC window
+    // exists (CreateMsgWindow happens after lock acquisition). Wait briefly
+    // for that window so double-clicking a .md is not silently dropped.
+    bool forwarded = false;
+    for (int i = 0; i < 40 && !forwarded; ++i) {
+      forwarded = ForwardToDeskNote(action);
+      if (!forwarded) {
+        Sleep(50);
+      }
+    }
     LogShutdown();
-    return 0;
+    return forwarded ? 0 : 1;
   }
 
   const HRESULT hr = OleInitialize(nullptr);

@@ -331,7 +331,10 @@ bool DownloadToFile(const std::wstring& url, const std::wstring& dest,
         for (;;) {
           DWORD avail = 0;
           if (!WinHttpQueryDataAvailable(req, &avail) || avail == 0) {
-            ok = done > 0;
+            // A connection that dies mid-transfer reports EOF too. If the
+            // server told us the expected size, require an exact match or we
+            // would extract a truncated ZIP over a working ffmpeg install.
+            ok = done > 0 && (total == 0 || done == total);
             break;
           }
           std::vector<BYTE> chunk(avail);

@@ -1,6 +1,7 @@
 #include "help_center.h"
 
 #include "first_run.h"
+#include "app_prefs.h"
 #include "i18n.h"
 #include "mist_msg.h"
 #include "mist_webview.h"
@@ -88,6 +89,13 @@ void OpenHelpDocs(HWND owner) {
 void ReplayFirstRunGuide(HWND owner) {
   const std::wstring marker = JoinPath(NativeDataDir(), L"firstrun.done");
   DeleteFileW(marker.c_str());
+  // MaybeShowFirstRun gates on the persisted prefs flag; deleting only the
+  // legacy marker made "replay guide" a no-op on every modern profile.
+  AppPrefs prefs = LoadAppPrefs();
+  if (prefs.first_run_guide_done) {
+    prefs.first_run_guide_done = false;
+    SaveAppPrefs(prefs);
+  }
   MaybeShowFirstRun(owner);
 }
 

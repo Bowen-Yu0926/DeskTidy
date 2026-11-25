@@ -6612,75 +6612,77 @@ void App::PruneStickyMissingPins() {
 
   int dropped = 0;
   int retargeted = 0;
-  for (auto it = pins_.begin(); it != pins_.end();) {
-    const std::wstring path = it->first;
-    const std::string fence_id = it->second;
-    if (path.empty()) {
-      ++it;
-      continue;
-    }
-    // pins_ keys are already NormalizePinKey'd (SetPin / LoadPins).
+  // Two-phase: collect decisions while iterating, mutate after. Earlier code
+  // erased then called SetPin on the same unordered_map, which can rehash and
+  // invalidate the iterator returned by erase (random crash / heap corruption
+  // in this 30s prune tick).
+  struct PinPruneAction {
+    std::wstring path;
+    std::string fence_id;
+    std::wstring replacement;  // empty = drop
+  };
+  std::vector<PinPruneAction> pin_prune_actions;
+  for (const auto& kv : pins_) {
+    const std::wstring& path = kv.first;
+    const std::string& fence_id = kv.second;
+    if (path.empty()) continue;
     const bool on_desktop = on_desk.find(path) != on_desk.end();
     if (on_desktop ||
         GetFileAttributesW(path.c_str()) != INVALID_FILE_ATTRIBUTES) {
       pin_missing_since_.erase(path);
-      ++it;
       continue;
     }
     auto miss = pin_missing_since_.find(path);
     if (miss == pin_missing_since_.end()) {
       pin_missing_since_[path] = now;
-      ++it;
       continue;
     }
-    if (now - miss->second < kStickyGraceMs) {
-      ++it;
-      continue;
-    }
+    if (now - miss->second < kStickyGraceMs) continue;
     pin_missing_since_.erase(miss);
 
     const std::wstring replacement = find_desktop_replacement(path);
     const std::wstring replacement_key =
         replacement.empty() ? std::wstring{} : NormalizePinKey(replacement);
-    if (!replacement.empty() && replacement_key != path) {
-      const std::string* existing = FindPin(pins_, replacement);
-      if (!existing) {
-        LogLine(L"[pin] sticky prune retarget: %s -> %s", path.c_str(),
-                replacement.c_str());
-        it = pins_.erase(it);
-        SetPin(&pins_, replacement, fence_id);
-        RetargetFloatPlacement(&float_placements_, path, replacement);
-        for (auto& fence : fences_) {
-          if (!fence) {
-            continue;
-          }
-          auto order = fence->PinOrder();
-          bool changed = false;
-          for (auto& p : order) {
-            if (NormalizePinKey(p) == path) {
-              p = replacement;
-              changed = true;
-            }
-          }
-          if (changed) {
-            fence->SetPinOrder(std::move(order));
-          }
+    if (!replacement.empty() && replacement_key != path &&
+        !FindPin(pins_, replacement)) {
+      pin_prune_actions.push_back({path, fence_id, replacement});
+    } else {
+      pin_prune_actions.push_back({path, fence_id, std::wstring()});
+    }
+  }
+  for (const auto& act : pin_prune_actions) {
+    const std::wstring& path = act.path;
+    const std::string& fence_id = act.fence_id;
+    if (!act.replacement.empty()) {
+      LogLine(L"[pin] sticky prune retarget: %s -> %s", path.c_str(),
+              act.replacement.c_str());
+    } else {
+      LogLine(L"[pin] sticky prune drop: %s", path.c_str());
+    }
+    pins_.erase(path);
+    if (!act.replacement.empty()) {
+      SetPin(&pins_, act.replacement, fence_id);
+      RetargetFloatPlacement(&float_placements_, path, act.replacement);
+      for (auto& fence : fences_) {
+        if (!fence) continue;
+        auto order = fence->PinOrder();
+        bool changed = false;
+        for (auto& p : order) {
+          if (NormalizePinKey(p) == path) { p = act.replacement; changed = true; }
         }
-        ++retargeted;
-        continue;
+        if (changed) fence->SetPinOrder(std::move(order));
       }
-    }
-
-    LogLine(L"[pin] sticky prune drop: %s", path.c_str());
-    EraseFloatPlacement(&float_placements_, path);
-    for (auto& fence : fences_) {
-      if (fence && fence->Id() == fence_id) {
-        fence->RemovePinOrder({path});
-        break;
+      ++retargeted;
+    } else {
+      EraseFloatPlacement(&float_placements_, path);
+      for (auto& fence : fences_) {
+        if (fence && fence->Id() == fence_id) {
+          fence->RemovePinOrder({path});
+          break;
+        }
       }
+      ++dropped;
     }
-    it = pins_.erase(it);
-    ++dropped;
   }
 
   // Same sticky window for orphan floats (e.g. 「启动 Foo.lnk」 after Public
@@ -8277,10 +8279,12 @@ void App::EditRules() {
     }
     hints.push_back({fence->Id(), fence->Title()});
   }
-  if (EditRulesDialog(settings_.Hwnd(), &rules_, hints)) {
-    rules_ = LoadRules();
-    ShowToast(L"整理规则已保存");
-  }
+  // Always reload from disk: the rules editor can hand the file to Notepad,
+  // and a stale in-memory map would otherwise overwrite those external edits
+  // at shutdown. LoadRules has a .bak fallback for a torn file.
+  EditRulesDialog(settings_.Hwnd(), &rules_, hints);
+  rules_ = LoadRules();
+  ShowToast(L"整理规则已保存");
 }
 
 void App::AddFence() {

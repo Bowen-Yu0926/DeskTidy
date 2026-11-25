@@ -394,7 +394,9 @@ std::wstring RunPickDialog(HWND owner, const std::wstring& dir,
     if (id == L"open") {
       const int index = MistJsonIntField(json, L"index", -1);
       if (index >= 0 && index < static_cast<int>(files.size())) {
-        result = JoinPath(dir, files[static_cast<size_t>(index)]);
+        // ListNoteFiles returns absolute paths; joining dir again produced
+        // "C:\notes\C:\notes\foo.md" and every pick silently failed to open.
+        result = files[static_cast<size_t>(index)];
         return true;
       }
       return false;

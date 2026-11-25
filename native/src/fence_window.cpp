@@ -3875,8 +3875,10 @@ void FenceWindow::ActivateHeaderBtn(HeaderBtn btn) {
   } else if (btn == HeaderBtn::Lock) {
     SetPositionLocked(!position_locked_);
   } else if (btn == HeaderBtn::Dissolve) {
-    if (on_dissolve_) {
-      on_dissolve_(this);
+    // Defer: the callback destroys this FenceWindow synchronously. Calling it
+    // from WM_LBUTTONUP left the handler touching freed `this` afterwards.
+    if (on_dissolve_ && hwnd_) {
+      PostMessageW(hwnd_, WM_APP + 61, 0, 0);
     }
   } else if (btn == HeaderBtn::PortalUp) {
     // Shift+上一级 → 门户根 (Fences Folder Portal).
@@ -5814,8 +5816,9 @@ void FenceWindow::ShowFenceMenu(POINT screen) {
     } else if (rc == kExtFenceLockContent) {
       SetContentLocked(!content_locked_);
     } else if (rc == kExtFenceDissolve) {
-      if (on_dissolve_) {
-        on_dissolve_(this);
+      // Defer destruction out of the menu command handler (see WM_APP+61).
+      if (on_dissolve_ && hwnd_) {
+        PostMessageW(hwnd_, WM_APP + 61, 0, 0);
       }
     } else if (rc == kExtFenceRename) {
       BeginTitleInlineRename();
@@ -6149,6 +6152,13 @@ LRESULT CALLBACK FenceWindow::WndProc(HWND hwnd, UINT msg, WPARAM wparam,
 }
 
 LRESULT FenceWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
+  if (msg == WM_APP + 61) {
+    // Deferred dissolve: safe point to destroy this window.
+    if (on_dissolve_) {
+      on_dissolve_(this);
+    }
+    return 0;
+  }
   if (msg == WM_DPICHANGED) {
     // Drop the cached DPI so S() re-queries on the new monitor.
     dpi_ = 0;

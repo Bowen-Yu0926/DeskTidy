@@ -1186,11 +1186,18 @@ std::vector<std::wstring> PathDropTarget::ExtractPaths(IDataObject* data) const 
   const UINT count = DragQueryFileW(static_cast<HDROP>(stg.hGlobal), 0xFFFFFFFF,
                                     nullptr, 0);
   out.reserve(count);
-  wchar_t buf[MAX_PATH * 4];
   for (UINT i = 0; i < count; ++i) {
-    if (DragQueryFileW(static_cast<HDROP>(stg.hGlobal), i, buf,
-                       static_cast<UINT>(ARRAYSIZE(buf)))) {
-      out.emplace_back(buf);
+    // Query the exact length first; a fixed 4*MAX_PATH buffer silently
+    // truncated long paths into wrong drop destinations.
+    const UINT need = DragQueryFileW(static_cast<HDROP>(stg.hGlobal), i,
+                                     nullptr, 0);
+    if (need == 0) {
+      continue;
+    }
+    std::vector<wchar_t> buf(static_cast<size_t>(need) + 1);
+    if (DragQueryFileW(static_cast<HDROP>(stg.hGlobal), i, buf.data(),
+                       need + 1)) {
+      out.emplace_back(buf.data());
     }
   }
   ReleaseStgMedium(&stg);

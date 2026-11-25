@@ -125,16 +125,7 @@ std::string ParseStringField(const std::string& json, const char* key) {
   return v;
 }
 
-std::string EscapeJson(const std::string& s) {
-  std::string o;
-  for (char c : s) {
-    if (c == '\\' || c == '"') {
-      o.push_back('\\');
-    }
-    o.push_back(c);
-  }
-  return o;
-}
+std::string EscapeJson(const std::string& s) { return EscapeJsonUtf8(s); }
 
 // Parse a JSON array of strings, e.g. "exclude_patterns":["desktop.ini","DeskTidy"].
 std::vector<std::wstring> ParseStringArrayField(const std::string& json,

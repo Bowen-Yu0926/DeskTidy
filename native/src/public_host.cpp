@@ -595,6 +595,9 @@ void PublicHost::InvalidateDpiCaches() {
 }
 
 void PublicHost::Destroy() {
+  // The global OLE drag hook captures `this`; clear it before teardown or a
+  // drag started afterwards calls into freed memory.
+  SetPublicDropSinkHitFn({});
   if (GetFenceKeyTarget() == hwnd_) {
     ClearFenceKeyTarget();
   }

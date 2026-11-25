@@ -153,8 +153,13 @@ bool FindNumber(const std::string& body, const char* key, int* out) {
   }
   int64_t v = 0;
   while (p < body.size() && body[p] >= '0' && body[p] <= '9') {
-    if (v <= 0x7FFFFFFFLL) {
-      v = v * 10 + (body[p] - '0');
+    const int digit = body[p] - '0';
+    // Saturate instead of letting a long digit run wrap past 32 bits: a
+    // corrupt/edited layout.json must not become absurd negative geometry.
+    if (v <= (0x7FFFFFFFLL - digit) / 10) {
+      v = v * 10 + digit;
+    } else {
+      v = 0x7FFFFFFFLL;
     }
     ++p;
   }

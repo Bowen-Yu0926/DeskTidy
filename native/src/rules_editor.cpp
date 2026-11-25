@@ -226,7 +226,11 @@ bool EditRulesDialog(
       SaveRules(*ctx.rules);
       ShellExecuteW(dlg.hwnd ? dlg.hwnd : owner, L"open", L"notepad.exe",
                     RuleFilePath().c_str(), nullptr, SW_SHOWNORMAL);
-      return false;
+      // Return "saved" so App::EditRules reloads rules_ from disk after the
+      // dialog closes. Otherwise Notepad's edits are overwritten at shutdown
+      // by the stale in-memory map.
+      ctx.saved = true;
+      return true;
     }
     if (id == L"save") {
       CommitRows(&ctx);

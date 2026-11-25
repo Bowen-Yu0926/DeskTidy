@@ -1311,8 +1311,10 @@ bool ApplyRecordKeepName(std::wstring* path, const std::wstring& stem_in) {
   if (_wcsicmp(dest.c_str(), path->c_str()) == 0) {
     return true;
   }
-  DeleteFileW(dest.c_str());
-  if (!MoveFileW(path->c_str(), dest.c_str())) {
+  // Never delete the destination before the move: if the user typed the name
+  // of another recording and the move then fails, both files are lost.
+  // MOVEFILE_REPLACE_EXISTING overwrites atomically only on success.
+  if (!MoveFileExW(path->c_str(), dest.c_str(), MOVEFILE_REPLACE_EXISTING)) {
     MistAlert(nullptr, L"录屏", L"重命名失败，已保留原文件名。",
               MistMsgTone::Warn);
     return true;  // keep original path

@@ -134,6 +134,18 @@ bool RegisterNativeShellVerbs() {
   RegSetValueExW(hk, L"Position", 0, REG_SZ,
                  reinterpret_cast<const BYTE*>(pos),
                  static_cast<DWORD>(sizeof(pos)));
+  // Windows 10/11 only shows a static verb submenu when SubCommands lists the
+  // child keys. Without it the parent registered fine but no menu appeared.
+  std::wstring sub_commands;
+  for (const auto& c : kChildren) {
+    if (!sub_commands.empty()) {
+      sub_commands += L";";
+    }
+    sub_commands += c.key;
+  }
+  RegSetValueExW(hk, L"SubCommands", 0, REG_SZ,
+                 reinterpret_cast<const BYTE*>(sub_commands.c_str()),
+                 static_cast<DWORD>((sub_commands.size() + 1) * sizeof(wchar_t)));
   const std::wstring exe = NativeExePath();
   RegSetValueExW(hk, L"Icon", 0, REG_SZ,
                  reinterpret_cast<const BYTE*>(exe.c_str()),
@@ -149,6 +161,9 @@ bool RegisterNativeShellVerbs() {
                    reinterpret_cast<const BYTE*>(cmdline.c_str()),
                    static_cast<DWORD>((cmdline.size() + 1) * sizeof(wchar_t)));
     RegCloseKey(cmd);
+  }
+  for (const auto& c : kChildren) {
+    WriteChild(parent, c);
   }
   return true;
 }

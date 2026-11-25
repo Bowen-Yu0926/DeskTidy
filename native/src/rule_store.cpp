@@ -642,8 +642,9 @@ RuleMap LoadRules() {
     if (!ReadQuoted(json, &pos, &val)) {
       break;
     }
-    key = UnescapeJsonUtf8(key);
-    val = UnescapeJsonUtf8(val);
+    // ReadQuoted already decodes escapes (incl. \uXXXX). A second
+    // UnescapeJsonUtf8 pass corrupted keys/values containing literal
+    // backslash-u or newline sequences written by SaveRules.
     if (!key.empty() && !val.empty()) {
       InsertNormalizedRule(&rules, Widen(key), val);
     }

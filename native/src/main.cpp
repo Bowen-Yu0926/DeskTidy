@@ -89,9 +89,15 @@ std::wstring NotesActionFromCmd(const std::wstring& cmd) {
     return {};
   }
   size_t start = pos + 7;
-  size_t end = cmd.find(L"--", start);
-  if (end == std::wstring::npos) {
-    end = cmd.size();
+  // Only treat "--" as the next flag when it starts a whitespace-delimited
+  // token. A path like C:\work--docs\a.md must not be truncated.
+  size_t end = cmd.size();
+  for (size_t i = start; i + 1 < cmd.size(); ++i) {
+    if (cmd[i] == L'-' && cmd[i + 1] == L'-' &&
+        (i == 0 || cmd[i - 1] == L' ')) {
+      end = i;
+      break;
+    }
   }
   std::wstring rest = cmd.substr(start, end - start);
   while (!rest.empty() &&
