@@ -6343,10 +6343,15 @@ bool NotesWindow::ExportNoteWithAssets(const std::wstring& note_path,
       if (it != online_body_cache_.end()) {
         md_text = it->second.body;
       } else {
-        VaultHttpNote vn;
-        if (VaultHttpGetNote(id, &vn)) {
-          md_text = vn.body;
-        }
+        // Do not block the UI thread on a network fetch here: VaultHttpGetNote
+        // retries with blocking sleeps (worst case tens of seconds) and export
+        // runs synchronously on the UI thread. If the body is not cached yet,
+        // ask the user to open the note first (opening fills the cache in the
+        // background). Exporting an empty body would silently produce a blank
+        // document.
+        MistAlert(hwnd_, L"导出", L"云端笔记正文尚未加载。请先打开该笔记，稍候再导出。",
+                  MistMsgTone::Info);
+        return false;
       }
     } else if (GetFileAttributesW(note_path.c_str()) != INVALID_FILE_ATTRIBUTES) {
       std::string bytes;
@@ -7055,6 +7060,15 @@ void NotesWindow::ToggleWysiwyg() {
 }
 
 std::wstring NotesWindow::NoteBaseDir() const {
+  // Online notes ("online://<id>") are virtual paths with no real folder.
+  // Images they embed live in the library's 云笔记 folder, so map the asset
+  // base there instead of "online:/" (which does not exist → every relative
+  // image 404s and silently fails to display).
+  if (IsOnlineNotePath(path_)) {
+    const std::wstring cloud_dir = JoinPath(NotesLibraryDir(true), L"云笔记");
+    CreateDirectoryW(cloud_dir.c_str(), nullptr);
+    return cloud_dir;
+  }
   const std::wstring d = DirOfPath(path_);
   if (d.empty() || d == L".") {
     return NotesLibraryDir(true);
@@ -7516,10 +7530,15 @@ void NotesWindow::ExportWord(const std::wstring& target_path) {
       if (it != online_body_cache_.end()) {
         md_text = it->second.body;
       } else {
-        VaultHttpNote vn;
-        if (VaultHttpGetNote(id, &vn)) {
-          md_text = vn.body;
-        }
+        // Do not block the UI thread on a network fetch here: VaultHttpGetNote
+        // retries with blocking sleeps (worst case tens of seconds) and export
+        // runs synchronously on the UI thread. If the body is not cached yet,
+        // ask the user to open the note first (opening fills the cache in the
+        // background). Exporting an empty body would silently produce a blank
+        // document.
+        MistAlert(hwnd_, L"导出", L"云端笔记正文尚未加载。请先打开该笔记，稍候再导出。",
+                  MistMsgTone::Info);
+        return;
       }
     } else if (GetFileAttributesW(note_path.c_str()) != INVALID_FILE_ATTRIBUTES) {
       std::string bytes;
@@ -7626,10 +7645,15 @@ void NotesWindow::ExportPdf(const std::wstring& target_path) {
       if (it != online_body_cache_.end()) {
         md_text = it->second.body;
       } else {
-        VaultHttpNote vn;
-        if (VaultHttpGetNote(id, &vn)) {
-          md_text = vn.body;
-        }
+        // Do not block the UI thread on a network fetch here: VaultHttpGetNote
+        // retries with blocking sleeps (worst case tens of seconds) and export
+        // runs synchronously on the UI thread. If the body is not cached yet,
+        // ask the user to open the note first (opening fills the cache in the
+        // background). Exporting an empty body would silently produce a blank
+        // document.
+        MistAlert(hwnd_, L"导出", L"云端笔记正文尚未加载。请先打开该笔记，稍候再导出。",
+                  MistMsgTone::Info);
+        return;
       }
     } else if (GetFileAttributesW(note_path.c_str()) != INVALID_FILE_ATTRIBUTES) {
       std::string bytes;
@@ -9393,6 +9417,8 @@ namespace {
 // Worker→UI notification (WM_APP+87): the push outcome, so a failed upload is
 // visible instead of silently leaving local and cloud diverged.
 constexpr UINT kMsgCloudPushFailed = WM_APP + 87;
+// Cloud delete failed after the local row/tab was already removed.
+constexpr UINT kMsgCloudDeleteFailed = WM_APP + 94;
 // Backoff before retrying a failed batch. The queue keeps the latest body per
 // note, so a retry never resurrects stale content.
 constexpr unsigned kCloudPushRetryMs = 5000;
@@ -10222,11 +10248,22 @@ void NotesWindow::RenameOnlineNote(int note_id,
       return;
     }
     std::wstring send_body = body;
-    if (send_body.empty()) {
+    bool have_body = !send_body.empty();
+    if (!have_body) {
       VaultHttpNote cur;
       if (VaultHttpGetNote(note_id, &cur)) {
         send_body = cur.body;
+        have_body = true;
       }
+    }
+    // Without the real body, an update would overwrite the cloud note's
+    // content with an empty/short placeholder (the "content cross-write" class
+    // of data loss). Refuse the push and leave the cloud copy untouched.
+    if (!have_body) {
+      if (hwnd && IsWindow(hwnd)) {
+        PostMessageW(hwnd, kMsgCloudPushFailed, 0, 0);
+      }
+      return;
     }
     VaultHttpNote updated;
     if (VaultHttpUpdateNote(note_id, new_title, send_body, &updated)) {
@@ -10337,12 +10374,20 @@ void NotesWindow::DeleteOnlineNote(int note_id,
 
   std::thread([hwnd = hwnd_, note_id]() {
     if (!VaultHttpLoggedIn()) {
+      if (hwnd && IsWindow(hwnd)) {
+        PostMessageW(hwnd, kMsgCloudDeleteFailed, 0, 0);
+      }
       return;
     }
     if (VaultHttpDeleteNote(note_id)) {
       if (hwnd && IsWindow(hwnd)) {
         PostMessageW(hwnd, WM_APP + 86, 0, 0);
       }
+    } else if (hwnd && IsWindow(hwnd)) {
+      // The local row/tab was already removed optimistically; the cloud copy
+      // still exists, so surface the divergence and re-pull the list, otherwise
+      // the note silently reappears on the next refresh.
+      PostMessageW(hwnd, kMsgCloudDeleteFailed, 0, 0);
     }
   }).detach();
 }
@@ -13162,6 +13207,16 @@ LRESULT NotesWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
         SetWindowTextW(status_, L"云端同步失败，稍后自动重试…");
       }
       ShowToast(L"云笔记上传失败，将在稍后自动重试");
+      return 0;
+    }
+    case kMsgCloudDeleteFailed: {
+      // Cloud delete failed after the row/tab was removed locally. Tell the
+      // user and re-pull the cloud list so the still-existing note reappears
+      // instead of vanishing then silently coming back on the next refresh.
+      ShowToast(L"云端删除失败，笔记仍在云端，正在刷新列表…");
+      if (VaultHttpLoggedIn()) {
+        SyncRefreshFromCloud();
+      }
       return 0;
     }
     case WM_APP + 88: {
