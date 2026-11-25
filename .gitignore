@@ -35,7 +35,7 @@ native/third_party/Microsoft.Web.WebView2/
 native/third_party/webview2/
 *.spec.bak
 
-# Bundled FFmpeg is large and downloaded by scripts\prepare_ffmpeg_recording.py
+# Bundled FFmpeg (if present) is large; recording uses on-demand fetch in native
 assets/ffmpeg/
 assets/ffmpeg.staging/
 

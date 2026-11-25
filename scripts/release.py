@@ -274,10 +274,13 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  bump={args.bump} github={not args.no_github} site={not args.no_site}")
 
     version = sync_version(bump=args.bump, dry_run=args.dry_run)
-    setup = build_installer(dry_run=args.dry_run)
-    sidecar = write_sha256_sidecar(setup, dry_run=args.dry_run)
+    # Update docs/desktidy.html BEFORE building the installer: DeskTidy.iss
+    # bakes that file in, so the bundled intro page must already point at this
+    # release's installer, not the previous version's.
     if not args.skip_docs:
         update_download_links(version, dry_run=args.dry_run)
+    setup = build_installer(dry_run=args.dry_run)
+    sidecar = write_sha256_sidecar(setup, dry_run=args.dry_run)
     if not args.no_github:
         github_release(
             version, setup, sidecar, args.notes, dry_run=args.dry_run

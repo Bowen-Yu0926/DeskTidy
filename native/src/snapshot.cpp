@@ -888,6 +888,20 @@ bool LoadSnapshot(const std::wstring& path, AppState* out) {
       snapshot_json.find('}') == std::string::npos) {
     return false;
   }
+  // A brace pair alone is not a valid layout: a truncated / hand-edited
+  // snapshot (e.g. "{}" or half a file) would load as an empty/default AppState
+  // and then be written over the live layout.json. Real layout files always
+  // contain these top-level keys (see SaveAppState); require all of them before
+  // touching the current layout.
+  const bool looks_like_layout =
+      snapshot_json.find("\"current_page\"") != std::string::npos &&
+      snapshot_json.find("\"fences\"") != std::string::npos &&
+      snapshot_json.find("\"pages\"") != std::string::npos;
+  if (!looks_like_layout) {
+    LogLine(L"[snapshot] reject malformed snapshot (missing layout keys): %s",
+            path.c_str());
+    return false;
+  }
   const std::wstring layout = LayoutFilePath();
   const std::wstring tmp = AtomicTempPathFor(layout);
   {

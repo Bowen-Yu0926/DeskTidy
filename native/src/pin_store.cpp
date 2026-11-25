@@ -106,17 +106,43 @@ bool ReadJsonQuoted(const std::string& s, size_t* pos, std::string* out) {
               else { ok = false; break; }
             }
             if (ok) {
+              // A non-BMP character arrives as a UTF-16 \uD800-\uDBFF / \uDC00-\uDFFF
+              // pair. Encoding each half as UTF-8 separately yields invalid bytes;
+              // WidenUtf8 then produces a different pin key and emoji paths lose
+              // their pins. Combine the pair before UTF-8 encoding.
+              *pos += 5;  // past 'u' + 4 hex digits
+              if (cp >= 0xD800 && cp <= 0xDBFF && *pos + 6 <= s.size() &&
+                  s[*pos] == '\\' && s[*pos + 1] == 'u') {
+                unsigned low = 0;
+                bool low_ok = true;
+                for (int k = 0; k < 4; ++k) {
+                  const char h = s[*pos + 2 + k];
+                  low <<= 4;
+                  if (h >= '0' && h <= '9') low |= static_cast<unsigned>(h - '0');
+                  else if (h >= 'a' && h <= 'f') low |= static_cast<unsigned>(h - 'a' + 10);
+                  else if (h >= 'A' && h <= 'F') low |= static_cast<unsigned>(h - 'A' + 10);
+                  else { low_ok = false; break; }
+                }
+                if (low_ok && low >= 0xDC00 && low <= 0xDFFF) {
+                  cp = 0x10000 + ((cp - 0xD800) << 10) + (low - 0xDC00);
+                  *pos += 6;
+                }
+              }
               if (cp < 0x80) {
                 out->push_back(static_cast<char>(cp));
               } else if (cp < 0x800) {
                 out->push_back(static_cast<char>(0xC0 | (cp >> 6)));
                 out->push_back(static_cast<char>(0x80 | (cp & 0x3F)));
-              } else {
+              } else if (cp < 0x10000) {
                 out->push_back(static_cast<char>(0xE0 | (cp >> 12)));
                 out->push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
                 out->push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+              } else {
+                out->push_back(static_cast<char>(0xF0 | (cp >> 18)));
+                out->push_back(static_cast<char>(0x80 | ((cp >> 12) & 0x3F)));
+                out->push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+                out->push_back(static_cast<char>(0x80 | (cp & 0x3F)));
               }
-              *pos += 5;
               break;
             }
           }

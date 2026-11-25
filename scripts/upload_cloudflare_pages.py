@@ -111,13 +111,15 @@ def main(argv: list[str] | None = None) -> int:
         if account:
             env["CLOUDFLARE_ACCOUNT_ID"] = account
 
-        printable = " ".join(cmd)
+        # Windows: npx.cmd via shell so PATH resolution matches interactive use.
+        # Quote every argument: staging paths from tempfile.mkdtemp may contain
+        # spaces, which cmd.exe would otherwise split into multiple args.
+        printable = subprocess.list2cmdline(cmd)
         print(f"\n>> {printable}")
         if args.dry_run:
             print("(dry-run) skip wrangler")
             return 0
 
-        # Windows: npx.cmd via shell so PATH resolution matches interactive use.
         completed = subprocess.run(
             printable if os.name == "nt" else cmd,
             cwd=ROOT,

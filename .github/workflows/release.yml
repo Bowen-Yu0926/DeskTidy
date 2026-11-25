@@ -67,6 +67,14 @@ jobs:
           "RELEASE_VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           Write-Host "release version: $version"
 
+      - name: Sync docs download link to release version
+        shell: pwsh
+        run: |
+          $version = $env:RELEASE_VERSION
+          python -c "import sys; sys.path.insert(0,'scripts'); import release; release.update_download_links('$version', dry_run=False)"
+          if ($LASTEXITCODE -ne 0) { throw 'docs download-link sync failed' }
+          Write-Host "docs/desktidy.html now points at v$version"
+
       - name: Prepare Visual Studio 2022 C++ toolchain
         shell: pwsh
         run: |

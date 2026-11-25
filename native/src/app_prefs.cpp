@@ -115,14 +115,23 @@ std::string ParseStringField(const std::string& json, const char* key) {
     return {};
   }
   ++p;
-  std::string v;
-  while (p < json.size() && json[p] != '"') {
+  const size_t begin = p;
+  // Walk to the unescaped closing quote, then decode the escape sequence as a
+  // whole. The old per-char loop dropped the backslash and kept the next char,
+  // turning a legacy escaped "\u4e2d\u6587" path into literal "u4e2du6587".
+  while (p < json.size()) {
     if (json[p] == '\\' && p + 1 < json.size()) {
+      p += 2;
+    } else if (json[p] == '"') {
+      break;
+    } else {
       ++p;
     }
-    v.push_back(json[p++]);
   }
-  return v;
+  if (p >= json.size()) {
+    return {};
+  }
+  return UnescapeJsonUtf8(json.substr(begin, p - begin));
 }
 
 std::string EscapeJson(const std::string& s) { return EscapeJsonUtf8(s); }
