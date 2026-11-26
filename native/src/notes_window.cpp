@@ -4254,9 +4254,50 @@ std::wstring NotesWindow::MakeNewNotePath() {
 }
 
 bool NotesWindow::SeedBlankDraftTab() {
-  const std::wstring path = MakeNewNotePath();
-  bool wrote = false;
+  // Reuse an existing empty 未命名 draft before creating another one. Closing
+  // the last tab (or deleting the last note) always seeds a blank draft, so
+  // without this every such gesture left another empty 未命名_N.md behind and
+  // the library filled up with them.
+  const std::wstring dir = NotesLibraryDir(true);
+  std::wstring path;
   {
+    for (int i = 0; i < 1000; ++i) {
+      wchar_t name[64];
+      if (i == 0) {
+        swprintf_s(name, L"未命名.md");
+      } else {
+        swprintf_s(name, L"未命名_%02d.md", i);
+      }
+      const std::wstring cand = JoinPath(dir, name);
+      if (GetFileAttributesW(cand.c_str()) == INVALID_FILE_ATTRIBUTES) {
+        continue;
+      }
+      // Only reuse a placeholder that carries no content the user could lose.
+      std::ifstream in(cand, std::ios::binary);
+      if (!in) {
+        continue;
+      }
+      std::string raw((std::istreambuf_iterator<char>(in)),
+                      std::istreambuf_iterator<char>());
+      const std::wstring txt = WidenUtf8(raw);
+      std::wstring trimmed = txt;
+      while (!trimmed.empty() && iswspace(trimmed.back())) {
+        trimmed.pop_back();
+      }
+      while (!trimmed.empty() && iswspace(trimmed.front())) {
+        trimmed.erase(trimmed.begin());
+      }
+      if (trimmed == L"#" || trimmed.empty()) {
+        path = cand;
+        break;
+      }
+    }
+  }
+  if (path.empty()) {
+    path = MakeNewNotePath();
+  }
+  bool wrote = true;
+  if (GetFileAttributesW(path.c_str()) == INVALID_FILE_ATTRIBUTES) {
     std::ofstream out(path, std::ios::binary);
     out << u8"# \n\n";
     wrote = static_cast<bool>(out);
