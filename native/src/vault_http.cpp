@@ -59,7 +59,7 @@ std::string EscapeJson(const std::string& s) {
 
 // RFC 3986 percent-encoding for a path segment (asset filenames may contain
 // spaces / non-ASCII). Unreserved bytes survive; everything else becomes %XX.
-std::string UrlEncodePath(const std::wstring& ws) {
+std::wstring UrlEncodePath(const std::wstring& ws) {
   static const char kHex[] = "0123456789ABCDEF";
   const std::string utf8 = NarrowUtf8(ws);
   std::string out;
@@ -75,7 +75,7 @@ std::string UrlEncodePath(const std::wstring& ws) {
       out.push_back(kHex[c & 0x0F]);
     }
   }
-  return out;
+  return WidenUtf8(out);
 }
 
 bool FindStringField(const std::string& obj, const char* key, std::string* out) {
@@ -1731,7 +1731,9 @@ bool VaultHttpGetNoteAsset(int note_id, const std::wstring& name,
       resp.status != 200) {
     return false;
   }
-  out_bytes->assign(reinterpret_cast<const BYTE*>(resp.body.data()),
-                     resp.body.size());
+  out_bytes->resize(resp.body.size());
+  if (!resp.body.empty()) {
+    memcpy(out_bytes->data(), resp.body.data(), resp.body.size());
+  }
   return true;
 }

@@ -3,6 +3,7 @@
 #include "desktop_items.h"
 #include "display_geom.h"
 #include "float_placements.h"
+#include "log.h"
 #include "paths_util.h"
 #include "pin_store.h"
 #include "shell_icons.h"
