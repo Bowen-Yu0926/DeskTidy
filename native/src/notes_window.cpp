@@ -5540,7 +5540,7 @@ void NotesWindow::Save(bool authoritative_pull, bool push_cloud) {
     if (title.empty()) {
       title = L"未命名";
     }
-    online_body_cache_[id] = OnlineBodyCache{title, plain};
+    RememberOnlineBody(id, title, plain);
     // Explicit Save: enqueue cloud push — never block the UI thread on WinHTTP.
     if (push_cloud) {
       // Never open a modal login from Save: Save also runs from Hide()/close,
@@ -9662,6 +9662,34 @@ constexpr unsigned kCloudPushRetryMaxMs = 60000;
 std::atomic<HWND> g_cloud_push_notify_hwnd{nullptr};
 }  // namespace
 
+// Cap the in-memory body cache. Every opened online note stays here for the
+// whole session otherwise; a long-running window walking a large library could
+// hold hundreds of full note bodies. The current tab and any note whose push is
+// still queued must survive, so eviction skips those and drops the oldest
+// others (std::map keeps ids ascending, not LRU, but the working set is tiny).
+void NotesWindow::RememberOnlineBody(int note_id, const std::wstring& title,
+                                    const std::wstring& body) {
+  if (note_id <= 0) {
+    return;
+  }
+  online_body_cache_[note_id] = OnlineBodyCache{title, body};
+  constexpr size_t kMaxBodies = 24;
+  if (online_body_cache_.size() <= kMaxBodies) {
+    return;
+  }
+  const int keep_current =
+      IsOnlineNotePath(path_) ? OnlineNoteIdFromPath(path_) : 0;
+  for (auto it = online_body_cache_.begin();
+       it != online_body_cache_.end() &&
+       online_body_cache_.size() > kMaxBodies;) {
+    if (it->first == keep_current || it->first == note_id) {
+      ++it;
+      continue;
+    }
+    it = online_body_cache_.erase(it);
+  }
+}
+
 void NotesWindow::QueueCloudNotePush(int note_id, std::wstring title,
                                      std::wstring body) {
   if (note_id <= 0) {
@@ -9670,7 +9698,7 @@ void NotesWindow::QueueCloudNotePush(int note_id, std::wstring title,
   if (title.empty()) {
     title = L"未命名";
   }
-  online_body_cache_[note_id] = OnlineBodyCache{title, body};
+  RememberOnlineBody(note_id, title, body);
   g_cloud_push_notify_hwnd.store(hwnd_, std::memory_order_release);
   // One worker thread + latest-wins queue (state lives in notes_cloud_sync so
   // it survives this window). The old detached-thread-per-save spawned
@@ -10323,7 +10351,7 @@ void NotesWindow::ConvertPathToCloud(const std::wstring& path) {
                      }),
       cloud_sync_.pending_deletes.end());
   SaveNoteCloudSync(cloud_sync_);
-  online_body_cache_[note_id] = OnlineBodyCache{title, body};
+  RememberOnlineBody(note_id, title, body);
   if (status_) {
     SetWindowTextW(status_, L"已转云（同一文件，已开启同步）");
   }
@@ -10822,7 +10850,7 @@ void NotesWindow::NewOnlineNoteInEditor() {
   AtomicWriteUtf8File(path, NarrowUtf8(seed), false);
   NoteCloudUpsertLink(&cloud_sync_, path, created.id, true);
   SaveNoteCloudSync(cloud_sync_);
-  online_body_cache_[created.id] = OnlineBodyCache{L"未命名", seed};
+  RememberOnlineBody(created.id, L"未命名", seed);
   LibraryOnlineItem row;
   row.id = created.id;
   row.title = L"未命名";
@@ -13110,7 +13138,7 @@ LRESULT NotesWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
             row.updated_at = created.updated_at;
             library_online_cache_.insert(library_online_cache_.begin(),
                                         std::move(row));
-            online_body_cache_[created.id] = OnlineBodyCache{title, body};
+            RememberOnlineBody(created.id, title, body);
             library_online_stale_ = false;
           }
           OpenOnlineNoteInEditor(created.id);
@@ -13707,7 +13735,7 @@ LRESULT NotesWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
       int updated = 0;
       for (auto& b : res->bodies) {
         if (IsOnlineNotePath(b.path)) {
-          online_body_cache_[b.note_id] = OnlineBodyCache{b.title, b.body};
+          RememberOnlineBody(b.note_id, b.title, b.body);
           if (_wcsicmp(path_.c_str(), b.path.c_str()) == 0) {
             loading_ = true;
             SetWindowTextW(edit_, b.body.c_str());
@@ -13752,7 +13780,7 @@ LRESULT NotesWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
           continue;
         }
         if (AtomicWriteUtf8File(b.path, NarrowUtf8(b.body), false)) {
-          online_body_cache_[b.note_id] = OnlineBodyCache{b.title, b.body};
+          RememberOnlineBody(b.note_id, b.title, b.body);
           ++updated;
           if (_wcsicmp(path_.c_str(), b.path.c_str()) == 0) {
             loading_ = true;
@@ -13846,7 +13874,7 @@ LRESULT NotesWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
       if (!n->title.empty() && wide.rfind(L"# ", 0) != 0) {
         wide = L"# " + n->title + L"\n\n" + wide;
       }
-      online_body_cache_[n->id] = OnlineBodyCache{n->title, wide};
+      RememberOnlineBody(n->id, n->title, wide);
       // Cloud bodies reference assets/... but the binaries never left the
       // local library. Gather them before the WebView renders this body.
       MaterializeOnlineNoteAssets(

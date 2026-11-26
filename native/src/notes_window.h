@@ -467,6 +467,9 @@ class NotesWindow {
   std::vector<LibraryOnlineItem> library_online_cache_;
   bool library_online_stale_ = true;
   std::map<int, OnlineBodyCache> online_body_cache_;
+  // Writes into online_body_cache_ with a size cap (see the definition).
+  void RememberOnlineBody(int note_id, const std::wstring& title,
+                          const std::wstring& body);
   NoteCloudSyncStore cloud_sync_;
   // Cloud list / refresh fetches run on worker threads; WM_APP+85 (list) and
   // WM_APP+86 (refresh) apply results back on the UI thread. The busy flags
