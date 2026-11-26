@@ -1424,6 +1424,39 @@ bool NotesWindow::Create(HINSTANCE instance) {
     preview_web_.SetTheme(theme);
   }
   LoadTabSession();
+  // Drop tabs whose file no longer exists (deleted between runs, moved outside
+  // DeskNote, or removed by another tab action). Restoring them produced a tab
+  // that looks fine but cannot be saved, and the editor then wrote a brand-new
+  // file at a path the user thought was gone. online:// entries are virtual and
+  // always kept.
+  if (!tab_paths_.empty()) {
+    std::vector<std::wstring> kept;
+    std::vector<TabState> kept_states;
+    int new_index = 0;
+    const int old_index =
+        (tab_index_ >= 0 && tab_index_ < static_cast<int>(tab_paths_.size()))
+            ? tab_index_
+            : 0;
+    for (size_t i = 0; i < tab_paths_.size(); ++i) {
+      const std::wstring& tp = tab_paths_[i];
+      const bool ok = tp.empty() || IsOnlineNotePath(tp) ||
+                      GetFileAttributesW(tp.c_str()) != INVALID_FILE_ATTRIBUTES;
+      if (!ok) {
+        continue;
+      }
+      if (static_cast<int>(i) == old_index) {
+        new_index = static_cast<int>(kept.size());
+      }
+      kept.push_back(tp);
+      kept_states.push_back(i < tab_states_.size() ? tab_states_[i]
+                                                   : TabState{});
+    }
+    if (kept.size() != tab_paths_.size()) {
+      tab_paths_ = std::move(kept);
+      tab_states_ = std::move(kept_states);
+      tab_index_ = new_index;
+    }
+  }
   LoadAndSweepCloudSync();
   LoadViewSettings();
   EnsureFontControls();
