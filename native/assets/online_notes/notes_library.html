@@ -441,6 +441,10 @@
   function render() {
     hideMenu();
     const box = document.getElementById('list');
+    // Every state push rebuilds the whole list (innerHTML). Preserve the
+    // scroll position or the panel jumps to the top on each keystroke of the
+    // 280ms-debounced search and on every save-driven refresh.
+    const keepScroll = box ? box.scrollTop : 0;
     const online = (state.online || []).filter(matchTitle);
     const local = (state.local || []).filter(matchTitle);
     const hasOnlineBlock = online.length > 0 || state.logged_in;
@@ -468,6 +472,11 @@
       html += local.map((it) => rowHtml(it, 'local')).join('');
     }
     box.innerHTML = html;
+    if (box && keepScroll > 0) {
+      // Clamp: the new content may be shorter than the old scroll offset.
+      const maxScroll = Math.max(0, box.scrollHeight - box.clientHeight);
+      box.scrollTop = Math.min(keepScroll, maxScroll);
+    }
     const login = document.getElementById('login-link');
     if (login) {
       login.onclick = (e) => {
@@ -508,6 +517,21 @@
       hideMenu();
     }
   });
+  // Selection-only update: touching .on classes instead of re-rendering keeps
+  // the list from being rebuilt (and scroll reset / hover lost) every time the
+  // editor switches tabs.
+  window.applyActive = function (key) {
+    state.active = key || '';
+    window.__lib = state;
+    const want = normKey(state.active);
+    document.querySelectorAll('#list .row').forEach((r) => {
+      const p = r.dataset.path || '';
+      const id = r.dataset.id || '';
+      const kind = r.dataset.kind || '';
+      const k = (kind === 'online' && !p) ? ('online://' + id) : p;
+      r.classList.toggle('on', normKey(k) === want);
+    });
+  };
   window.applyState = function (m) {
     if (!m || typeof m !== 'object') return;
     if (m.query != null) state.query = m.query || '';

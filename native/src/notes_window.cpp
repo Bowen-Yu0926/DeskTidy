@@ -9715,12 +9715,14 @@ void NotesWindow::UpdateLibraryRailActiveOnly() {
     return;
   }
   // Selection highlight only — no disk peek, no cloud list round-trip.
+  // applyActive only flips .on classes. The old applyState(window.__lib)
+  // re-rendered the whole list on every tab switch (innerHTML rebuild → scroll
+  // jump, hover loss) just to move the highlight.
   std::wstring script =
-      L"(function(){try{if(typeof window.applyState!=='function'||!window.__lib){"
-      L"return;}window.__lib.active=\"";
+      L"(function(){try{if(typeof window.applyActive!=='function'){"
+      L"return;}window.applyActive(\"";
   script += JsonEscLib(path_);
-  script +=
-      L"\";window.applyState(window.__lib);}catch(e){}})();";
+  script += L"\");}catch(e){}})();";
   library_web_.EvalScript(script);
 }
 
