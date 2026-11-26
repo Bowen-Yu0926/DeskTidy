@@ -205,8 +205,9 @@ add_custom_command(TARGET deskNote POST_BUILD
 target_include_directories(desktidy_native PRIVATE
   src
   ${CMAKE_CURRENT_SOURCE_DIR}/third_party/webview2-include
-  ${CMAKE_CURRENT_SOURCE_DIR}/third_party/argon2/include
-  ${CMAKE_CURRENT_SOURCE_DIR}/third_party/argon2/src
+  # No argon2 here: DeskTidy carries no cloud/vault code (see DeskNote below),
+  # and pointing the include path at an unlinked library is a trap — a stray
+  # #include "argon2.h" would compile and then fail to link.
 )
 target_compile_definitions(desktidy_native PRIVATE
   UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX ARGON2_NO_THREADS)
