@@ -789,11 +789,15 @@ void OnlineNotesWindow::EnsureLogin() {
     PushState();
     return;
   }
-  if (!VaultHttpLogin(login, pass)) {
-    MistAlert(hwnd_, L"在线笔记",
-              L"登录失败（用户名或密码错误，或服务端不可达）。",
-              MistMsgTone::Danger);
-    status_ = L"登录失败";
+  VaultLoginError lerr = VaultLoginError::None;
+  if (!VaultHttpLoginEx(login, pass, &lerr)) {
+    // Split network failure from bad credentials — see VaultHttpLoginEx.
+    const wchar_t* why =
+        lerr == VaultLoginError::Network
+            ? L"无法连接服务器，请检查网络后重试。"
+            : L"用户名或密码错误。";
+    MistAlert(hwnd_, L"在线笔记", why, MistMsgTone::Danger);
+    status_ = lerr == VaultLoginError::Network ? L"网络不可用" : L"登录失败";
     PushState();
     return;
   }
