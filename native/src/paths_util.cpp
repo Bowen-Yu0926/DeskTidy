@@ -167,9 +167,16 @@ std::string NarrowUtf8(const std::wstring& ws) {
   if (ws.empty()) {
     return {};
   }
+  // Without WC_ERR_INVALID_CHARS, lone surrogates and other unencodable code
+  // units become U+FFFD instead of failing the conversion. With strict mode
+  // the call returns 0 and out comes back EMPTY — saving a note that happened
+  // to contain one stray surrogate would truncate the file to nothing.
   const int n = WideCharToMultiByte(CP_UTF8, 0, ws.c_str(), -1, nullptr, 0,
                                     nullptr, nullptr);
-  std::string out(n > 0 ? n - 1 : 0, '\0');
+  if (n <= 0) {
+    return std::string();  // caller keeps the previous file contents
+  }
+  std::string out(static_cast<size_t>(n) - 1, '\0');
   if (n > 1) {
     WideCharToMultiByte(CP_UTF8, 0, ws.c_str(), -1, out.data(), n, nullptr,
                         nullptr);
@@ -181,8 +188,22 @@ std::wstring WidenUtf8(const std::string& s) {
   if (s.empty()) {
     return {};
   }
+  // MB_ERR_INVALID_CHARS is deliberately NOT set: without it Windows replaces
+  // malformed sequences with U+FFFD. With strict validation the call returns 0
+  // and the whole string would vanish — a single corrupt byte in a JSON field
+  // (truncated write, mangled sync payload) silently erased the entire value.
   const int n = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, nullptr, 0);
-  std::wstring out(n > 0 ? n - 1 : 0, L'\0');
+  if (n <= 0) {
+    // Never return an empty result for a non-empty input on conversion failure:
+    // keep the bytes readable as Latin-1 so the user still sees something.
+    std::wstring fallback;
+    fallback.reserve(s.size());
+    for (unsigned char c : s) {
+      fallback.push_back(static_cast<wchar_t>(c));
+    }
+    return fallback;
+  }
+  std::wstring out(static_cast<size_t>(n) - 1, L'\0');
   if (n > 1) {
     MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, out.data(), n);
   }

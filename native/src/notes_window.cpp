@@ -5801,6 +5801,15 @@ void NotesWindow::Save(bool authoritative_pull, bool push_cloud) {
     payload = cookie.data;
   } else {
     payload = NarrowUtf8(plain);
+    // NarrowUtf8 can only come back empty for a non-empty body if the UTF-16
+    // conversion failed outright (lone surrogates). Writing the zero-length
+    // buffer would truncate the note to nothing — refuse and keep the file.
+    if (payload.empty() && !plain.empty()) {
+      MistAlert(hwnd_, L"笔记",
+                L"内容包含无法编码的字符，已取消保存（原文件未改动）。",
+                MistMsgTone::Danger);
+      return;
+    }
   }
   if (!WriteFileBytes(path_, payload.data(), payload.size())) {
     if (LastWriteWasAccessDenied() && OfferElevatedSave(path_, plain)) {
