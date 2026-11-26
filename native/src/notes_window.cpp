@@ -9677,16 +9677,24 @@ bool NotesWindow::ShowAccountLoginDialog() {
     if (id == L"login") {
       const std::wstring login = MistJsonStringField(json, L"login");
       const std::wstring pass  = MistJsonStringField(json, L"pass");
-      if (VaultHttpLogin(login, pass)) {
+      VaultLoginError lerr = VaultLoginError::None;
+      if (VaultHttpLoginEx(login, pass, &lerr)) {
         logged_in = true;
         // Reply success then close.
         MistWebDialogPostJson(&dlg, L"{\"type\":\"result\",\"ok\":true}");
         return true;
       }
-      MistWebDialogPostJson(
-          &dlg,
-          L"{\"type\":\"result\",\"ok\":false,"
-          L"\"error\":\"用户名或密码错误，或服务端不可达。\"}");
+      // Tell the two cases apart. Reporting "wrong password" for a dead
+      // network made users retype a perfectly good password.
+      const wchar_t* reason =
+          lerr == VaultLoginError::Network
+              ? L"无法连接服务器，请检查网络后重试。"
+              : (lerr == VaultLoginError::Empty ? L"请填写用户名和密码。"
+                                                : L"用户名或密码错误。");
+      std::wstring reply = L"{\"type\":\"result\",\"ok\":false,\"error\":\"";
+      reply += JsonEscLib(reason);
+      reply += L"\"}";
+      MistWebDialogPostJson(&dlg, reply);
       return false;
     }
 

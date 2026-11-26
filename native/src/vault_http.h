@@ -37,6 +37,13 @@ bool VaultHttpImportPythonSessionIfNeeded();
 
 bool VaultHttpHealth();
 bool VaultHttpLogin(const std::wstring& login, const std::wstring& password);
+// Same, but reports WHY it failed. Callers that surface an error to the user
+// need the distinction: "wrong password" and "server unreachable" used to be
+// reported with one vague sentence, so a user with a dead network kept
+// retyping a correct password.
+enum class VaultLoginError { None, Network, Rejected, Empty };
+bool VaultHttpLoginEx(const std::wstring& login, const std::wstring& password,
+                      VaultLoginError* err);
 // Register (auth/register). Returns false with *error_msg set on failure.
 bool VaultHttpRegister(const std::wstring& login, const std::wstring& password,
                        const std::wstring& display_name,

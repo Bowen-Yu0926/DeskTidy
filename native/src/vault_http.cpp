@@ -916,7 +916,17 @@ bool VaultHttpHealth() {
   return JsonOkTrue(resp.body) || resp.body.find("\"service\"") != std::string::npos;
 }
 
-bool VaultHttpLogin(const std::wstring& login, const std::wstring& password) {
+bool VaultHttpLoginEx(const std::wstring& login, const std::wstring& password,
+                      VaultLoginError* err) {
+  if (err) {
+    *err = VaultLoginError::None;
+  }
+  if (login.empty() || password.empty()) {
+    if (err) {
+      *err = VaultLoginError::Empty;
+    }
+    return false;
+  }
   Session s = LoadSession();
   VaultClient client(s.api_base);
   std::ostringstream body;
@@ -925,13 +935,22 @@ bool VaultHttpLogin(const std::wstring& login, const std::wstring& password) {
   const std::string payload = body.str();
   HttpResponse resp;
   if (!client.Request(L"POST", L"auth/login", &payload, false, &resp)) {
+    if (err) {
+      *err = VaultLoginError::Network;  // could not reach / parse the server
+    }
     return false;
   }
   if (!JsonOkTrue(resp.body)) {
+    if (err) {
+      *err = VaultLoginError::Rejected;  // the server answered and said no
+    }
     return false;
   }
   std::string token;
   if (!FindStringField(resp.body, "token", &token) || token.empty()) {
+    if (err) {
+      *err = VaultLoginError::Rejected;  // 200 but no session token
+    }
     return false;
   }
   std::string login_echo;
@@ -955,6 +974,10 @@ bool VaultHttpLogin(const std::wstring& login, const std::wstring& password) {
     s.kdf_algo = WidenUtf8(algo);
   }
   return SaveSession(s);
+}
+
+bool VaultHttpLogin(const std::wstring& login, const std::wstring& password) {
+  return VaultHttpLoginEx(login, password, nullptr);
 }
 
 bool VaultHttpRegister(const std::wstring& login, const std::wstring& password,
