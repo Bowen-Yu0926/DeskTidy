@@ -5343,8 +5343,12 @@ void NotesWindow::Load() {
                  ? (L"# " + (title.empty() ? std::wstring(L"") : title) + L"\n\n")
                  : it->second.body;
     } else if (id > 0 && VaultHttpLoggedIn()) {
-      // Reopening retries the fetch, so drop the stale failure guard.
+      // Reopening retries the fetch, so drop the stale failure guard. Also
+      // drop any stale "still loading" mark: if the previous worker's
+      // PostMessageW failed (window mid-teardown), the id would otherwise stay
+      // pending forever and this note could never be saved in this session.
       online_load_failed_ids_.erase(id);
+      pending_online_load_ids_.erase(id);
       // Cache miss: fetch on a worker. VaultHttpGetNote retries with blocking
       // sleeps (up to ~45 s with a dead server); running it here froze the whole
       // window — no paint, no input — on the first open of an online note.
