@@ -4489,6 +4489,56 @@ namespace {
 // but the file usually still lives under whichever local note inserted it.
 // Gather referenced files into the shared folder so online notes (and their
 // preview tab) can display images that already exist somewhere in the library.
+// Directory list under the notes library, cached briefly. MaterializeOnline-
+// NoteAssets runs on the UI thread every time an online note is opened and only
+// needs this list to locate assets/; a full walk is hundreds of FindFirstFile
+// calls. The set changes at most when the user creates a note folder, so a
+// few seconds of staleness is invisible (a miss simply re-walks next time).
+std::vector<std::wstring> CachedNoteLibraryDirs() {
+  static std::mutex mu;
+  static std::vector<std::wstring> cache;
+  static std::wstring cache_root;
+  static ULONGLONG cache_tick = 0;
+  constexpr ULONGLONG kTtlMs = 5000;
+
+  const std::wstring root = NotesLibraryDir(false);
+  if (root.empty()) {
+    return {};
+  }
+  const ULONGLONG now = GetTickCount64();
+  {
+    std::lock_guard<std::mutex> lk(mu);
+    if (!cache.empty() && cache_root == root && now - cache_tick < kTtlMs) {
+      return cache;
+    }
+  }
+  std::vector<std::wstring> dirs{root};
+  for (size_t i = 0; i < dirs.size() && dirs.size() < 512; ++i) {
+    WIN32_FIND_DATAW fd{};
+    const HANDLE h = FindFirstFileW((dirs[i] + L"\\*").c_str(), &fd);
+    if (h == INVALID_HANDLE_VALUE) {
+      continue;
+    }
+    do {
+      const std::wstring name = fd.cFileName;
+      if (name == L"." || name == L"..") {
+        continue;
+      }
+      if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+        dirs.push_back(JoinPath(dirs[i], name));
+      }
+    } while (FindNextFileW(h, &fd));
+    FindClose(h);
+  }
+  {
+    std::lock_guard<std::mutex> lk(mu);
+    cache = dirs;
+    cache_root = root;
+    cache_tick = now;
+  }
+  return dirs;
+}
+
 void MaterializeOnlineNoteAssets(HWND hwnd, int note_id,
                                  const std::wstring& body,
                                  const std::wstring& dest_assets) {
@@ -4523,28 +4573,8 @@ void MaterializeOnlineNoteAssets(HWND hwnd, int note_id,
   if (root.empty()) {
     return;
   }
-  // Walk a bounded number of directories (the library is small; max depth
-  // mirrors notes_library.cpp's WalkOpenable).
-  std::vector<std::wstring> dirs{root};
-  for (size_t i = 0; i < dirs.size() && dirs.size() < 512; ++i) {
-    const std::wstring dir = dirs[i];
-    WIN32_FIND_DATAW fd{};
-    const HANDLE h = FindFirstFileW((dir + L"\\*").c_str(), &fd);
-    if (h == INVALID_HANDLE_VALUE) {
-      continue;
-    }
-    do {
-      const std::wstring name = fd.cFileName;
-      if (name == L"." || name == L"..") {
-        continue;
-      }
-      const std::wstring full = JoinPath(dir, name);
-      if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
-        dirs.push_back(full);
-      }
-    } while (FindNextFileW(h, &fd));
-    FindClose(h);
-  }
+  // Bounded, cached walk (max depth mirrors notes_library.cpp's WalkOpenable).
+  const std::vector<std::wstring> dirs = CachedNoteLibraryDirs();
 
   for (const std::wstring& leaf : wanted) {
     const std::wstring dest = JoinPath(dest_assets, leaf);
