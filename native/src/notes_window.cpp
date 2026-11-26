@@ -3805,7 +3805,17 @@ void NotesWindow::PersistTabs() {
   // Atomic replace: the old in-place ofstream truncated notes_tabs.json first,
   // so a crash mid-write (timer fires every 400ms of typing) corrupted the
   // whole session file.
-  AtomicWriteUtf8File(file, out.str(), false);
+  if (!AtomicWriteUtf8File(file, out.str(), false)) {
+    // Metadata only — the note contents are safe — but losing the session file
+    // silently means the user's tabs/pins vanish on next start with no clue
+    // why. Warn once per session (full disk / read-only profile).
+    static bool s_warned = false;
+    if (!s_warned && status_) {
+      s_warned = true;
+      LogLineA("[notes] notes_tabs.json write failed (disk full / read-only?)");
+      SetWindowTextW(status_, L"无法保存会话（标签/置顶）：请检查磁盘空间");
+    }
+  }
 }
 
 void NotesWindow::LoadTabSession() {
