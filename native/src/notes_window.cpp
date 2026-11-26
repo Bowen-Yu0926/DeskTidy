@@ -1424,6 +1424,25 @@ bool NotesWindow::Create(HINSTANCE instance) {
     preview_web_.SetTheme(theme);
   }
   LoadTabSession();
+  // Same for the pin/lock lists: entries for files that are gone only ever add
+  // noise (they are persisted back out every save) and would silently apply
+  // again if a file with that exact path ever reappeared.
+  auto drop_missing = [](std::vector<std::wstring>* list) {
+    if (!list) {
+      return;
+    }
+    list->erase(std::remove_if(list->begin(), list->end(),
+                               [](const std::wstring& p) {
+                                 if (p.empty() || IsOnlineNotePath(p)) {
+                                   return false;
+                                 }
+                                 return GetFileAttributesW(p.c_str()) ==
+                                        INVALID_FILE_ATTRIBUTES;
+                               }),
+                list->end());
+  };
+  drop_missing(&pinned_paths_);
+  drop_missing(&locked_paths_);
   // Drop tabs whose file no longer exists (deleted between runs, moved outside
   // DeskNote, or removed by another tab action). Restoring them produced a tab
   // that looks fine but cannot be saved, and the editor then wrote a brand-new
