@@ -4253,11 +4253,21 @@ std::wstring NotesWindow::MakeNewNotePath() {
   return JoinPath(dir, fallback);
 }
 
-void NotesWindow::SeedBlankDraftTab() {
+bool NotesWindow::SeedBlankDraftTab() {
   const std::wstring path = MakeNewNotePath();
+  bool wrote = false;
   {
     std::ofstream out(path, std::ios::binary);
     out << u8"# \n\n";
+    wrote = static_cast<bool>(out);
+  }
+  if (!wrote) {
+    // Do not point the editor at a file that does not exist: the tab would look
+    // fine but every later Save/rename would fail against a phantom path.
+    MistAlert(hwnd_, L"新建笔记",
+              L"无法在笔记库创建文件，请检查目录权限或磁盘空间。",
+              MistMsgTone::Danger);
+    return false;
   }
   InvalidateNotesFileCache();
   tab_paths_.assign(1, path);
@@ -4276,6 +4286,7 @@ void NotesWindow::SeedBlankDraftTab() {
     SetWindowTextW(edit_, L"# \n\n");
   }
   SetNativeTitleText(L"");
+  return true;
 }
 
 void NotesWindow::ActivateSeededBlankDraft(const std::wstring& removed_path) {
@@ -4954,8 +4965,9 @@ void NotesWindow::CloseTabOnly() {
   EnsureTabStates();
   if (tab_paths_.size() <= 1) {
     // 关掉最后一个页签：新草稿替换，原文件仍在库里（Notepad++ new 1）。
-    SeedBlankDraftTab();
-    ActivateSeededBlankDraft(L"");  // keep old file row; only add 未命名
+    if (SeedBlankDraftTab()) {
+      ActivateSeededBlankDraft(L"");  // keep old file row; only add 未命名
+    }
     return;
   }
   tab_paths_.erase(tab_paths_.begin() + tab_index_);
@@ -5062,8 +5074,9 @@ void NotesWindow::DeleteAndCloseTabAt(int index, bool ask_confirm) {
   if (tab_paths_.empty()) {
     // Last tab deleted with the file — seed blank draft; swap one tree row
     // without Load + HealUntitledDraftsOnDisk full walk.
-    SeedBlankDraftTab();
-    ActivateSeededBlankDraft(path);
+    if (SeedBlankDraftTab()) {
+      ActivateSeededBlankDraft(path);
+    }
     return;
   }
   if (deleting_current) {
@@ -12164,7 +12177,9 @@ void NotesWindow::DeleteSidebarSelected() {
   bool need_switch = current_gone;
   const bool seeded_blank = tab_paths_.empty();
   if (seeded_blank) {
-    SeedBlankDraftTab();
+    if (!SeedBlankDraftTab()) {
+      return;  // nothing valid to switch to; the alert already explained why
+    }
     need_switch = true;
   } else if (tab_index_ >= static_cast<int>(tab_paths_.size())) {
     tab_index_ = static_cast<int>(tab_paths_.size()) - 1;

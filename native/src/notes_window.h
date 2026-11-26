@@ -255,7 +255,7 @@ class NotesWindow {
   int RunReplaceAllTabs(bool match_case, bool whole);
   std::wstring MakeNewNotePath();
   // Notepad++: never zero tabs — seed 未命名.md and clear title/editor state.
-  void SeedBlankDraftTab();
+  bool SeedBlankDraftTab();
   // After SeedBlankDraftTab: chrome/tree only — no Load + full Heal rescan.
   void ActivateSeededBlankDraft(const std::wstring& removed_path);
   // Load active tab + rebuild chips; optionally rescan the file tree.
