@@ -2018,6 +2018,12 @@ void NotesWindow::Destroy() {
     DestroyWindow(hwnd_);
     hwnd_ = nullptr;
   }
+  // Clear AFTER the final Save() above: saving an online/synced note enqueues a
+  // cloud push, and that path re-registers hwnd_. Clearing earlier would be
+  // undone. The (process-scoped, detached) push worker must not post into a
+  // window that no longer exists — worse, the HWND may be recycled for an
+  // unrelated window, where IsWindow() still passes.
+  g_cloud_push_notify_hwnd.store(nullptr, std::memory_order_release);
   if (bg_brush_) {
     DeleteObject(bg_brush_);
     bg_brush_ = nullptr;
