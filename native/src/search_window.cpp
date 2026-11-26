@@ -627,14 +627,16 @@ bool SearchWindow::CreateWebView() {
 }
 
 void SearchWindow::DestroyWebView() {
-  if (webview_) {
-    static_cast<ICoreWebView2*>(webview_)->Release();
-    webview_ = nullptr;
-  }
+  // Close before releasing: the controller owns the browser message pump and
+  // its handlers capture `this` by raw pointer.
   if (controller_) {
     static_cast<ICoreWebView2Controller*>(controller_)->Close();
     static_cast<ICoreWebView2Controller*>(controller_)->Release();
     controller_ = nullptr;
+  }
+  if (webview_) {
+    static_cast<ICoreWebView2*>(webview_)->Release();
+    webview_ = nullptr;
   }
   if (host_) {
     DestroyWindow(host_);

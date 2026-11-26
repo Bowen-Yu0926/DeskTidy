@@ -259,15 +259,18 @@ void DestroyWeb(MistWebDialog* dlg) {
   if (!dlg) {
     return;
   }
+  // Already neutralised the callbacks via the alive flag; still close the
+  // controller before releasing the WebView, so the browser's message pump is
+  // stopped while we still hold a valid interface pointer to it.
   InvalidateMistAlive(dlg);
-  if (dlg->webview) {
-    static_cast<ICoreWebView2*>(dlg->webview)->Release();
-    dlg->webview = nullptr;
-  }
   if (dlg->controller) {
     static_cast<ICoreWebView2Controller*>(dlg->controller)->Close();
     static_cast<ICoreWebView2Controller*>(dlg->controller)->Release();
     dlg->controller = nullptr;
+  }
+  if (dlg->webview) {
+    static_cast<ICoreWebView2*>(dlg->webview)->Release();
+    dlg->webview = nullptr;
   }
   if (dlg->host) {
     DestroyWindow(dlg->host);

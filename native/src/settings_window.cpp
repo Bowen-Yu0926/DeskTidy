@@ -477,14 +477,19 @@ void SettingsWindow::NavigateHome() {
 }
 
 void SettingsWindow::DestroyWebView() {
-  if (webview_) {
-    static_cast<ICoreWebView2*>(webview_)->Release();
-    webview_ = nullptr;
-  }
+  // Close the controller BEFORE dropping the ICoreWebView2 reference: the
+  // controller owns the browser process and its message pump, and the
+  // WebMessageReceived handler captures `this` with a bare pointer. Releasing
+  // the WebView first left a live pump able to call into this half-destroyed
+  // object. (Same ordering bug fixed in NotesWebView.)
   if (controller_) {
     static_cast<ICoreWebView2Controller*>(controller_)->Close();
     static_cast<ICoreWebView2Controller*>(controller_)->Release();
     controller_ = nullptr;
+  }
+  if (webview_) {
+    static_cast<ICoreWebView2*>(webview_)->Release();
+    webview_ = nullptr;
   }
   if (host_) {
     DestroyWindow(host_);
