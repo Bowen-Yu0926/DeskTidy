@@ -10322,9 +10322,18 @@ void NotesWindow::ConvertPathToCloud(const std::wstring& path) {
   if (const auto* existing = FindNoteCloudLink(cloud_sync_, path)) {
     note_id = existing->note_id;
   }
+  // Uploading blocks the UI thread; show progress so the click does not look
+  // ignored while the request is in flight.
+  if (status_) {
+    SetWindowTextW(status_, L"正在上传到云端…");
+    UpdateWindow(status_);
+  }
   VaultHttpNote remote;
   if (note_id > 0) {
     if (!VaultHttpUpdateNote(note_id, title, body, &remote)) {
+      if (status_) {
+        SetWindowTextW(status_, L"");
+      }
       MistAlert(hwnd_, L"转云",
                 L"上传失败。可能是登录已过期或网络不可达，"
                 L"请点击侧边栏底部的账号条重新登录后重试。",
@@ -10333,6 +10342,9 @@ void NotesWindow::ConvertPathToCloud(const std::wstring& path) {
     }
   } else {
     if (!VaultHttpCreateNote(title, body, &remote) || remote.id <= 0) {
+      if (status_) {
+        SetWindowTextW(status_, L"");
+      }
       MistAlert(hwnd_, L"转云",
                 L"上传失败。可能是登录已过期或网络不可达，"
                 L"请点击侧边栏底部的账号条重新登录后重试。",
@@ -10825,8 +10837,28 @@ void NotesWindow::NewOnlineNoteInEditor() {
     }
   }
   const std::wstring seed = L"# 未命名\n\n";
+  // This call blocks the UI thread on the network (bounded now by the tightened
+  // WinHTTP timeouts). Say what is happening instead of leaving the editor
+  // looking hung for up to a minute.
+  const std::wstring prev_status =
+      status_ ? [&] {
+        const int n = GetWindowTextLengthW(status_);
+        std::wstring t(static_cast<size_t>(n) + 1, L'\0');
+        GetWindowTextW(status_, t.data(), n + 1);
+        t.resize(static_cast<size_t>(n));
+        return t;
+      }()
+              : std::wstring();
+  if (status_) {
+    SetWindowTextW(status_, L"正在创建在线笔记…");
+    UpdateWindow(status_);
+  }
   VaultHttpNote created;
-  if (!VaultHttpCreateNote(L"未命名", seed, &created) || created.id <= 0) {
+  const bool created_ok = VaultHttpCreateNote(L"未命名", seed, &created);
+  if (status_) {
+    SetWindowTextW(status_, prev_status.c_str());
+  }
+  if (!created_ok || created.id <= 0) {
     MistAlert(hwnd_, L"在线笔记", L"新建失败，请稍后重试。",
               MistMsgTone::Danger);
     return;
