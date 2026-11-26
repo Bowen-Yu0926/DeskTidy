@@ -500,7 +500,13 @@ HINTERNET SharedWinHttpSession() {
     HINTERNET h = WinHttpOpen(kUserAgent, WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
                               WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
     if (h) {
-      WinHttpSetTimeouts(h, 15000, 15000, 20000, 20000);
+      // resolve / connect / send / receive. The old 15/15/20/20 allowed a
+      // single request to block ~70s, and RequestRetry runs it up to 3 times —
+      // ~210s. Several callers still run on the UI thread (new/rename/delete
+      // online note, convert-to-local), so a dead server froze the editor for
+      // minutes. Tightened so the worst case stays measurable; retries below
+      // still cover transient failures.
+      WinHttpSetTimeouts(h, 5000, 5000, 8000, 12000);
     }
     return h;
   }();
@@ -1001,12 +1007,15 @@ bool VaultHttpLogout() {
 bool RequestRetry(VaultClient* client, const wchar_t* method,
                   const std::wstring& rel_path, const std::string* body,
                   bool auth, HttpResponse* out) {
-  for (int attempt = 0; attempt < 3; ++attempt) {
+  // Two attempts, not three: combined with the per-request timeouts this keeps
+  // the worst case roughly half of what three attempts allowed, which matters
+  // for the callers that still block the UI thread.
+  for (int attempt = 0; attempt < 2; ++attempt) {
     if (client->Request(method, rel_path, body, auth, out)) {
       return true;
     }
-    if (attempt < 2) {
-      Sleep(400u << attempt);  // 400ms, 800ms exponential backoff.
+    if (attempt == 0) {
+      Sleep(400u);
     }
   }
   return false;
