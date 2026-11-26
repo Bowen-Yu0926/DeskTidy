@@ -9610,10 +9610,44 @@ void NotesWindow::LoadAndSweepCloudSync() {
   cloud_sync_ = LoadNoteCloudSync();
   const long long now = NoteCloudUnixNow();
   std::vector<int> due_ids;
+  std::vector<int> abandoned_ids;
   for (const auto& d : cloud_sync_.pending_deletes) {
-    if (d.note_id > 0 && d.delete_after > 0 && now >= d.delete_after) {
-      due_ids.push_back(d.note_id);
+    if (d.note_id <= 0 || d.delete_after <= 0 || now < d.delete_after) {
+      continue;
     }
+    //「转本地」schedules this delete as the tail of a copy-then-remove dance.
+    // If the local file is gone by now the user did not end up with a local
+    // copy either (deleted it, or the write was rolled back) — deleting the
+    // cloud note here would erase the only remaining copy. Keep it instead.
+    const NoteCloudLink* link = nullptr;
+    for (const auto& L : cloud_sync_.links) {
+      if (L.note_id == d.note_id) {
+        link = &L;
+        break;
+      }
+    }
+    const bool has_local = link && !link->path.empty() &&
+                           GetFileAttributesW(link->path.c_str()) !=
+                               INVALID_FILE_ATTRIBUTES;
+    if (has_local) {
+      due_ids.push_back(d.note_id);
+    } else {
+      abandoned_ids.push_back(d.note_id);
+    }
+  }
+  if (!abandoned_ids.empty()) {
+    // Stop scheduling deletes that can never become safe.
+    std::set<int> drop(abandoned_ids.begin(), abandoned_ids.end());
+    cloud_sync_.pending_deletes.erase(
+        std::remove_if(cloud_sync_.pending_deletes.begin(),
+                       cloud_sync_.pending_deletes.end(),
+                       [&drop](const NoteCloudPendingDelete& d) {
+                         return drop.count(d.note_id) > 0;
+                       }),
+        cloud_sync_.pending_deletes.end());
+    SaveNoteCloudSync(cloud_sync_);
+    LogLineA("[cloud] kept %d note(s) whose local copy is gone",
+             static_cast<int>(abandoned_ids.size()));
   }
   if (!due_ids.empty()) {
     std::thread([hwnd = hwnd_, due_ids = std::move(due_ids)]() {
