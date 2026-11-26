@@ -87,7 +87,6 @@ class SettingsWindow {
     bool search_include_open_folders = true;
     bool search_include_hidden = false;
     int search_threads = 2;
-    // Cloud service master switch (offline build default OFF).
     bool pet_auto_wander = true;
     bool pet_show_bubbles = true;
     float pet_size_scale = 1.f;
