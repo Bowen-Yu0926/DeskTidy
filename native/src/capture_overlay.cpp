@@ -927,10 +927,9 @@ bool CaptureOverlay::ClientRectOfWindow(HWND target, RECT* out_client) const {
          out_client->bottom > out_client->top;
 }
 
-bool CaptureOverlay::Begin(HINSTANCE instance, DoneFn on_done, bool auto_pin) {
+bool CaptureOverlay::Begin(HINSTANCE instance, DoneFn on_done) {
   Gdi();
   instance_ = instance;
-  auto_pin_ = auto_pin;
   on_done_ = std::move(on_done);
   mode_ = Mode::Selecting;
   tool_ = Tool::None;
@@ -1849,7 +1848,7 @@ bool CaptureOverlay::FinishSelection(FinishAction action) {
                 MistMsgTone::Danger);
       return false;
     }
-    pin = (action == FinishAction::Pin) || auto_pin_;
+    pin = (action == FinishAction::Pin);
   }
   DeleteObject(bmp);
   if (on_done_) {
@@ -2211,7 +2210,7 @@ LRESULT CaptureOverlay::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
           CommitInlineText();
           return 0;
         }
-        FinishSelection(auto_pin_ ? FinishAction::Pin : FinishAction::Copy);
+        FinishSelection(FinishAction::Copy);
         Cancel();
         return 0;
       }

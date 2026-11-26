@@ -302,8 +302,6 @@ AppPrefs LoadAppPrefsFromPath(const std::wstring& path) {
   prefs.record_on_bar = ParseBoolField(json, "record_on_bar", false);
   prefs.calculator_on_bar = ParseBoolField(json, "calculator_on_bar", false);
   prefs.todos_on_bar = ParseBoolField(json, "todos_on_bar", false);
-  prefs.screenshot_auto_pin =
-      ParseBoolField(json, "screenshot_auto_pin", false);
   prefs.screenshot_max_pins = ParseIntField(json, "screenshot_max_pins", 3);
   if (prefs.screenshot_max_pins < 1) {
     prefs.screenshot_max_pins = 1;
@@ -477,8 +475,6 @@ void SaveAppPrefsToPath(const AppPrefs& prefs, const std::wstring& path) {
       << (prefs.calculator_on_bar ? "true" : "false")
       << ",\n  \"todos_on_bar\": "
       << (prefs.todos_on_bar ? "true" : "false")
-      << ",\n  \"screenshot_auto_pin\": "
-      << (prefs.screenshot_auto_pin ? "true" : "false")
       << ",\n  \"screenshot_max_pins\": " << prefs.screenshot_max_pins
       << ",\n  \"notepad_folder\": \""
       << EscapeJson(NarrowUtf8(prefs.notepad_folder))

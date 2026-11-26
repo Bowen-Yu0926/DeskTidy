@@ -26,12 +26,7 @@ namespace {
 
 constexpr wchar_t kDefaultBase[] =
     L"https://chromhome.kdns.fr/api/";
-constexpr wchar_t kCloudFlagName[] = L"cloud_enabled.json";
 constexpr wchar_t kUserAgent[] = L"Mozilla/5.0 DeskTidy-Vault/1";
-
-std::wstring CloudFlagPath() {
-  return JoinPath(NativeDataDir(), kCloudFlagName);
-}
 
 std::wstring SessionPath() {
   return JoinPath(NativeDataDir(), L"account_vault_session.json");
@@ -568,9 +563,6 @@ class VaultClient {
 
   bool Request(const wchar_t* method, const std::wstring& rel_path,
                const std::string* body_utf8, bool auth, HttpResponse* out) {
-    if (!VaultCloudEnabled()) {
-      return false;
-    }
     if (!EnsureSession()) {
       return false;
     }
@@ -603,7 +595,7 @@ class VaultClient {
   // binary asset responses are not JSON and must be returned byte-for-byte.
   bool RequestRaw(const wchar_t* method, const std::wstring& rel_path,
                   const std::string* body_utf8, bool auth, HttpResponse* out) {
-    if (!VaultCloudEnabled() || !EnsureSession() || !out) {
+    if (!EnsureSession() || !out) {
       return false;
     }
     EnsureByethost();
@@ -622,7 +614,7 @@ class VaultClient {
   bool RawRequest(const wchar_t* method, const std::wstring& url,
                   const std::string* body_utf8, bool auth, HttpResponse* out,
                   bool send_cookie) {
-    if (!out || !EnsureSession() || !VaultCloudEnabled()) {
+    if (!out || !EnsureSession()) {
       return false;
     }
     UrlParts parts;
@@ -852,25 +844,6 @@ std::string MakeCredBodyZk(const std::wstring& title, const std::wstring& user,
 
 }  // namespace
 
-bool VaultCloudEnabled() {
-  // Off unless the user explicitly opts in by creating the flag file.
-  std::ifstream in(CloudFlagPath(), std::ios::binary);
-  if (!in) {
-    return false;
-  }
-  std::string body((std::istreambuf_iterator<char>(in)),
-                   std::istreambuf_iterator<char>());
-  return body.find("true") != std::string::npos;
-}
-
-void VaultSetCloudEnabled(bool enabled) {
-  if (enabled) {
-    AtomicWriteUtf8File(CloudFlagPath(), "{\"enabled\":true}\n", false);
-  } else {
-    DeleteFileW(CloudFlagPath().c_str());
-  }
-}
-
 void VaultHttpSetApiBase(const std::wstring& api_base) {
   Session s = LoadSession();
   s.api_base = NormalizeBase(api_base);
@@ -882,17 +855,14 @@ std::wstring VaultHttpGetApiBase() {
 }
 
 bool VaultHttpLoggedIn() {
-  return VaultCloudEnabled() && !LoadSession().token.empty();
+  return !LoadSession().token.empty();
 }
 
 std::wstring VaultHttpSessionLogin() {
-  return VaultCloudEnabled() ? LoadSession().login : std::wstring();
+  return LoadSession().login;
 }
 
 bool VaultHttpImportPythonSessionIfNeeded() {
-  if (!VaultCloudEnabled()) {
-    return false;
-  }
   if (VaultHttpLoggedIn()) {
     return true;
   }

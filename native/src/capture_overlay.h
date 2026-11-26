@@ -13,7 +13,7 @@ class CaptureOverlay {
  public:
   using DoneFn = std::function<void(const std::wstring& png_path, bool pin)>;
 
-  bool Begin(HINSTANCE instance, DoneFn on_done, bool auto_pin = false);
+  bool Begin(HINSTANCE instance, DoneFn on_done);
   void Cancel();
   HWND Hwnd() const { return hwnd_; }
   bool IsActive() const { return hwnd_ != nullptr; }
@@ -121,7 +121,6 @@ class CaptureOverlay {
   RECT hover_{};
   bool hover_ok_ = false;
   HWND hover_hwnd_ = nullptr;
-  bool auto_pin_ = false;
   DoneFn on_done_;
 
   HBITMAP bkg_bmp_ = nullptr;  // pristine freeze

@@ -37,7 +37,6 @@ struct AppPrefs {
   bool record_on_bar = false;
   bool calculator_on_bar = false;
   bool todos_on_bar = false;
-  bool screenshot_auto_pin = false;
   int screenshot_max_pins = 3;
   std::wstring notepad_folder;
   // One-shot migration marker: legacy DeskTidyNative\notes copied to the

@@ -1305,7 +1305,7 @@ bool NotesWindow::Create(HINSTANCE instance) {
         asset_note_id = link->note_id;
       }
     }
-    if (asset_note_id > 0 && VaultCloudEnabled() && VaultHttpLoggedIn()) {
+    if (asset_note_id > 0 && VaultHttpLoggedIn()) {
       const size_t slash = rel.find_last_of(L'/');
       const std::wstring leaf =
           slash == std::wstring::npos ? rel : rel.substr(slash + 1);
@@ -4517,8 +4517,7 @@ void MaterializeOnlineNoteAssets(HWND hwnd, int note_id,
     }
     // Not on this machine — fetch the binary from the cloud in the background
     // (never block the UI on WinHTTP retries) and refresh the preview when done.
-    if (!found_local && note_id > 0 && hwnd && VaultCloudEnabled() &&
-        VaultHttpLoggedIn()) {
+    if (!found_local && note_id > 0 && hwnd && VaultHttpLoggedIn()) {
       std::thread([hwnd, note_id, leaf, dest]() {
         std::vector<BYTE> bytes;
         if (!VaultHttpGetNoteAsset(note_id, leaf, &bytes) || bytes.empty()) {
@@ -9493,11 +9492,6 @@ bool NotesWindow::ShowAccountLoginDialog() {
 }
 
 void NotesWindow::EnsureLibraryCloudLogin() {
-  if (!VaultCloudEnabled()) {
-    MistAlert(hwnd_, L"云服务", L"云服务未启用；本地笔记功能不受影响。",
-              MistMsgTone::Info);
-    return;
-  }
   if (VaultHttpLoggedIn()) return;
   if (ShowAccountLoginDialog()) {
     NoteCloudNotifyPushWorker();
@@ -9506,10 +9500,6 @@ void NotesWindow::EnsureLibraryCloudLogin() {
 
 void NotesWindow::LoadAndSweepCloudSync() {
   cloud_sync_ = LoadNoteCloudSync();
-  // 云服务关闭：保留本地链接数据但不做任何网络清理，离线期间数据安全。
-  if (!VaultCloudEnabled()) {
-    return;
-  }
   const long long now = NoteCloudUnixNow();
   std::vector<int> due_ids;
   for (const auto& d : cloud_sync_.pending_deletes) {
@@ -9562,7 +9552,7 @@ std::atomic<HWND> g_cloud_push_notify_hwnd{nullptr};
 
 void NotesWindow::QueueCloudNotePush(int note_id, std::wstring title,
                                      std::wstring body) {
-  if (note_id <= 0 || !VaultCloudEnabled()) {
+  if (note_id <= 0) {
     return;
   }
   if (title.empty()) {
@@ -9724,8 +9714,6 @@ void NotesWindow::PushLibraryRailState(bool refresh_online) {
   json += JsonEscLib(path_);
   json += L"\",\"logged_in\":";
   json += VaultHttpLoggedIn() ? L"true" : L"false";
-  json += L",\"cloud_enabled\":";
-  json += VaultCloudEnabled() ? L"true" : L"false";
   json += L",\"local_matched\":";
   json += local_matched ? L"true" : L"false";
   json += L",\"online\":[";
@@ -9763,8 +9751,6 @@ void NotesWindow::PushLibraryRailState(bool refresh_online) {
   // same way as the `key` lookups below (lowercase + backslash), otherwise a
   // link stored with forward slashes / different case silently misses.
   std::set<std::wstring> synced_keys;
-  // 云服务关闭时不输出任何云行；本地文件仍以普通本地行显示。
-  if (VaultCloudEnabled()) {
   for (const auto& L : cloud_sync_.links) {
     if (!L.sync || L.note_id <= 0 || L.path.empty()) {
       continue;
@@ -9826,7 +9812,6 @@ void NotesWindow::PushLibraryRailState(bool refresh_online) {
     json += fast_is_locked(L.path) ? L"true" : L"false";
     json += L"}";
   }
-  }  // if (VaultCloudEnabled())
   // Pure remote rows only when never bound locally. After「转本地」sync=false
   // + pending_deletes must NOT reappear here (was leaking as online:// ghosts).
   // If a bound local file was deleted on disk, do not suppress the online item.
@@ -9889,9 +9874,7 @@ void NotesWindow::PushLibraryRailState(bool refresh_online) {
           c = static_cast<wchar_t>(c - L'A' + L'a');
         }
       }
-      // 云关闭时，历史同步链接的文件按普通本地文件显示，保证离线可用。
-      if (VaultCloudEnabled() &&
-          (synced_keys.count(key) || PathIsCloudSynced(full))) {
+      if (synced_keys.count(key) || PathIsCloudSynced(full)) {
         continue;
       }
       if (!first_local) {
@@ -9946,8 +9929,7 @@ void NotesWindow::PushLibraryRailState(bool refresh_online) {
           c = static_cast<wchar_t>(c - L'A' + L'a');
         }
       }
-      if (VaultCloudEnabled() &&
-          (synced_keys.count(key) || PathIsCloudSynced(full))) {
+      if (synced_keys.count(key) || PathIsCloudSynced(full)) {
         continue;
       }
       if (!first_local) {
@@ -9988,14 +9970,6 @@ void NotesWindow::PushLibraryRailState(bool refresh_online) {
 
 void NotesWindow::HandleLibraryRailAction(const std::wstring& json) {
   const std::wstring id = LibJsonString(json, L"id");
-  // 云服务关闭时拒绝所有云动作，保证零网络调用（本地动作照常处理）。
-  const bool cloud_action = id == L"login" || id == L"to_cloud" ||
-                            id == L"to_local" || id == L"sync";
-  if (cloud_action && !VaultCloudEnabled()) {
-    MistAlert(hwnd_, L"云服务", L"云服务未启用；本地笔记功能不受影响。",
-              MistMsgTone::Info);
-    return;
-  }
   if (id == L"login") {
     EnsureLibraryCloudLogin();
     if (VaultHttpLoggedIn()) {
@@ -10549,9 +10523,6 @@ struct SyncCloudResult {
 }  // namespace
 
 void NotesWindow::SyncRefreshFromCloud() {
-  if (!VaultCloudEnabled()) {
-    return;
-  }
   if (!VaultHttpLoggedIn()) {
     EnsureLibraryCloudLogin();
     if (!VaultHttpLoggedIn()) {
@@ -12614,15 +12585,12 @@ LRESULT NotesWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
           GotoBookmark(false);
           return 0;
         case kMenuOnlineNotes:
-          if (!VaultCloudEnabled()) { MistAlert(hwnd_, L"云服务", L"云服务未启用；本地笔记功能不受影响。", MistMsgTone::Info); return 0; }
           OpenOnlineNotes(false);
           return 0;
         case kMenuNewOnlineNote:
-          if (!VaultCloudEnabled()) { MistAlert(hwnd_, L"云服务", L"云服务未启用；本地笔记功能不受影响。", MistMsgTone::Info); return 0; }
           OpenOnlineNotes(true);
           return 0;
         case kMenuToOnline: {
-          if (!VaultCloudEnabled()) { MistAlert(hwnd_, L"云服务", L"云服务未启用；本地笔记功能不受影响。", MistMsgTone::Info); return 0; }
           // Push current local note to cloud online notes.
           Save(true);
           std::wstring title = TabLabel(path_);

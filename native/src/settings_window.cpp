@@ -3,7 +3,6 @@
 #include "brand_mark.h"
 #include "paths_util.h"
 #include "rule_store.h"
-#include "vault_http.h"
 
 #include <objbase.h>
 #ifndef interface
@@ -597,8 +596,6 @@ std::wstring SettingsWindow::BuildStateJson() const {
   json += flag(ext_.todos_enabled);
   json += L",\"record_enabled\":";
   json += flag(ext_.record_enabled);
-  json += L",\"screenshot_auto_pin\":";
-  json += flag(ext_.screenshot_auto_pin);
   json += L",\"screenshot_max_pins\":";
   json += std::to_wstring(ext_.screenshot_max_pins);
   json += L",\"record_quality\":";
@@ -665,8 +662,6 @@ std::wstring SettingsWindow::BuildStateJson() const {
   json += flag(ext_.search_include_hidden);
   json += L",\"search_threads\":";
   json += std::to_wstring(ext_.search_threads);
-  json += L",\"cloud_enabled\":";
-  json += flag(VaultCloudEnabled());
   json += L",\"pet_auto_wander\":";
   json += flag(ext_.pet_auto_wander);
   json += L",\"pet_show_bubbles\":";
@@ -1396,11 +1391,6 @@ void SettingsWindow::SetCurrentPage(int page, bool push) {
 }
 
 bool SettingsWindow::ApplyExtToggleLocal(const std::wstring& id, bool value) {
-  if (id == L"cloud_enabled") {
-    VaultSetCloudEnabled(value);
-    ext_.cloud_enabled = value;
-    return true;
-  }
   if (id == L"minutes_on_bar" || id == L"minutes_enabled") {
     // Single UI switch drives both prefs (enable ≡ show on page bar).
     ext_.minutes_enabled = value;
@@ -1421,8 +1411,6 @@ bool SettingsWindow::ApplyExtToggleLocal(const std::wstring& id, bool value) {
     ext_.calculator_on_bar = value;
   } else if (id == L"todos_on_bar") {
     ext_.todos_on_bar = value;
-  } else if (id == L"screenshot_auto_pin") {
-    ext_.screenshot_auto_pin = value;
   } else if (id == L"search_desktop") {
     ext_.search_desktop = value;
   } else if (id == L"search_documents") {

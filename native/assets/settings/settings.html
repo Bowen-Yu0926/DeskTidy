@@ -1043,9 +1043,6 @@
       <div class="card">
         <h3>区域截图</h3>
         <p class="hint">框选屏幕区域进行截图。可在下方配置全局快捷键；「显示贴图」/ F2 会按「同时贴图最多」从最近截图一次贴满多张。</p>
-        <div class="toggles" style="margin-top:0">
-          <label class="toggle"><input type="checkbox" id="ext_shot_pin" /> 截图复制后自动贴图到桌面</label>
-        </div>
         <div class="field-row">
           <span class="label">同时贴图最多</span>
           <input type="number" id="ext_shot_max" min="1" max="5" value="3" />
@@ -1112,14 +1109,6 @@
         <div class="field-row">
           <span class="label">搜索线程数</span>
           <input type="number" id="ext_search_threads" min="1" max="64" value="2" />
-        </div>
-      </div>
-
-      <div class="card">
-        <h3>云服务</h3>
-        <p class="hint">默认关闭：关闭时程序不会连接云端，所有本地功能（分区、整理、笔记、搜索、截图、录屏、导出等）完全可用。开启后可登录并使用云笔记同步与账号库。</p>
-        <div class="toggles" style="margin-top:0">
-          <label class="toggle"><input type="checkbox" id="ext_cloud_enabled" /> 启用云服务（云笔记 / 账号库）</label>
         </div>
       </div>
 
@@ -1364,7 +1353,7 @@
     org_startup: false, org_watch: true, preview: [],
     org_pending: 0, org_organized: 0, org_total: 0, org_files: [],
     minutes_on_bar: true, notepad_enabled: true, elevate_hotkey_helper: false, record_on_bar: false,
-    calculator_on_bar: false, todos_on_bar: false, screenshot_auto_pin: false,
+    calculator_on_bar: false, todos_on_bar: false,
     minutes_enabled: false, calculator_enabled: false, todos_enabled: false,
     record_enabled: false,
     screenshot_max_pins: 3, minutes_folder: '', notepad_folder: '',
@@ -1375,7 +1364,6 @@
     search_max_results: 50, search_max_depth: 12,
     search_include_open_folders: true, search_include_hidden: false,
     search_threads: 2,
-    cloud_enabled: false,
     exclude_patterns: [],
     category_fence_map: '', filename_rules: '',
     pet_auto_wander: true, pet_show_bubbles: true, pet_size_scale: 1,
@@ -2318,7 +2306,6 @@
     set('ext_calc_enabled', state.calculator_enabled);
     set('ext_todos_bar', state.todos_on_bar);
     set('ext_todos_enabled', state.todos_enabled);
-    set('ext_shot_pin', state.screenshot_auto_pin);
     setVal('ext_shot_max', state.screenshot_max_pins);
     setVal('ext_minutes_folder', state.minutes_folder);
     setVal('ext_notepad_folder', state.notepad_folder);
@@ -2357,7 +2344,6 @@
     set('ext_search_open_folders', state.search_include_open_folders);
     set('ext_search_hidden', state.search_include_hidden);
     setVal('ext_search_threads', state.search_threads);
-    set('ext_cloud_enabled', state.cloud_enabled);
     setVal('ext_exclude_patterns', (Array.isArray(state.exclude_patterns) ? state.exclude_patterns : []).join(', '));
     setVal('ext_dock_items', (Array.isArray(state.dock_items) ? state.dock_items : []).join(', '));
     setVal('ext_category_fence_map', state.category_fence_map || '');
@@ -2866,7 +2852,7 @@
     const copyStr = (k) => { if (typeof msg[k] === 'string') state[k] = msg[k]; };
     const copyNum = (k) => { if (typeof msg[k] === 'number') state[k] = msg[k]; };
     ['minutes_on_bar','notepad_enabled','elevate_hotkey_helper','record_on_bar','calculator_on_bar',
-     'todos_on_bar','screenshot_auto_pin','search_desktop','search_documents',
+     'todos_on_bar','search_desktop','search_documents',
      'search_downloads','search_all_drives','pet_auto_wander','pet_show_bubbles',
      'check_update_on_startup',
      'desktop_right_click_menu','close_to_tray','show_fences',
@@ -3035,14 +3021,12 @@
     ext_calc_enabled: 'calculator_enabled',
     ext_todos_bar: 'todos_on_bar',
     ext_todos_enabled: 'todos_enabled',
-    ext_shot_pin: 'screenshot_auto_pin',
     ext_search_desktop: 'search_desktop',
     ext_search_documents: 'search_documents',
     ext_search_downloads: 'search_downloads',
     ext_search_all: 'search_all_drives',
     ext_search_open_folders: 'search_include_open_folders',
     ext_search_hidden: 'search_include_hidden',
-    ext_cloud_enabled: 'cloud_enabled',
     ext_pet_bubbles: 'pet_show_bubbles',
     ext_check_update: 'check_update_on_startup',
     ext_desktop_menu: 'desktop_right_click_menu',

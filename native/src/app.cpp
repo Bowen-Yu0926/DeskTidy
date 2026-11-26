@@ -1253,8 +1253,6 @@ bool App::Init(HINSTANCE instance) {
       if (value) {
         prefs_.todos_enabled = true;
       }
-    } else if (id == L"screenshot_auto_pin") {
-      prefs_.screenshot_auto_pin = value;
     } else if (id == L"search_desktop") {
       prefs_.search_desktop = value;
     } else if (id == L"search_documents") {
@@ -2491,7 +2489,6 @@ void App::Shutdown() {
 
 void App::StartRegionCapture() {
   capture_.Cancel();
-  const bool auto_pin = prefs_.screenshot_auto_pin;
   capture_.Begin(
       instance_,
       [this](const std::wstring& path, bool pin) {
@@ -2509,8 +2506,7 @@ void App::StartRegionCapture() {
           // Mark so the next F2 does not pin the same shot again.
           RememberPinClipboardSeq();
         }
-      },
-      auto_pin);
+      });
 }
 
 void App::RememberPinClipboardSeq() {
@@ -3672,7 +3668,6 @@ void App::PushExtensionSettings() {
       prefs_.calculator_enabled && prefs_.calculator_on_bar;
   ext.todos_enabled = prefs_.todos_enabled;
   ext.todos_on_bar = prefs_.todos_enabled && prefs_.todos_on_bar;
-  ext.screenshot_auto_pin = prefs_.screenshot_auto_pin;
   ext.screenshot_max_pins = prefs_.screenshot_max_pins;
   ext.record_quality = prefs_.record_quality;
   ext.minutes_folder = MinutesFolderOverride();

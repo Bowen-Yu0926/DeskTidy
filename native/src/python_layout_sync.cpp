@@ -774,7 +774,6 @@ void MigratePythonPrefs(const std::string& json) {
 
   const std::string shot = FindNestedObject(json, "screenshot");
   if (!shot.empty()) {
-    FindBool(shot, "auto_pin_after_copy", &prefs.screenshot_auto_pin);
     FindNumber(shot, "max_pins", &prefs.screenshot_max_pins);
   }
 

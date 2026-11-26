@@ -56,7 +56,6 @@ add_executable(desktidy_native WIN32
   src/float_placements.cpp
   src/todo_window.cpp
   src/search_window.cpp
-  src/notes_cloud_sync.cpp
   src/tools_misc.cpp
   src/tool_paths.cpp
   src/capture_overlay.cpp
@@ -73,8 +72,6 @@ add_executable(desktidy_native WIN32
   src/display_geom.cpp
   src/minutes.cpp
   src/i18n.cpp
-  src/vault_http.cpp
-  src/vault_crypto.cpp
   src/shell_icons.cpp
   src/page_folders.cpp
   src/organize_suppress.cpp
@@ -102,7 +99,6 @@ add_executable(desktidy_native WIN32
   src/docx_export.cpp
   src/version.rc
   src/desktidy_icon.rc
-  ${ARGON2_SOURCES}
   ${TWEETNACL_SOURCES}
 )
 

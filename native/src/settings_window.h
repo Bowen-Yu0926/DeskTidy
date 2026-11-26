@@ -59,7 +59,6 @@ class SettingsWindow {
     bool record_enabled = false;
     bool calculator_on_bar = false;
     bool todos_on_bar = false;
-    bool screenshot_auto_pin = false;
     int screenshot_max_pins = 3;
     int record_quality = 2;
     std::wstring minutes_folder;
@@ -89,7 +88,6 @@ class SettingsWindow {
     bool search_include_hidden = false;
     int search_threads = 2;
     // Cloud service master switch (offline build default OFF).
-    bool cloud_enabled = false;
     bool pet_auto_wander = true;
     bool pet_show_bubbles = true;
     float pet_size_scale = 1.f;
