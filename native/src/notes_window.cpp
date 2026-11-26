@@ -1309,7 +1309,7 @@ bool NotesWindow::Create(HINSTANCE instance) {
       const size_t slash = rel.find_last_of(L'/');
       const std::wstring leaf =
           slash == std::wstring::npos ? rel : rel.substr(slash + 1);
-      const comma = data_url.find(L',');
+      const size_t comma = data_url.find(L',');
       const std::wstring b64 =
           comma == std::wstring::npos ? data_url : data_url.substr(comma + 1);
       std::thread([asset_note_id, leaf, mime, b64]() {
