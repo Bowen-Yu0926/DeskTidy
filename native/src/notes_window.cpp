@@ -4120,7 +4120,11 @@ void NotesWindow::SwitchToTab(int index, bool save_current) {
     // Only flush when dirty — Save() on a clean tab still rewrote the file
     // (and could push cloud), which made tab switches feel stuck.
     if (dirty_) {
-      Save(wysiwyg_, /*push_cloud=*/false);
+      // Local write must not block the switch (no network), but the cloud push
+      // still has to happen: skipping it here meant an edit made just before
+      // switching tabs never reached the server once the user stopped editing
+      // that note. Enqueue is async, so this stays off the UI thread's back.
+      Save(wysiwyg_, /*push_cloud=*/true);
     }
     SyncCurrentTabTitleHint();
   } else if (!same_path) {
@@ -5630,7 +5634,7 @@ void NotesWindow::Save(bool authoritative_pull, bool push_cloud) {
         return;
       }
     }
-    // Synced attribute: local write done; cloud push is async (skip on tab switch).
+    // Synced attribute: local write done; cloud push is async (queue only).
     if (push_cloud && PathIsCloudSynced(path_) && !IsOnlineNotePath(path_) &&
         VaultHttpLoggedIn()) {
       if (const auto* L = FindNoteCloudLink(cloud_sync_, path_)) {
