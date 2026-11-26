@@ -2278,6 +2278,23 @@ bool NotesWindow::InsertImageFile(const std::wstring& src_path) {
   if (!IsImageDropSuffix(lower)) {
     return false;
   }
+  // Same cap as the paste/upload path (SaveDataUrlToAssets). Dragging a file
+  // in bypassed the editor's limit entirely, so a large photo could still end
+  // up in the library and make the note body impractical to sync.
+  {
+    constexpr ULONGLONG kMaxImageBytes = 8ull * 1024ull * 1024ull;
+    WIN32_FILE_ATTRIBUTE_DATA fad{};
+    if (GetFileAttributesExW(src_path.c_str(), GetFileExInfoStandard, &fad)) {
+      const ULONGLONG sz =
+          (static_cast<ULONGLONG>(fad.nFileSizeHigh) << 32) | fad.nFileSizeLow;
+      if (sz > kMaxImageBytes) {
+        MistAlert(hwnd_, L"插入图片",
+                  L"图片过大（超过 8 MB），请压缩后再插入。",
+                  MistMsgTone::Warn);
+        return false;
+      }
+    }
+  }
   const std::wstring assets_dir = JoinPath(NoteBaseDir(), L"assets");
   CreateDirectoryW(assets_dir.c_str(), nullptr);
   const size_t slash = src_path.find_last_of(L"\\/");
