@@ -9993,11 +9993,19 @@ void NotesWindow::DismissLibraryMenu() {
 }
 
 void NotesWindow::EnsureLibraryListFetch() {
+  // A worker whose PostMessageW failed (window mid-teardown) never clears the
+  // busy flag, and then the online list can never refresh again for the life of
+  // the session. Treat a "busy" state older than the request budget as stale.
   if (library_list_busy_) {
-    library_list_refresh_pending_ = true;
-    return;
+    constexpr ULONGLONG kStaleMs = 120000;  // 2 min >> worst-case retry budget
+    if (GetTickCount64() - library_list_busy_since_ < kStaleMs) {
+      library_list_refresh_pending_ = true;
+      return;
+    }
+    library_list_busy_ = false;  // stale marker — fall through and retry
   }
   library_list_busy_ = true;
+  library_list_busy_since_ = GetTickCount64();
   // VaultHttp* is cookie-mutex guarded and safe off-thread. Only hwnd is
   // captured (no `this`): if the window dies before completion, PostMessage
   // fails and the payload is freed here.
@@ -10920,10 +10928,16 @@ void NotesWindow::SyncRefreshFromCloud() {
     }
   }
   if (sync_cloud_busy_) {
-    if (status_) {
-      SetWindowTextW(status_, L"同步正在进行…");
+    // Same latch risk as library_list_busy_: WM_APP+86 clears it, and if that
+    // post is lost the button stays dead for the session.
+    constexpr ULONGLONG kStaleMs = 180000;  // 3 min >> worst-case retry budget
+    if (GetTickCount64() - sync_cloud_busy_since_ < kStaleMs) {
+      if (status_) {
+        SetWindowTextW(status_, L"同步正在进行…");
+      }
+      return;
     }
-    return;
+    sync_cloud_busy_ = false;  // stale marker — allow a fresh attempt
   }
   library_online_stale_ = true;
   // Snapshot the links: cloud_sync_ may mutate while the fetch is in flight.
@@ -10943,6 +10957,7 @@ void NotesWindow::SyncRefreshFromCloud() {
     }
   }
   sync_cloud_busy_ = true;
+  sync_cloud_busy_since_ = GetTickCount64();
   // Only hwnd captured (no `this`); result marshalled via WM_APP+86.
   std::thread([hwnd = hwnd_, links = std::move(links), online_ids = std::move(online_ids)]() {
     auto* res = new SyncCloudResult();

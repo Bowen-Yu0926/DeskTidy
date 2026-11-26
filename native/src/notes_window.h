@@ -478,11 +478,15 @@ class NotesWindow {
   // WM_APP+86 (refresh) apply results back on the UI thread. The busy flags
   // are only touched on the UI thread.
   bool library_list_busy_ = false;
+  // Tick when library_list_busy_ was set, so a lost completion message
+  // cannot latch the rail into a permanently-busy state.
+  ULONGLONG library_list_busy_since_ = 0;
   // True once an online-list fetch has completed; an empty list is a valid
   // answer and must not trigger refetch-on-every-push.
   bool library_list_loaded_once_ = false;
   bool library_list_refresh_pending_ = false;
   bool sync_cloud_busy_ = false;
+  ULONGLONG sync_cloud_busy_since_ = 0;
   // Last JSON pushed to the library rail — identical pushes skip EvalScript
   // (and the page's full innerHTML rebuild) entirely.
   std::wstring last_library_json_;
