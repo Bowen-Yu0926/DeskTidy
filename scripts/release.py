@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""One-shot DeskTidy release: version → installer → GitHub Releases → site.
+"""One-shot DeskTidy release: version -> installer -> GitHub Releases -> site.
 
 Keeps existing helpers (bump_version / build_native_installer /
 upload_cloudflare_pages / upload_byethost).
@@ -132,7 +132,7 @@ def update_download_links(version: str, *, dry_run: bool) -> None:
     if updated == text:
         print(f"docs/desktidy.html already points at {version}")
         return
-    print(f"\n>> update docs/desktidy.html → v{version}")
+    print(f"\n>> update docs/desktidy.html -> v{version}")
     if dry_run:
         return
     DESKTIDY_HTML.write_text(updated, encoding="utf-8")

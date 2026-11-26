@@ -69,6 +69,8 @@ jobs:
 
       - name: Sync docs download link to release version
         shell: pwsh
+        env:
+          PYTHONIOENCODING: utf-8
         run: |
           $version = $env:RELEASE_VERSION
           python -c "import sys; sys.path.insert(0,'scripts'); import release; release.update_download_links('$version', dry_run=False)"
