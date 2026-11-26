@@ -5,6 +5,8 @@
 #include <Windows.h>
 #include <ShlObj.h>
 #include <Shellapi.h>
+#include <aclapi.h>   // SetNamedSecurityInfoW
+#include <sddl.h>     // ConvertStringSecurityDescriptorToSecurityDescriptorW
 
 #include <atomic>
 #include <cstring>
@@ -680,4 +682,36 @@ bool AdoptOrphanPortableSidecarOnce() {
     CloseHandle(h);
   }
   return any;
+}
+
+// --- file ACL hardening -----------------------------------------------------
+// The default ACL on %LOCALAPPDATA%\DeskTidy\*.json inherits whatever the
+// parent grants, which on shared machines can include other local users. The
+// vault session file holds a bearer token plus the KDF salt and key_check —
+// enough to grind the master password offline — so it gets an explicit,
+// owner-only DACL.
+bool RestrictFileToCurrentUser(const std::wstring& path) {
+  if (path.empty()) {
+    return false;
+  }
+  PSECURITY_DESCRIPTOR sd = nullptr;
+  if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(
+          L"D:P(A;OICI;FA;;;OW)", SDDL_REVISION_1, &sd, nullptr)) {
+    return false;
+  }
+  BOOL ok = FALSE;
+  PACL dacl = nullptr;
+  BOOL dacl_present = FALSE;
+  BOOL dacl_defaulted = FALSE;
+  if (GetSecurityDescriptorDacl(sd, &dacl_present, &dacl, &dacl_defaulted) &&
+      dacl_present) {
+    // PROTECTED_DACL_SECURITY_INFORMATION removes inherited ACEs, so the
+    // explicit owner-only entry is the whole story.
+    ok = SetNamedSecurityInfoW(
+             const_cast<LPWSTR>(path.c_str()), SE_FILE_OBJECT,
+             DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+             nullptr, nullptr, dacl, nullptr) == ERROR_SUCCESS;
+  }
+  LocalFree(sd);
+  return ok != FALSE;
 }

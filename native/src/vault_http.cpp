@@ -479,7 +479,14 @@ bool SaveSession(const Session& s) {
     out << ",\n  \"key_check\": \"" << EscapeJson(NarrowUtf8(s.key_check)) << "\"";
   }
   out << "\n}\n";
-  return AtomicWriteUtf8File(SessionPath(), out.str());
+  const std::wstring path = SessionPath();
+  const bool ok = AtomicWriteUtf8File(path, out.str());
+  if (ok) {
+    // Owner-only DACL: the file carries a bearer token plus the KDF salt and
+    // key_check, which is enough to attack the master password offline.
+    RestrictFileToCurrentUser(path);
+  }
+  return ok;
 }
 
 void ClearSessionFile() {

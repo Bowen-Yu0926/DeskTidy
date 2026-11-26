@@ -61,6 +61,13 @@ bool ReadUtf8FileWithBak(const std::wstring& path, std::string* out);
 // True when path is missing or its size is below min_bytes (treat as empty).
 bool FileMissingOrTiny(const std::wstring& path, std::uint32_t min_bytes = 8);
 
+// Restrict a file to the current user (remove inherited ACEs, grant only the
+// owner full control). Used for files that carry credentials material: the
+// session token and the KDF salt + key_check, which together allow an offline
+// dictionary attack on the master password. Best-effort: returns false when
+// the ACL could not be applied, and callers must still write the file.
+bool RestrictFileToCurrentUser(const std::wstring& path);
+
 // One-shot: when running non-portable, copy sparse user files (e.g.
 // page_folders.json) from orphan portable sidecars (<exe>\data and the
 // Desktidy ↔ Desktidy-cpp mirror build tree). Prevents "settings vanished"
