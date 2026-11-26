@@ -236,3 +236,28 @@ bool FindExeAsset(const std::string& json, std::string* name,
   }
   return true;
 }
+
+bool FindAssetByName(const std::string& json, const std::string& want_name,
+                     std::wstring* url) {
+  std::wstring found;
+  ForEachArrayObject(json, "assets", [&](const std::string& obj) {
+    if (!found.empty()) {
+      return;
+    }
+    const std::string nm = JsonStringField(obj, "name");
+    if (nm != want_name) {
+      return;
+    }
+    const std::string ur = JsonStringField(obj, "browser_download_url");
+    if (!ur.empty()) {
+      found = Widen(ur);
+    }
+  });
+  if (found.empty()) {
+    return false;
+  }
+  if (url) {
+    *url = found;
+  }
+  return true;
+}

@@ -113,6 +113,65 @@ jobs:
         shell: cmd
         run: scripts\build_native_installer.bat --release-only
 
+      - name: Verify update-signature module
+        shell: pwsh
+        run: |
+          # Ed25519 verify is a security boundary — fail the release, not the
+          # user's updater, if the vendored TweetNaCl or glue is broken.
+          cmake --build build --config Release --target test_update_verify
+          if ($LASTEXITCODE -ne 0) { throw 'test_update_verify build failed' }
+          $exe = Get-ChildItem -Recurse -Filter test_update_verify.exe build | Select-Object -First 1
+          if (-not $exe) { throw 'test_update_verify.exe not found' }
+          & $exe.FullName
+          if ($LASTEXITCODE -ne 0) { throw 'test_update_verify FAILED' }
+
+      - name: Sign installer manifest
+        shell: pwsh
+        env:
+          UPDATE_SIGNING_KEY_B64: ${{ secrets.UPDATE_SIGNING_KEY_B64 }}
+        run: |
+          $version = $env:RELEASE_VERSION
+          $setup = "dist\DeskTidy_Setup_$version.exe"
+          if (-not (Test-Path $setup)) { throw "Missing $setup" }
+
+          # Does the build itself require a signature? If a public key is
+          # embedded, the client REFUSES unsigned updates — so releasing
+          # without one would brick auto-update for every user on that build.
+          $verifySrc = "native/src/update_verify.cpp"
+          $hasKey = -not (Select-String -Path $verifySrc -Pattern 'kBuiltinSigningKeyB64 = "\s*"' -Quiet)
+
+          if (-not $env:UPDATE_SIGNING_KEY_B64) {
+            if ($hasKey) {
+              throw ('Build has an embedded update-signing public key but ' +
+                     'UPDATE_SIGNING_KEY_B64 is not set. Clients would refuse ' +
+                     'this release''s updates. Add the secret, or clear the key.')
+            }
+            # Rollout window: no key embedded, no signing. Client skips the
+            # signature check with a loud log and still enforces sha256.
+            Write-Warning 'UPDATE_SIGNING_KEY_B64 not set — releasing WITHOUT update signature'
+            exit 0
+          }
+          if (-not $hasKey) {
+            throw ('UPDATE_SIGNING_KEY_B64 is set but the build has no embedded ' +
+                   'public key (native/src/update_verify.cpp). Shipping .sig ' +
+                   'files clients cannot check. Embed the key first.')
+          }
+
+          $keyFile = Join-Path $env:RUNNER_TEMP 'update_signing.key'
+          [IO.File]::WriteAllBytes($keyFile, [Convert]::FromBase64String($env:UPDATE_SIGNING_KEY_B64))
+          try {
+            python scripts/update_signing.py sign $setup --version $version --key $keyFile
+            if ($LASTEXITCODE -ne 0) { throw 'update_signing.py sign failed' }
+            if (-not (Test-Path "$setup.manifest") -or -not (Test-Path "$setup.sig")) {
+              throw 'manifest/.sig missing after signing'
+            }
+            python scripts/update_signing.py verify "$setup.manifest" "$setup.sig" --key $keyFile
+            if ($LASTEXITCODE -ne 0) { throw 'signature self-check failed' }
+          } finally {
+            Remove-Item $keyFile -Force -ErrorAction SilentlyContinue
+          }
+          Write-Host "signed: $setup.manifest"
+
       - name: Verify installer artifact
         shell: pwsh
         run: |
@@ -134,6 +193,13 @@ jobs:
           $notes = "${{ github.event.inputs.notes }}"
           if (-not $notes) { $notes = "DeskTidy $version" }
           $assets = @("dist\DeskTidy_Setup_$version.exe", "dist\DeskTidy_Setup_$version.exe.sha256")
+          # Attach the signature sidecars only when signing actually ran.
+          $man = "dist\DeskTidy_Setup_$version.exe.manifest"
+          $sig = "dist\DeskTidy_Setup_$version.exe.sig"
+          if ((Test-Path $man) -and (Test-Path $sig)) {
+            $assets += $man
+            $assets += $sig
+          }
           $repo = "Bowen-Yu0926/DeskTidy"
           $existing = gh release view $tag --repo $repo 2>$null
           if ($LASTEXITCODE -eq 0) {
@@ -151,4 +217,6 @@ jobs:
           path: |
             dist/DeskTidy_Setup_*.exe
             dist/DeskTidy_Setup_*.exe.sha256
+            dist/DeskTidy_Setup_*.exe.manifest
+            dist/DeskTidy_Setup_*.exe.sig
           retention-days: 14

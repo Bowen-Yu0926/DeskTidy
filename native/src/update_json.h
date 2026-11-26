@@ -35,3 +35,8 @@ void ForEachArrayObject(const std::string& json, const char* key,
 // untouched) when there is none.
 bool FindExeAsset(const std::string& json, std::string* name,
                   std::wstring* url, long long* size);
+
+// Pick a sibling asset by exact name (e.g. "<Setup>.exe.manifest" /
+// "<Setup>.exe.sig"). Returns false when absent.
+bool FindAssetByName(const std::string& json, const std::string& want_name,
+                     std::wstring* url);

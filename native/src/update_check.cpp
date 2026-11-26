@@ -2,6 +2,7 @@
 
 #include "paths_util.h"
 #include "update_json.h"
+#include "update_verify.h"
 
 #include <Shellapi.h>
 #include <bcrypt.h>
@@ -798,10 +799,61 @@ void StartUpdateInstallAsync(HWND owner) {
                            ToLowerW(Widen(hex)) == ToLowerW(Widen(checksum));
             LogLine(L"[update] sha256 verify %s",
                     r->verify_ok ? L"ok" : L"FAIL");
+
+            // Signature check: the digest and the exe come from the same
+            // release, so a compromised release can swap both. Only the
+            // Ed25519 manifest (signed with the key compiled into this build)
+            // proves the installer is ours. Required once a key is embedded.
+            if (r->verify_ok) {
+              std::wstring manifest_url;
+              std::wstring sig_url;
+              const std::string man_name = asset_name + ".manifest";
+              const std::string sig_name = asset_name + ".sig";
+              std::string manifest, sig_b64;
+              std::wstring serr;
+              bool sig_ok = false;
+              bool sig_skipped = false;
+              if (!FindAssetByName(body, man_name, &manifest_url) ||
+                  !FindAssetByName(body, sig_name, &sig_url)) {
+                sig_ok = false;
+                r->error = L"该版本未提供更新签名（manifest/.sig），已取消安装";
+                LogLine(L"[update] manifest/sig asset missing — refuse");
+              } else if (!HttpGetTextUrl(manifest_url, &manifest, &serr) ||
+                         !HttpGetTextUrl(sig_url, &sig_b64, &serr)) {
+                sig_ok = false;
+                r->error = L"获取更新签名失败：" + serr;
+                LogLine(L"[update] manifest fetch failed: %s", serr.c_str());
+              } else {
+                // Trim trailing CR/LF the .sig file may carry.
+                while (!sig_b64.empty() && (sig_b64.back() == '\n' ||
+                                            sig_b64.back() == '\r' ||
+                                            sig_b64.back() == ' ')) {
+                  sig_b64.pop_back();
+                }
+                sig_ok = VerifyManifestWithBuiltinKey(manifest, sig_b64,
+                                                      &sig_skipped);
+                if (sig_skipped) {
+                  LogLine(L"[update] builtin signing key not configured — "
+                          L"signature check SKIPPED (digest only)");
+                } else {
+                  LogLine(L"[update] manifest signature %s",
+                          sig_ok ? L"ok" : L"FAIL");
+                  if (!sig_ok) {
+                    r->error = L"更新签名校验未通过，已拒绝安装该更新";
+                  }
+                }
+              }
+              if (!sig_ok) {
+                r->verify_ok = false;
+              }
+            }
+
             if (!r->verify_ok) {
               DeleteFileW(dest.c_str());
               r->path.clear();
-              r->error = L"安装包 sha256 校验未通过，已删除文件";
+              if (r->error.empty()) {
+                r->error = L"安装包 sha256 校验未通过，已删除文件";
+              }
             }
           }
           (void)asset_size;

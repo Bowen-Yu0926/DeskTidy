@@ -14,6 +14,13 @@ set(ARGON2_SOURCES
   third_party/argon2/src/blake2/blake2b.c
 )
 
+# TweetNaCl: Ed25519 verify only (update manifest signatures). The no-random
+# shim aborts on randombytes so the signing path cannot be reached at runtime.
+set(TWEETNACL_SOURCES
+  third_party/tweetnacl/tweetnacl.c
+  third_party/tweetnacl/tweetnacl_no_random.c
+)
+
 add_executable(desktidy_native WIN32
   src/main.cpp
   src/log.cpp
@@ -79,6 +86,7 @@ add_executable(desktidy_native WIN32
   src/fence_region_overlay.cpp
   src/update_check.cpp
   src/update_json.cpp
+  src/update_verify.cpp
   src/shell_clipboard.cpp
   src/icon_actions.cpp
   src/shell_context_menu.cpp
@@ -95,6 +103,7 @@ add_executable(desktidy_native WIN32
   src/version.rc
   src/desktidy_icon.rc
   ${ARGON2_SOURCES}
+  ${TWEETNACL_SOURCES}
 )
 
 # Standalone DeskNote (sibling of desktidy_native.exe).
@@ -406,4 +415,17 @@ target_compile_definitions(test_docx_export PRIVATE UNICODE _UNICODE WIN32_LEAN_
 target_link_libraries(test_docx_export PRIVATE user32 shell32 ole32 advapi32 gdiplus oleaut32)
 if(MSVC)
   target_compile_options(test_docx_export PRIVATE /W4 /permissive- /utf-8)
+endif()
+
+# Ed25519 update-manifest verification: the trust boundary against a
+# compromised release. Pure C++ (no Win32), so it runs headless in CI.
+add_executable(test_update_verify
+  tests/test_update_verify.cpp
+  src/update_verify.cpp
+  ${TWEETNACL_SOURCES}
+)
+target_include_directories(test_update_verify PRIVATE src)
+target_compile_definitions(test_update_verify PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+if(MSVC)
+  target_compile_options(test_update_verify PRIVATE /W4 /permissive- /utf-8)
 endif()

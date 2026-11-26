@@ -33,6 +33,13 @@ DeskTidy bundles third-party open-source components. Their licenses and copyrigh
 - Files: `native/third_party/argon2/`, `native/third_party/argon2/NOTICE.txt`
 - Copyright: Argon2 reference implementation authors.
 
+### TweetNaCl
+- License: Public domain
+- Upstream: https://tweetnacl.cr.yp.to/
+- Files: `native/third_party/tweetnacl/`
+- Copyright: Daniel J. Bernstein, Bernard van Gastel, Wesley Janssen, Tanja Lange, Peter Schwabe, Sjaak Smetsers.
+- Note: uses only the Ed25519 verify path (`crypto_sign_open`); `randombytes` is replaced with an aborting shim so the client cannot sign.
+
 ### fd (file search utility)
 - License: MIT OR Apache-2.0
 - Upstream: https://github.com/sharkdp/fd
