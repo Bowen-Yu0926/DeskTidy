@@ -9604,6 +9604,10 @@ constexpr UINT kMsgCloudDeleteFailed = WM_APP + 94;
 // Backoff before retrying a failed batch. The queue keeps the latest body per
 // note, so a retry never resurrects stale content.
 constexpr unsigned kCloudPushRetryMs = 5000;
+// Exponential backoff for repeated failures: a long offline stretch otherwise
+// retries every 5s forever (thread wakeups + WinHTTP session churn). Capped so
+// reconnecting still uploads within a minute.
+constexpr unsigned kCloudPushRetryMaxMs = 60000;
 std::atomic<HWND> g_cloud_push_notify_hwnd{nullptr};
 }  // namespace
 
@@ -9626,6 +9630,7 @@ void NotesWindow::QueueCloudNotePush(int note_id, std::wstring title,
   }
   // The push outcome goes back via PostMessage to the latest active window.
   std::thread([]() {
+    unsigned backoff_ms = kCloudPushRetryMs;
     for (;;) {
       // Blocks until something is queued.
       NoteCloudPushWaitForRetry(1000u * 60u * 60u);
@@ -9637,8 +9642,10 @@ void NotesWindow::QueueCloudNotePush(int note_id, std::wstring title,
       // code cleared the queue here and relied on "the next save re-queues" —
       // if the user stopped editing, those edits never left the machine.
       if (!VaultHttpLoggedIn()) {
+        // Keep the batch queued — dropping it silently lost edits.
         NoteCloudPushRequeue(batch);
-        NoteCloudPushWaitForRetry(kCloudPushRetryMs);
+        NoteCloudPushWaitForRetry(backoff_ms);
+        backoff_ms = (std::min)(backoff_ms * 2, kCloudPushRetryMaxMs);
         continue;
       }
       std::map<int, std::pair<std::wstring, std::wstring>> failed_batch;
@@ -9658,7 +9665,10 @@ void NotesWindow::QueueCloudNotePush(int note_id, std::wstring title,
           PostMessageW(hwnd, kMsgCloudPushFailed,
                        static_cast<WPARAM>(failed), 0);
         }
-        NoteCloudPushWaitForRetry(kCloudPushRetryMs);
+        NoteCloudPushWaitForRetry(backoff_ms);
+        backoff_ms = (std::min)(backoff_ms * 2, kCloudPushRetryMaxMs);
+      } else {
+        backoff_ms = kCloudPushRetryMs;  // healthy again — reset the ramp
       }
     }
   }).detach();
@@ -10330,10 +10340,22 @@ void NotesWindow::ConvertPathToLocal(const std::wstring& path, int note_id) {
                 MistMsgTone::Danger);
       return;
     }
-    // Retarget open tab from online:// to local file.
+    // Retarget every place that may hold the online:// key. Missing pin/lock
+    // here left entries pointing at a path that no longer exists, so the
+    // converted note silently lost its pinned/locked state.
     for (auto& tp : tab_paths_) {
       if (_wcsicmp(tp.c_str(), path.c_str()) == 0) {
         tp = local_path;
+      }
+    }
+    for (auto& pp : pinned_paths_) {
+      if (_wcsicmp(pp.c_str(), path.c_str()) == 0) {
+        pp = local_path;
+      }
+    }
+    for (auto& lp : locked_paths_) {
+      if (_wcsicmp(lp.c_str(), path.c_str()) == 0) {
+        lp = local_path;
       }
     }
     if (_wcsicmp(path_.c_str(), path.c_str()) == 0) {
@@ -11407,14 +11429,12 @@ void NotesWindow::MoveSidebarItem(HTREEITEM drag_item, HTREEITEM target_item,
   ins.hParent = drag_parent;
   ins.hInsertAfter = insert_after ? insert_after : TVI_FIRST;
   ins.item.mask = TVIF_TEXT | TVIF_PARAM;
-  // Reuse the original label + path payload.
-  static thread_local std::wstring s_label;
-  s_label = NoteDisplayName(drag_path, true);
-  const bool pinned = PathIsPinned(drag_path);
-  if (pinned) {
-    s_label = L"   " + s_label;
+  // Rebuild the label exactly as RebuildSidebar does (pin pad included).
+  std::wstring label = NoteDisplayName(drag_path, true);
+  if (PathIsPinned(drag_path)) {
+    label = L"   " + label;
   }
-  ins.item.pszText = s_label.data();
+  ins.item.pszText = label.data();
   ins.item.lParam = dt.lParam;
   const HTREEITEM moved = TreeView_InsertItem(sidebar_, &ins);
   if (moved) {
@@ -11477,7 +11497,35 @@ void NotesWindow::LoadSidebarOrder() {
   if (pos == std::string::npos) {
     return;
   }
-  size_t end = raw.find('}', pos);
+  // Match the closing brace by depth: a plain find('}') stops at the first
+  // nested object's brace and truncates the parse. String literals are
+  // skipped so a '}' inside a path cannot unbalance the count.
+  size_t end = std::string::npos;
+  {
+    int depth = 0;
+    bool in_str = false;
+    for (size_t k = pos; k < raw.size(); ++k) {
+      const char c = raw[k];
+      if (in_str) {
+        if (c == '\\') {
+          ++k;  // skip escaped char
+        } else if (c == '"') {
+          in_str = false;
+        }
+        continue;
+      }
+      if (c == '"') {
+        in_str = true;
+      } else if (c == '{') {
+        ++depth;
+      } else if (c == '}') {
+        if (--depth == 0) {
+          end = k;
+          break;
+        }
+      }
+    }
+  }
   if (end == std::string::npos) {
     return;
   }
@@ -11493,9 +11541,11 @@ void NotesWindow::LoadSidebarOrder() {
     }
     const std::string dir_u8 = raw.substr(kq + 1, kq2 - kq - 1);
     const size_t arr_open = raw.find('[', kq2);
+    if (arr_open == std::string::npos || arr_open > end) {
+      break;  // no array for this key — stop rather than search past the end
+    }
     const size_t arr_close = raw.find(']', arr_open);
-    if (arr_open == std::string::npos || arr_close == std::string::npos ||
-        arr_close > end) {
+    if (arr_close == std::string::npos || arr_close > end) {
       break;
     }
     std::vector<std::wstring> items;
