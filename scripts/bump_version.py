@@ -16,6 +16,7 @@ VERSION_FILE = ROOT / "VERSION"
 ISS_FILE = ROOT / "installer" / "DeskTidy.iss"
 ISS_NATIVE_FILE = ROOT / "installer" / "DeskTidyNative.iss"
 VERSION_RC = ROOT / "native" / "src" / "version.rc"
+DESKNOTE_VERSION_RC = ROOT / "native" / "src" / "desknote_version.rc"
 
 
 def parse_version(raw: str) -> tuple[int, int, int]:
@@ -56,11 +57,11 @@ def sync_iss(path: Path, version: str) -> None:
     path.write_text(updated, encoding="utf-8")
 
 
-def sync_version_rc(version: str) -> None:
-    if not VERSION_RC.exists():
+def sync_version_rc(path: Path, version: str) -> None:
+    if not path.exists():
         return
     major, minor, patch = parse_version(version)
-    text = VERSION_RC.read_text(encoding="utf-8")
+    text = path.read_text(encoding="utf-8")
     text = re.sub(
         r"FILEVERSION\s+\d+\s*,\s*\d+\s*,\s*\d+\s*,\s*\d+",
         f"FILEVERSION {major},{minor},{patch},0",
@@ -86,7 +87,7 @@ def sync_version_rc(version: str) -> None:
         count=1,
     )
     # Fallback strings in update_check.cpp stay as last-resort only; rc is truth.
-    VERSION_RC.write_text(text, encoding="utf-8")
+    path.write_text(text, encoding="utf-8")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -117,7 +118,8 @@ def main(argv: list[str] | None = None) -> int:
     VERSION_FILE.write_text(f"{version}\n", encoding="utf-8")
     sync_iss(ISS_FILE, version)
     sync_iss(ISS_NATIVE_FILE, version)
-    sync_version_rc(version)
+    for rc in (VERSION_RC, DESKNOTE_VERSION_RC):
+        sync_version_rc(rc, version)
     # Keep update_check.cpp compile-time fallbacks aligned (not 0.0.0).
     uc = ROOT / "native" / "src" / "update_check.cpp"
     if uc.exists():
