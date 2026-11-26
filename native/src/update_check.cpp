@@ -644,17 +644,17 @@ std::wstring NativeProductVersion() {
   DWORD handle = 0;
   const DWORD size = GetFileVersionInfoSizeW(path, &handle);
   if (!size) {
-    return L"4.0.54";
+    return L"4.0.55";
   }
   std::vector<BYTE> buf(size);
   if (!GetFileVersionInfoW(path, 0, size, buf.data())) {
-    return L"4.0.54";
+    return L"4.0.55";
   }
   VS_FIXEDFILEINFO* fi = nullptr;
   UINT len = 0;
   if (!VerQueryValueW(buf.data(), L"\\", reinterpret_cast<void**>(&fi), &len) ||
       !fi) {
-    return L"4.0.54";
+    return L"4.0.55";
   }
   wchar_t ver[64];
   swprintf_s(ver, L"%u.%u.%u", HIWORD(fi->dwFileVersionMS),
