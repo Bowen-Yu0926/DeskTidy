@@ -565,6 +565,7 @@ bool NotesWebView::Create(HWND parent) {
                               })
                               .Get(),
                           &token);
+                      msg_token_ = token.value;
                       // Explorer drop → WebView2 navigates to file://… — cancel
                       // shell pages stay allowed (wysiwyg_native / viewer_native).
                       EventRegistrationToken start_tok{};
@@ -603,6 +604,7 @@ bool NotesWebView::Create(HWND parent) {
                               })
                               .Get(),
                           &start_tok);
+                      nav_token_ = start_tok.value;
                       // If the page scripts fail to post previewReady, still
                       // flush pending markdown once navigation finishes.
                       EventRegistrationToken nav_tok{};
@@ -631,6 +633,7 @@ bool NotesWebView::Create(HWND parent) {
                               })
                               .Get(),
                           &nav_tok);
+                      complete_token_ = nav_tok.value;
                       NavigateHome();
                       return S_OK;
                     })
@@ -1015,14 +1018,41 @@ void NotesWebView::OnWebMessage(const std::wstring& json) {
 }
 
 void NotesWebView::Destroy() {
+  // Order matters. The handlers below capture `this` as a bare pointer, so:
+  //   1) unregister them while the WebView is still alive,
+  //   2) Close() the controller (stops the browser and in-flight callbacks),
+  //   3) only then release the interface pointers.
+  // Releasing the ICoreWebView2 first (as this used to) left the controller
+  // owning a live message pump whose callbacks could still reach us.
   if (webview_) {
-    static_cast<ICoreWebView2*>(webview_)->Release();
-    webview_ = nullptr;
+    auto* wv = static_cast<ICoreWebView2*>(webview_);
+    if (msg_token_ != 0) {
+      EventRegistrationToken t{};
+      t.value = msg_token_;
+      wv->remove_WebMessageReceived(t);
+      msg_token_ = 0;
+    }
+    if (nav_token_ != 0) {
+      EventRegistrationToken t{};
+      t.value = nav_token_;
+      wv->remove_NavigationStarting(t);
+      nav_token_ = 0;
+    }
+    if (complete_token_ != 0) {
+      EventRegistrationToken t{};
+      t.value = complete_token_;
+      wv->remove_NavigationCompleted(t);
+      complete_token_ = 0;
+    }
   }
   if (controller_) {
     static_cast<ICoreWebView2Controller*>(controller_)->Close();
     static_cast<ICoreWebView2Controller*>(controller_)->Release();
     controller_ = nullptr;
+  }
+  if (webview_) {
+    static_cast<ICoreWebView2*>(webview_)->Release();
+    webview_ = nullptr;
   }
   if (host_) {
     SetWindowLongPtrW(host_, GWLP_USERDATA, 0);

@@ -160,5 +160,14 @@ class NotesWebView {
   bool print_ok_ = false;
   void* controller_ = nullptr;  // ICoreWebView2Controller*
   void* webview_ = nullptr;     // ICoreWebView2*
+  // EventRegistrationTokens for the handlers registered in Create(). They are
+  // removed on Destroy: the callbacks capture `this` with a bare pointer, and
+  // a WebView2 message already in flight while the owner is being torn down
+  // would call into a half-destroyed NotesWebView.
+  // Stores EventRegistrationToken values (int64). Kept type-erased so this
+  // header does not have to include WebView2.h.
+  long long msg_token_ = 0;
+  long long nav_token_ = 0;
+  long long complete_token_ = 0;
   int last_ww_height_ = -1;     // Skip redundant Toast setHeight scripts.
 };
