@@ -34,6 +34,10 @@ std::vector<NoteSearchHit> SearchNotesLibrary(
 // any note create / delete / rename (the cached listing is keyed on directory
 // mtimes, so this is a belt-and-suspenders guard for coarse mtime filesystems).
 void InvalidateNotesFileCache();
+// Monotonic counter bumped by InvalidateNotesFileCache(). Secondary caches
+// (e.g. the sidebar title peek) compare this to know when to drop entries;
+// mtime+size alone cannot catch a same-length rewrite inside one second.
+unsigned long long NotesFileCacheGeneration();
 
 // Every openable note file under `dir`, recursively, as absolute paths. Shares
 // the listing cache above (keyed on directory mtimes), so repeated calls while

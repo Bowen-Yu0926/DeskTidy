@@ -2934,7 +2934,43 @@ std::wstring ExtractMarkdownTitle(const std::wstring& md) {
 }
 
 // Library tree: cheap first-heading peek so closed notes match tab titles.
+// Disk peek is called once per file on every sidebar rebuild, so it must not
+// hit the disk repeatedly. Cached by (path → mtime,size) — same scheme as the
+// note-text cache in notes_library.cpp, so edits still show up immediately.
 std::wstring PeekMarkdownTitleFromDisk(const std::wstring& path) {
+  struct PeekEntry {
+    FILETIME mtime{};
+    ULONGLONG size = 0;
+    std::wstring title;
+  };
+  static std::mutex s_mu;
+  static std::unordered_map<std::wstring, PeekEntry> s_cache;
+  static unsigned long long s_generation = 0;
+  // A flush elsewhere (delete/rename/external invalidation) must drop our copy
+  // too — mtime+size cannot see a same-length rewrite within one second.
+  {
+    const unsigned long long gen = NotesFileCacheGeneration();
+    std::lock_guard<std::mutex> lk(s_mu);
+    if (gen != s_generation) {
+      s_cache.clear();
+      s_generation = gen;
+    }
+  }
+  FILETIME mt{};
+  ULONGLONG sz = 0;
+  {
+    WIN32_FILE_ATTRIBUTE_DATA fad{};
+    if (GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &fad)) {
+      mt = fad.ftLastWriteTime;
+      sz = (static_cast<ULONGLONG>(fad.nFileSizeHigh) << 32) | fad.nFileSizeLow;
+    }
+    std::lock_guard<std::mutex> lk(s_mu);
+    const auto it = s_cache.find(path);
+    if (it != s_cache.end() && CompareFileTime(&it->second.mtime, &mt) == 0 &&
+        it->second.size == sz) {
+      return it->second.title;
+    }
+  }
   std::ifstream in(path, std::ios::binary);
   if (!in) {
     return {};
@@ -2951,7 +2987,19 @@ std::wstring PeekMarkdownTitleFromDisk(const std::wstring& path) {
   if (!DecodeTextFileBytes(raw, &wide, &enc)) {
     wide = WidenUtf8(raw);
   }
-  return ExtractMarkdownTitle(wide);
+  std::wstring title = ExtractMarkdownTitle(wide);
+  {
+    std::lock_guard<std::mutex> lk(s_mu);
+    if (s_cache.size() >= 4096) {
+      s_cache.clear();
+    }
+    PeekEntry e;
+    e.mtime = mt;
+    e.size = sz;
+    e.title = title;
+    s_cache[path] = std::move(e);
+  }
+  return title;
 }
 }  // namespace
 
@@ -9697,6 +9745,23 @@ void NotesWindow::PushLibraryRailState(bool refresh_online) {
   const std::wstring query = qbuf;
   // One prefs read per push — NotesLibraryDir loads the prefs JSON each call.
   const std::wstring root = NotesLibraryDir(false);
+  // Per-push existence cache. This function stats every cloud link and every
+  // matched file, and ran several times per user action (title keystroke,
+  // save, sidebar rebuild). One map lookup per path instead of repeated disk
+  // round-trips; invalidated on every push so it never goes stale.
+  std::map<std::wstring, bool> exists_cache;
+  auto path_exists = [&](const std::wstring& p) -> bool {
+    if (p.empty()) {
+      return false;
+    }
+    const auto it = exists_cache.find(p);
+    if (it != exists_cache.end()) {
+      return it->second;
+    }
+    const bool ok = GetFileAttributesW(p.c_str()) != INVALID_FILE_ATTRIBUTES;
+    exists_cache.emplace(p, ok);
+    return ok;
+  };
   std::vector<NoteSearchHit> body_hits;
   const bool local_matched = !query.empty();
   if (local_matched) {
@@ -9764,7 +9829,7 @@ void NotesWindow::PushLibraryRailState(bool refresh_online) {
     if (!L.sync || L.note_id <= 0 || L.path.empty()) {
       continue;
     }
-    if (GetFileAttributesW(L.path.c_str()) == INVALID_FILE_ATTRIBUTES) {
+    if (!path_exists(L.path)) {
       continue;
     }
     std::wstring nkey = L.path;
@@ -9827,8 +9892,7 @@ void NotesWindow::PushLibraryRailState(bool refresh_online) {
   // Set-based: the old per-item nested scans were O(online × links).
   std::set<int> linked_ids;
   for (const auto& L : cloud_sync_.links) {
-    if (L.sync && !L.path.empty() &&
-        GetFileAttributesW(L.path.c_str()) != INVALID_FILE_ATTRIBUTES) {
+    if (L.sync && !L.path.empty() && path_exists(L.path)) {
       linked_ids.insert(L.note_id);
     }
   }
@@ -9871,7 +9935,7 @@ void NotesWindow::PushLibraryRailState(bool refresh_online) {
           IsVaultAccountsNotePath(full)) {
         continue;
       }
-      if (GetFileAttributesW(full.c_str()) == INVALID_FILE_ATTRIBUTES) {
+      if (!path_exists(full)) {
         continue;
       }
       std::wstring key = full;
@@ -9926,7 +9990,7 @@ void NotesWindow::PushLibraryRailState(bool refresh_online) {
           IsVaultAccountsNotePath(full)) {
         continue;
       }
-      if (GetFileAttributesW(full.c_str()) == INVALID_FILE_ATTRIBUTES) {
+      if (!path_exists(full)) {
         continue;
       }
       std::wstring key = full;

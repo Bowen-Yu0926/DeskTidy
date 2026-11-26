@@ -1,5 +1,7 @@
 #include "notes_library.h"
 
+#include <atomic>
+
 #include "app_prefs.h"
 #include "mist_msg.h"
 #include "mist_webview.h"
@@ -597,7 +599,16 @@ std::vector<std::wstring> ListNoteFiles(const std::wstring& dir) {
   return ListNoteFilesCached(dir);
 }
 
+namespace {
+std::atomic<unsigned long long> g_notes_cache_generation{0};
+}  // namespace
+
+unsigned long long NotesFileCacheGeneration() {
+  return g_notes_cache_generation.load(std::memory_order_relaxed);
+}
+
 void InvalidateNotesFileCache() {
+  g_notes_cache_generation.fetch_add(1, std::memory_order_relaxed);
   std::lock_guard<std::mutex> lock(g_notes_files_mutex);
   g_notes_files_valid = false;
   g_notes_files.clear();
