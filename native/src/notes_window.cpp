@@ -4761,6 +4761,11 @@ void NotesWindow::RetargetNotePath(const std::wstring& old_path,
   if (_wcsicmp(NormalizePathKey(path_).c_str(), old_key.c_str()) == 0) {
     path_ = new_path;
   }
+  // Cloud link must follow the file, or a renamed synced note silently stops
+  // syncing and the cloud copy becomes an orphan.
+  if (NoteCloudRetargetLink(&cloud_sync_, old_path, new_path)) {
+    SaveNoteCloudSync(cloud_sync_);
+  }
   SchedulePersistTabs();
 }
 

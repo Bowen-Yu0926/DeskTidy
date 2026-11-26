@@ -33,10 +33,15 @@ NoteCloudLink* FindNoteCloudLinkMut(NoteCloudSyncStore* store,
 
 void NoteCloudUpsertLink(NoteCloudSyncStore* store, const std::wstring& path,
                          int note_id, bool sync);
+// Follow a renamed/moved local file so its cloud link keeps working. Without
+// this the link keeps the stale path, PathIsCloudSynced() goes false, saves
+// stop being pushed, and the note silently drops out of the online section.
+// Returns true when a link was moved (caller should persist the store).
+bool NoteCloudRetargetLink(NoteCloudSyncStore* store,
+                           const std::wstring& old_path,
+                           const std::wstring& new_path);
 void NoteCloudScheduleDelete(NoteCloudSyncStore* store, int note_id,
                              long long delete_after_unix);
-// Deletes expired remote notes (best-effort). Returns how many deleted.
-int NoteCloudSweepPendingDeletes(NoteCloudSyncStore* store);
 
 long long NoteCloudUnixNow();
 long long NoteCloudUnixAfterHours(int hours);

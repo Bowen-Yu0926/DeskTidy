@@ -1,7 +1,6 @@
 #include "notes_cloud_sync.h"
 
 #include "paths_util.h"
-#include "vault_http.h"
 
 #include <chrono>
 #include <condition_variable>
@@ -388,6 +387,29 @@ void NoteCloudUpsertLink(NoteCloudSyncStore* store, const std::wstring& path,
   store->links.push_back(std::move(L));
 }
 
+bool NoteCloudRetargetLink(NoteCloudSyncStore* store,
+                           const std::wstring& old_path,
+                           const std::wstring& new_path) {
+  if (!store || old_path.empty() || new_path.empty()) {
+    return false;
+  }
+  // Compare/store in the same normalised form NoteCloudUpsertLink uses,
+  // otherwise a moved link could stop matching its own file.
+  const std::wstring old_norm = NormPath(old_path);
+  const std::wstring new_norm = NormPath(new_path);
+  if (old_norm == new_norm) {
+    return false;
+  }
+  bool moved = false;
+  for (auto& L : store->links) {
+    if (_wcsicmp(L.path.c_str(), old_norm.c_str()) == 0) {
+      L.path = new_norm;
+      moved = true;
+    }
+  }
+  return moved;
+}
+
 void NoteCloudScheduleDelete(NoteCloudSyncStore* store, int note_id,
                              long long delete_after_unix) {
   if (!store || note_id <= 0 || delete_after_unix <= 0) {
@@ -401,33 +423,6 @@ void NoteCloudScheduleDelete(NoteCloudSyncStore* store, int note_id,
   }
   store->pending_deletes.push_back(
       NoteCloudPendingDelete{note_id, delete_after_unix});
-}
-
-int NoteCloudSweepPendingDeletes(NoteCloudSyncStore* store) {
-  if (!store) {
-    return 0;
-  }
-  const long long now = NoteCloudUnixNow();
-  int deleted = 0;
-  std::vector<NoteCloudPendingDelete> keep;
-  keep.reserve(store->pending_deletes.size());
-  for (const auto& d : store->pending_deletes) {
-    if (d.note_id <= 0) {
-      continue;
-    }
-    if (d.delete_after > 0 && now >= d.delete_after) {
-      if (VaultHttpLoggedIn() && VaultHttpDeleteNote(d.note_id)) {
-        ++deleted;
-        continue;
-      }
-      // Not logged in / failed — keep and retry next launch.
-      keep.push_back(d);
-      continue;
-    }
-    keep.push_back(d);
-  }
-  store->pending_deletes = std::move(keep);
-  return deleted;
 }
 
 // --- DeskNote cloud-body upload queue -------------------------------------

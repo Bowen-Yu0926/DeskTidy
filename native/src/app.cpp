@@ -2491,7 +2491,7 @@ void App::StartRegionCapture() {
   capture_.Cancel();
   capture_.Begin(
       instance_,
-      [this](const std::wstring& path, bool pin) {
+      [this](const std::wstring& path) {
         if (!path.empty()) {
           recent_shots_.insert(recent_shots_.begin(), path);
           if (recent_shots_.size() > 12) {
@@ -2500,11 +2500,6 @@ void App::StartRegionCapture() {
           recent_shot_i_ = 0;
           // Overlay already copied pixels to the clipboard before this cb.
           last_capture_clipboard_seq_ = GetClipboardSequenceNumber();
-        }
-        if (pin) {
-          PinImage(path);
-          // Mark so the next F2 does not pin the same shot again.
-          RememberPinClipboardSeq();
         }
       });
 }

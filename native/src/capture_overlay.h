@@ -11,7 +11,7 @@
 // copy / save / pin. Esc cancels with no file.
 class CaptureOverlay {
  public:
-  using DoneFn = std::function<void(const std::wstring& png_path, bool pin)>;
+  using DoneFn = std::function<void(const std::wstring& png_path)>;
 
   bool Begin(HINSTANCE instance, DoneFn on_done);
   void Cancel();
@@ -19,7 +19,7 @@ class CaptureOverlay {
   bool IsActive() const { return hwnd_ != nullptr; }
 
  private:
-  enum class FinishAction { Copy, Save, Pin };
+  enum class FinishAction { Copy, Save };
   enum class Mode { Selecting, Annotating };
   enum class Tool { None, Rect, Ellipse, Arrow, Brush, Mosaic, Text };
   enum class ResizeEdge {

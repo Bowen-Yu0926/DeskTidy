@@ -1827,7 +1827,6 @@ bool CaptureOverlay::FinishSelection(FinishAction action) {
   };
 
   std::wstring path;
-  bool pin = false;
   if (action == FinishAction::Save) {
     path = ShowSaveAsDialog();
     if (path.empty()) {
@@ -1840,19 +1839,19 @@ bool CaptureOverlay::FinishSelection(FinishAction action) {
       return false;
     }
   } else {
-    // Copy / Pin / toolbar complete: always land a file for the pin stack.
+    // Copy / toolbar complete: always land a file for the recent-shot stack
+    // (F2 re-pins from history; capturing itself no longer pins anything).
     path = default_shot_path();
     if (!SaveBitmapToFile(bmp, path)) {
       DeleteObject(bmp);
-      MistAlert(nullptr, L"区域截图", L"截图保存失败，无法钉到桌面。",
+      MistAlert(nullptr, L"区域截图", L"截图保存失败，请检查路径或磁盘空间。",
                 MistMsgTone::Danger);
       return false;
     }
-    pin = (action == FinishAction::Pin);
   }
   DeleteObject(bmp);
   if (on_done_) {
-    on_done_(path, pin);
+    on_done_(path);
   }
   return true;
 }
