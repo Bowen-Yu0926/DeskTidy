@@ -835,6 +835,14 @@ std::wstring SaveDataUrlToAssets(const std::wstring& assets_dir,
   if (!DecodeBase64Bytes(b64, &bytes)) {
     return {};
   }
+  // Guard the same limit the editor enforces: an oversized paste would create
+  // a multi-megabyte .md that is slow to save and cannot be synced sanely.
+  constexpr size_t kMaxImageBytes = 8u * 1024u * 1024u;
+  if (bytes.size() > kMaxImageBytes) {
+    LogLineA("[notes] image rejected: %d bytes > cap",
+             static_cast<int>(bytes.size()));
+    return {};
+  }
   const std::wstring ext = ImageExtFromMimeOrName(mime, name);
   const std::wstring dest = MakeAssetImagePath(assets_dir, ext);
   std::ofstream out(dest, std::ios::binary);

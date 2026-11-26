@@ -790,8 +790,19 @@
     });
   }
 
+  // Cap the size we accept. Images above this stay inline as a data URL only
+  // if the host rejects them anyway; pasting a 20 MB photo would otherwise
+  // produce a ~27 MB Markdown body that is slow to save and far too large for
+  // the cloud note sync.
+  var MAX_IMAGE_BYTES = 8 * 1024 * 1024;
   function uploadImageFile(file) {
     if (!file) return Promise.resolve("");
+    if (file.size && file.size > MAX_IMAGE_BYTES) {
+      try {
+        alert("图片过大（超过 8 MB），请压缩后再插入。");
+      } catch (e) {}
+      return Promise.resolve("");
+    }
     return readFileAsDataUrl(file).then(function (dataUrl) {
       if (!dataUrl) return "";
       if (!(window.chrome && chrome.webview && chrome.webview.postMessage)) {
