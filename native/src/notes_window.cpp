@@ -1290,8 +1290,31 @@ bool NotesWindow::Create(HINSTANCE instance) {
     web_.SetAssetBaseDir(base_dir);
     const std::wstring rel =
         SaveDataUrlToAssets(assets_dir, name, mime, data_url);
-    if (!rel.empty()) {
-      MarkDirty();
+    if (rel.empty()) {
+      return rel;
+    }
+    MarkDirty();
+    // Attach the binary to the cloud note as well; otherwise the Markdown
+    // reference is dead on any other device. Determine the note id for both
+    // online tabs and locally-synced files.
+    int asset_note_id = 0;
+    if (IsOnlineNotePath(path_)) {
+      asset_note_id = OnlineNoteIdFromPath(path_);
+    } else if (!path_.empty()) {
+      if (const auto* link = FindNoteCloudLink(cloud_sync_, path_)) {
+        asset_note_id = link->note_id;
+      }
+    }
+    if (asset_note_id > 0 && VaultCloudEnabled() && VaultHttpLoggedIn()) {
+      const size_t slash = rel.find_last_of(L'/');
+      const std::wstring leaf =
+          slash == std::wstring::npos ? rel : rel.substr(slash + 1);
+      const comma = data_url.find(L',');
+      const std::wstring b64 =
+          comma == std::wstring::npos ? data_url : data_url.substr(comma + 1);
+      std::thread([asset_note_id, leaf, mime, b64]() {
+        VaultHttpPutNoteAsset(asset_note_id, leaf, mime, NarrowUtf8(b64));
+      }).detach();
     }
     return rel;
   };
@@ -4409,6 +4432,114 @@ void NotesWindow::HealUntitledDraftsOnDisk() {
 }
 
 namespace {
+// The vault API syncs note bodies only — image binaries are never uploaded.
+// An online note's `assets/foo.png` therefore resolves against 云笔记/assets,
+// but the file usually still lives under whichever local note inserted it.
+// Gather referenced files into the shared folder so online notes (and their
+// preview tab) can display images that already exist somewhere in the library.
+void MaterializeOnlineNoteAssets(HWND hwnd, int note_id,
+                                 const std::wstring& body,
+                                 const std::wstring& dest_assets) {
+  if (body.empty()) {
+    return;
+  }
+  // Collect referenced asset filenames (assets/<name>, case-insensitive).
+  std::vector<std::wstring> wanted;
+  size_t pos = 0;
+  const std::wstring needle = L"assets/";
+  while ((pos = body.find(needle, pos)) != std::string::npos) {
+    size_t begin = pos + needle.size();
+    size_t end = begin;
+    while (end < body.size() && body[end] != L'"' && body[end] != L'\'' &&
+           body[end] != L')' && body[end] != L' ' && body[end] != L'\n' &&
+           body[end] != L'\r' && body[end] != L'>') {
+      ++end;
+    }
+    std::wstring leaf = body.substr(begin, end - begin);
+    if (!leaf.empty() && leaf.find(L'/') == std::wstring::npos &&
+        leaf.find(L'\\') == std::wstring::npos) {
+      wanted.push_back(leaf);
+    }
+    pos = end;
+  }
+  if (wanted.empty()) {
+    return;
+  }
+  CreateDirectoryW(dest_assets.c_str(), nullptr);
+
+  const std::wstring root = NotesLibraryDir(false);
+  if (root.empty()) {
+    return;
+  }
+  // Walk a bounded number of directories (the library is small; max depth
+  // mirrors notes_library.cpp's WalkOpenable).
+  std::vector<std::wstring> dirs{root};
+  for (size_t i = 0; i < dirs.size() && dirs.size() < 512; ++i) {
+    const std::wstring dir = dirs[i];
+    WIN32_FIND_DATAW fd{};
+    const HANDLE h = FindFirstFileW((dir + L"\\*").c_str(), &fd);
+    if (h == INVALID_HANDLE_VALUE) {
+      continue;
+    }
+    do {
+      const std::wstring name = fd.cFileName;
+      if (name == L"." || name == L"..") {
+        continue;
+      }
+      const std::wstring full = JoinPath(dir, name);
+      if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+        dirs.push_back(full);
+      }
+    } while (FindNextFileW(h, &fd));
+    FindClose(h);
+  }
+
+  for (const std::wstring& leaf : wanted) {
+    const std::wstring dest = JoinPath(dest_assets, leaf);
+    if (GetFileAttributesW(dest.c_str()) != INVALID_FILE_ATTRIBUTES) {
+      continue;  // already present
+    }
+    bool found_local = false;
+    for (const std::wstring& dir : dirs) {
+      if (_wcsicmp(dir.c_str(), dest_assets.c_str()) == 0) {
+        continue;
+      }
+      // Images are stored under each note's own <folder>/assets/<name>,
+      // not at the folder root.
+      const std::wstring candidate =
+          JoinPath(JoinPath(dir, L"assets"), leaf);
+      if (GetFileAttributesW(candidate.c_str()) == INVALID_FILE_ATTRIBUTES) {
+        continue;
+      }
+      CopyFileW(candidate.c_str(), dest.c_str(), FALSE);
+      found_local = true;
+      break;
+    }
+    // Not on this machine — fetch the binary from the cloud in the background
+    // (never block the UI on WinHTTP retries) and refresh the preview when done.
+    if (!found_local && note_id > 0 && hwnd && VaultCloudEnabled() &&
+        VaultHttpLoggedIn()) {
+      std::thread([hwnd, note_id, leaf, dest]() {
+        std::vector<BYTE> bytes;
+        if (!VaultHttpGetNoteAsset(note_id, leaf, &bytes) || bytes.empty()) {
+          return;
+        }
+        std::ofstream out(dest, std::ios::binary | std::ios::trunc);
+        const bool wrote = static_cast<bool>(out);
+        if (wrote) {
+          out.write(reinterpret_cast<const char*>(bytes.data()),
+                    static_cast<std::streamsize>(bytes.size()));
+          out.close();
+        }
+        if (wrote && IsWindow(hwnd)) {
+          PostMessageW(hwnd, WM_APP + 95, 0, 0);  // repaint image preview
+        }
+      }).detach();
+    }
+  }
+}
+}  // namespace
+
 bool TryRenameNoteFile(const std::wstring& src, const std::wstring& dest) {
   if (src.empty() || dest.empty() ||
       _wcsicmp(src.c_str(), dest.c_str()) == 0) {
@@ -4994,6 +5125,12 @@ void NotesWindow::Load() {
     if (!title.empty() && wide.rfind(L"# ", 0) != 0) {
       wide = L"# " + title + L"\n\n" + wide;
     }
+    // Make referenced images resolvable in the preview/WYSIWYG surface: the
+    // vault never uploaded image binaries, so gather them from local notes.
+    const int online_id = OnlineNoteIdFromPath(path_);
+    MaterializeOnlineNoteAssets(
+        hwnd_, online_id, wide,
+        JoinPath(JoinPath(NotesLibraryDir(true), L"云笔记"), L"assets"));
     text_enc_ = TextFileEncoding::Utf8;
     SetWindowTextW(edit_, wide.c_str());
     ApplyNativeTitleFromMarkdown(wide);
@@ -13219,6 +13356,15 @@ LRESULT NotesWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
       }
       return 0;
     }
+    case WM_APP + 95: {
+      // A cloud note image finished downloading; repaint the active preview
+      // so the <img> which previously 404'd now resolves.
+      UpdatePreview();
+      if (wysiwyg_) {
+        web_.SetMarkdown(CurrentPlainText(), NoteBaseDir());
+      }
+      return 0;
+    }
     case WM_APP + 88: {
       auto* deleted_ids = reinterpret_cast<std::vector<int>*>(lparam);
       if (deleted_ids) {
@@ -13256,6 +13402,11 @@ LRESULT NotesWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
         wide = L"# " + n->title + L"\n\n" + wide;
       }
       online_body_cache_[n->id] = OnlineBodyCache{n->title, wide};
+      // Cloud bodies reference assets/... but the binaries never left the
+      // local library. Gather them before the WebView renders this body.
+      MaterializeOnlineNoteAssets(
+          hwnd_, n->id, wide,
+          JoinPath(JoinPath(NotesLibraryDir(true), L"云笔记"), L"assets"));
       if (!IsOnlineNotePath(path_) || OnlineNoteIdFromPath(path_) != n->id) {
         return 0;
       }

@@ -102,3 +102,13 @@ bool VaultHttpCreateNote(const std::wstring& title, const std::wstring& body,
 bool VaultHttpUpdateNote(int id, const std::wstring& title,
                          const std::wstring& body, VaultHttpNote* updated);
 bool VaultHttpDeleteNote(int id);
+
+// Online-note image assets. Bodies only carry `assets/<name>` references; the
+// binaries are stored separately on the server so other devices can render
+// them. `data_b64` is standard base64 (no URL-safe alphabet).
+bool VaultHttpPutNoteAsset(int note_id, const std::wstring& name,
+                           const std::wstring& mime,
+                           const std::string& data_b64);
+// Returns raw bytes on success (mime is inferred from the filename on client).
+bool VaultHttpGetNoteAsset(int note_id, const std::wstring& name,
+                           std::vector<BYTE>* out_bytes);

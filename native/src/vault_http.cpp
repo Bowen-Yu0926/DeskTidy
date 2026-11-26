@@ -57,6 +57,27 @@ std::string EscapeJson(const std::string& s) {
   return o;
 }
 
+// RFC 3986 percent-encoding for a path segment (asset filenames may contain
+// spaces / non-ASCII). Unreserved bytes survive; everything else becomes %XX.
+std::string UrlEncodePath(const std::wstring& ws) {
+  static const char kHex[] = "0123456789ABCDEF";
+  const std::string utf8 = NarrowUtf8(ws);
+  std::string out;
+  out.reserve(utf8.size());
+  for (unsigned char c : utf8) {
+    if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+        (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.' ||
+        c == '~') {
+      out.push_back(static_cast<char>(c));
+    } else {
+      out.push_back('%');
+      out.push_back(kHex[(c >> 4) & 0x0F]);
+      out.push_back(kHex[c & 0x0F]);
+    }
+  }
+  return out;
+}
+
 bool FindStringField(const std::string& obj, const char* key, std::string* out) {
   const std::string needle = std::string("\"") + key + "\"";
   size_t p = obj.find(needle);
@@ -576,6 +597,25 @@ class VaultClient {
       }
     }
     return true;
+  }
+
+  // Like Request(), but without the JSON / byethost challenge retry heuristic —
+  // binary asset responses are not JSON and must be returned byte-for-byte.
+  bool RequestRaw(const wchar_t* method, const std::wstring& rel_path,
+                  const std::string* body_utf8, bool auth, HttpResponse* out) {
+    if (!VaultCloudEnabled() || !EnsureSession() || !out) {
+      return false;
+    }
+    EnsureByethost();
+    std::wstring url = base_;
+    if (!rel_path.empty()) {
+      if (rel_path.front() == L'/') {
+        url += rel_path.substr(1);
+      } else {
+        url += rel_path;
+      }
+    }
+    return RawRequest(method, url, body_utf8, auth, out, true);
   }
 
  private:
@@ -1647,5 +1687,51 @@ bool VaultHttpDeleteNote(int id) {
       !JsonOkTrue(resp.body)) {
     return false;
   }
+  return true;
+}
+
+bool VaultHttpPutNoteAsset(int note_id, const std::wstring& name,
+                           const std::wstring& mime,
+                           const std::string& data_b64) {
+  if (note_id <= 0 || name.empty() || data_b64.empty()) {
+    return false;
+  }
+  Session s = LoadSession();
+  if (s.token.empty()) {
+    return false;
+  }
+  VaultClient client(s.api_base);
+  client.SetToken(s.token);
+  HttpResponse resp;
+  const std::wstring path =
+      L"notes/" + std::to_wstring(note_id) + L"/assets/" + UrlEncodePath(name);
+  const std::string payload = "{\"data\":\"" + data_b64 + "\",\"mime\":\"" +
+                              EscapeJson(NarrowUtf8(mime)) + "\"}";
+  return client.Request(L"PUT", path, &payload, true, &resp) &&
+         JsonOkTrue(resp.body);
+}
+
+bool VaultHttpGetNoteAsset(int note_id, const std::wstring& name,
+                           std::vector<BYTE>* out_bytes) {
+  if (note_id <= 0 || name.empty() || !out_bytes) {
+    return false;
+  }
+  Session s = LoadSession();
+  if (s.token.empty()) {
+    return false;
+  }
+  VaultClient client(s.api_base);
+  client.SetToken(s.token);
+  HttpResponse resp;
+  const std::wstring path =
+      L"notes/" + std::to_wstring(note_id) + L"/assets/" + UrlEncodePath(name);
+  // The asset endpoint answers with image bytes, not JSON; only trust a 200
+  // so a stray HTML error page is never written to disk as "an image".
+  if (!client.RequestRaw(L"GET", path, nullptr, true, &resp) ||
+      resp.status != 200) {
+    return false;
+  }
+  out_bytes->assign(reinterpret_cast<const BYTE*>(resp.body.data()),
+                     resp.body.size());
   return true;
 }
