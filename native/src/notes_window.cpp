@@ -13441,9 +13441,17 @@ LRESULT NotesWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
           if (MistConfirm(hwnd_, L"在线笔记", account_msg.c_str(),
                           MistMsgTone::Warn)) {
             VaultHttpLogout();
+            // Drop everything tied to the previous session. Without this the
+            // rail kept listing the signed-out account's online notes and the
+            // body cache still short-circuited later fetches.
+            library_online_cache_.clear();
+            online_body_cache_.clear();
+            library_online_stale_ = true;
+            library_list_loaded_once_ = false;
             if (sidebar_account_) {
               InvalidateRect(sidebar_account_, nullptr, TRUE);
             }
+            PushLibraryRailState(true);
           }
         }
         return 0;
