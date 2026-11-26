@@ -4431,6 +4431,7 @@ void NotesWindow::HealUntitledDraftsOnDisk() {
   }
 }
 
+namespace {
 // The vault API syncs note bodies only — image binaries are never uploaded.
 // An online note's `assets/foo.png` therefore resolves against 云笔记/assets,
 // but the file usually still lives under whichever local note inserted it.
