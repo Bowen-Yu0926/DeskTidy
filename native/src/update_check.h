@@ -57,3 +57,13 @@ void StartInstallerLaunchAsync(HWND owner, const std::wstring& path);
 
 // Legacy manual-check entry (tools_misc OpenUpdatePage): async + forced refresh.
 void CheckForUpdates(HWND owner);
+
+// Register the App message window that owns the kMsgUpdate* handlers.
+// Manual-check entry points live in the settings window / help dialog, whose
+// WndProc does not handle kMsgUpdateCheckDone — posting the result there made
+// 「检查更新」 appear to do nothing at all. The App calls this once after its
+// message window is created; CheckForUpdates then targets it regardless of
+// which window triggered the check.
+void SetUpdateResultWindow(HWND hwnd);
+// Returns the registered result window, falling back to `fallback` when unset.
+HWND UpdateResultWindow(HWND fallback);

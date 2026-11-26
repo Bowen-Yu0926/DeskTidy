@@ -1049,6 +1049,10 @@ bool App::Init(HINSTANCE instance) {
   }
   SetWindowLongPtrW(message_hwnd_, GWLP_USERDATA,
                     reinterpret_cast<LONG_PTR>(this));
+  // Manual「检查更新」is triggered from the settings window / help dialog,
+  // whose WndProc never handle kMsgUpdateCheckDone. Register the message
+  // window so those entry points post results here instead of into the void.
+  SetUpdateResultWindow(message_hwnd_);
   // Cut-ghost dimming tracks Explorer Preferred DropEffect changes.
   ChangeWindowMessageFilter(WM_COPYDATA, 1);
   ChangeWindowMessageFilter(kCliActionMsg, 1);
@@ -2474,6 +2478,7 @@ void App::Shutdown() {
       WTSUnRegisterSessionNotification(message_hwnd_);
       DestroyWindow(message_hwnd_);
       message_hwnd_ = nullptr;
+      SetUpdateResultWindow(nullptr);
     }
   });
 

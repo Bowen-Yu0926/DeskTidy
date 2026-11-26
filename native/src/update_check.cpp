@@ -670,6 +670,22 @@ std::wstring NativeDisplayVersion() {
   return v;
 }
 
+// The App message window whose WndProc handles kMsgUpdate*. Set once at
+// startup; guarded because startup and UI-thread checks both read it.
+std::atomic<HWND> g_update_result_window{nullptr};
+
+void SetUpdateResultWindow(HWND hwnd) {
+  g_update_result_window.store(hwnd);
+}
+
+HWND UpdateResultWindow(HWND fallback) {
+  HWND h = g_update_result_window.load();
+  if (h && IsWindow(h)) {
+    return h;
+  }
+  return fallback;
+}
+
 void StartUpdateCheckAsync(HWND owner, bool force, bool interactive) {
   static std::atomic<bool> g_checking{false};
   if (g_checking.exchange(true)) {
@@ -857,5 +873,8 @@ void StartInstallerLaunchAsync(HWND owner, const std::wstring& path) {
 
 void CheckForUpdates(HWND owner) {
   // Manual entry (tools_misc OpenUpdatePage): forced refresh + interactive UI.
-  StartUpdateCheckAsync(owner, /*force=*/true, /*interactive=*/true);
+  // Retarget to the App message window — manual-check callers pass the
+  // settings window / help dialog, which never handle kMsgUpdateCheckDone.
+  StartUpdateCheckAsync(UpdateResultWindow(owner), /*force=*/true,
+                        /*interactive=*/true);
 }
