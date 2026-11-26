@@ -4773,17 +4773,40 @@ bool TryRenameNoteFile(const std::wstring& src, const std::wstring& dest) {
       _wcsicmp(src.c_str(), dest.c_str()) == 0) {
     return false;
   }
-  SetFileAttributesW(src.c_str(), FILE_ATTRIBUTE_NORMAL);
+  // Preserve a user-set read-only flag. Clearing it outright told the OS the
+  // file is freely modifiable from then on — read-only is how a user says
+  // "don't touch this", and silently stripping it defeats that protection.
+  const DWORD orig_attrs = GetFileAttributesW(src.c_str());
+  const bool was_readonly =
+      orig_attrs != INVALID_FILE_ATTRIBUTES &&
+      (orig_attrs & FILE_ATTRIBUTE_READONLY) != 0;
+  if (was_readonly) {
+    SetFileAttributesW(src.c_str(), orig_attrs & ~FILE_ATTRIBUTE_READONLY);
+  } else {
+    SetFileAttributesW(src.c_str(), FILE_ATTRIBUTE_NORMAL);
+  }
+  // Re-apply the read-only flag on the renamed file (its new path).
+  auto restore_readonly = [was_readonly](const std::wstring& p) {
+    if (!was_readonly || p.empty()) {
+      return;
+    }
+    const DWORD a = GetFileAttributesW(p.c_str());
+    if (a != INVALID_FILE_ATTRIBUTES) {
+      SetFileAttributesW(p.c_str(), a | FILE_ATTRIBUTE_READONLY);
+    }
+  };
   for (int attempt = 0; attempt < 5; ++attempt) {
     if (attempt > 0) {
       Sleep(50u * static_cast<DWORD>(attempt));
     }
     if (MoveFileW(src.c_str(), dest.c_str())) {
+      restore_readonly(dest);
       return true;
     }
     if (MoveFileExW(src.c_str(), dest.c_str(),
                     MOVEFILE_COPY_ALLOWED | MOVEFILE_REPLACE_EXISTING |
                         MOVEFILE_WRITE_THROUGH)) {
+      restore_readonly(dest);
       return true;
     }
   }
@@ -4803,6 +4826,7 @@ bool TryRenameNoteFile(const std::wstring& src, const std::wstring& dest) {
     if (SHFileOperationW(&op) == 0 && !op.fAnyOperationsAborted &&
         GetFileAttributesW(dest.c_str()) != INVALID_FILE_ATTRIBUTES &&
         GetFileAttributesW(src.c_str()) == INVALID_FILE_ATTRIBUTES) {
+      restore_readonly(dest);
       return true;
     }
   }
@@ -4827,8 +4851,11 @@ bool TryRenameNoteFile(const std::wstring& src, const std::wstring& dest) {
         }
         out.close();
         if (GetFileAttributesW(dest.c_str()) != INVALID_FILE_ATTRIBUTES) {
+          // src is read-only by now if the user protected it; clear just for
+          // the delete, then re-apply the flag to the new file.
           SetFileAttributesW(src.c_str(), FILE_ATTRIBUTE_NORMAL);
           if (DeleteFileW(src.c_str())) {
+            restore_readonly(dest);
             return true;
           }
           SHFILEOPSTRUCTW del{};
@@ -4840,15 +4867,19 @@ bool TryRenameNoteFile(const std::wstring& src, const std::wstring& dest) {
           del.fFlags = FOF_NOCONFIRMATION | FOF_NOERRORUI | FOF_SILENT |
                        FOF_ALLOWUNDO | FOF_NORECURSION;
           if (SHFileOperationW(&del) == 0 && !del.fAnyOperationsAborted) {
+            restore_readonly(dest);
             return true;
           }
           LogLine(L"[notes] renamed via copy but source linger %lu: %s",
                   GetLastError(), src.c_str());
+          restore_readonly(dest);
           return true;
         }
       }
     }
   }
+  // Rename failed — the original file is untouched, so put its protection back.
+  restore_readonly(src);
   LogLine(L"[notes] rename failed %lu: %s -> %s", GetLastError(), src.c_str(),
           dest.c_str());
   return false;
