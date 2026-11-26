@@ -10847,7 +10847,28 @@ void NotesWindow::NewOnlineNoteInEditor() {
       }
     }
   }
-  AtomicWriteUtf8File(path, NarrowUtf8(seed), false);
+  if (!AtomicWriteUtf8File(path, NarrowUtf8(seed), false)) {
+    // The cloud note already exists but nothing landed on disk. Delete it again
+    // rather than leaving an orphan the user can never open from the library.
+    if (VaultHttpDeleteNote(created.id)) {
+      MistAlert(hwnd_, L"在线笔记",
+                L"写入本地文件失败，已撤销本次新建。请检查笔记库目录权限。",
+                MistMsgTone::Danger);
+    } else {
+      MistAlert(hwnd_, L"在线笔记",
+                L"写入本地文件失败，且未能撤销云端笔记，请稍后在「在线笔记」中手动删除",
+                MistMsgTone::Danger);
+      // Keep it visible so the user can remove it deliberately.
+      LibraryOnlineItem orphan;
+      orphan.id = created.id;
+      orphan.title = L"未命名";
+      orphan.updated_at = created.updated_at;
+      library_online_cache_.insert(library_online_cache_.begin(),
+                                   std::move(orphan));
+      PushLibraryRailState(false);
+    }
+    return;
+  }
   NoteCloudUpsertLink(&cloud_sync_, path, created.id, true);
   SaveNoteCloudSync(cloud_sync_);
   RememberOnlineBody(created.id, L"未命名", seed);
