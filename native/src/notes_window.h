@@ -425,6 +425,10 @@ class NotesWindow {
   // IDs of online notes whose bodies are still being fetched. Multiple tabs
   // can be loaded concurrently; a single id would let one fetch clobber another.
   std::set<int> pending_online_load_ids_;
+  // Bodies whose fetch FAILED. The editor then shows a placeholder, and
+  // saving it would overwrite the real cloud body with '# '. Cleared on a
+  // successful retry, so the guard lifts as soon as the body arrives.
+  std::set<int> online_load_failed_ids_;
   bool quit_on_close_ = false;
   bool toast_ = false;
   bool wysiwyg_ = false;

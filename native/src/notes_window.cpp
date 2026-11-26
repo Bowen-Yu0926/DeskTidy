@@ -5001,6 +5001,11 @@ void NotesWindow::DeleteAndCloseTabAt(int index, bool ask_confirm) {
       break;
     }
   }
+  // Deleting the local file must not orphan its cloud copy. The link is left
+  // exactly as-is on purpose: the rail treats a missing bound file as a pure
+  // online row (see linked_ids / path_exists in PushLibraryRailState), so the
+  // note stays reachable and can still be「转本地」again. Clearing the path
+  // here would instead hide it, because empty paths are filtered out.
   // 删文件即丢弃未保存改动，不再走保存确认。
   if (deleting_current) {
     dirty_ = false;
@@ -5162,6 +5167,8 @@ void NotesWindow::Load() {
                  ? (L"# " + (title.empty() ? std::wstring(L"") : title) + L"\n\n")
                  : it->second.body;
     } else if (id > 0 && VaultHttpLoggedIn()) {
+      // Reopening retries the fetch, so drop the stale failure guard.
+      online_load_failed_ids_.erase(id);
       // Cache miss: fetch on a worker. VaultHttpGetNote retries with blocking
       // sleeps (up to ~45 s with a dead server); running it here froze the whole
       // window — no paint, no input — on the first open of an online note.
@@ -5477,6 +5484,16 @@ void NotesWindow::Save(bool authoritative_pull, bool push_cloud) {
     if (pending_online_load_ids_.count(id) != 0) {
       MistAlert(hwnd_, L"保存", L"云端正文仍在加载，请稍候再保存。",
                 MistMsgTone::Info);
+      return;
+    }
+    if (online_load_failed_ids_.count(id) != 0) {
+      // Refuse: the editor only has the placeholder. Uploading now would
+      // replace the real note with '# '. The guard lifts after a reload
+      // succeeds (reopen the note once the network is back).
+      MistAlert(hwnd_, L"保存",
+                L"云端正文未能加载，已阻止保存以免覆盖云端内容。\n"
+                L"请检查网络或登录状态后重新打开该笔记。",
+                MistMsgTone::Danger);
       return;
     }
     std::wstring title = NativeTitleText();
@@ -13751,11 +13768,15 @@ LRESULT NotesWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
       }
       pending_online_load_ids_.erase(n->id);
       if (wparam == 0) {
+        // Record the failure: the editor still holds the '# ' placeholder, and
+        // saving it would overwrite the real cloud body with an empty one.
+        online_load_failed_ids_.insert(n->id);
         if (status_ && IsOnlineNotePath(path_) && OnlineNoteIdFromPath(path_) == n->id) {
-          SetWindowTextW(status_, L"云端笔记加载失败，请检查网络或登录状态");
+          SetWindowTextW(status_, L"云端笔记加载失败，请检查网络或登录状态（已禁止保存以免覆盖云端正文）");
         }
         return 0;
       }
+      online_load_failed_ids_.erase(n->id);
       std::wstring wide =
           n->body.empty() ? (L"# " + n->title + L"\n\n") : n->body;
       if (!n->title.empty() && wide.rfind(L"# ", 0) != 0) {
