@@ -171,6 +171,7 @@ class NotesWindow {
   // Drag-to-reorder in the library tree (WM_NOTIFY TVN_BEGINDRAG).
   void StartSidebarDrag(HTREEITEM item);
   void MoveSidebarItem(HTREEITEM drag_item, HTREEITEM target_item, bool after);
+  void ApplySidebarDrop();
   void EndSidebarDrag();
   void PersistSidebarOrder();
   void LoadSidebarOrder();
@@ -408,6 +409,10 @@ class NotesWindow {
   // User-locked note paths (delete blocked). 账号库 is locked without listing.
   std::vector<std::wstring> locked_paths_;
   HTREEITEM sidebar_drag_item_ = nullptr;
+  // Pending drop target — the reorder is applied once on mouse-up so the node
+  // under the cursor is never destroyed mid-drag.
+  HTREEITEM sidebar_drag_target_ = nullptr;
+  bool sidebar_drag_after_ = false;
   std::vector<NoteSearchHit> sidebar_hits_;
   std::vector<TabState> tab_states_;
   int tab_index_ = 0;

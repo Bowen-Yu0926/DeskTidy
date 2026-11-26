@@ -11178,9 +11178,14 @@ void NotesWindow::RebuildSidebar() {
   // main hitch after delete / pin / rename (Explorer-class notes rails).
   SendMessageW(sidebar_, WM_SETREDRAW, FALSE, 0);
   // DeleteAllItems invalidates every HTREEITEM; a drag still holding one would
-  // use freed handles. End the drag first and persist whatever order we have.
-  if (sidebar_drag_item_) {
-    EndSidebarDrag();
+  // use freed handles. Drop the gesture outright here (rather than finishing it)
+  // because finishing would call ApplySidebarDrop → RebuildSidebar again.
+  if (sidebar_drag_item_ || sidebar_drag_target_) {
+    sidebar_drag_item_ = nullptr;
+    sidebar_drag_target_ = nullptr;
+    if (GetCapture() == hwnd_) {
+      ReleaseCapture();
+    }
   }
   TreeView_DeleteAllItems(sidebar_);
   sidebar_paths_.clear();
@@ -11188,6 +11193,18 @@ void NotesWindow::RebuildSidebar() {
   sidebar_anchor_path_.clear();
   const std::wstring root = NotesLibraryDir(true);
   CreateDirectoryW(root.c_str(), nullptr);
+
+  // Precompute the pinned set once: PathIsPinned() re-normalizes every pinned
+  // path per call, and the walk below asks once per file. Rebuilding a tree of
+  // N notes with P pins cost N×P mutex-guarded path normalizations.
+  std::set<std::wstring> pinned_keys;
+  for (const auto& p : pinned_paths_) {
+    pinned_keys.insert(NormalizePathKey(p));
+  }
+  auto is_pinned_fast = [&pinned_keys](const std::wstring& full) {
+    return !pinned_keys.empty() &&
+           pinned_keys.count(NormalizePathKey(full)) != 0;
+  };
 
   bool sidebar_healed = false;
   auto retarget_after_heal = [&](const std::wstring& old_path,
@@ -11260,7 +11277,7 @@ void NotesWindow::RebuildSidebar() {
             }
             // Match window title / tab: document title → localized stem.
             Entry e{NoteDisplayName(full, true), full, false, false, 0};
-            e.pinned = PathIsPinned(e.full);
+            e.pinned = is_pinned_fast(e.full);
             ULARGE_INTEGER u{};
             u.LowPart = fd.ftCreationTime.dwLowDateTime;
             u.HighPart = fd.ftCreationTime.dwHighDateTime;
@@ -11377,10 +11394,10 @@ void NotesWindow::MoveSidebarItem(HTREEITEM drag_item, HTREEITEM target_item,
   if (!sidebar_ || !drag_item || !target_item || drag_item == target_item) {
     return;
   }
-  // Siblings only: same parent, and the order list is keyed by that parent.
-  const HTREEITEM drag_parent = TreeView_GetParent(sidebar_, drag_item);
-  const HTREEITEM tgt_parent = TreeView_GetParent(sidebar_, target_item);
-  if (drag_parent != tgt_parent) {
+  // Siblings only — the order list is keyed by the parent folder, and moving a
+  // file into another folder is a file-system operation we do not do here.
+  if (TreeView_GetParent(sidebar_, drag_item) !=
+      TreeView_GetParent(sidebar_, target_item)) {
     return;
   }
   TVITEMW dt{};
@@ -11389,19 +11406,53 @@ void NotesWindow::MoveSidebarItem(HTREEITEM drag_item, HTREEITEM target_item,
   if (!TreeView_GetItem(sidebar_, &dt) || dt.lParam == 0) {
     return;
   }
-  // Persist as the new sibling order: read the current visible order, remove
-  // the dragged entry, then re-insert it next to the target.
-  const std::wstring drag_path = sidebar_paths_[static_cast<size_t>(dt.lParam) - 1];
-  if (drag_path.empty()) {
+  TVITEMW tt{};
+  tt.mask = TVIF_HANDLE | TVIF_PARAM;
+  tt.hItem = target_item;
+  if (!TreeView_GetItem(sidebar_, &tt) || tt.lParam == 0) {
     return;
   }
+  // Only record the intent here. Re-inserting the item on every WM_MOUSEMOVE
+  // destroyed and recreated the node under the cursor (flicker, and the drag
+  // item handle went stale mid-gesture). The reorder is applied once on drop.
+  sidebar_drag_target_ = target_item;
+  sidebar_drag_after_ = after;
+}
+
+// Apply the recorded drop: rebuild the sibling order, persist it, and reorder
+// the visible items without a full RebuildSidebar (which would also walk disk).
+void NotesWindow::ApplySidebarDrop() {
+  HTREEITEM drag_item = sidebar_drag_item_;
+  HTREEITEM target_item = sidebar_drag_target_;
+  const bool after = sidebar_drag_after_;
+  sidebar_drag_item_ = nullptr;
+  sidebar_drag_target_ = nullptr;
+  if (!sidebar_ || !drag_item || !target_item || drag_item == target_item) {
+    return;
+  }
+  const HTREEITEM drag_parent = TreeView_GetParent(sidebar_, drag_item);
+  if (drag_parent != TreeView_GetParent(sidebar_, target_item)) {
+    return;
+  }
+  TVITEMW dt{};
+  dt.mask = TVIF_HANDLE | TVIF_PARAM;
+  dt.hItem = drag_item;
+  if (!TreeView_GetItem(sidebar_, &dt) || dt.lParam == 0) {
+    return;
+  }
+  const size_t drag_idx = static_cast<size_t>(dt.lParam) - 1;
+  if (drag_idx >= sidebar_paths_.size()) {
+    return;
+  }
+  const std::wstring drag_path = sidebar_paths_[drag_idx];
   const size_t ds = drag_path.find_last_of(L"\\/");
   const std::wstring parent_dir = ds == std::wstring::npos
                                       ? NotesLibraryDir(true)
                                       : drag_path.substr(0, ds);
-  const std::wstring drag_key = NormalizePathKey(drag_path);
 
-  std::vector<std::wstring> order;
+  // Rebuild the ordering list from what is on screen, then move the drag entry
+  // next to the drop target.
+  std::vector<std::wstring> keys;
   for (HTREEITEM c = TreeView_GetChild(sidebar_, drag_parent); c;
        c = TreeView_GetNextSibling(sidebar_, c)) {
     TVITEMW ct{};
@@ -11410,67 +11461,44 @@ void NotesWindow::MoveSidebarItem(HTREEITEM drag_item, HTREEITEM target_item,
     if (TreeView_GetItem(sidebar_, &ct) && ct.lParam > 0) {
       const size_t idx = static_cast<size_t>(ct.lParam) - 1;
       if (idx < sidebar_paths_.size()) {
-        order.push_back(NormalizePathKey(sidebar_paths_[idx]));
+        keys.push_back(NormalizePathKey(sidebar_paths_[idx]));
       }
     }
   }
-  order.erase(std::remove_if(order.begin(), order.end(),
-                             [&](const std::wstring& k) {
-                               return _wcsicmp(k.c_str(), drag_key.c_str()) == 0;
-                             }),
-              order.end());
+  const std::wstring drag_key = NormalizePathKey(drag_path);
+  keys.erase(std::remove(keys.begin(), keys.end(), drag_key), keys.end());
 
   TVITEMW tt{};
   tt.mask = TVIF_HANDLE | TVIF_PARAM;
   tt.hItem = target_item;
-  if (!TreeView_GetItem(sidebar_, &tt) || tt.lParam == 0) {
-    return;
+  if (TreeView_GetItem(sidebar_, &tt) && tt.lParam > 0) {
+    const size_t ti = static_cast<size_t>(tt.lParam) - 1;
+    if (ti < sidebar_paths_.size()) {
+      const std::wstring tgt_key = NormalizePathKey(sidebar_paths_[ti]);
+      auto pos = std::find(keys.begin(), keys.end(), tgt_key);
+      if (pos == keys.end()) {
+        keys.push_back(drag_key);
+      } else {
+        keys.insert(after ? std::next(pos) : pos, drag_key);
+      }
+    }
   }
-  const size_t tgt_idx = static_cast<size_t>(tt.lParam) - 1;
-  if (tgt_idx >= sidebar_paths_.size()) {
-    return;
-  }
-  const std::wstring tgt_key = NormalizePathKey(sidebar_paths_[tgt_idx]);
-  auto pos = std::find_if(order.begin(), order.end(),
-                          [&](const std::wstring& k) {
-                            return _wcsicmp(k.c_str(), tgt_key.c_str()) == 0;
-                          });
-  if (pos == order.end()) {
-    order.push_back(drag_key);
-  } else {
-    order.insert(after ? std::next(pos) : pos, drag_key);
-  }
-  sidebar_order_[NormalizePathKey(parent_dir)] = order;
-
-  HTREEITEM insert_after = after ? target_item : TreeView_GetPrevSibling(sidebar_, target_item);
-  TreeView_DeleteItem(sidebar_, drag_item);  // drops the HTREEITEM
-  TVINSERTSTRUCTW ins{};
-  ins.hParent = drag_parent;
-  ins.hInsertAfter = insert_after ? insert_after : TVI_FIRST;
-  ins.item.mask = TVIF_TEXT | TVIF_PARAM;
-  // Rebuild the label exactly as RebuildSidebar does (pin pad included).
-  std::wstring label = NoteDisplayName(drag_path, true);
-  if (PathIsPinned(drag_path)) {
-    label = L"   " + label;
-  }
-  ins.item.pszText = label.data();
-  ins.item.lParam = dt.lParam;
-  const HTREEITEM moved = TreeView_InsertItem(sidebar_, &ins);
-  if (moved) {
-    sidebar_drag_item_ = moved;
-    TreeView_SelectItem(sidebar_, moved);
-  }
-  TreeView_Expand(sidebar_, drag_parent, TVE_EXPAND);
+  sidebar_order_[NormalizePathKey(parent_dir)] = keys;
+  PersistSidebarOrder();
+  // Re-sort the tree once; cheap because it reuses the already-built rows.
+  RebuildSidebar();
 }
 
 void NotesWindow::EndSidebarDrag() {
-  if (sidebar_drag_item_) {
-    PersistSidebarOrder();
-  }
-  sidebar_drag_item_ = nullptr;
   if (GetCapture() == hwnd_) {
     ReleaseCapture();
   }
+  // Pending drop is applied only if the gesture actually moved somewhere.
+  if (sidebar_drag_item_ && sidebar_drag_target_) {
+    ApplySidebarDrop();
+  }
+  sidebar_drag_item_ = nullptr;
+  sidebar_drag_target_ = nullptr;
 }
 
 void NotesWindow::PersistSidebarOrder() {
