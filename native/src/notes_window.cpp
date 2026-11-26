@@ -9823,10 +9823,17 @@ void NotesWindow::PushLibraryRailState(bool refresh_online) {
   if (!VaultHttpLoggedIn()) {
     library_online_cache_.clear();
     library_online_stale_ = true;
+    library_list_loaded_once_ = false;
   } else if (refresh_online || library_online_stale_ ||
-             library_online_cache_.empty()) {
+             !library_list_loaded_once_) {
     // Async fetch — see EnsureLibraryListFetch. The rail renders whatever the
     // cache holds (possibly empty) and refreshes when WM_APP+85 lands.
+    //
+    // The old `cache.empty()` condition re-fetched on every push once the
+    // account genuinely had no online notes: WM_APP+85 clears the cache, then
+    // PushLibraryRailState sees it empty and starts another request, forever.
+    // `library_list_loaded_once_` marks "we have an answer"; staleness alone
+    // drives refresh after that.
     EnsureLibraryListFetch();
   }
   wchar_t qbuf[256]{};
@@ -13665,6 +13672,7 @@ LRESULT NotesWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
             library_online_cache_.push_back(std::move(it));
           }
           library_online_stale_ = false;
+          library_list_loaded_once_ = true;
           refreshed = true;
         } else {
           // Keep showing the stale cache; the next explicit action retries.
