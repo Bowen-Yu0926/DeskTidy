@@ -5006,8 +5006,13 @@ void NotesWindow::DeleteAndCloseTabAt(int index, bool ask_confirm) {
   const std::wstring name =
       slash == std::wstring::npos ? path : path.substr(slash + 1);
   if (ask_confirm) {
-    const std::wstring msg =
-        L"确定删除「" + name + L"」？\n将移入回收站。";
+    std::wstring msg = L"确定删除「" + name + L"」？\n将移入回收站。";
+    // This note is bound to a cloud copy that survives the local delete (the
+    // rail keeps showing it as an online row). Say so, or the user reasonably
+    // expects a cloud delete as well.
+    if (PathIsCloudSynced(path)) {
+      msg += L"\n\n注意：该笔记已云同步，云端副本会保留（可在「在线笔记」中删除）。";
+    }
     if (!MistConfirm(hwnd_, L"删除", msg.c_str(), MistMsgTone::Danger)) {
       return;
     }
