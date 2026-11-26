@@ -168,6 +168,12 @@ class NotesWindow {
   void ShowHelp();
   void ToggleSidebar();
   void RebuildSidebar();
+  // Drag-to-reorder in the library tree (WM_NOTIFY TVN_BEGINDRAG).
+  void StartSidebarDrag(HTREEITEM item);
+  void MoveSidebarItem(HTREEITEM drag_item, HTREEITEM target_item, bool after);
+  void EndSidebarDrag();
+  void PersistSidebarOrder();
+  void LoadSidebarOrder();
   // Drop matching file rows from the tree without a full library rescan.
   void SidebarRemovePaths(const std::vector<std::wstring>& paths);
   // Insert or refresh one file row under「全部笔记」(no Heal / full walk).
@@ -391,12 +397,17 @@ class NotesWindow {
   TextFileEncoding text_enc_ = TextFileEncoding::Utf8;
   std::vector<std::wstring> tab_paths_;
   std::vector<std::wstring> sidebar_paths_;
+  // User drag-order for the library tree, keyed by parent dir (normalized).
+  // Children listed here sort before everything else, in this exact order;
+  // unlisted files keep the default dirs → pinned → newest order after them.
+  std::map<std::wstring, std::vector<std::wstring>> sidebar_order_;
   // Ctrl/Shift multi-select in the library tree (paths, not HTREEITEM — rebuild-safe).
   std::vector<std::wstring> sidebar_multi_;
   std::wstring sidebar_anchor_path_;
   std::vector<std::wstring> pinned_paths_;
   // User-locked note paths (delete blocked). 账号库 is locked without listing.
   std::vector<std::wstring> locked_paths_;
+  HTREEITEM sidebar_drag_item_ = nullptr;
   std::vector<NoteSearchHit> sidebar_hits_;
   std::vector<TabState> tab_states_;
   int tab_index_ = 0;

@@ -81,27 +81,44 @@
   .row-title-text {
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
+  /* Cloud vs local must be obvious at a glance: cloud rows carry a filled
+     accent badge + left color bar; local rows carry a muted outline badge. */
   .cloud-icon {
     position: absolute; top: 9px; right: 30px;
     flex-shrink: 0; display: inline-flex; align-items: center; justify-content: center;
-    width: 20px; height: 20px; padding: 0; border: 0; border-radius: 4px;
-    background: transparent; color: var(--accent); cursor: pointer;
-    transition: color 0.15s ease, background 0.15s ease, opacity 0.15s ease;
+    width: 22px; height: 22px; padding: 0; border: 0; border-radius: 6px;
+    background: var(--accent); color: #fff; cursor: pointer;
+    box-shadow: 0 1px 2px rgba(47, 111, 237, 0.35);
+    transition: transform 0.15s ease, background 0.15s ease, opacity 0.15s ease;
   }
   .cloud-icon svg {
     width: 14px; height: 14px; display: block;
   }
   .row.local .cloud-icon {
-    color: #94a3b8; opacity: 0;
+    background: transparent; color: #8b96a8;
+    box-shadow: none; opacity: 0.5;
+    border: 1px solid rgba(139, 150, 168, 0.45);
   }
   .row.local:hover .cloud-icon,
   .row.local.on .cloud-icon {
-    opacity: 0.78;
+    opacity: 0.85;
   }
   .cloud-icon:hover {
-    background: rgba(47, 111, 237, 0.10);
+    transform: scale(1.08);
+  }
+  .row.local .cloud-icon:hover {
     color: var(--accent) !important;
+    border-color: var(--accent) !important;
+    background: rgba(47, 111, 237, 0.10) !important;
     opacity: 1 !important;
+  }
+  /* Left bar makes the state readable without hovering or reading the badge. */
+  .row::before {
+    content: ''; position: absolute; left: 0; top: 6px; bottom: 6px;
+    width: 3px; border-radius: 0 2px 2px 0; background: var(--accent);
+  }
+  .row.local::before {
+    background: rgba(139, 150, 168, 0.45);
   }
   .row-meta { color: var(--muted); font-size: 11px; margin-top: 4px; }
   .more {
@@ -316,7 +333,8 @@
     const r = el.getBoundingClientRect();
     showMenuAt(r.right - 8, r.bottom + 2, it, kind);
   }
-  const CLOUD_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"/></svg>';
+  const CLOUD_SVG = '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M6.5 19a4.5 4.5 0 0 1-.36-8.99 6 6 0 0 1 11.66-.53A4 4 0 0 1 17.5 19h-11Z"/></svg>';
+  const FILE_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8l-5-5Z"/><path d="M14 3v5h5"/></svg>';
   function rowHtml(it, fallbackKind) {
     const kind = rowKind(it, fallbackKind);
     const key = (kind === 'online' && !it.path)
@@ -342,9 +360,13 @@
     if (it.pinned) data += ' data-pinned="1"';
     if (it.locked) data += ' data-locked="1"';
     const more = '<button type="button" class="more" title="更多">⋯</button>';
-    const cloudTip = cloud ? '已云同步（点击转本地）' : '本地文件（点击转云同步）';
+    const cloudTip = cloud
+      ? '☁ 已云同步 — 点击转为本机文件'
+      : '本机文件 — 点击转为云同步';
     const cloudBadge =
-      '<button type="button" class="cloud-icon" title="' + cloudTip + '">' + CLOUD_SVG + '</button>';
+      '<button type="button" class="cloud-icon" title="' + cloudTip +
+      '" aria-label="' + cloudTip + '">' +
+      (cloud ? CLOUD_SVG : FILE_SVG) + '</button>';
 
     const titleHtml = highlightMatches(it.title || '未命名', state.query);
     const metaHtml = highlightMatches(rawMeta, state.query);
