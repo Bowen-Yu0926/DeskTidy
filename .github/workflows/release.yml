@@ -118,9 +118,13 @@ jobs:
         run: |
           # Ed25519 verify is a security boundary — fail the release, not the
           # user's updater, if the vendored TweetNaCl or glue is broken.
-          cmake --build build --config Release --target test_update_verify
+          # build.bat runs from native/, so the tree is native/build.
+          if (-not (Test-Path 'native/build/CMakeCache.txt')) {
+            throw 'native/build not found — installer build did not configure CMake'
+          }
+          cmake --build native/build --config Release --target test_update_verify
           if ($LASTEXITCODE -ne 0) { throw 'test_update_verify build failed' }
-          $exe = Get-ChildItem -Recurse -Filter test_update_verify.exe build | Select-Object -First 1
+          $exe = Get-ChildItem -Recurse -Filter test_update_verify.exe native/build | Select-Object -First 1
           if (-not $exe) { throw 'test_update_verify.exe not found' }
           & $exe.FullName
           if ($LASTEXITCODE -ne 0) { throw 'test_update_verify FAILED' }
