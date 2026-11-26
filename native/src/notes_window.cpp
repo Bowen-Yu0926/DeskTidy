@@ -10550,12 +10550,11 @@ void NotesWindow::RenameOnlineNote(int note_id,
       }
       return;
     }
-    VaultHttpNote updated;
-    if (VaultHttpUpdateNote(note_id, new_title, send_body, &updated)) {
-      if (hwnd && IsWindow(hwnd)) {
-        PostMessageW(hwnd, WM_APP + 86, 0, 0);
-      }
-    }
+    // On success the local row was already updated optimistically before this
+    // worker started, so no callback is needed. Posting WM_APP+86 here (the
+    // SyncCloudResult message) with a null payload made the handler clear
+    // sync_cloud_busy_ for an unrelated in-flight sync.
+    (void)VaultHttpUpdateNote(note_id, new_title, send_body, &updated);
   }).detach();
 }
 
@@ -10665,9 +10664,8 @@ void NotesWindow::DeleteOnlineNote(int note_id,
       return;
     }
     if (VaultHttpDeleteNote(note_id)) {
-      if (hwnd && IsWindow(hwnd)) {
-        PostMessageW(hwnd, WM_APP + 86, 0, 0);
-      }
+      // Local row/tab already removed; nothing to update on success. (Sending
+      // WM_APP+86 here used to reset sync_cloud_busy_ for an unrelated sync.)
     } else if (hwnd && IsWindow(hwnd)) {
       // The local row/tab was already removed optimistically; the cloud copy
       // still exists, so surface the divergence and re-pull the list, otherwise
