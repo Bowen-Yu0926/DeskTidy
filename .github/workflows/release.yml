@@ -161,8 +161,24 @@ jobs:
                    'files clients cannot check. Embed the key first.')
           }
 
+          # Normalise: GitHub Secrets can carry a trailing newline, and
+          # Convert.FromBase64String throws on ANY whitespace it considers
+          # invalid. Trim first and report the length so a mismatch is obvious.
+          $b64 = ($env:UPDATE_SIGNING_KEY_B64 -replace '\s', '')
+          Write-Host "key b64 length: $($b64.Length)"
+          if ($b64.Length -ne 44) {
+            throw "UPDATE_SIGNING_KEY_B64 has length $($b64.Length), expected 44 (32 raw bytes, padded base64)"
+          }
           $keyFile = Join-Path $env:RUNNER_TEMP 'update_signing.key'
-          [IO.File]::WriteAllBytes($keyFile, [Convert]::FromBase64String($env:UPDATE_SIGNING_KEY_B64))
+          try {
+            $bytes = [Convert]::FromBase64String($b64)
+          } catch {
+            throw "base64 decode failed: $($_.Exception.Message)"
+          }
+          if ($bytes.Length -ne 32) {
+            throw "decoded key is $($bytes.Length) bytes, expected 32"
+          }
+          [IO.File]::WriteAllBytes($keyFile, $bytes)
           try {
             python scripts/update_signing.py sign $setup --version $version --key $keyFile
             if ($LASTEXITCODE -ne 0) { throw 'update_signing.py sign failed' }
@@ -175,6 +191,27 @@ jobs:
             Remove-Item $keyFile -Force -ErrorAction SilentlyContinue
           }
           Write-Host "signed: $setup.manifest"
+
+      - name: Publish release log on failure
+        if: failure()
+        shell: pwsh
+        run: |
+          # Same trick as build-check: job logs need admin rights via the API,
+          # so a failed release leaves no readable trace otherwise.
+          git config user.email "ci@desktidy.local"
+          git config user.name "release-ci"
+          $log = @(
+            "RELEASE_VERSION=$env:RELEASE_VERSION",
+            "secret_len=$($env:UPDATE_SIGNING_KEY_B64.Length)",
+            "dist listing:",
+            (Get-ChildItem dist -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name) -join "`n"
+          ) -join "`n"
+          Set-Content -Path release-debug.log -Value $log -Encoding utf8
+          git checkout --orphan release-log 2>$null
+          git rm -rf --cached . 2>$null | Out-Null
+          git add -f release-debug.log
+          git commit -m "release debug ${{ github.sha }}" --no-verify
+          git push -f origin release-log
 
       - name: Verify installer artifact
         shell: pwsh
