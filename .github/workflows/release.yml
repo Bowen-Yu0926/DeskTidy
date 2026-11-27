@@ -190,8 +190,18 @@ jobs:
           }
           [IO.File]::WriteAllBytes($keyFile, $bytes)
           try {
-            python scripts/update_signing.py sign $setup --version $version --key $keyFile
-            if ($LASTEXITCODE -ne 0) { throw 'update_signing.py sign failed' }
+            python scripts/update_signing.py sign $setup --version $version --key $keyFile 2>&1 |
+              Tee-Object -FilePath sign-out.log
+            if ($LASTEXITCODE -ne 0) {
+              # Push the captured output so it is readable without admin rights.
+              git config user.email "ci@desktidy.local"
+              git config user.name "release-ci"
+              git switch --orphan release-log 2>$null
+              git add -f sign-out.log
+              git commit -m "sign failure ${{ github.sha }}" --no-verify
+              git push -f origin release-log
+              throw 'update_signing.py sign failed'
+            }
             if (-not (Test-Path "$setup.manifest") -or -not (Test-Path "$setup.sig")) {
               throw 'manifest/.sig missing after signing'
             }
