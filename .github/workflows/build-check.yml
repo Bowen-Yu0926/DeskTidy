@@ -68,9 +68,12 @@ jobs:
             }
             exit 1
           }
-          cmake --build native/build --config Release --target deskNote
+          # deskNote shares sources with desktidy_native but has its own file
+          # list and link inputs — it must be built and logged separately.
+          cmake --build native/build --config Release --target deskNote 2>&1 |
+            Tee-Object -FilePath build-desknote.log
           if ($LASTEXITCODE -ne 0) {
-            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "## deskNote build failed" -Encoding utf8
+            Get-Content build-desknote.log | Add-Content -Path build.log
             exit 1
           }
 
