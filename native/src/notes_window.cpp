@@ -9915,16 +9915,44 @@ void NotesWindow::RememberOnlineBody(int note_id, const std::wstring& title,
   if (online_body_cache_.size() <= kMaxBodies) {
     return;
   }
-  const int keep_current =
-      IsOnlineNotePath(path_) ? OnlineNoteIdFromPath(path_) : 0;
-  for (auto it = online_body_cache_.begin();
-       it != online_body_cache_.end() &&
-       online_body_cache_.size() > kMaxBodies;) {
-    if (it->first == keep_current || it->first == note_id) {
-      ++it;
-      continue;
+  // Evict the least-recently written entry rather than the lowest note id.
+  // std::map orders by id, so erasing from the front kept a stale low-id note
+  // and dropped a just-used high-id one. A monotonic stamp per entry makes the
+  // scan pick the actual oldest.
+  static std::atomic<unsigned long long> s_seq{0};
+  static std::mutex s_seq_mu;
+  static std::map<int, unsigned long long> s_stamp;
+  {
+    std::lock_guard<std::mutex> lk(s_seq_mu);
+    s_stamp[note_id] = ++s_seq;
+    // Drop stamps for entries no longer cached (deleted/erased elsewhere).
+    for (auto it = s_stamp.begin(); it != s_stamp.end();) {
+      if (online_body_cache_.count(it->first) == 0) {
+        it = s_stamp.erase(it);
+      } else {
+        ++it;
+      }
     }
-    it = online_body_cache_.erase(it);
+    const int keep_current =
+        IsOnlineNotePath(path_) ? OnlineNoteIdFromPath(path_) : 0;
+    while (online_body_cache_.size() > kMaxBodies && s_stamp.size() > 1) {
+      int victim = 0;
+      unsigned long long oldest = ~0ull;
+      for (const auto& kv : s_stamp) {
+        if (kv.first == keep_current || kv.first == note_id) {
+          continue;
+        }
+        if (kv.second < oldest) {
+          oldest = kv.second;
+          victim = kv.first;
+        }
+      }
+      if (victim == 0) {
+        break;  // only protected entries left
+      }
+      online_body_cache_.erase(victim);
+      s_stamp.erase(victim);
+    }
   }
 }
 
