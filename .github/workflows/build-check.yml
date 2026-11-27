@@ -71,6 +71,15 @@ jobs:
             exit 1
           }
 
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: build.log
+          retention-days: 3
+          if-no-files-found: warn
+
       - name: Run update-signature test
         shell: pwsh
         run: |
