@@ -9504,253 +9504,24 @@ void NotesWindow::ShowFind(bool replace) {
     find_wrap_ = json.find(L"\"wrap\":false") == std::wstring::npos;
     find_all_tabs_ = json.find(L"\"all_tabs\":true") != std::wstring::npos;
   };
-  dlg.on_message = [&](const std::wstring& json) -> bool {
-    const std::wstring type = MistJsonStringField(json, L"type");
-    if (type != L"action") {
-      return false;
-    }
-    const std::wstring id = MistJsonStringField(json, L"id");
-    if (id == L"ready") {
-      MistWebDialogPushState(&dlg);
-      return false;
-    }
-    if (id == L"close") {
-      return true;
-    }
-    sync_from_json(json);
-    if (id == L"find_next") {
-      RunFindOnce(true, find_wrap_, find_match_case_, find_whole_word_,
-                  &status);
-      MistWebDialogPushState(&dlg);
-      return false;
-    }
-    if (id == L"find_prev") {
-      RunFindOnce(false, find_wrap_, find_match_case_, find_whole_word_,
-                  &status);
-      MistWebDialogPushState(&dlg);
-      return false;
-    }
-    if (id == L"replace") {
-      RunReplaceOnce(find_match_case_, find_whole_word_, find_wrap_, &status);
-      MistWebDialogPushState(&dlg);
-      return false;
-    }
-    if (id == L"replace_all") {
-      const int n =
-          find_all_tabs_
-              ? RunReplaceAllTabs(find_match_case_, find_whole_word_)
-              : RunReplaceAll(find_match_case_, find_whole_word_);
-      status = L"已替换 " + std::to_wstring(n) + L" 处";
-      MistWebDialogPushState(&dlg);
-      return false;
-    }
-    return false;
+  // Login/register do blocking network I/O (up to ~60 s with a dead server).
+  // Running them inside on_message froze the dialog: WebView2 delivers that
+  // callback on the UI thread, so the spinner could not even paint. Keep
+  // on_message non-blocking and hand the work to a worker thread; the result
+  // comes back through on_deferred (WM_APP+81), which runs off the callback
+  // stack. State shared with the worker lives in a shared_ptr so it cannot
+  // dangle if the dialog closes early.
+  struct AuthState {
+    std::mutex mu;
+    bool busy = false;
+    std::wstring reply;  // pending reply JSON for the UI thread
+    bool close = false;
+    bool ok = false;
   };
-  MistWebDialogRun(&dlg, replace ? L"替换" : L"查找", 460,
-                   replace ? 330 : 280);
-}
-
-void NotesWindow::InsertTemplate() {
-  if (!edit_) {
-    return;
-  }
-  const wchar_t* tpl =
-      L"\r\n---\r\n# 笔记\r\n\r\n- 要点：\r\n- 待办：\r\n- 链接：\r\n";
-  SendMessageW(edit_, EM_REPLACESEL, TRUE, reinterpret_cast<LPARAM>(tpl));
-}
-
-void NotesWindow::ShowHelp() { ShowDeskNoteHelp(hwnd_); }
-
-void NotesWindow::OpenNotesFolder() {
-  // Prefer folder of the active tab (Python resolve_openable_notes_folder).
-  std::wstring dir;
-  if (!path_.empty()) {
-    const DWORD attr = GetFileAttributesW(path_.c_str());
-    if (attr != INVALID_FILE_ATTRIBUTES && !(attr & FILE_ATTRIBUTE_DIRECTORY)) {
-      const size_t slash = path_.find_last_of(L"\\/");
-      if (slash != std::wstring::npos) {
-        dir = path_.substr(0, slash);
-      }
-    } else if (attr != INVALID_FILE_ATTRIBUTES) {
-      dir = path_;
-    }
-  }
-  if (dir.empty()) {
-    dir = NotesLibraryDir(true);
-  }
-  CreateDirectoryW(dir.c_str(), nullptr);
-  ShellExecuteW(hwnd_, L"open", dir.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
-}
-
-void NotesWindow::OpenFileDialog() {
-  const size_t kCap = 32768;
-  std::vector<wchar_t> buf(kCap, L'\0');
-  OPENFILENAMEW ofn{};
-  ofn.lStructSize = sizeof(ofn);
-  ofn.hwndOwner = hwnd_;
-  ofn.lpstrFilter =
-      L"文本与代码\0*.md;*.txt;*.markdown;*.log;*.json;*.xml;*.yml;*.yaml;*.csv;"
-      L"*.py;*.js;*.ts;*.tsx;*.css;*.html;*.htm;*.c;*.cpp;*.h;*.hpp;*.java;"
-      L"*.cs;*.go;*.rs;*.rb;*.php;*.sql;*.sh;*.bash;*.ps1;*.bat;*.cmd;*.ini;"
-      L"*.toml;*.cfg;*.conf;*.env;*.properties\0"
-      L"所有文件\0*.*\0";
-  ofn.lpstrFile = buf.data();
-  ofn.nMaxFile = static_cast<DWORD>(kCap);
-  ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_ALLOWMULTISELECT |
-              OFN_EXPLORER | OFN_NOCHANGEDIR;
-  if (!GetOpenFileNameW(&ofn)) {
-    return;
-  }
-  std::vector<std::wstring> paths;
-  if (ofn.nFileOffset > 0 && buf[ofn.nFileOffset - 1] == L'\0') {
-    const std::wstring dir = buf.data();
-    const wchar_t* q = buf.data() + ofn.nFileOffset;
-    while (*q) {
-      const std::wstring name = q;
-      paths.push_back(dir + L"\\" + name);
-      q += name.size() + 1;
-    }
-  } else {
-    paths.push_back(buf.data());
-  }
-  if (!paths.empty()) {
-    OpenPaths(paths);
-  }
-}
-
-void NotesWindow::Present() {
-  if (!hwnd_) {
-    return;
-  }
-  if (toast_) {
-    Show();
-    return;
-  }
-  ShowWindow(hwnd_, SW_SHOWMAXIMIZED);
-  BringWindowToTop(hwnd_);
-  // Windows foreground lock: a background process (file association / shell
-  // "Open with") calling SetForegroundWindow directly is often ignored. Attach
-  // to the foreground thread briefly so the window actually pops up.
-  HWND fg = GetForegroundWindow();
-  DWORD fg_tid = fg ? GetWindowThreadProcessId(fg, nullptr) : 0;
-  DWORD my_tid = GetCurrentThreadId();
-  const bool attached = fg_tid && fg_tid != my_tid &&
-                        AttachThreadInput(my_tid, fg_tid, TRUE);
-  SetForegroundWindow(hwnd_);
-  if (attached) {
-    AttachThreadInput(my_tid, fg_tid, FALSE);
-  }
-  SetFocus(hwnd_);
-  LayoutClient();
-  // Do NOT force a reload here: Present() runs on every activation (tray click,
-  // --focus), and force_reload re-pushes the whole document through
-  // setMarkdown() → replaceAll(), which drops ProseMirror undo history,
-  // selection and scroll position. Only a tab/path change needs the reload.
-  EnsureMarkdownEditor(false);
-  UpdateWindow(hwnd_);
-  FocusActiveEditor(true);
-}
-
-bool NotesWindow::ConfirmSaveCurrent() {
-  SyncFromWysiwyg();
-  if (!dirty_) {
-    return true;
-  }
-  const std::wstring msg =
-      L"是否保存对「" + TabLabel(path_) + L"」的更改？";
-  const MistMsgResult r = MistMessage(hwnd_, L"便签", msg.c_str(),
-                                      MistMsgKind::YesNoCancel, MistMsgTone::Warn);
-  if (r == MistMsgResult::Yes) {
-    Save(true);
-    return true;
-  }
-  if (r == MistMsgResult::No) {
-    dirty_ = false;
-    return true;
-  }
-  return false;
-}
-
-bool NotesWindow::ConfirmCloseAll() {
-  if (in_elevated_save_) {
-    PersistTabs();
-    PersistViewSettings();
-    return true;
-  }
-  // Notepad++ style: close always autosaves (no discard prompt).
-  if (!path_.empty()) {
-    Save(true);
-  } else if (edit_) {
-    path_ = MakeNewNotePath();
-    if (tab_index_ >= 0 &&
-        tab_index_ < static_cast<int>(tab_paths_.size())) {
-      tab_paths_[static_cast<size_t>(tab_index_)] = path_;
-    } else {
-      tab_paths_.push_back(path_);
-      tab_index_ = static_cast<int>(tab_paths_.size()) - 1;
-    }
-    Save(true);
-  }
-  PersistTabs();
-  PersistViewSettings();
-  return true;
-}
-
-void NotesWindow::ToggleSidebar() {
-  sidebar_visible_ = !sidebar_visible_;
-  if (menu_) {
-    CheckMenuItem(menu_, kMenuSidebar,
-                  MF_BYCOMMAND | (sidebar_visible_ ? MF_CHECKED : MF_UNCHECKED));
-  }
-  if (sidebar_visible_) {
-    RebuildSidebar();
-  }
-  LayoutClient();
-  PersistViewSettings();
-}
-
-void NotesWindow::EnsureOnlineNotesPanel() {
-  if (online_notes_.Hwnd()) {
-    return;
-  }
-  online_notes_.Create(GetModuleHandleW(nullptr));
-  online_notes_.SetOnOpenLocal([this](const std::wstring& p) {
-    if (!p.empty()) {
-      OpenPaths({p});
-      // 「转本地」landed a new .md under 云笔记 — the rail reads its own file
-      // list, so without this the new note stayed invisible in the tree until
-      // something else rebuilt it. Same refresh every other land-a-file path
-      // (NewOnlineNoteInEditor etc.) already does.
-      PushLibraryRailState(false);
-      Present();
-    }
-  });
-}
-
-bool NotesWindow::ShowAccountLoginDialog() {
-  const std::wstring html = MistFindAssetHtml(L"dialogs\\account_login.html");
-  if (html.empty()) {
-    // Fallback: simple prompt chain (unchanged behaviour).
-    const std::wstring login =
-        PromptTextWin32(hwnd_, L"在线笔记", L"用户名：", L"");
-    if (login.empty()) return false;
-    const std::wstring pass =
-        PromptTextWin32(hwnd_, L"在线笔记", L"密码：", L"");
-    if (pass.empty()) return false;
-    return VaultHttpLogin(login, pass);
-  }
-
-  bool logged_in = false;
-
-  MistWebDialog dlg;
-  dlg.owner = hwnd_;
-  dlg.frameless = true;
-  dlg.user_data_subdir = L"webview2-mist-account-login";
-  dlg.html_path = html;
-  dlg.build_state = []() -> std::wstring {
-    return L"{\"type\":\"state\",\"mode\":\"login\"}";
-  };
-  dlg.on_message = [&](const std::wstring& json) -> bool {
+  auto auth = std::make_shared<AuthState>();
+  // Deferred op id for this dialog only — each dialog owns its on_deferred.
+  constexpr WPARAM kDeferAuthResult = 1;
+  dlg.on_message = [&, auth](const std::wstring& json) -> bool {
     const std::wstring type = MistJsonStringField(json, L"type");
     if (type != L"action") return false;
     const std::wstring id = MistJsonStringField(json, L"id");
@@ -9760,58 +9531,91 @@ bool NotesWindow::ShowAccountLoginDialog() {
     }
     if (id == L"cancel") return true;
 
-    if (id == L"login") {
+    if (id == L"login" || id == L"register") {
+      const bool is_register = (id == L"register");
       const std::wstring login = MistJsonStringField(json, L"login");
-      const std::wstring pass  = MistJsonStringField(json, L"pass");
-      VaultLoginError lerr = VaultLoginError::None;
-      if (VaultHttpLoginEx(login, pass, &lerr)) {
-        logged_in = true;
-        // Reply success then close.
-        MistWebDialogPostJson(&dlg, L"{\"type\":\"result\",\"ok\":true}");
-        return true;
+      const std::wstring pass = MistJsonStringField(json, L"pass");
+      const std::wstring display = MistJsonStringField(json, L"display");
+      {
+        std::lock_guard<std::mutex> lk(auth->mu);
+        if (auth->busy) {
+          return false;  // ignore double submit
+        }
+        auth->busy = true;
       }
-      // Tell the two cases apart. Reporting "wrong password" for a dead
-      // network made users retype a perfectly good password.
-      const wchar_t* reason =
-          lerr == VaultLoginError::Network
-              ? L"无法连接服务器，请检查网络后重试。"
-              : (lerr == VaultLoginError::Empty ? L"请填写用户名和密码。"
-                                                : L"用户名或密码错误。");
-      std::wstring reply = L"{\"type\":\"result\",\"ok\":false,\"error\":\"";
-      reply += JsonEscLib(reason);
-      reply += L"\"}";
-      MistWebDialogPostJson(&dlg, reply);
+      HWND hwnd = dlg.hwnd;
+      std::thread([auth, is_register, login, pass, display, hwnd] {
+        std::wstring reply;
+        bool ok = false;
+        bool close_after = false;
+        if (!is_register) {
+          VaultLoginError lerr = VaultLoginError::None;
+          ok = VaultHttpLoginEx(login, pass, &lerr);
+          if (!ok) {
+            const wchar_t* reason =
+                lerr == VaultLoginError::Network
+                    ? L"无法连接服务器，请检查网络后重试。"
+                    : (lerr == VaultLoginError::Empty ? L"请填写用户名和密码。"
+                                                      : L"用户名或密码错误。");
+            reply = std::wstring(L"{\"type\":\"result\",\"ok\":false,"
+                                 L"\"error\":\"") +
+                    MistJsonEscape(reason) + L"\"}";
+          }
+        } else {
+          std::wstring err;
+          if (!VaultHttpRegister(login, pass, display, &err)) {
+            const std::wstring msg =
+                err.empty() ? L"注册失败，请稍后重试。" : err;
+            reply = std::wstring(L"{\"type\":\"result\",\"ok\":false,"
+                                 L"\"error\":\"") +
+                    MistJsonEscape(msg) + L"\"}";
+          } else if (!VaultHttpLogin(login, pass)) {
+            reply = L"{\"type\":\"result\",\"ok\":false,"
+                    L"\"error\":\"注册成功，但自动登录失败，请手动登录。\"}";
+          } else {
+            ok = true;
+          }
+        }
+        if (ok) {
+          reply = L"{\"type\":\"result\",\"ok\":true}";
+          close_after = true;
+        }
+        {
+          std::lock_guard<std::mutex> lk(auth->mu);
+          auth->busy = false;
+          auth->reply = std::move(reply);
+          auth->ok = ok;
+          auth->close = close_after;
+        }
+        if (hwnd) {
+          PostMessageW(hwnd, WM_APP + 81, 1 /* auth result */, 0);
+        }
+      }).detach();
       return false;
     }
-
-    if (id == L"register") {
-      const std::wstring login   = MistJsonStringField(json, L"login");
-      const std::wstring pass    = MistJsonStringField(json, L"pass");
-      const std::wstring display = MistJsonStringField(json, L"display");
-      std::wstring err;
-      if (!VaultHttpRegister(login, pass, display, &err)) {
-        const std::wstring msg =
-            err.empty() ? L"注册失败，请稍后重试。" : err;
-        std::wstring reply =
-            L"{\"type\":\"result\",\"ok\":false,\"error\":\""
-            + MistJsonEscape(msg) + L"\"}";
-        MistWebDialogPostJson(&dlg, reply);
-        return false;
-      }
-      // Register succeeded — auto login.
-      if (!VaultHttpLogin(login, pass)) {
-        MistWebDialogPostJson(
-            &dlg,
-            L"{\"type\":\"result\",\"ok\":false,"
-            L"\"error\":\"注册成功，但自动登录失败，请手动登录。\"}");
-        return false;
-      }
-      logged_in = true;
-      MistWebDialogPostJson(&dlg, L"{\"type\":\"result\",\"ok\":true}");
-      return true;
-    }
-
     return false;
+  };
+
+  dlg.on_deferred = [&, auth](WPARAM op, LPARAM) {
+    if (op != kDeferAuthResult) {
+      return;
+    }
+    std::wstring reply;
+    bool close_after = false;
+    {
+      std::lock_guard<std::mutex> lk(auth->mu);
+      reply.swap(auth->reply);
+      close_after = auth->close;
+      if (auth->ok) {
+        logged_in = true;
+      }
+    }
+    if (!reply.empty()) {
+      MistWebDialogPostJson(&dlg, reply);
+    }
+    if (close_after) {
+      MistWebDialogClose(&dlg);
+    }
   };
 
   MistWebDialogRun(&dlg, L"在线笔记", 400, 340);
