@@ -53,13 +53,16 @@ jobs:
             Tee-Object -FilePath build.log
           $rc = $LASTEXITCODE
           if ($rc -ne 0) {
-            $errors = Get-Content build.log |
-              Where-Object { $_ -match 'error|Error|错误' } |
-              Select-Object -First 20
-            foreach ($e in $errors) { Write-Host "::error::$e" }
-            if (-not $errors) {
-              Get-Content build.log -Tail 40 | ForEach-Object { Write-Host "::error::$_" }
+            $lines = Get-Content build.log
+            $errors = $lines | Where-Object { $_ -match ': error |error LNK|error C[0-9]|错误' } |
+              Select-Object -First 25
+            if ($errors) {
+              foreach ($e in $errors) { Write-Host "::error::$e" }
             }
+            # No recognizable error lines — dump the tail so the failure is
+            # still diagnosable from annotations alone.
+            $tail = $lines | Select-Object -Last 30
+            foreach ($t in $tail) { Write-Host "::error::TAIL| $t" }
             exit $rc
           }
           cmake --build native/build --config Release --target deskNote
