@@ -2,7 +2,7 @@
 ; Build: scripts\build_native_installer.bat
 
 #ifndef MyAppVersion
-#define MyAppVersion "4.0.59"
+#define MyAppVersion "4.0.60"
 #endif
 
 #define MyAppName "DeskTidy Native"
