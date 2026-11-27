@@ -148,6 +148,8 @@ target_compile_definitions(deskNote PRIVATE
 target_link_libraries(deskNote PRIVATE
   user32 gdi32 shell32 ole32 oleaut32 uuid comctl32 advapi32 crypt32
   gdiplus comdlg32 uxtheme version propsys winhttp bcrypt
+  # sddl: RestrictFileToCurrentUser() via vault_http.cpp's SaveSession().
+  sddl
   ${CMAKE_CURRENT_SOURCE_DIR}/third_party/webview2-x64/WebView2LoaderStatic.lib
 )
 set_target_properties(deskNote PROPERTIES OUTPUT_NAME "deskNote")
@@ -214,6 +216,10 @@ target_compile_definitions(desktidy_native PRIVATE
 target_link_libraries(desktidy_native PRIVATE
   user32 gdi32 shell32 ole32 oleaut32 uuid comctl32 advapi32
   gdiplus comdlg32 crypt32 winhttp bcrypt msimg32 version propsys wtsapi32
+  # sddl: ConvertStringSecurityDescriptorToSecurityDescriptorW(), used by
+  # RestrictFileToCurrentUser() to harden the vault session file's DACL.
+  # advapi32 is not enough — that symbol lives in sddl.lib.
+  sddl
   ${CMAKE_CURRENT_SOURCE_DIR}/third_party/webview2-x64/WebView2LoaderStatic.lib
 )
 
