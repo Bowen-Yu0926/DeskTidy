@@ -108,11 +108,26 @@ int main() {
         "wrong key rejected");
 
   UpdateSigningKey none;
+  // An unconfigured key must never be treated as "verified".
   Check(!VerifyManifestSignature(empty, sig64, none),
         "unconfigured key never verifies");
+
+  // The builtin key is either empty (rollout: signature checks are skipped and
+  // the caller falls back to the sha256 digest) or a real public key (signature
+  // enforced). This test must hold in BOTH states — asserting "always skipped"
+  // broke the release the moment a key was embedded.
   bool skipped = false;
-  Check(VerifyManifestWithBuiltinKey(empty, sig64, &skipped) && skipped,
-        "builtin unconfigured -> skipped flag set");
+  const bool builtin_configured = BuiltinUpdateKey().configured;
+  const bool wrapper_ok = VerifyManifestWithBuiltinKey(empty, sig64, &skipped);
+  if (builtin_configured) {
+    // Real key present: the BLAKE-derived RFC vector signature is not ours, so
+    // verification must fail and the skip flag must stay clear.
+    Check(!wrapper_ok, "configured key rejects foreign signature");
+    Check(!skipped, "configured key does not report skipped");
+  } else {
+    Check(wrapper_ok, "unconfigured builtin passes through");
+    Check(skipped, "unconfigured builtin sets skipped flag");
+  }
 
   if (g_bad == 0) {
     std::printf("test_update_verify: all checks passed\n");
