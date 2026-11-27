@@ -11886,6 +11886,21 @@ void NotesWindow::CleanOrphanNoteAssets() {
     if (NormalizePathKey(note).rfind(cloud_dir, 0) == 0) {
       continue;  // online-note mirror — see the header comment
     }
+    // Skip anything implausibly large for a note. Reading a stray multi-GB
+    // file into memory here would hang the UI thread; such a file is not a
+    // note body we could meaningfully scan for asset references anyway.
+    {
+      WIN32_FILE_ATTRIBUTE_DATA fad{};
+      constexpr unsigned long long kMaxScanBytes = 16ull * 1024ull * 1024ull;
+      if (!GetFileAttributesExW(note.c_str(), GetFileExInfoStandard, &fad)) {
+        continue;
+      }
+      const ULONGLONG sz =
+          (static_cast<ULONGLONG>(fad.nFileSizeHigh) << 32) | fad.nFileSizeLow;
+      if (sz > kMaxScanBytes) {
+        continue;
+      }
+    }
     std::ifstream in(note, std::ios::binary);
     if (!in) {
       continue;
