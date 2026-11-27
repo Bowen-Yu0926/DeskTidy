@@ -121,6 +121,11 @@
     background: rgba(139, 150, 168, 0.45);
   }
   .row-meta { color: var(--muted); font-size: 11px; margin-top: 4px; }
+  /* Drag-to-reorder feedback. The whole row is the drag handle; the ghost
+     fades and a thin rule shows where it will land. */
+  .row[draggable="true"] { cursor: grab; }
+  .row.dragging { opacity: .45; }
+  .row.dragging .cloud-icon, .row.dragging .more { pointer-events: none; }
   .more {
     position: absolute; top: 6px; right: 4px;
     width: 26px; height: 26px; border: 0; border-radius: 6px;
@@ -371,7 +376,7 @@
     const titleHtml = highlightMatches(it.title || '未命名', state.query);
     const metaHtml = highlightMatches(rawMeta, state.query);
 
-    return '<div class="' + cls + on + '" ' + data + '>'
+    return '<div class="' + cls + on + '" ' + data + ' draggable="true">'
       + cloudBadge
       + more
       + '<div class="row-title"><span class="row-title-text">' + titleHtml + '</span></div>'
@@ -438,6 +443,113 @@
       };
     }
   }
+  // --- drag to reorder -------------------------------------------------------
+  // The visible note list is this WebView, not the (hidden) Win32 TreeView, so
+  // ordering lives here. Order is stored per section ("online" / "local") as a
+  // list of row keys and kept in localStorage; unlisted rows fall back to the
+  // original order, so a new note never disappears.
+  var ORDER_PREFIX = 'libOrder.';
+  function orderKey(section) { return ORDER_PREFIX + section; }
+  function loadOrder(section) {
+    try {
+      var raw = localStorage.getItem(orderKey(section));
+      return raw ? JSON.parse(raw) : [];
+    } catch (e) { return []; }
+  }
+  function saveOrder(section, keys) {
+    try { localStorage.setItem(orderKey(section), JSON.stringify(keys)); } catch (e) {}
+  }
+  function rowKeyOf(el) {
+    var p = el.dataset.path || '';
+    var id = el.dataset.id || '';
+    var kind = el.dataset.kind || '';
+    return normKey((kind === 'online' && !p) ? ('online://' + id) : p);
+  }
+  // Stable sort: rows named in `order` come first in that exact order.
+  function applyOrder(items, section) {
+    var order = loadOrder(section);
+    if (!order.length) return items;
+    var rank = {};
+    // `order` is stored already-normalised (see commitOrder -> rowKeyOf), but
+    // normalise again defensively so an older entry with backslashes still maps.
+    for (var i = 0; i < order.length; i++) rank[normKey(order[i])] = i;
+    return items.slice().sort(function (a, b) {
+      var ka = normKey((rowKind(a, section) === 'online' && !a.path) ? ('online://' + a.id) : String(a.path || ''));
+      var kb = normKey((rowKind(b, section) === 'online' && !b.path) ? ('online://' + b.id) : String(b.path || ''));
+      var ra = (ka in rank) ? rank[ka] : 1e9;
+      var rb = (kb in rank) ? rank[kb] : 1e9;
+      if (ra !== rb) return ra - rb;
+      return 0;  // keep original order for unlisted rows
+    });
+  }
+
+  var dragEl = null;
+  function sectionOf(el) {
+    var k = el.dataset.kind || 'local';
+    return (k === 'online' || k === 'synced') ? 'online' : 'local';
+  }
+  function bindDrag(el) {
+    el.addEventListener('dragstart', function (e) {
+      dragEl = el;
+      el.classList.add('dragging');
+      try { e.dataTransfer.setData('text/plain', rowKeyOf(el)); } catch (_) {}
+      e.dataTransfer.effectAllowed = 'move';
+      // No stopPropagation: the row also has a click handler, and swallowing
+      // the event here made selection feel unresponsive.
+    });
+    el.addEventListener('dragend', function () {
+      el.classList.remove('dragging');
+      // Do NOT clear dragEl here: drop fires before dragend in some engines,
+      // and commitOrder still needs it. It is cleared there instead.
+    });
+    el.addEventListener('dragover', function (e) {
+      if (!dragEl || dragEl === el) return;
+      // Same section only — moving between 在线/本地 is 转云/转本地, a different
+      // operation with its own buttons. Both sections share #list, so compare
+      // the derived section rather than parentNode.
+      if (sectionOf(dragEl) !== sectionOf(el)) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      var r = el.getBoundingClientRect();
+      var after = (e.clientY - r.top) > r.height / 2;
+      // Skip the move when the row is already where it would land; without
+      // this, dragover fires continuously and the row jitters.
+      if (after) {
+        if (dragEl.nextSibling === el) return;
+        el.parentNode.insertBefore(dragEl, el.nextSibling);
+      } else {
+        if (dragEl.previousSibling === el) return;
+        el.parentNode.insertBefore(dragEl, el);
+      }
+    });
+    el.addEventListener('drop', function (e) {
+      e.preventDefault();
+      e.stopPropagation();
+      // dragEl (the row that moved), not el (the row it was dropped on).
+      commitOrder(dragEl);
+    });
+  }
+  function commitOrder(draggedEl) {
+    if (!draggedEl) return;
+    var kind = draggedEl.dataset.kind || 'local';
+    var section = (kind === 'online' || kind === 'synced') ? 'online' : 'local';
+    // Online and local rows share the same #list container, so collect only
+    // the rows of the dragged row's section — otherwise each section's stored
+    // order would contain the other section's keys.
+    var all = Array.prototype.slice.call(
+        document.querySelectorAll('#list .row'));
+    var mine = all.filter(function (el) {
+      var k = el.dataset.kind || 'local';
+      return ((k === 'online' || k === 'synced') ? 'online' : 'local') === section;
+    });
+    // rowKeyOf already runs normKey, so what is stored is the same form the
+    // comparator looks up. Keeping them identical avoids relying on the
+    // defensive re-normalisation inside applyOrder.
+    saveOrder(section, mine.map(rowKeyOf));
+    dragEl = null;
+    render();
+  }
+
   function render() {
     hideMenu();
     const box = document.getElementById('list');
@@ -445,8 +557,8 @@
     // scroll position or the panel jumps to the top on each keystroke of the
     // 280ms-debounced search and on every save-driven refresh.
     const keepScroll = box ? box.scrollTop : 0;
-    const online = (state.online || []).filter(matchTitle);
-    const local = (state.local || []).filter(matchTitle);
+    const online = applyOrder((state.online || []).filter(matchTitle), 'online');
+    const local = applyOrder((state.local || []).filter(matchTitle), 'local');
     const hasOnlineBlock = online.length > 0 || state.logged_in;
     let html = '';
     if (!hasOnlineBlock) {
@@ -484,7 +596,10 @@
         post({ type: 'action', id: 'login' });
       };
     }
-    box.querySelectorAll('.row').forEach(bindRow);
+    box.querySelectorAll('.row').forEach(function (el) {
+      bindRow(el);
+      bindDrag(el);
+    });
   }
   const backdrop = document.getElementById('menu-backdrop');
   if (backdrop) {

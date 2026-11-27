@@ -11656,7 +11656,13 @@ void NotesWindow::RebuildSidebar() {
   PushLibraryRailState(false);
 }
 
-// --- Library tree drag-to-order -------------------------------------------
+// --- Library tree drag-to-order (FALLBACK PATH ONLY) -----------------------
+// When WebView2 is available the note list is rendered by notes_library.html and
+// this TreeView is hidden (see LayoutClient: `ShowWindow(sidebar_, SW_HIDE)`),
+// so the drag users actually interact with lives in that page. This Win32
+// implementation only runs on the fallback path where the WebView failed to
+// create — it is kept so that mode is not feature-less.
+//
 // TVN_BEGINDRAG starts a modal-ish drag: we own the loop with SetCapture and
 // move the dragged item to the hovered sibling on each WM_MOUSEMOVE. Order is
 // persisted per parent folder in sidebar_order_ so it survives rebuilds.
