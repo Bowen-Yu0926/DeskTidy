@@ -11792,8 +11792,10 @@ void NotesWindow::MoveSidebarItem(HTREEITEM drag_item, HTREEITEM target_item,
   sidebar_drag_after_ = after;
 }
 
-// Apply the recorded drop: rebuild the sibling order, persist it, and reorder
-// the visible items without a full RebuildSidebar (which would also walk disk).
+// Apply the recorded drop: rebuild the sibling ordering list for that folder,
+// persist it, then rebuild the tree once so the new order shows. A single
+// rebuild on drop is fine (and reuses the peek/title caches); it is the
+// per-mousemove re-insert that was removed from MoveSidebarItem().
 void NotesWindow::ApplySidebarDrop() {
   HTREEITEM drag_item = sidebar_drag_item_;
   HTREEITEM target_item = sidebar_drag_target_;
