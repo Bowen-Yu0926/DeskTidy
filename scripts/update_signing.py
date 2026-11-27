@@ -30,6 +30,16 @@ import os
 import sys
 from pathlib import Path
 
+# Windows' default console encoding (cp1252 in CI) cannot represent the Chinese
+# status strings printed below, and `print` raises UnicodeEncodeError — which
+# aborted the release AFTER the signature had already been written. Force UTF-8
+# on stdout/stderr; no-op on platforms that are already UTF-8.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8")
+    except (AttributeError, ValueError):
+        pass
+
 try:
     from cryptography.hazmat.primitives import serialization
     from cryptography.hazmat.primitives.asymmetric.ed25519 import (
