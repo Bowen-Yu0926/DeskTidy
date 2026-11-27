@@ -352,6 +352,10 @@ constexpr UINT_PTR kTitleSyncTimer = 9;
 // View settings (font size/face, toggles) are persisted on a short debounce:
 // Ctrl+wheel zoom used to do a blocking write+flush+rename per wheel notch.
 constexpr UINT_PTR kPersistViewTimer = 10;
+// Autosave: re-armed on every edit, fires after a short idle gap. A crash or
+// power loss otherwise loses everything since the last tab switch / close.
+constexpr UINT_PTR kAutoSaveTimer = 11;
+constexpr UINT kAutoSaveIdleMs = 5000;
 constexpr UINT kPersistViewDebounceMs = 400;
 constexpr int kStatusBarH = 26;
 
@@ -1964,6 +1968,7 @@ void NotesWindow::Destroy() {
     PersistViewSettings();
     KillTimer(hwnd_, kStatusTimer);
     KillTimer(hwnd_, kPersistTabsTimer);
+    KillTimer(hwnd_, kAutoSaveTimer);
     KillTimer(hwnd_, kGutterTimer);
   }
   online_notes_.Destroy();
@@ -4203,6 +4208,10 @@ void NotesWindow::SwitchToTab(int index, bool save_current) {
   // tab_index_/edit_ repoint would read the wrong tab's body.
   if (hwnd_) {
     KillTimer(hwnd_, kTitleSyncTimer);
+    // The pending autosave belongs to the outgoing tab; Save() below runs
+    // synchronously before the tab repoints, so dropping the timer here is
+    // enough (the incoming tab re-arms on its first edit).
+    KillTimer(hwnd_, kAutoSaveTimer);
   }
   const std::wstring incoming = tab_paths_[static_cast<size_t>(index)];
   const bool same_path =
@@ -5904,6 +5913,13 @@ void NotesWindow::MarkDirty() {
   }
   // Already dirty: skip title/status churn on every Toast change post, but
   // still poke the tab bar so the save glyph cannot stick on「✓».
+  // Arm (or re-arm) the idle autosave on EVERY edit, including the ones that
+  // take the "already dirty" fast path below — otherwise a long editing
+  // session would save once, then never again. Re-arming on each keystroke
+  // means it only fires after the user pauses, so it never competes.
+  if (hwnd_) {
+    SetTimer(hwnd_, kAutoSaveTimer, kAutoSaveIdleMs, nullptr);
+  }
   if (dirty_) {
     if (tabs_) {
       InvalidateRect(tabs_, nullptr, FALSE);
@@ -5911,7 +5927,6 @@ void NotesWindow::MarkDirty() {
     return;
   }
   dirty_ = true;
-  RefreshTitle();
   RefreshCurrentTabLabel();
   UpdateStatusBar();
 }
@@ -14316,6 +14331,17 @@ LRESULT NotesWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
       }
       if (wparam == kPersistTabsTimer) {
         PersistTabs();
+        return 0;
+      }
+      if (wparam == kAutoSaveTimer) {
+        KillTimer(hwnd_, kAutoSaveTimer);
+        // Idle autosave. Only touch the cloud when the tab is actually dirty
+        // and fully loaded — an online note whose body is still in flight (or
+        // failed to load) must not be written back, which Save() already
+        // guards via pending_online_load_ids_ / online_load_failed_ids_.
+        if (dirty_ && !loading_ && !path_.empty()) {
+          Save(wysiwyg_ ? true : false, /*push_cloud=*/true);
+        }
         return 0;
       }
       if (wparam == kPersistViewTimer) {
