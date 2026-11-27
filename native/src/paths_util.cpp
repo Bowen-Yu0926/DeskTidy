@@ -6,7 +6,6 @@
 #include <ShlObj.h>
 #include <Shellapi.h>
 #include <aclapi.h>   // SetNamedSecurityInfoW
-#include <sddl.h>     // ConvertStringSecurityDescriptorToSecurityDescriptorW
 
 #include <atomic>
 #include <cstring>
@@ -711,28 +710,56 @@ bool AdoptOrphanPortableSidecarOnce() {
 // vault session file holds a bearer token plus the KDF salt and key_check —
 // enough to grind the master password offline — so it gets an explicit,
 // owner-only DACL.
+//
+// Built with SetEntriesInAclW (advapi32) rather than an SDDL string: the
+// SDDL helper lives in sddl.lib, which is not present on every build image and
+// broke CI with LNK1181. This path needs nothing beyond advapi32.
 bool RestrictFileToCurrentUser(const std::wstring& path) {
   if (path.empty()) {
     return false;
   }
-  PSECURITY_DESCRIPTOR sd = nullptr;
-  if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(
-          L"D:P(A;OICI;FA;;;OW)", SDDL_REVISION_1, &sd, nullptr)) {
+  // Current user's SID.
+  HANDLE token = nullptr;
+  if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) {
     return false;
   }
-  BOOL ok = FALSE;
-  PACL dacl = nullptr;
-  BOOL dacl_present = FALSE;
-  BOOL dacl_defaulted = FALSE;
-  if (GetSecurityDescriptorDacl(sd, &dacl_present, &dacl, &dacl_defaulted) &&
-      dacl_present) {
-    // PROTECTED_DACL_SECURITY_INFORMATION removes inherited ACEs, so the
-    // explicit owner-only entry is the whole story.
-    ok = SetNamedSecurityInfoW(
-             const_cast<LPWSTR>(path.c_str()), SE_FILE_OBJECT,
-             DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
-             nullptr, nullptr, dacl, nullptr) == ERROR_SUCCESS;
+  std::vector<BYTE> sid_buf;
+  DWORD need = 0;
+  GetTokenInformation(token, TokenUser, nullptr, 0, &need);
+  if (need == 0) {
+    CloseHandle(token);
+    return false;
   }
-  LocalFree(sd);
-  return ok != FALSE;
+  sid_buf.resize(need);
+  const BOOL got = GetTokenInformation(token, TokenUser, sid_buf.data(), need,
+                                       &need);
+  CloseHandle(token);
+  if (!got) {
+    return false;
+  }
+  auto* user = reinterpret_cast<TOKEN_USER*>(sid_buf.data());
+
+  // EXPLICIT_ACCESS: full control for the current user, nothing else. Setting
+  // it with SET_ACCESS (not GRANT) plus PROTECTED_DACL below drops the
+  // inherited entries, so "everyone else" ends up with no access at all.
+  EXPLICIT_ACCESSW ea{};
+  ea.grfAccessPermissions = GENERIC_ALL;
+  ea.grfAccessMode = SET_ACCESS;
+  ea.grfInheritance = NO_INHERITANCE;
+  ea.Trustee.TrusteeForm = TRUSTEE_IS_SID;
+  ea.Trustee.TrusteeType = TRUSTEE_IS_USER;
+  ea.Trustee.ptstrName = reinterpret_cast<LPWSTR>(user->User.Sid);
+
+  PACL acl = nullptr;
+  if (SetEntriesInAclW(1, &ea, nullptr, &acl) != ERROR_SUCCESS || !acl) {
+    return false;
+  }
+  LPWSTR p = const_cast<LPWSTR>(path.c_str());
+  // PROTECTED_DACL_SECURITY_INFORMATION stops inheritance from the parent.
+  const DWORD rc = SetNamedSecurityInfoW(
+      p, SE_FILE_OBJECT,
+      DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION, nullptr,
+      nullptr, acl, nullptr);
+  LocalFree(acl);
+  return rc == ERROR_SUCCESS;
 }
