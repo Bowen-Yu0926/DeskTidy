@@ -11858,6 +11858,20 @@ std::wstring LeafOfPath(const std::wstring& p) {
   const size_t slash = p.find_last_of(L"\\/");
   return slash == std::wstring::npos ? p : p.substr(slash + 1);
 }
+
+// Case-folded bare filename, used as the reference-set key. NormalizePathKey
+// must NOT be used here: it resolves through GetFullPathNameW, so a bare name
+// like "x.png" becomes "<cwd>\\x.png" and can never match a real file —
+// every image would then look unreferenced and be deleted.
+std::wstring AssetKey(const std::wstring& name) {
+  std::wstring k = LeafOfPath(name);
+  for (auto& c : k) {
+    if (c >= L'A' && c <= L'Z') {
+      c = static_cast<wchar_t>(c - L'A' + L'a');
+    }
+  }
+  return k;
+}
 }  // namespace
 
 void NotesWindow::CleanOrphanNoteAssets() {
@@ -11895,7 +11909,7 @@ void NotesWindow::CleanOrphanNoteAssets() {
         ++end;
       }
       if (end > begin) {
-        referenced.insert(NormalizePathKey(body.substr(begin, end - begin)));
+        referenced.insert(AssetKey(body.substr(begin, end - begin)));
       }
       pos = end;
     }
@@ -11930,7 +11944,26 @@ void NotesWindow::CleanOrphanNoteAssets() {
       if (!is_assets) {
         continue;
       }
-      if (referenced.count(NormalizePathKey(name)) != 0) {
+      // Never touch system/hidden files (desktop.ini, thumbnails) or anything
+      // that is not an image this editor knows how to insert — the reference
+      // scan only collects "assets/<name>" strings, so an unreferenced .txt or
+      // .json sitting in assets/ is not an orphan image, it is just a file.
+      if (fd.dwFileAttributes & (FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM)) {
+        continue;
+      }
+      {
+        const size_t dot = name.find_last_of(L'.');
+        std::wstring ext = dot == std::wstring::npos ? L"" : name.substr(dot);
+        for (auto& c : ext) {
+          if (c >= L'A' && c <= L'Z') {
+            c = static_cast<wchar_t>(c - L'A' + L'a');
+          }
+        }
+        if (!IsImageDropSuffix(ext)) {
+          continue;
+        }
+      }
+      if (referenced.count(AssetKey(name)) != 0) {
         continue;
       }
       orphans.push_back(full);
@@ -14278,7 +14311,7 @@ LRESULT NotesWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
         // failed to load) must not be written back, which Save() already
         // guards via pending_online_load_ids_ / online_load_failed_ids_.
         if (dirty_ && !loading_ && !path_.empty()) {
-          Save(wysiwyg_ ? true : false, /*push_cloud=*/true);
+          Save(wysiwyg_, /*push_cloud=*/true);
         }
         return 0;
       }
