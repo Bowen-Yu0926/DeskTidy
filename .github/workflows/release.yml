@@ -153,6 +153,7 @@ jobs:
           # without one would brick auto-update for every user on that build.
           $verifySrc = "native/src/update_verify.cpp"
           $hasKey = -not (Select-String -Path $verifySrc -Pattern 'kBuiltinSigningKeyB64 = "\s*"' -Quiet)
+          Add-Content $env:GITHUB_STEP_SUMMARY "1. hasKey=$hasKey secretLen=$($env:UPDATE_SIGNING_KEY_B64.Length)"
 
           if (-not $env:UPDATE_SIGNING_KEY_B64) {
             if ($hasKey) {
@@ -175,6 +176,7 @@ jobs:
           # Convert.FromBase64String throws on ANY whitespace it considers
           # invalid. Trim first and report the length so a mismatch is obvious.
           $b64 = ($env:UPDATE_SIGNING_KEY_B64 -replace '\s', '')
+          Add-Content $env:GITHUB_STEP_SUMMARY "2. normalizedLen=$($b64.Length)"
           Write-Host "key b64 length: $($b64.Length)"
           if ($b64.Length -ne 44) {
             throw "UPDATE_SIGNING_KEY_B64 has length $($b64.Length), expected 44 (32 raw bytes, padded base64)"
@@ -188,6 +190,7 @@ jobs:
           if ($bytes.Length -ne 32) {
             throw "decoded key is $($bytes.Length) bytes, expected 32"
           }
+          Add-Content $env:GITHUB_STEP_SUMMARY "3. decoded=$($bytes.Length) bytes"
           [IO.File]::WriteAllBytes($keyFile, $bytes)
           try {
             python scripts/update_signing.py sign $setup --version $version --key $keyFile 2>&1 |
