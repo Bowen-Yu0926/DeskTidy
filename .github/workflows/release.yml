@@ -35,6 +35,16 @@ jobs:
         with:
           python-version: '3.11'
 
+      - name: Install signing dependency
+        shell: pwsh
+        run: |
+          # scripts/update_signing.py needs `cryptography` for Ed25519 sign/verify.
+          # setup-python only provisions the interpreter — without this the
+          # "Sign installer manifest" step exited on the module's ImportError
+          # guard and failed the release.
+          python -m pip install --disable-pip-version-check --no-input cryptography
+          if ($LASTEXITCODE -ne 0) { throw 'pip install cryptography failed' }
+
       - name: Resolve release version
         shell: pwsh
         run: |
@@ -191,27 +201,6 @@ jobs:
             Remove-Item $keyFile -Force -ErrorAction SilentlyContinue
           }
           Write-Host "signed: $setup.manifest"
-
-      - name: Publish release log on failure
-        if: failure()
-        shell: pwsh
-        run: |
-          # Same trick as build-check: job logs need admin rights via the API,
-          # so a failed release leaves no readable trace otherwise.
-          git config user.email "ci@desktidy.local"
-          git config user.name "release-ci"
-          $log = @(
-            "RELEASE_VERSION=$env:RELEASE_VERSION",
-            "secret_len=$($env:UPDATE_SIGNING_KEY_B64.Length)",
-            "dist listing:",
-            (Get-ChildItem dist -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name) -join "`n"
-          ) -join "`n"
-          Set-Content -Path release-debug.log -Value $log -Encoding utf8
-          git checkout --orphan release-log 2>$null
-          git rm -rf --cached . 2>$null | Out-Null
-          git add -f release-debug.log
-          git commit -m "release debug ${{ github.sha }}" --no-verify
-          git push -f origin release-log
 
       - name: Verify installer artifact
         shell: pwsh
