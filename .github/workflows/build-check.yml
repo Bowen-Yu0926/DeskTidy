@@ -47,26 +47,29 @@ jobs:
       - name: Build native targets
         shell: pwsh
         run: |
-          # Capture the compiler output so failures surface as annotations
-          # instead of a bare "exit code 1" (job logs need admin rights).
+          # Compile and capture output. On failure, publish the interesting
+          # lines to the step summary (always visible) and as annotations.
+          # Job logs need admin rights via the API, so this is the only way to
+          # see the actual compiler message.
           cmake --build native/build --config Release --target desktidy_native 2>&1 |
             Tee-Object -FilePath build.log
-          $rc = $LASTEXITCODE
-          if ($rc -ne 0) {
-            $lines = Get-Content build.log
-            $errors = $lines | Where-Object { $_ -match ': error |error LNK|error C[0-9]|错误' } |
+          if ($LASTEXITCODE -ne 0) {
+            $all = Get-Content build.log
+            $errors = $all | Where-Object { $_ -match ': error |error LNK|error C[0-9]|error MSB' } |
               Select-Object -First 25
-            if ($errors) {
-              foreach ($e in $errors) { Write-Host "::error::$e" }
+            $report = if ($errors) { $errors } else { $all | Select-Object -Last 40 }
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "## Build failed" -Encoding utf8
+            foreach ($l in $report) {
+              Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ("``" + $l + "``") -Encoding utf8
+              Write-Output "::error::$l"
             }
-            # No recognizable error lines — dump the tail so the failure is
-            # still diagnosable from annotations alone.
-            $tail = $lines | Select-Object -Last 30
-            foreach ($t in $tail) { Write-Host "::error::TAIL| $t" }
-            exit $rc
+            exit 1
           }
           cmake --build native/build --config Release --target deskNote
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if ($LASTEXITCODE -ne 0) {
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "## deskNote build failed" -Encoding utf8
+            exit 1
+          }
 
       - name: Run update-signature test
         shell: pwsh
