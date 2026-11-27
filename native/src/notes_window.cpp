@@ -111,6 +111,7 @@ constexpr int kMenuTypewriter = 2125;
 constexpr int kMenuNewTab = 2126;
 constexpr int kMenuCloseTab = 2127;
 constexpr int kMenuOpen = 2128;
+constexpr int kMenuCleanOrphanAssets = 2175;
 constexpr int kMenuHelp = 2129;
 constexpr int kMenuOpenFolder = 2130;
 constexpr int kMenuSidebar = 2131;
@@ -1120,6 +1121,9 @@ bool NotesWindow::Create(HINSTANCE instance) {
   // Format menu removed — toolbar + Ctrl+B/I/U/K (and Shift+Enter soft break).
   HMENU help = CreatePopupMenu();
   AppendMenuW(help, MF_STRING, kMenuHelp, L"DeskNote 使用说明\tF1");
+  AppendMenuW(help, MF_SEPARATOR, 0, nullptr);
+  AppendMenuW(help, MF_STRING, kMenuCleanOrphanAssets,
+              L"清理未引用的图片…");
   AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(help), Tr("help").c_str());
   menu_ = menu;
   SetMenu(hwnd_, menu);
@@ -11839,6 +11843,133 @@ void NotesWindow::LoadSidebarOrder() {
   }
 }
 
+// Move images in <note folder>/assets that no note body references to the
+// Recycle Bin (recoverable). Deliberately conservative — it would rather miss
+// an orphan than delete a live image:
+//   * only the local library is scanned, and the 云笔记 subtree is skipped —
+//     an online-only note has no local body, so its images would look orphaned;
+//   * references are matched by bare FILENAME across the whole library, so a
+//     same-named file in another note's assets/ also counts as referenced
+//     (under-deletes rather than risk a false positive);
+//   * the user has to invoke it explicitly from the menu and confirm the list.
+namespace {
+// Last path component ("…\\assets" -> "assets").
+std::wstring LeafOfPath(const std::wstring& p) {
+  const size_t slash = p.find_last_of(L"\\/");
+  return slash == std::wstring::npos ? p : p.substr(slash + 1);
+}
+}  // namespace
+
+void NotesWindow::CleanOrphanNoteAssets() {
+  const std::wstring root = NotesLibraryDir(false);
+  if (root.empty()) {
+    return;
+  }
+  // 1) Collect every referenced asset filename from all note bodies.
+  std::set<std::wstring> referenced;
+  const std::wstring cloud_dir = NormalizePathKey(JoinPath(root, L"云笔记"));
+  for (const auto& note : ListNoteFiles(root)) {
+    if (NormalizePathKey(note).rfind(cloud_dir, 0) == 0) {
+      continue;  // online-note mirror — see the header comment
+    }
+    std::ifstream in(note, std::ios::binary);
+    if (!in) {
+      continue;
+    }
+    std::ostringstream ss;
+    ss << in.rdbuf();
+    const std::string raw = ss.str();
+    std::wstring body;
+    TextFileEncoding enc = TextFileEncoding::Utf8;
+    if (!DecodeTextFileBytes(raw, &body, &enc)) {
+      body = WidenUtf8(raw);
+    }
+    size_t pos = 0;
+    const std::wstring needle = L"assets/";
+    while ((pos = body.find(needle, pos)) != std::wstring::npos) {
+      size_t begin = pos + needle.size();
+      size_t end = begin;
+      while (end < body.size() && body[end] != L'"' && body[end] != L'\'' &&
+             body[end] != L')' && body[end] != L' ' && body[end] != L'\n' &&
+             body[end] != L'\r' && body[end] != L'>' && body[end] != L'#') {
+        ++end;
+      }
+      if (end > begin) {
+        referenced.insert(NormalizePathKey(body.substr(begin, end - begin)));
+      }
+      pos = end;
+    }
+  }
+
+  // 2) Walk every assets/ directory in the local library (skipping 云笔记)
+  //    and diff against the reference set.
+  std::vector<std::wstring> orphans;
+  std::vector<std::wstring> dirs{root};
+  for (size_t i = 0; i < dirs.size() && dirs.size() < 512; ++i) {
+    const std::wstring dir = dirs[i];
+    if (NormalizePathKey(dir).rfind(cloud_dir, 0) == 0) {
+      continue;
+    }
+    const bool is_assets =
+        _wcsicmp(LeafOfPath(dir).c_str(), L"assets") == 0;
+    WIN32_FIND_DATAW fd{};
+    const HANDLE h = FindFirstFileW((dir + L"\\*").c_str(), &fd);
+    if (h == INVALID_HANDLE_VALUE) {
+      continue;
+    }
+    do {
+      const std::wstring name = fd.cFileName;
+      if (name == L"." || name == L"..") {
+        continue;
+      }
+      const std::wstring full = JoinPath(dir, name);
+      if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+        dirs.push_back(full);
+        continue;
+      }
+      if (!is_assets) {
+        continue;
+      }
+      if (referenced.count(NormalizePathKey(name)) != 0) {
+        continue;
+      }
+      orphans.push_back(full);
+    } while (FindNextFileW(h, &fd));
+    FindClose(h);
+  }
+
+  if (orphans.empty()) {
+    MistAlert(hwnd_, L"清理图片", L"没有发现未被引用的图片。",
+              MistMsgTone::Info);
+    return;
+  }
+  std::wstring msg = L"发现 " + std::to_wstring(orphans.size()) +
+                     L" 个未被任何笔记引用的图片：\n\n";
+  const size_t kPreview = 8;
+  for (size_t i = 0; i < orphans.size() && i < kPreview; ++i) {
+    msg += L"  " + LeafOfPath(orphans[i]) + L"\n";
+  }
+  if (orphans.size() > kPreview) {
+    msg += L"  …\n";
+  }
+  msg += L"\n将移入回收站（可恢复）。确定继续？";
+  if (!MistConfirm(hwnd_, L"清理未引用的图片", msg.c_str(), MistMsgTone::Warn)) {
+    return;
+  }
+  int moved = 0;
+  for (const auto& p : orphans) {
+    if (RecyclePathQuiet(hwnd_, p)) {
+      ++moved;
+    }
+  }
+  InvalidateNotesFileCache();
+  if (status_) {
+    SetWindowTextW(status_,
+                   (L"已清理 " + std::to_wstring(moved) + L" 个未引用的图片")
+                       .c_str());
+  }
+}
+
 void NotesWindow::SidebarUpsertFile(const std::wstring& path) {
   if (!sidebar_ || path.empty()) {
     return;
@@ -13312,6 +13443,9 @@ LRESULT NotesWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
           return 0;
         case kMenuOpenFolder:
           OpenNotesFolder();
+          return 0;
+        case kMenuCleanOrphanAssets:
+          CleanOrphanNoteAssets();
           return 0;
         case kMenuHelp:
           ShowHelp();

@@ -168,6 +168,11 @@ class NotesWindow {
   void ShowHelp();
   void ToggleSidebar();
   void RebuildSidebar();
+  // Scan the local notes library for images under each note folder's assets/
+  // that no note body references, and move them to the Recycle Bin. Excludes
+  // the 云笔记 tree entirely: an online-only note has no local .md to scan,
+  // so its images would look orphaned and be deleted while still in use.
+  void CleanOrphanNoteAssets();
   // Drag-to-reorder in the library tree (WM_NOTIFY TVN_BEGINDRAG).
   void StartSidebarDrag(HTREEITEM item);
   void MoveSidebarItem(HTREEITEM drag_item, HTREEITEM target_item, bool after);
