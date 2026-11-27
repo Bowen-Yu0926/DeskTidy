@@ -246,7 +246,6 @@ class NotesWindow {
   void ScheduleSyncFilenameToTitle();
   void HandleEditContextMenu(POINT screen_pt);
   void HandleWysiwygContextMenu(POINT pt, bool has_sel);
-  void ActivateNextTab(bool forward);
   void HandleTabContextMenu(int index, POINT screen_pt);
   // Prompt rename for open tab (right-click or double-click on chip body).
   void RenameTabAt(int index);
