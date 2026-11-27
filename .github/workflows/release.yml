@@ -144,6 +144,21 @@ jobs:
         env:
           UPDATE_SIGNING_KEY_B64: ${{ secrets.UPDATE_SIGNING_KEY_B64 }}
         run: |
+          # Report the full error no matter where it comes from: job logs need
+          # admin rights via the API, so failures were invisible.
+          trap {
+            $msg = "TRAP: $($_.Exception.Message)`n$($_ | Out-String)"
+            Set-Content -Path sign-error.txt -Value $msg -Encoding utf8
+            git config user.email "ci@desktidy.local"
+            git config user.name "release-ci"
+            git checkout -- . 2>$null
+            git switch -C release-log 2>$null
+            git add -f sign-error.txt
+            git commit -m "sign error ${{ github.sha }}" --no-verify 2>$null
+            git push -f origin release-log 2>$null
+            Write-Host $msg
+            exit 1
+          }
           $version = $env:RELEASE_VERSION
           $setup = "dist\DeskTidy_Setup_$version.exe"
           if (-not (Test-Path $setup)) { throw "Missing $setup" }
