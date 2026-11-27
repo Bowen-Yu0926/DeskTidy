@@ -4,8 +4,8 @@
 LANGUAGE 0x09, 0x01
 
 VS_VERSION_INFO VERSIONINFO
- FILEVERSION 4,0,58,0
- PRODUCTVERSION 4,0,58,0
+ FILEVERSION 4,0,59,0
+ PRODUCTVERSION 4,0,59,0
  FILEFLAGSMASK 0x3fL
  FILEFLAGS 0x0L
  FILEOS VOS_NT_WINDOWS32
@@ -18,12 +18,12 @@ BEGIN
         BEGIN
             VALUE "CompanyName", "DeskTidy"
             VALUE "FileDescription", "DeskNote - 系统文件提权保存"
-            VALUE "FileVersion", "4.0.58"
+            VALUE "FileVersion", "4.0.59"
             VALUE "InternalName", "deskNote"
             VALUE "LegalCopyright", "DeskTidy"
             VALUE "OriginalFilename", "deskNote.exe"
             VALUE "ProductName", "DeskNote"
-            VALUE "ProductVersion", "4.0.58"
+            VALUE "ProductVersion", "4.0.59"
         END
     END
     BLOCK "VarFileInfo"
