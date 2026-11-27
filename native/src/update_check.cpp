@@ -813,7 +813,15 @@ void StartUpdateInstallAsync(HWND owner) {
               std::wstring serr;
               bool sig_ok = false;
               bool sig_skipped = false;
-              if (!FindAssetByName(body, man_name, &manifest_url) ||
+              // Check whether this build even has a key BEFORE demanding the
+              // signature assets. The rollout window ships with an empty key;
+              // rejecting for a "missing manifest" the client never asked for
+              // would block every update until the key is embedded.
+              if (!BuiltinUpdateKey().configured) {
+                sig_ok = true;  // digest-only — see VerifyManifestWithBuiltinKey
+                LogLine(L"[update] builtin signing key not configured — "
+                        L"signature check SKIPPED (digest only)");
+              } else if (!FindAssetByName(body, man_name, &manifest_url) ||
                   !FindAssetByName(body, sig_name, &sig_url)) {
                 sig_ok = false;
                 r->error = L"该版本未提供更新签名（manifest/.sig），已取消安装";

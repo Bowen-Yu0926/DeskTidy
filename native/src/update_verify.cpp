@@ -10,12 +10,14 @@ namespace {
 
 // The public half of the release signing key.
 //
-// PLACEHOLDER — replace with the real key once generated:
-//   python scripts/gen_update_signing_key.py
-// prints the exact line to paste here. Left empty on purpose: an unset key
-// makes checks fall back to digest-only (with a loud log) instead of silently
-// trusting an attacker, and we never want a made-up key to look configured.
-constexpr const char* kBuiltinSigningKeyB64 = "";
+// Generated once with `python scripts/update_signing.py genkey`; the matching
+// private key lives offline and in the UPDATE_SIGNING_KEY_B64 CI secret.
+// Rotating it means: generate a new pair, paste the new public value here,
+// ship a release, and only then destroy the old private key.
+//
+// Leaving this empty is still a legal state — checks then fall back to
+// digest-only with a loud log rather than silently trusting anything.
+constexpr const char* kBuiltinSigningKeyB64 = "xdsBToXbWJPfAWNkVObz4QwKdRrEcwO7jinc+jXo3R8=";
 
 int B64Val(char c) {
   if (c >= 'A' && c <= 'Z') return c - 'A';
