@@ -148,6 +148,7 @@ jobs:
           # admin rights via the API, so failures were invisible.
           trap {
             $msg = "TRAP: $($_.Exception.Message)`n$($_ | Out-String)"
+            if (Test-Path sign-out.log) { $msg += "`n--- python output ---`n" + (Get-Content sign-out.log -Raw) }
             Set-Content -Path sign-error.txt -Value $msg -Encoding utf8
             git config user.email "ci@desktidy.local"
             git config user.name "release-ci"
@@ -208,8 +209,9 @@ jobs:
           Add-Content $env:GITHUB_STEP_SUMMARY "3. decoded=$($bytes.Length) bytes"
           [IO.File]::WriteAllBytes($keyFile, $bytes)
           try {
-            python scripts/update_signing.py sign $setup --version $version --key $keyFile 2>&1 |
-              Tee-Object -FilePath sign-out.log
+            $pyOut = python scripts/update_signing.py sign $setup --version $version --key $keyFile 2>&1
+            $pyOut | ForEach-Object { Write-Host $_ }
+            Set-Content -Path sign-out.log -Value ($pyOut -join "`n") -Encoding utf8
             if ($LASTEXITCODE -ne 0) {
               # Push the captured output so it is readable without admin rights.
               git config user.email "ci@desktidy.local"
