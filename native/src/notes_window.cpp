@@ -67,6 +67,10 @@ namespace {
 bool IsVaultAccountsNotePath(const std::wstring&) { return false; }
 
 constexpr wchar_t kClassName[] = L"DeskTidyNativeNotes";
+
+// Notification HWND for the detached cloud-push worker (defined early: it is
+// cleared in NotesWindow::Destroy, which appears far above the push code).
+std::atomic<HWND> g_cloud_push_notify_hwnd{nullptr};
 // 提权写盘完成后，由原普通权限窗口恢复并重新加载目标文件。
 constexpr UINT kMsgElevatedSaveDone = WM_APP + 90;
 struct ElevatedSaveDone {
@@ -9508,6 +9512,66 @@ void NotesWindow::ShowFind(bool replace) {
     find_wrap_ = json.find(L"\"wrap\":false") == std::wstring::npos;
     find_all_tabs_ = json.find(L"\"all_tabs\":true") != std::wstring::npos;
   };
+  dlg.on_message = [&](const std::wstring& json) -> bool {
+    const std::wstring type = MistJsonStringField(json, L"type");
+    if (type != L"action") {
+      return false;
+    }
+    const std::wstring id = MistJsonStringField(json, L"id");
+    if (id == L"ready") {
+      MistWebDialogPushState(&dlg);
+      return false;
+    }
+    if (id == L"close") {
+      return true;
+    }
+    sync_from_json(json);
+    if (id == L"find_next") {
+      RunFindOnce(true, find_wrap_, find_match_case_, find_whole_word_,
+                  &status);
+      MistWebDialogPushState(&dlg);
+      return false;
+    }
+    if (id == L"find_prev") {
+      RunFindOnce(false, find_wrap_, find_match_case_, find_whole_word_,
+                  &status);
+      MistWebDialogPushState(&dlg);
+      return false;
+    }
+    if (id == L"replace") {
+      RunReplaceOnce(find_match_case_, find_whole_word_, find_wrap_, &status);
+      MistWebDialogPushState(&dlg);
+      return false;
+    }
+    if (id == L"replace_all") {
+      const int n =
+          find_all_tabs_
+              ? RunReplaceAllTabs(find_match_case_, find_whole_word_)
+              : RunReplaceAll(find_match_case_, find_whole_word_);
+      status = L"已替换 " + std::to_wstring(n) + L" 处";
+      MistWebDialogPushState(&dlg);
+      return false;
+    }
+    return false;
+  };
+  MistWebDialogRun(&dlg, replace ? L"替换" : L"查找", 460,
+                   replace ? 330 : 280);
+}
+
+bool NotesWindow::ShowAccountLoginDialog() {
+  const std::wstring html = MistFindAssetHtml(L"dialogs\\account_login.html");
+  if (html.empty()) {
+    return false;
+  }
+  bool logged_in = false;
+  MistWebDialog dlg;
+  dlg.owner = hwnd_;
+  dlg.frameless = true;
+  dlg.user_data_subdir = L"webview2-mist-account-login";
+  dlg.html_path = html;
+  dlg.build_state = []() -> std::wstring {
+    return L"{\"type\":\"state\",\"mode\":\"login\"}";
+  };
   // Login/register do blocking network I/O (up to ~60 s with a dead server).
   // Running them inside on_message froze the dialog: WebView2 delivers that
   // callback on the UI thread, so the spinner could not even paint. Keep
@@ -9720,7 +9784,6 @@ constexpr unsigned kCloudPushRetryMs = 5000;
 // retries every 5s forever (thread wakeups + WinHTTP session churn). Capped so
 // reconnecting still uploads within a minute.
 constexpr unsigned kCloudPushRetryMaxMs = 60000;
-std::atomic<HWND> g_cloud_push_notify_hwnd{nullptr};
 }  // namespace
 
 // Cap the in-memory body cache. Every opened online note stays here for the
@@ -10670,6 +10733,7 @@ void NotesWindow::RenameOnlineNote(int note_id,
     // worker started, so no callback is needed. Posting WM_APP+86 here (the
     // SyncCloudResult message) with a null payload made the handler clear
     // sync_cloud_busy_ for an unrelated in-flight sync.
+    VaultHttpNote updated;
     (void)VaultHttpUpdateNote(note_id, new_title, send_body, &updated);
   }).detach();
 }

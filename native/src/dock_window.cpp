@@ -17,6 +17,7 @@
 #include <gdiplus.h>
 
 #include <algorithm>
+#include <cstdint>   // uint32_t (MSVC pulled it in transitively; be explicit)
 #include <cstring>
 #include <string>
 
