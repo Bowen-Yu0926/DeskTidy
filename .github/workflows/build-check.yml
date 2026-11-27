@@ -45,8 +45,25 @@ jobs:
         run: cmake -S native -B native/build -G "Visual Studio 17 2022" -A x64
 
       - name: Build native targets
-        shell: cmd
-        run: cmake --build native/build --config Release --target desktidy_native deskNote
+        shell: pwsh
+        run: |
+          # Capture the compiler output so failures surface as annotations
+          # instead of a bare "exit code 1" (job logs need admin rights).
+          cmake --build native/build --config Release --target desktidy_native 2>&1 |
+            Tee-Object -FilePath build.log
+          $rc = $LASTEXITCODE
+          if ($rc -ne 0) {
+            $errors = Get-Content build.log |
+              Where-Object { $_ -match 'error|Error|错误' } |
+              Select-Object -First 20
+            foreach ($e in $errors) { Write-Host "::error::$e" }
+            if (-not $errors) {
+              Get-Content build.log -Tail 40 | ForEach-Object { Write-Host "::error::$_" }
+            }
+            exit $rc
+          }
+          cmake --build native/build --config Release --target deskNote
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Run update-signature test
         shell: pwsh
