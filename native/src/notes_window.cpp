@@ -14442,3 +14442,145 @@ LRESULT NotesWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
   }
   return DefWindowProcW(hwnd_, msg, wparam, lparam);
 }
+
+
+// --- restored: these definitions were accidentally dropped when the login
+// dialog was rewritten; see the commit message for details. ---
+void NotesWindow::Present() {
+  if (!hwnd_) {
+    return;
+  }
+  if (toast_) {
+    Show();
+    return;
+  }
+  ShowWindow(hwnd_, SW_SHOWMAXIMIZED);
+  BringWindowToTop(hwnd_);
+  // Windows foreground lock: a background process (file association / shell
+  // "Open with") calling SetForegroundWindow directly is often ignored. Attach
+  // to the foreground thread briefly so the window actually pops up.
+  HWND fg = GetForegroundWindow();
+  DWORD fg_tid = fg ? GetWindowThreadProcessId(fg, nullptr) : 0;
+  DWORD my_tid = GetCurrentThreadId();
+  const bool attached = fg_tid && fg_tid != my_tid &&
+                        AttachThreadInput(my_tid, fg_tid, TRUE);
+  SetForegroundWindow(hwnd_);
+  if (attached) {
+    AttachThreadInput(my_tid, fg_tid, FALSE);
+  }
+  SetFocus(hwnd_);
+  LayoutClient();
+  // Do NOT force a reload here: Present() runs on every activation (tray click,
+  // --focus), and force_reload re-pushes the whole document through
+  // setMarkdown() → replaceAll(), which drops ProseMirror undo history,
+  // selection and scroll position. Only a tab/path change needs the reload.
+  EnsureMarkdownEditor(false);
+  UpdateWindow(hwnd_);
+  FocusActiveEditor(true);
+}
+
+bool NotesWindow::ConfirmCloseAll() {
+  if (in_elevated_save_) {
+    PersistTabs();
+    PersistViewSettings();
+    return true;
+  }
+  // Notepad++ style: close always autosaves (no discard prompt).
+  if (!path_.empty()) {
+    Save(true);
+  } else if (edit_) {
+    path_ = MakeNewNotePath();
+    if (tab_index_ >= 0 &&
+        tab_index_ < static_cast<int>(tab_paths_.size())) {
+      tab_paths_[static_cast<size_t>(tab_index_)] = path_;
+    } else {
+      tab_paths_.push_back(path_);
+      tab_index_ = static_cast<int>(tab_paths_.size()) - 1;
+    }
+    Save(true);
+  }
+  PersistTabs();
+  PersistViewSettings();
+  return true;
+}
+
+void NotesWindow::InsertTemplate() {
+  if (!edit_) {
+    return;
+  }
+  const wchar_t* tpl =
+      L"\r\n---\r\n# 笔记\r\n\r\n- 要点：\r\n- 待办：\r\n- 链接：\r\n";
+  SendMessageW(edit_, EM_REPLACESEL, TRUE, reinterpret_cast<LPARAM>(tpl));
+}
+
+void NotesWindow::OpenFileDialog() {
+  const size_t kCap = 32768;
+  std::vector<wchar_t> buf(kCap, L'\0');
+  OPENFILENAMEW ofn{};
+  ofn.lStructSize = sizeof(ofn);
+  ofn.hwndOwner = hwnd_;
+  ofn.lpstrFilter =
+      L"文本与代码\0*.md;*.txt;*.markdown;*.log;*.json;*.xml;*.yml;*.yaml;*.csv;"
+      L"*.py;*.js;*.ts;*.tsx;*.css;*.html;*.htm;*.c;*.cpp;*.h;*.hpp;*.java;"
+      L"*.cs;*.go;*.rs;*.rb;*.php;*.sql;*.sh;*.bash;*.ps1;*.bat;*.cmd;*.ini;"
+      L"*.toml;*.cfg;*.conf;*.env;*.properties\0"
+      L"所有文件\0*.*\0";
+  ofn.lpstrFile = buf.data();
+  ofn.nMaxFile = static_cast<DWORD>(kCap);
+  ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_ALLOWMULTISELECT |
+              OFN_EXPLORER | OFN_NOCHANGEDIR;
+  if (!GetOpenFileNameW(&ofn)) {
+    return;
+  }
+  std::vector<std::wstring> paths;
+  if (ofn.nFileOffset > 0 && buf[ofn.nFileOffset - 1] == L'\0') {
+    const std::wstring dir = buf.data();
+    const wchar_t* q = buf.data() + ofn.nFileOffset;
+    while (*q) {
+      const std::wstring name = q;
+      paths.push_back(dir + L"\\" + name);
+      q += name.size() + 1;
+    }
+  } else {
+    paths.push_back(buf.data());
+  }
+  if (!paths.empty()) {
+    OpenPaths(paths);
+  }
+}
+
+void NotesWindow::OpenNotesFolder() {
+  // Prefer folder of the active tab (Python resolve_openable_notes_folder).
+  std::wstring dir;
+  if (!path_.empty()) {
+    const DWORD attr = GetFileAttributesW(path_.c_str());
+    if (attr != INVALID_FILE_ATTRIBUTES && !(attr & FILE_ATTRIBUTE_DIRECTORY)) {
+      const size_t slash = path_.find_last_of(L"\\/");
+      if (slash != std::wstring::npos) {
+        dir = path_.substr(0, slash);
+      }
+    } else if (attr != INVALID_FILE_ATTRIBUTES) {
+      dir = path_;
+    }
+  }
+  if (dir.empty()) {
+    dir = NotesLibraryDir(true);
+  }
+  CreateDirectoryW(dir.c_str(), nullptr);
+  ShellExecuteW(hwnd_, L"open", dir.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+}
+
+void NotesWindow::ShowHelp() { ShowDeskNoteHelp(hwnd_); }
+
+void NotesWindow::ToggleSidebar() {
+  sidebar_visible_ = !sidebar_visible_;
+  if (menu_) {
+    CheckMenuItem(menu_, kMenuSidebar,
+                  MF_BYCOMMAND | (sidebar_visible_ ? MF_CHECKED : MF_UNCHECKED));
+  }
+  if (sidebar_visible_) {
+    RebuildSidebar();
+  }
+  LayoutClient();
+  PersistViewSettings();
+}

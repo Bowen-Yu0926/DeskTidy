@@ -200,7 +200,6 @@ class NotesWindow {
   // Keep pinned open tabs on the left (Python pin-to-front).
   void ApplyPinnedTabOrder();
   static std::wstring NormalizePathKey(const std::wstring& path);
-  bool ConfirmSaveCurrent();
   void MarkDirty();
   void RefreshTitle();
   void ApplyChrome();
@@ -342,7 +341,6 @@ class NotesWindow {
   HWND sidebar_new_ = nullptr;
   HWND sidebar_refresh_ = nullptr;
   HWND sidebar_account_ = nullptr;  // bottom strip: "登录/注册" or username
-  void EnsureOnlineNotesPanel();
   void OpenOnlineNotes(bool create_new);
   void EnsureLibraryRail();
   // refresh_online: hit network for cloud list (refresh / login / CRUD).
