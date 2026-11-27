@@ -630,14 +630,72 @@ std::wstring DocumentsDeskTidyNotesDir() {
 }
 
 std::wstring NotesLibraryDir(bool ensure) {
-  // Load prefs once per call — ResolveNotesFolder + MaybeMigrateNotes both
-  // used to call LoadAppPrefs() independently (2 disk reads + JSON parses).
-  AppPrefs prefs = LoadAppPrefs();
-  std::wstring dir = ResolveNotesFolder(prefs);
-  if (ensure) {
-    EnsureDirRecursive(dir);
-    MaybeMigrateNotes(dir, &prefs);
+  // LoadAppPrefs() re-reads and re-parses the whole prefs JSON on every call,
+  // and this runs from per-item loops (asset lookup, NoteBaseDir per preview
+  // render, sidebar rebuild). Cache only the RESOLVED DIRECTORY, keyed on
+  // app_prefs.json's mtime+size so a settings change takes effect at once.
+  //
+  // The ensure-only side effects (mkdir / one-shot legacy migration) are run
+  // OUTSIDE the cache lock: LoadAppPrefs() touches the disk and could re-enter
+  // this function, and holding the mutex across that would deadlock.
+  static std::mutex s_dir_mu;
+  static std::wstring s_dir_value;
+  static FILETIME s_dir_mtime{};
+  static ULONGLONG s_dir_size = 0;
+  static bool s_dir_valid = false;
+
+  const std::wstring prefs_path = JoinPath(NativeDataDir(), L"app_prefs.json");
+  WIN32_FILE_ATTRIBUTE_DATA fad{};
+  const bool have_stat =
+      GetFileAttributesExW(prefs_path.c_str(), GetFileExInfoStandard, &fad) != 0;
+  const ULONGLONG cur_size =
+      have_stat ? ((static_cast<ULONGLONG>(fad.nFileSizeHigh) << 32) |
+                   fad.nFileSizeLow)
+                : 0;
+
+  std::wstring dir;
+  {
+    std::lock_guard<std::mutex> lk(s_dir_mu);
+    if (s_dir_valid && have_stat &&
+        CompareFileTime(&s_dir_mtime, &fad.ftLastWriteTime) == 0 &&
+        s_dir_size == cur_size) {
+      dir = s_dir_value;
+    }
   }
+
+  if (dir.empty()) {
+    // Cache miss: one prefs read shared by both helpers.
+    AppPrefs prefs = LoadAppPrefs();
+    dir = ResolveNotesFolder(prefs);
+    {
+      std::lock_guard<std::mutex> lk(s_dir_mu);
+      s_dir_value = dir;
+      if (have_stat) {
+        s_dir_mtime = fad.ftLastWriteTime;
+        s_dir_size = cur_size;
+      }
+      s_dir_valid = have_stat;
+    }
+    if (ensure) {
+      EnsureDirRecursive(dir);
+      MaybeMigrateNotes(dir, &prefs);
+    }
+    return dir;
+  }
+
+  if (!ensure) {
+    return dir;  // hot path: no side effects, no prefs read
+  }
+  // Cached dir + ensure: run the side effects, doing the (rare) migration
+  // exactly once per process — after that MaybeMigrateNotes is a flag check.
+  EnsureDirRecursive(dir);
+  static std::once_flag s_migrate_once;
+  std::call_once(s_migrate_once, [&] {
+    AppPrefs prefs = LoadAppPrefs();
+    if (!prefs.notes_migrated) {
+      MaybeMigrateNotes(dir, &prefs);
+    }
+  });
   return dir;
 }
 
