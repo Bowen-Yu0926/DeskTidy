@@ -3834,9 +3834,9 @@ void FenceWindow::HeaderBtnRects(RECT* collapse, RECT* lock, RECT* dissolve,
     out->bottom = header - 2;
     right = out->left - gap;
   };
-  // Right → left: collapse, dissolve (delete).
+  // Right → left: collapse, lock, dissolve (delete).
   place(collapse, collapsible_);
-  place(lock, false);
+  place(lock, true);
   place(dissolve, !IsSystemFence());
   // Fences Folder Portal: up chevron on the left when drilled below root.
   if (portal_up && PortalCanGoUp()) {
@@ -7391,7 +7391,7 @@ void FenceWindow::Paint(HDC hdc) {
       const auto c = mid(lock_rc);
       const float bw = 7.f, bh = 6.f;
       Gdiplus::RectF body(c.X - bw * 0.5f, c.Y - 0.5f, bw, bh);
-      if (content_locked_) {
+      if (position_locked_) {
         g.FillRectangle(&title_brush, body);
       } else {
         g.DrawRectangle(&pen, body);
