@@ -850,6 +850,42 @@ void StartUpdateInstallAsync(HWND owner) {
                     r->error = L"更新签名校验未通过，已拒绝安装该更新";
                   }
                 }
+                // Bind the signature to the FILE we actually downloaded.
+                //
+                // Verifying the Ed25519 signature only proves "this manifest
+                // text was authored by the key holder". It says nothing about
+                // which installer that manifest describes. The digest checked
+                // above (FindChecksum) comes from the same release as the exe —
+                // a compromised release can swap exe + .sha256 together and
+                // still pass. The signed manifest carries exe_sha256 precisely
+                // to close that gap: require it to equal the hash we computed
+                // over the downloaded bytes. Without this the signature is
+                // decorative — a key holder could sign a manifest for a
+                // malicious hash and ship a different exe.
+                if (sig_ok) {
+                  // Compare the signed manifest's exe_sha256 with the digest
+                  // computed over the downloaded bytes (`hex`, lowercase). Both
+                  // are std::string; normalise case so an uppercase manifest
+                  // value still matches.
+                  std::string signed_hex = JsonStringField(manifest, "exe_sha256");
+                  for (auto& c : signed_hex) {
+                    if (c >= 'A' && c <= 'F') {
+                      c = static_cast<char>(c - 'A' + 'a');
+                    }
+                  }
+                  if (signed_hex.empty()) {
+                    sig_ok = false;
+                    r->error = L"更新签名清单缺少 exe_sha256，已拒绝安装";
+                    LogLine(L"[update] signed manifest has no exe_sha256 — "
+                            L"refuse (cannot bind signature to file)");
+                  } else if (signed_hex != hex) {
+                    sig_ok = false;
+                    r->error =
+                        L"安装包与签名清单中的哈希不一致，已拒绝安装";
+                    LogLine(L"[update] manifest exe_sha256 != downloaded "
+                            L"digest — refuse (signature/file mismatch)");
+                  }
+                }
               }
               if (!sig_ok) {
                 r->verify_ok = false;

@@ -2,6 +2,8 @@
 
 #include "paths_util.h"
 
+#include <Windows.h>
+
 #include <chrono>
 #include <condition_variable>
 #include <ctime>
@@ -429,14 +431,140 @@ void NoteCloudScheduleDelete(NoteCloudSyncStore* store, int note_id,
 // Process-scoped state. The worker thread outlives any NotesWindow, so the
 // queue cannot live on the window (it used to, and a window teardown would
 // have stranded queued bodies).
+//
+// A note that is edited while offline/not-logged-in has no disk copy — the
+// online (`online://`) mirror is memory-only. To avoid losing that edit on
+// process exit, the pending queue is mirrored to a small JSON file whenever it
+// changes; on startup any leftover entries are re-loaded so they are still
+// uploaded once the session is restored.
 namespace {
 std::mutex g_push_mutex;
 std::condition_variable g_push_cv;
 std::map<int, std::pair<std::wstring, std::wstring>> g_push_queue;
+// Bodies removed from the retry queue but still being uploaded. Keep these in
+// the persisted snapshot until the server confirms success; otherwise an edit
+// to another note during an upload would rewrite the file without this batch.
+std::map<int, std::pair<std::wstring, std::wstring>> g_push_inflight;
 bool g_push_worker_started = false;
 // Set by NotifyPushWorker so a wakeup that lands between "queue drained" and
 // "start waiting" is not lost (a plain notify_one would be).
 bool g_push_wake = false;
+
+std::wstring PushPendingPath() {
+  return JoinPath(NativeDataDir(), L"notes_push_pending.json");
+}
+
+void PersistPushPendingLocked() {
+  if (g_push_queue.empty() && g_push_inflight.empty()) {
+    DeleteFileW(PushPendingPath().c_str());
+    return;
+  }
+  std::map<int, std::pair<std::wstring, std::wstring>> snapshot = g_push_inflight;
+  for (const auto& kv : g_push_queue) {
+    snapshot[kv.first] = kv.second;  // queued edits are newer than in-flight
+  }
+  std::ostringstream out;
+  out << "{";
+  bool first = true;
+  for (const auto& kv : snapshot) {
+    if (!first) {
+      out << ",";
+    }
+    first = false;
+    out << "\"" << kv.first << "\":{\"title\":\""
+        << Esc(Narrow(kv.second.first)) << "\",\"body\":\""
+        << Esc(Narrow(kv.second.second)) << "\"}";
+  }
+  out << "}";
+  AtomicWriteUtf8File(PushPendingPath(), out.str());
+}
+
+void LoadPushPending() {
+  std::lock_guard<std::mutex> lock(g_push_mutex);
+  std::string json;
+  if (!ReadFileUtf8(PushPendingPath(), &json) || json.empty()) {
+    return;
+  }
+  auto skip_ws = [&](size_t* p) {
+    while (*p < json.size() &&
+           (json[*p] == ' ' || json[*p] == '\t' || json[*p] == '\r' ||
+            json[*p] == '\n' || json[*p] == ',')) {
+      ++*p;
+    }
+  };
+  size_t pos = json.find('{');
+  if (pos == std::string::npos) {
+    return;
+  }
+  ++pos;
+  for (;;) {
+    skip_ws(&pos);
+    if (pos >= json.size() || json[pos] == '}') {
+      break;
+    }
+    if (json[pos] != '"') {
+      break;  // malformed top-level key; don't guess and corrupt recovery
+    }
+    // Parse the top-level key while respecting escaped quotes/backslashes.
+    ++pos;
+    std::string token;
+    while (pos < json.size()) {
+      if (json[pos] == '\\' && pos + 1 < json.size()) {
+        token.push_back(json[pos++]);
+        token.push_back(json[pos++]);
+        continue;
+      }
+      if (json[pos] == '"') {
+        break;
+      }
+      token.push_back(json[pos++]);
+    }
+    if (pos >= json.size() || json[pos] != '"') {
+      break;
+    }
+    ++pos;
+    skip_ws(&pos);
+    if (pos >= json.size() || json[pos++] != ':') {
+      break;
+    }
+    skip_ws(&pos);
+    if (pos >= json.size() || json[pos] != '{') {
+      break;
+    }
+    const size_t obj_start = pos++;
+    int depth = 1;
+    bool in_string = false;
+    for (; pos < json.size() && depth > 0; ++pos) {
+      const char c = json[pos];
+      if (in_string) {
+        if (c == '\\' && pos + 1 < json.size()) {
+          ++pos;
+        } else if (c == '"') {
+          in_string = false;
+        }
+      } else if (c == '"') {
+        in_string = true;
+      } else if (c == '{') {
+        ++depth;
+      } else if (c == '}') {
+        --depth;
+      }
+    }
+    if (depth != 0) {
+      break;
+    }
+    const size_t obj_end = pos;
+    const bool is_number =
+        !token.empty() && token.size() <= 10 &&
+        token.find_first_not_of("0123456789") == std::string::npos;
+    const int id = is_number ? std::atoi(token.c_str()) : 0;
+    if (id > 0 && g_push_queue.count(id) == 0) {
+      std::wstring title = JsonStringAfter(json, obj_start, obj_end, "title");
+      std::wstring body_w = JsonStringAfter(json, obj_start, obj_end, "body");
+      g_push_queue.emplace(id, std::make_pair(title, body_w));
+    }
+  }
+}
 }  // namespace
 
 void NoteCloudPushEnqueue(int note_id, const std::wstring& title,
@@ -447,6 +575,11 @@ void NoteCloudPushEnqueue(int note_id, const std::wstring& title,
   {
     std::lock_guard<std::mutex> lock(g_push_mutex);
     g_push_queue[note_id] = std::make_pair(title, body);
+    // A new edit must be able to wake an idle worker. The retry wait below
+    // only wakes on g_push_wake (never on the queue), so a freshly-enqueued
+    // batch would otherwise sit until the next notify or the 1h timeout.
+    g_push_wake = true;
+    PersistPushPendingLocked();
   }
   g_push_cv.notify_one();
 }
@@ -456,6 +589,14 @@ std::map<int, std::pair<std::wstring, std::wstring>> NoteCloudPushTakeAll() {
   {
     std::lock_guard<std::mutex> lock(g_push_mutex);
     batch.swap(g_push_queue);
+    // The batch is now "in flight": keep it in the persisted snapshot so an
+    // edit to a different note while this upload runs cannot rewrite the file
+    // without this pending body. Committed ones are dropped in CommitBatch;
+    // failed ones move back to the queue in Requeue.
+    for (const auto& kv : batch) {
+      g_push_inflight[kv.first] = kv.second;
+    }
+    PersistPushPendingLocked();
   }
   return batch;
 }
@@ -467,7 +608,10 @@ void NoteCloudPushRequeue(
     // emplace, not operator[]: never overwrite a newer body that was queued
     // while this batch was in flight (latest-wins).
     g_push_queue.emplace(kv.first, kv.second);
+    // No longer in flight — it is queued again and will be retried.
+    g_push_inflight.erase(kv.first);
   }
+  PersistPushPendingLocked();
 }
 
 bool NoteCloudPushMarkWorkerStarted() {
@@ -475,6 +619,33 @@ bool NoteCloudPushMarkWorkerStarted() {
   const bool start = !g_push_worker_started;
   g_push_worker_started = true;
   return start;
+}
+
+// Call after a batch uploaded successfully: drop the on-disk pending mirror so
+// a future crash recovery does not re-upload an already-committed body.
+void NoteCloudPushCommitBatch(const std::map<int, std::pair<std::wstring,
+                               std::wstring>>& uploaded) {
+  std::lock_guard<std::mutex> lock(g_push_mutex);
+  for (const auto& kv : uploaded) {
+    const auto it = g_push_inflight.find(kv.first);
+    if (it != g_push_inflight.end() && it->second == kv.second) {
+      g_push_inflight.erase(it);
+    }
+  }
+  PersistPushPendingLocked();
+}
+
+// Reload any bodies that were queued but not yet uploaded when a previous run
+// exited. Returns true if anything was recovered (caller should start the
+// worker and wake it).
+bool NoteCloudPushRecoverPending() {
+  LoadPushPending();
+  std::lock_guard<std::mutex> lock(g_push_mutex);
+  const bool recovered = !g_push_queue.empty();
+  if (recovered) {
+    g_push_wake = true;
+  }
+  return recovered;
 }
 
 void NoteCloudNotifyPushWorker() {
@@ -490,9 +661,13 @@ void NoteCloudNotifyPushWorker() {
 
 void NoteCloudPushWaitForRetry(unsigned ms) {
   std::unique_lock<std::mutex> lock(g_push_mutex);
-  // Wake on a pending batch or a latched notify (new edit / login).
-  g_push_cv.wait_for(lock, std::chrono::milliseconds(ms), [] {
-    return !g_push_queue.empty() || g_push_wake;
-  });
+  // Wake ONLY on a latched notify (new edit / login). The predicate must not
+  // test !g_push_queue.empty(): the worker calls this AFTER re-queueing a
+  // failed batch, so a queue-based predicate is instantly true and the wait
+  // returns without sleeping — turning "offline, not logged in, or server
+  // down" into a 100%-CPU spin that never honours the backoff. A new edit
+  // still wakes us because NoteCloudPushEnqueue sets g_push_wake.
+  g_push_cv.wait_for(lock, std::chrono::milliseconds(ms),
+                     [] { return g_push_wake; });
   g_push_wake = false;
 }

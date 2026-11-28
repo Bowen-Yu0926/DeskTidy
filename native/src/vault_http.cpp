@@ -3,6 +3,8 @@
 #include "paths_util.h"
 #include "vault_crypto.h"
 
+#include "log.h"
+
 #include <Windows.h>
 #include <bcrypt.h>
 #include <winhttp.h>
@@ -697,6 +699,11 @@ class VaultClient {
                         WINHTTP_NO_HEADER_INDEX);
     out->status = status;
     out->body.clear();
+    // Cap the response size. The body is read into memory wholesale; without a
+    // limit a hostile/compromised server (or a challenge page) could stream
+    // gigabytes and OOM the process. 64 MiB is far above any real JSON / asset
+    // payload this client handles (note assets are capped at 2 MB server-side).
+    constexpr size_t kMaxResponseBytes = 64u * 1024u * 1024u;
     for (;;) {
       DWORD avail = 0;
       if (!WinHttpQueryDataAvailable(req, &avail)) {
@@ -704,6 +711,14 @@ class VaultClient {
       }
       if (avail == 0) {
         break;
+      }
+      if (out->body.size() + avail > kMaxResponseBytes) {
+        LogLineA("[vault] response exceeds %zu bytes — aborting read",
+                 kMaxResponseBytes);
+        out->body.clear();
+        WinHttpCloseHandle(req);
+        WinHttpCloseHandle(conn);
+        return false;
       }
       std::string chunk(avail, '\0');
       DWORD read = 0;

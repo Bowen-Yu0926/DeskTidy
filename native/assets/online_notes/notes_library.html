@@ -173,7 +173,8 @@
     logged_in: false,
     local_matched: false,
     online: [],
-    local: []
+    local: [],
+    saved_order: null
   };
   let menuCtx = null;
   let menuOpen = false;
@@ -467,7 +468,14 @@
   }
   // Stable sort: rows named in `order` come first in that exact order.
   function applyOrder(items, section) {
+    // Prefer this page's own persisted order; fall back to the order the host
+    // saved to disk (notes_sidebar_order.json) so a fresh WebView profile that
+    // lost its localStorage still restores the user's arrangement.
     var order = loadOrder(section);
+    if (!order.length && state.saved_order) {
+      var so = state.saved_order[section];
+      if (Array.isArray(so)) order = so;
+    }
     if (!order.length) return items;
     var rank = {};
     // `order` is stored already-normalised (see commitOrder -> rowKeyOf), but
@@ -546,6 +554,16 @@
     // comparator looks up. Keeping them identical avoids relying on the
     // defensive re-normalisation inside applyOrder.
     saveOrder(section, mine.map(rowKeyOf));
+    // Persist the new order to the host as well. The page's own localStorage
+    // only lives in this WebView's profile; mirroring it to disk
+    // (notes_sidebar_order.json) means the order survives a data wipe and is
+    // available to rebuild the rail from the native side.
+    post({
+      type: 'action',
+      id: 'reorder',
+      section: section,
+      order: mine.map(rowKeyOf)
+    });
     dragEl = null;
     render();
   }
@@ -647,6 +665,31 @@
       r.classList.toggle('on', normKey(k) === want);
     });
   };
+  // Title-only update: patch the single matching row's label in place instead
+  // of rebuilding the whole rail. Typing in a note title used to trigger a full
+  // library enumeration + innerHTML rebuild every 200 ms (see host
+  // kTitleSyncTimer). Only the title text + data-title are touched here.
+  window.patchRowTitle = function (key, title) {
+    const want = normKey(key);
+    if (!want) return;
+    document.querySelectorAll('#list .row').forEach((r) => {
+      const p = r.dataset.path || '';
+      const id = r.dataset.id || '';
+      const kind = r.dataset.kind || '';
+      const k = (kind === 'online' && !p) ? ('online://' + id) : p;
+      if (normKey(k) !== want) return;
+      const span = r.querySelector('.row-title-text');
+      if (span) {
+        // Mirror render(): keep search highlighting when a query is active,
+        // otherwise the row would lose its <mark> while the user types a
+        // title during a search.
+        span.innerHTML = highlightMatches(title || '未命名', state.query);
+      }
+      if (title) {
+        r.dataset.title = title;
+      }
+    });
+  };
   window.applyState = function (m) {
     if (!m || typeof m !== 'object') return;
     if (m.query != null) state.query = m.query || '';
@@ -655,6 +698,10 @@
     if (m.local_matched != null) state.local_matched = !!m.local_matched;
     if (Array.isArray(m.online)) state.online = m.online;
     if (Array.isArray(m.local)) state.local = m.local;
+    // Fallback ordering persisted by the host (notes_sidebar_order.json).
+    if (m.saved_order && typeof m.saved_order === 'object') {
+      state.saved_order = m.saved_order;
+    }
     window.__lib = state;
     render();
   };

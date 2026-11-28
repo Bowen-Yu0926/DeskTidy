@@ -58,6 +58,13 @@ void NoteCloudPushRequeue(
     const std::map<int, std::pair<std::wstring, std::wstring>>& batch);
 // Returns true exactly once, when the worker should be started.
 bool NoteCloudPushMarkWorkerStarted();
+// Call after a batch uploaded successfully: drop those entries from the on-disk
+// pending mirror so a later crash recovery never re-uploads a committed body.
+void NoteCloudPushCommitBatch(
+    const std::map<int, std::pair<std::wstring, std::wstring>>& uploaded);
+// Reload any bodies queued but not yet uploaded when a previous run exited.
+// Returns true if anything was recovered (caller should start the worker).
+bool NoteCloudPushRecoverPending();
 // Wake the worker so a parked/backing-off batch retries now.
 void NoteCloudNotifyPushWorker();
 // Sleep up to `ms`, waking early on a notify. Caller must hold no lock.

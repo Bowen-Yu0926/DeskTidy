@@ -302,6 +302,83 @@ int LibJsonInt(const std::wstring& json, const wchar_t* key) {
   }
   return _wtoi(json.c_str() + p);
 }
+
+// Parse a JSON string array for `key`, e.g. {"order":["a","b","c"]}. Returns
+// the decoded strings in order. A missing key or a non-array value yields an
+// empty vector. Only string elements are read; anything else is skipped.
+std::vector<std::wstring> LibJsonStringArray(const std::wstring& json,
+                                             const wchar_t* key) {
+  std::vector<std::wstring> out;
+  const std::wstring needle = std::wstring(L"\"") + key + L"\"";
+  size_t p = json.find(needle);
+  if (p == std::wstring::npos) {
+    return out;
+  }
+  p = json.find(L':', p + needle.size());
+  if (p == std::wstring::npos) {
+    return out;
+  }
+  ++p;
+  while (p < json.size() &&
+         (json[p] == L' ' || json[p] == L'\t' || json[p] == L'\r' ||
+          json[p] == L'\n')) {
+    ++p;
+  }
+  if (p >= json.size() || json[p] != L'[') {
+    return out;
+  }
+  ++p;
+  while (p < json.size() && json[p] != L']') {
+    if (json[p] == L',') {
+      ++p;
+      continue;
+    }
+    if (json[p] != L'"') {
+      // Unexpected token inside the array — skip one char to make progress.
+      ++p;
+      continue;
+    }
+    ++p;
+    std::wstring v;
+    while (p < json.size() && json[p] != L'"') {
+      if (json[p] == L'\\' && p + 1 < json.size()) {
+        ++p;
+        const wchar_t e = json[p++];
+        if (e == L'n') {
+          v.push_back(L'\n');
+        } else if (e == L'r') {
+          v.push_back(L'\r');
+        } else if (e == L't') {
+          v.push_back(L'\t');
+        } else if (e == L'u' && p + 4 <= json.size()) {
+          unsigned code = 0;
+          for (int k = 0; k < 4; ++k) {
+            const wchar_t hc = json[p + k];
+            code <<= 4;
+            if (hc >= L'0' && hc <= L'9') {
+              code |= static_cast<unsigned>(hc - L'0');
+            } else if (hc >= L'a' && hc <= L'f') {
+              code |= static_cast<unsigned>(hc - L'a' + 10);
+            } else if (hc >= L'A' && hc <= L'F') {
+              code |= static_cast<unsigned>(hc - L'A' + 10);
+            }
+          }
+          p += 4;
+          v.push_back(static_cast<wchar_t>(code));
+        } else {
+          v.push_back(e);
+        }
+        continue;
+      }
+      v.push_back(json[p++]);
+    }
+    if (p < json.size() && json[p] == L'"') {
+      ++p;  // closing quote
+    }
+    out.push_back(std::move(v));
+  }
+  return out;
+}
 constexpr int kEditCtxUndo = 3201;
 constexpr int kEditCtxRedo = 3202;
 constexpr int kEditCtxCut = 3203;
@@ -1336,9 +1413,25 @@ bool NotesWindow::Create(HINSTANCE instance) {
       const size_t comma = data_url.find(L',');
       const std::wstring b64 =
           comma == std::wstring::npos ? data_url : data_url.substr(comma + 1);
-      std::thread([asset_note_id, leaf, mime, b64]() {
-        VaultHttpPutNoteAsset(asset_note_id, leaf, mime, NarrowUtf8(b64));
-      }).detach();
+      // The server caps note assets at 2 MB (worker.js). Uploading anything
+      // larger is rejected with 413; do not fire a doomed request and — more
+      // importantly — do not let the failure vanish. Log it so a dead
+      // `assets/<name>` reference on other devices is diagnosable.
+      constexpr size_t kServerAssetCapB64 = (2u * 1024u * 1024u / 3u + 1u) * 4u;
+      if (b64.size() > kServerAssetCapB64) {
+        LogLineA("[notes] asset '%ls' too large for cloud (%d b64 bytes) — "
+                 "kept locally only",
+                 leaf.c_str(), static_cast<int>(b64.size()));
+      } else {
+        std::thread([asset_note_id, leaf, mime, b64]() {
+          if (!VaultHttpPutNoteAsset(asset_note_id, leaf, mime,
+                                     NarrowUtf8(b64))) {
+            LogLineA("[notes] asset upload failed for '%ls' (note %d) — will "
+                     "be missing on other devices",
+                     leaf.c_str(), asset_note_id);
+          }
+        }).detach();
+      }
     }
     return rel;
   };
@@ -1489,6 +1582,14 @@ bool NotesWindow::Create(HINSTANCE instance) {
     }
   }
   LoadAndSweepCloudSync();
+  // Recover online-note bodies that were queued for upload but never sent
+  // before the previous run exited (offline / not logged in). The queue is
+  // process-scoped in notes_cloud_sync; re-arming the worker here means the
+  // edit still reaches the cloud once a session is available.
+  if (NoteCloudPushRecoverPending()) {
+    g_cloud_push_notify_hwnd.store(hwnd_, std::memory_order_release);
+    EnsureCloudPushWorker();
+  }
   LoadViewSettings();
   EnsureFontControls();
   ApplyEditorFont();
@@ -3243,8 +3344,11 @@ void NotesWindow::SyncCurrentTabTitleHint() {
   RefreshTitle();
   RefreshSidebarLabelForPath(path_);
   // WebView library rail (TreeView is hidden) — keep titles in sync with H1.
+  // Use the targeted single-row patch: the old PushLibraryRailState(false)
+  // here re-enumerated the whole library + full innerHTML rebuild on every
+  // H1 change (the title sync timer fires repeatedly while editing).
   if (library_web_.Host() && IsWindowVisible(library_web_.Host())) {
-    PushLibraryRailState(false);
+    UpdateLibraryRailTitleOnly(path_);
   }
   SchedulePersistTabs();
   // Debounced — syncing on every keystroke blocked the UI and made the
@@ -5747,19 +5851,19 @@ void NotesWindow::Save(bool authoritative_pull, bool push_cloud) {
     RememberOnlineBody(id, title, plain);
     // Explicit Save: enqueue cloud push — never block the UI thread on WinHTTP.
     if (push_cloud) {
-      // Never open a modal login from Save: Save also runs from Hide()/close,
-      // where a modal would block teardown behind a network dialog. The push
-      // worker keeps unauthenticated batches queued and retries, so the edit
-      // still reaches the cloud once the session is restored.
-      if (VaultHttpLoggedIn()) {
-        for (auto& row : library_online_cache_) {
-          if (row.id == id) {
-            row.title = title;
-            break;
-          }
+      // Always enqueue, even when not logged in. The queue is now mirrored to
+      // disk (notes_cloud_sync.cpp), so an offline edit survives process exit
+      // and is uploaded once the session is restored. Previously this branch
+      // only enqueued while logged in, so an offline edit to an `online://`
+      // note (which has no disk mirror) was lost on close.
+      for (auto& row : library_online_cache_) {
+        if (row.id == id) {
+          row.title = title;
+          break;
         }
-        QueueCloudNotePush(id, title, plain);
-      } else if (status_) {
+      }
+      QueueCloudNotePush(id, title, plain);
+      if (!VaultHttpLoggedIn() && status_) {
         SetWindowTextW(status_, L"已保存到本地缓存；未登录，稍后自动上传");
       }
     }
@@ -9852,10 +9956,14 @@ void NotesWindow::QueueCloudNotePush(int note_id, std::wstring title,
   }
   RememberOnlineBody(note_id, title, body);
   g_cloud_push_notify_hwnd.store(hwnd_, std::memory_order_release);
+  NoteCloudPushEnqueue(note_id, title, body);
+  EnsureCloudPushWorker();
+}
+
+void NotesWindow::EnsureCloudPushWorker() {
   // One worker thread + latest-wins queue (state lives in notes_cloud_sync so
   // it survives this window). The old detached-thread-per-save spawned
   // unbounded threads and let an older request finish after a newer one.
-  NoteCloudPushEnqueue(note_id, title, body);
   if (!NoteCloudPushMarkWorkerStarted()) {
     return;
   }
@@ -9880,12 +9988,20 @@ void NotesWindow::QueueCloudNotePush(int note_id, std::wstring title,
         continue;
       }
       std::map<int, std::pair<std::wstring, std::wstring>> failed_batch;
+      std::map<int, std::pair<std::wstring, std::wstring>> ok_batch;
       for (const auto& kv : batch) {
         VaultHttpNote updated;
-        if (!VaultHttpUpdateNote(kv.first, kv.second.first,
-                                 kv.second.second, &updated)) {
+        if (VaultHttpUpdateNote(kv.first, kv.second.first,
+                                kv.second.second, &updated)) {
+          ok_batch.emplace(kv.first, kv.second);
+        } else {
           failed_batch.emplace(kv.first, kv.second);
         }
+      }
+      if (!ok_batch.empty()) {
+        // Drop the committed bodies from the on-disk pending mirror so a later
+        // crash recovery does not re-upload them.
+        NoteCloudPushCommitBatch(ok_batch);
       }
       if (!failed_batch.empty()) {
         // Re-queue only what failed so succeeded notes are not re-uploaded.
@@ -9945,6 +10061,24 @@ void NotesWindow::DismissLibraryMenu() {
     library_web_.EvalScript(
         L"if(typeof window.hideMenu==='function')window.hideMenu();");
   }
+}
+
+// Patch a single rail row's title in place. Used on title edits so typing does
+// not re-enumerate the whole library and rebuild the rail's innerHTML on every
+// input burst (PushLibraryRailState is O(files) + one stat per file).
+void NotesWindow::UpdateLibraryRailTitleOnly(const std::wstring& path) {
+  if (path.empty() || !library_web_.Host() || !library_web_.Ready()) {
+    return;
+  }
+  const std::wstring title = NoteDisplayName(path, false);
+  std::wstring script =
+      L"(function(){try{if(typeof window.patchRowTitle!=='function'){"
+      L"return;}window.patchRowTitle(\"";
+  script += JsonEscLib(path);
+  script += L"\",\"";
+  script += JsonEscLib(title);
+  script += L"\");}catch(e){}})();";
+  library_web_.EvalScript(script);
 }
 
 void NotesWindow::EnsureLibraryListFetch() {
@@ -10289,7 +10423,40 @@ void NotesWindow::PushLibraryRailState(bool refresh_online) {
       json += L"}";
     }
   }
-  json += L"]}";
+  // Ship the persisted rail order (notes_sidebar_order.json, keyed under
+  // "__rail:<section>__") so the page can restore ordering after its own
+  // localStorage was cleared (fresh WebView profile / data wipe). The page only
+  // uses this when its local order is empty, so an in-session drag — which is
+  // already reflected here — never fights it.
+  {
+    // Close the `local` array opened above ("local":[ ... ).
+    json += L"]";
+    const std::wstring on_key = L"__rail:online__";
+    const std::wstring lo_key = L"__rail:local__";
+    auto emit_order = [&](const std::wstring& key) {
+      json += L"[";
+      auto it = sidebar_order_.find(key);
+      if (it != sidebar_order_.end()) {
+        bool first = true;
+        for (const auto& k : it->second) {
+          if (!first) {
+            json += L",";
+          }
+          first = false;
+          json += L"\"";
+          json += JsonEscLib(k);
+          json += L"\"";
+        }
+      }
+      json += L"]";
+    };
+    json += L",\"saved_order\":{\"online\":";
+    emit_order(on_key);
+    json += L",\"local\":";
+    emit_order(lo_key);
+    json += L"}";
+  }
+  json += L"}";
   // Identical state → skip EvalScript + the page's full innerHTML rebuild.
   // Pushes fire from many paths (tab switches, title ticks, actions); without
   // this gate every one of them re-rendered the rail for nothing.
@@ -10349,6 +10516,25 @@ void NotesWindow::HandleLibraryRailAction(const std::wstring& json) {
   if (id == L"to_local") {
     ConvertPathToLocal(LibJsonString(json, L"path"),
                        LibJsonInt(json, L"note_id"));
+    return;
+  }
+  if (id == L"reorder") {
+    // The visible rail is the WebView (notes_library.html), which re-orders
+    // rows in its own DOM and localStorage. Persist that order to disk here so
+    // it survives a WebView data wipe and is kept in notes_sidebar_order.json
+    // like the Win32 fallback. `section` is "online" or "local"; the ordered
+    // keys are the same normalized row keys the page uses.
+    const std::wstring section = LibJsonString(json, L"section");
+    const std::vector<std::wstring> order =
+        LibJsonStringArray(json, L"order");
+    if (!section.empty() && !order.empty()) {
+      // Key by a synthetic dir under the section so it cannot collide with a
+      // real library directory, and so online/local stay separate.
+      const std::wstring key =
+          std::wstring(L"__rail:") + section + L"__";
+      sidebar_order_[key] = order;
+      PersistSidebarOrder();
+    }
     return;
   }
   if (id == L"pin") {
@@ -11952,6 +12138,11 @@ void NotesWindow::CleanOrphanNoteAssets() {
   // 1) Collect every referenced asset filename from all note bodies.
   std::set<std::wstring> referenced;
   const std::wstring cloud_dir = NormalizePathKey(JoinPath(root, L"云笔记"));
+  // If any note body cannot be scanned, we cannot prove that the images it
+  // references are unreferenced — and deleting them would be data loss. The
+  // reference set is global across the library, so one skipped note is enough
+  // to make the whole diff unsound. Abort instead of deleting.
+  std::wstring unscannable;
   for (const auto& note : ListNoteFiles(root)) {
     if (NormalizePathKey(note).rfind(cloud_dir, 0) == 0) {
       continue;  // online-note mirror — see the header comment
@@ -11959,6 +12150,8 @@ void NotesWindow::CleanOrphanNoteAssets() {
     // Skip anything implausibly large for a note. Reading a stray multi-GB
     // file into memory here would hang the UI thread; such a file is not a
     // note body we could meaningfully scan for asset references anyway.
+    // Because we cannot scan it, bail out of the whole cleanup (below) rather
+    // than treat its images as orphans.
     {
       WIN32_FILE_ATTRIBUTE_DATA fad{};
       constexpr unsigned long long kMaxScanBytes = 16ull * 1024ull * 1024ull;
@@ -11968,11 +12161,19 @@ void NotesWindow::CleanOrphanNoteAssets() {
       const ULONGLONG sz =
           (static_cast<ULONGLONG>(fad.nFileSizeHigh) << 32) | fad.nFileSizeLow;
       if (sz > kMaxScanBytes) {
+        if (unscannable.empty()) {
+          unscannable = note;
+        }
         continue;
       }
     }
     std::ifstream in(note, std::ios::binary);
     if (!in) {
+      // Unreadable for another reason (lock, permission) — same hazard as the
+      // oversize skip: its references are unknown.
+      if (unscannable.empty()) {
+        unscannable = note;
+      }
       continue;
     }
     std::ostringstream ss;
@@ -11998,6 +12199,21 @@ void NotesWindow::CleanOrphanNoteAssets() {
       }
       pos = end;
     }
+  }
+
+  // If any note body could not be scanned, its references are unknown and the
+  // orphan set would be unsound — refuse to delete anything. Better to leave a
+  // few orphans than to delete a live image referenced only from that note.
+  if (!unscannable.empty()) {
+    LogLine(L"[notes] orphan cleanup skipped: unscannable note %s",
+            unscannable.c_str());
+    MistAlert(hwnd_, L"清理图片",
+              (L"有笔记无法读取（可能过大或被占用），无法确认图片是否仍在引用，"
+               L"已取消清理以免误删。\n\n" +
+               unscannable)
+                  .c_str(),
+              MistMsgTone::Warn);
+    return;
   }
 
   // 2) Walk every assets/ directory in the local library (skipping 云笔记)
@@ -14158,6 +14374,16 @@ LRESULT NotesWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
       int updated = 0;
       for (auto& b : res->bodies) {
         if (IsOnlineNotePath(b.path)) {
+          // Online notes have no disk file to fingerprint, but the active tab's
+          // unsaved edits must still never be clobbered by the cloud copy.
+          // Mirror the local-synced guard below: if this is the current tab
+          // and it is dirty, keep the user's buffer and skip the reload (and
+          // skip caching the cloud body over the in-flight edits).
+          const bool active_dirty =
+              _wcsicmp(path_.c_str(), b.path.c_str()) == 0 && dirty_;
+          if (active_dirty) {
+            continue;
+          }
           RememberOnlineBody(b.note_id, b.title, b.body);
           if (_wcsicmp(path_.c_str(), b.path.c_str()) == 0) {
             loading_ = true;
@@ -14419,10 +14645,11 @@ LRESULT NotesWindow::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
         KillTimer(hwnd_, kTitleSyncTimer);
         SyncCurrentTabTitleHint();
         PushNativeTitleToWeb();  // WYSIWYG host title (no-op in markdown mode)
-        // Title EN_CHANGE already wrote title_hint — SyncCurrentTabTitleHint
-        // may no-op; still refresh the WebView library list labels.
+        // Update only this tab's rail row label. A full PushLibraryRailState
+        // re-enumerates the library + stats every file + rebuilds the whole
+        // rail innerHTML — far too heavy to run on every title keystroke burst.
         if (library_web_.Host() && IsWindowVisible(library_web_.Host())) {
-          PushLibraryRailState(false);
+          UpdateLibraryRailTitleOnly(path_);
         }
         return 0;
       }

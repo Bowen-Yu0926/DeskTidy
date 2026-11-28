@@ -369,6 +369,13 @@ class NotesWindow {
   // Fire-and-forget VaultHttpUpdateNote (local save already done). A failed
   // upload is re-queued and retried; the user is told when it fails.
   void QueueCloudNotePush(int note_id, std::wstring title, std::wstring body);
+  // Start the process-wide push worker if it isn't running yet. Shared by the
+  // enqueue path and startup recovery (recover re-arms it after loading any
+  // bodies that were queued but unsent when the previous run exited).
+  void EnsureCloudPushWorker();
+  // Patch a single rail row's title in place (avoids full rail rebuild on
+  // title-edit debounce). See UpdateLibraryRailActiveOnly for the pattern.
+  void UpdateLibraryRailTitleOnly(const std::wstring& path);
   HWND sidebar_results_ = nullptr;
   HWND status_ = nullptr;
   HWND mode_strip_ = nullptr;  // Top-right 预览/编辑 toggle chip.
