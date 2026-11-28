@@ -4846,6 +4846,11 @@ void MaterializeOnlineNoteAssets(HWND hwnd, int note_id,
   // Bounded, cached walk (max depth mirrors notes_library.cpp's WalkOpenable).
   const std::vector<std::wstring> dirs = CachedNoteLibraryDirs();
 
+  // Collect images that are missing locally so they can be fetched from the
+  // cloud on ONE background thread. Previously each missing image spawned its
+  // own detached thread — a note referencing dozens of not-yet-present images
+  // opened dozens of concurrent WinHTTP requests at once.
+  std::vector<std::pair<std::wstring, std::wstring>> to_fetch;  // leaf,dest
   for (const std::wstring& leaf : wanted) {
     const std::wstring dest = JoinPath(dest_assets, leaf);
     if (GetFileAttributesW(dest.c_str()) != INVALID_FILE_ATTRIBUTES) {
@@ -4867,26 +4872,35 @@ void MaterializeOnlineNoteAssets(HWND hwnd, int note_id,
       found_local = true;
       break;
     }
-    // Not on this machine — fetch the binary from the cloud in the background
-    // (never block the UI on WinHTTP retries) and refresh the preview when done.
-    if (!found_local && note_id > 0 && hwnd && VaultHttpLoggedIn()) {
-      std::thread([hwnd, note_id, leaf, dest]() {
+    if (!found_local && note_id > 0) {
+      to_fetch.emplace_back(leaf, dest);
+    }
+  }
+  // Fetch the cloud binaries sequentially on one worker thread (never block
+  // the UI on WinHTTP retries) and refresh the preview when the last one lands.
+  if (!to_fetch.empty() && hwnd && VaultHttpLoggedIn()) {
+    std::thread([hwnd, note_id, to_fetch = std::move(to_fetch)]() {
+      int wrote_any = 0;
+      for (const auto& lf : to_fetch) {
         std::vector<BYTE> bytes;
-        if (!VaultHttpGetNoteAsset(note_id, leaf, &bytes) || bytes.empty()) {
-          return;
+        if (!VaultHttpGetNoteAsset(note_id, lf.first, &bytes) || bytes.empty()) {
+          continue;
         }
-        std::ofstream out(dest, std::ios::binary | std::ios::trunc);
+        std::ofstream out(lf.second, std::ios::binary | std::ios::trunc);
         const bool wrote = static_cast<bool>(out);
         if (wrote) {
           out.write(reinterpret_cast<const char*>(bytes.data()),
                     static_cast<std::streamsize>(bytes.size()));
           out.close();
         }
-        if (wrote && IsWindow(hwnd)) {
-          PostMessageW(hwnd, WM_APP + 95, 0, 0);  // repaint image preview
+        if (wrote) {
+          ++wrote_any;
         }
-      }).detach();
-    }
+      }
+      if (wrote_any > 0 && IsWindow(hwnd)) {
+        PostMessageW(hwnd, WM_APP + 95, 0, 0);  // repaint image preview
+      }
+    }).detach();
   }
 }
 bool TryRenameNoteFile(const std::wstring& src, const std::wstring& dest) {
