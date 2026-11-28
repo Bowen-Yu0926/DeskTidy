@@ -336,7 +336,11 @@ void CopyBitmapToClipboardDib(HBITMAP bmp) {
       memcpy(dst, &bi, sizeof(bi));
       memcpy(reinterpret_cast<BYTE*>(dst) + sizeof(bi), bits.data(), img_size);
       GlobalUnlock(h);
-      SetClipboardData(CF_DIB, h);
+      // Once SetClipboardData succeeds the system owns the HGLOBAL; on failure
+      // (e.g. clipboard held by another app) nobody frees it, so free it here.
+      if (!SetClipboardData(CF_DIB, h)) {
+        GlobalFree(h);
+      }
     } else {
       GlobalFree(h);
     }
@@ -1431,6 +1435,13 @@ void CaptureOverlay::UpdateResizeCursor(POINT pt) const {
 
 void CaptureOverlay::DestroyInlineText() {
   if (text_edit_) {
+    // Take the font back BEFORE restoring the original wndproc: once the proc
+    // is restored, DestroyWindow dispatches WM_DESTROY to the *original* EDIT
+    // procedure, so TextEditProc's WM_DESTROY handler never runs. Relying on it
+    // to free the font leaked one HFONT per inline-text annotation (GDI handle
+    // leak that eventually exhausts the per-process GDI quota). Delete it here.
+    HFONT font =
+        reinterpret_cast<HFONT>(RemovePropW(text_edit_, L"DeskTidyTextFont"));
     if (text_edit_prev_) {
       SetWindowLongPtrW(text_edit_, GWLP_WNDPROC,
                         reinterpret_cast<LONG_PTR>(text_edit_prev_));
@@ -1438,6 +1449,9 @@ void CaptureOverlay::DestroyInlineText() {
     }
     DestroyWindow(text_edit_);
     text_edit_ = nullptr;
+    if (font) {
+      DeleteObject(font);  // control is gone; the font is no longer in use
+    }
   }
 }
 

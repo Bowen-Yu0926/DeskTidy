@@ -238,8 +238,18 @@ std::string FindNestedObject(const std::string& json, const char* key) {
 
 // Extract balanced {...} starting at `start` (must point at '{').
 std::string ExtractObject(const std::string& json, size_t start, size_t* end_out) {
-  if (start >= json.size() || json[start] != '{') {
+  // On any failure, still advance *end_out past `start` so a caller loop that
+  // does `p = end` cannot spin forever on a truncated/corrupt settings.json
+  // (an unmatched '{' made every such loop iterate in place at 100% CPU and
+  // hang startup before the first run's migration finished).
+  auto fail = [&]() -> std::string {
+    if (end_out) {
+      *end_out = start + 1;
+    }
     return {};
+  };
+  if (start >= json.size() || json[start] != '{') {
+    return fail();
   }
   int depth = 0;
   bool in_str = false;
@@ -271,7 +281,7 @@ std::string ExtractObject(const std::string& json, size_t start, size_t* end_out
       }
     }
   }
-  return {};
+  return fail();
 }
 
 size_t FindArrayStart(const std::string& json, const char* key) {
