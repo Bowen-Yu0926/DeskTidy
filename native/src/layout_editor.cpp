@@ -651,6 +651,15 @@ void DeletePage(int page) {
     }
     return;
   }
+  // A locked page must not be deletable — the lock would mean nothing otherwise.
+  // App::DeletePageAt guards this; the editor's own delete path used to skip it
+  // and silently removed locked pages (lock flags were then helpfully reindexed,
+  // which hid the fact that a protected page had just been destroyed).
+  if (page >= 0 && page < static_cast<int>(g_state->page_locked.size()) &&
+      g_state->page_locked[static_cast<size_t>(page)]) {
+    ShowToast(Tr("layout_page_locked"));
+    return;
+  }
   // Reindex per-page geometry after removing the page; fences only on `page`
   // move to page 0.
   for (auto& f : g_state->fences) {

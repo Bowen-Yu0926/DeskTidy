@@ -922,6 +922,18 @@ bool LoadSnapshot(const std::wstring& path, AppState* out) {
   // Faithful restore: do NOT inject defaults / HealFenceLayouts / migrate
   // kinds — that rewrote「其他」and resized fences away from the snapshot.
   // Profiles for the current display fingerprint still apply inside the load.
+  //
+  // parse-result sanity: LoadAppStateFromPath returns a bare/empty AppState on
+  // a corrupt file (it only *logs*). The key-substring check above can pass on
+  // a hand-edited file whose values are still junk, and the empty state would
+  // then be written over the user's live layout.json. A real layout always has
+  // page names; refuse to touch the live layout if the parsed one is empty.
+  if (parsed.page_names.empty()) {
+    LogLine(L"[snapshot] reject snapshot that parsed to an empty layout: %s",
+            path.c_str());
+    DeleteFileW(tmp.c_str());
+    return false;
+  }
   if (!MoveFileExW(tmp.c_str(), layout.c_str(),
                    MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
     DeleteFileW(tmp.c_str());
