@@ -10003,11 +10003,18 @@ void NotesWindow::EnsureCloudPushWorker() {
       }
       std::map<int, std::pair<std::wstring, std::wstring>> failed_batch;
       std::map<int, std::pair<std::wstring, std::wstring>> ok_batch;
+      // Bodies the server permanently rejects (HTTP 413: over the size cap)
+      // must be dropped, not retried — a 1MB+ note body will never succeed and
+      // retrying it forever wastes D1 quota and queue state.
+      std::vector<int> permanent_fail;
       for (const auto& kv : batch) {
         VaultHttpNote updated;
+        int status = 0;
         if (VaultHttpUpdateNote(kv.first, kv.second.first,
-                                kv.second.second, &updated)) {
+                                kv.second.second, &updated, &status)) {
           ok_batch.emplace(kv.first, kv.second);
+        } else if (status == 413) {
+          permanent_fail.push_back(kv.first);
         } else {
           failed_batch.emplace(kv.first, kv.second);
         }
@@ -10016,6 +10023,25 @@ void NotesWindow::EnsureCloudPushWorker() {
         // Drop the committed bodies from the on-disk pending mirror so a later
         // crash recovery does not re-upload them.
         NoteCloudPushCommitBatch(ok_batch);
+      }
+      if (!permanent_fail.empty()) {
+        // Drop permanently-rejected bodies from the disk mirror too.
+        std::map<int, std::pair<std::wstring, std::wstring>> perm;
+        for (int id : permanent_fail) {
+          auto it = batch.find(id);
+          if (it != batch.end()) {
+            perm.emplace(id, it->second);
+          }
+        }
+        NoteCloudPushCommitBatch(perm);  // erases inflight; drops from snapshot
+        LogLineA("[notes] dropped %zu cloud push(es) rejected with 413 "
+                 "(note body exceeds server cap)",
+                 permanent_fail.size());
+        HWND hwnd = g_cloud_push_notify_hwnd.load(std::memory_order_acquire);
+        if (hwnd && IsWindow(hwnd)) {
+          PostMessageW(hwnd, kMsgCloudPushFailed,
+                       static_cast<WPARAM>(permanent_fail.size()), 0);
+        }
       }
       if (!failed_batch.empty()) {
         // Re-queue only what failed so succeeded notes are not re-uploaded.

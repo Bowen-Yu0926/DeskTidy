@@ -104,7 +104,8 @@ bool VaultHttpGetNote(int id, VaultHttpNote* out);
 bool VaultHttpCreateNote(const std::wstring& title, const std::wstring& body,
                          VaultHttpNote* created);
 bool VaultHttpUpdateNote(int id, const std::wstring& title,
-                         const std::wstring& body, VaultHttpNote* updated);
+                         const std::wstring& body, VaultHttpNote* updated,
+                         int* out_status = nullptr);
 bool VaultHttpDeleteNote(int id);
 
 // Online-note image assets. Bodies only carry `assets/<name>` references; the

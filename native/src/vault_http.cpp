@@ -1672,7 +1672,11 @@ bool VaultHttpCreateNote(const std::wstring& title, const std::wstring& body,
 }
 
 bool VaultHttpUpdateNote(int id, const std::wstring& title,
-                         const std::wstring& body, VaultHttpNote* updated) {
+                         const std::wstring& body, VaultHttpNote* updated,
+                         int* out_status) {
+  if (out_status) {
+    *out_status = 0;
+  }
   if (id <= 0) {
     return false;
   }
@@ -1685,8 +1689,12 @@ bool VaultHttpUpdateNote(int id, const std::wstring& title,
   const std::string payload = MakeNoteBody(title, body);
   HttpResponse resp;
   const std::wstring path = L"notes/" + std::to_wstring(id);
-  if (!RequestRetry(&client, L"PUT", path, &payload, true, &resp) ||
-      !JsonOkTrue(resp.body)) {
+  const bool transport_ok =
+      RequestRetry(&client, L"PUT", path, &payload, true, &resp);
+  if (out_status) {
+    *out_status = static_cast<int>(resp.status);
+  }
+  if (!transport_ok || !JsonOkTrue(resp.body)) {
     return false;
   }
   if (updated) {
