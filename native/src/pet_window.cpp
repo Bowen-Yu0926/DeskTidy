@@ -1060,6 +1060,14 @@ void PetWindow::SetPose(const std::wstring& pose) {
     return;
   }
   EnsureGdiplus();
+  // All cels of one pose MUST share a single stride: Paint()/the flip path read
+  // frames_pargb_ with `sprite_w_ * sprite_h_ * 4`. A pose directory can pick up
+  // a stray PNG of a different size; the old code overwrote sprite_w_/h_ on
+  // every frame, so earlier frames no longer matched the stride (garbled or
+  // skipped cels). Freeze the geometry from the first successfully-decoded cel
+  // and scale every later cel to it.
+  int target_w = 0;
+  int target_h = 0;
   // Load every numbered cel (no 16-frame cap — Python scans until missing).
   for (const auto& path : files) {
     Gdiplus::Bitmap src(path.c_str());
@@ -1083,6 +1091,13 @@ void PetWindow::SetPose(const std::wstring& pose) {
         h = kSpriteMaxH;
       }
     }
+    if (target_w <= 0 || target_h <= 0) {
+      target_w = w;
+      target_h = h;
+    } else {
+      w = target_w;
+      h = target_h;
+    }
     Gdiplus::Bitmap scaled(w, h, PixelFormat32bppPARGB);
     {
       Gdiplus::Graphics g(&scaled);
@@ -1104,6 +1119,9 @@ void PetWindow::SetPose(const std::wstring& pose) {
     frames_.push_back(nullptr);  // Paint uses frames_pargb_; avoid per-frame HBITMAP allocation
     frames_alpha_.push_back(std::move(alpha));
     frames_pargb_.push_back(std::move(pargb));
+    // Stride is fixed for this pose (target_w/target_h above). Assign from the
+    // first cel of THIS pose every time — ClearFrames() does not reset the
+    // members, so a stale size from the previous pose must be replaced.
     sprite_w_ = w;
     sprite_h_ = h;
     if (pose == L"idle") {
