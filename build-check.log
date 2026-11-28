@@ -1,0 +1,116 @@
+MSBuild version 17.14.60+43b635718 for .NET Framework
+
+  1>Checking Build System
+  Building Custom Rule D:/a/DeskTidy/DeskTidy/native/CMakeLists.txt
+  main.cpp
+  log.cpp
+  app.cpp
+  desktop_shell.cpp
+  fence_window.cpp
+  settings_window.cpp
+D:\a\DeskTidy\DeskTidy\native\src\fence_window.cpp(801,51): warning C4244: 'argument': conversion from 'float' to 'INT', possible loss of data [D:\a\DeskTidy\DeskTidy\native\build\desktidy_native.vcxproj]
+  layout.cpp
+  python_layout_sync.cpp
+D:\a\DeskTidy\DeskTidy\native\src\python_layout_sync.cpp(622,18): warning C4456: declaration of 'p' hides previous local declaration [D:\a\DeskTidy\DeskTidy\native\build\desktidy_native.vcxproj]
+      D:\a\DeskTidy\DeskTidy\native\src\python_layout_sync.cpp(500,10):
+      see declaration of 'p'
+  
+  desktop_items.cpp
+  desktop_item_identity.cpp
+  namespace_icons.cpp
+  brand_mark.cpp
+  pin_store.cpp
+  rule_store.cpp
+  rules_editor.cpp
+  ole_drag.cpp
+  organize.cpp
+  dock_window.cpp
+  pet_window.cpp
+  desknote_launch.cpp
+  Generating Code...
+  Compiling...
+  mist_msg.cpp
+  page_bar.cpp
+  desktop_watch.cpp
+  prompt_text.cpp
+  autostart.cpp
+  instance_lock.cpp
+  paths_util.cpp
+  snapshot.cpp
+  shell_verbs.cpp
+  public_host.cpp
+  float_placements.cpp
+  todo_window.cpp
+  search_window.cpp
+  tools_misc.cpp
+  tool_paths.cpp
+D:\a\DeskTidy\DeskTidy\native\src\tool_paths.cpp(68,28): warning C4996: '_wgetenv': This function or variable may be unsafe. Consider using _wdupenv_s instead. To disable deprecation, use _CRT_SECURE_NO_WARNINGS. See online help for details. [D:\a\DeskTidy\DeskTidy\native\build\desktidy_native.vcxproj]
+D:\a\DeskTidy\DeskTidy\native\src\tool_paths.cpp(72,26): warning C4996: '_wgetenv': This function or variable may be unsafe. Consider using _wdupenv_s instead. To disable deprecation, use _CRT_SECURE_NO_WARNINGS. See online help for details. [D:\a\DeskTidy\DeskTidy\native\build\desktidy_native.vcxproj]
+D:\a\DeskTidy\DeskTidy\native\src\tool_paths.cpp(76,23): warning C4996: '_wgetenv': This function or variable may be unsafe. Consider using _wdupenv_s instead. To disable deprecation, use _CRT_SECURE_NO_WARNINGS. See online help for details. [D:\a\DeskTidy\DeskTidy\native\build\desktidy_native.vcxproj]
+D:\a\DeskTidy\DeskTidy\native\src\tool_paths.cpp(80,24): warning C4996: '_wgetenv': This function or variable may be unsafe. Consider using _wdupenv_s instead. To disable deprecation, use _CRT_SECURE_NO_WARNINGS. See online help for details. [D:\a\DeskTidy\DeskTidy\native\build\desktidy_native.vcxproj]
+  capture_overlay.cpp
+  pinned_image.cpp
+  first_run.cpp
+  hotkey_help.cpp
+  hotkey_helper.cpp
+  Generating Code...
+  Compiling...
+  hotkey_relay.cpp
+  hotkey_store.cpp
+  fence_style.cpp
+  whitelist.cpp
+  snapshot_ui.cpp
+  mist_webview.cpp
+  display_geom.cpp
+  minutes.cpp
+  i18n.cpp
+  shell_icons.cpp
+  page_folders.cpp
+  organize_suppress.cpp
+  app_prefs.cpp
+  ui_theme.cpp
+  desktop_dblclick.cpp
+  screen_record.cpp
+  ffmpeg_fetch.cpp
+D:\a\DeskTidy\DeskTidy\native\src\ffmpeg_fetch.cpp(26,22): warning C4996: '_wgetenv': This function or variable may be unsafe. Consider using _wdupenv_s instead. To disable deprecation, use _CRT_SECURE_NO_WARNINGS. See online help for details. [D:\a\DeskTidy\DeskTidy\native\build\desktidy_native.vcxproj]
+  fence_region_overlay.cpp
+  update_check.cpp
+  update_json.cpp
+  Generating Code...
+  Compiling...
+  update_verify.cpp
+  shell_clipboard.cpp
+  icon_actions.cpp
+  shell_context_menu.cpp
+  toast.cpp
+  help_center.cpp
+  native_cleanup.cpp
+  fence_keys.cpp
+  layout_editor.cpp
+  pet_ledges.cpp
+  pet_lines.cpp
+  cli_ipc.cpp
+  file_assoc.cpp
+  docx_export.cpp
+  Generating Code...
+  tweetnacl.c
+D:\a\DeskTidy\DeskTidy\native\third_party\tweetnacl\tweetnacl.c(13,9): warning C4132: '_0': const object should be initialized [D:\a\DeskTidy\DeskTidy\native\build\desktidy_native.vcxproj]
+D:\a\DeskTidy\DeskTidy\native\third_party\tweetnacl\tweetnacl.c(16,6): warning C4132: 'gf0': const object should be initialized [D:\a\DeskTidy\DeskTidy\native\build\desktidy_native.vcxproj]
+D:\a\DeskTidy\DeskTidy\native\third_party\tweetnacl\tweetnacl.c(45,21): warning C4244: '=': conversion from 'u32' to 'u8', possible loss of data [D:\a\DeskTidy\DeskTidy\native\build\desktidy_native.vcxproj]
+D:\a\DeskTidy\DeskTidy\native\third_party\tweetnacl\tweetnacl.c(51,35): warning C4244: '=': conversion from 'u64' to 'u8', possible loss of data [D:\a\DeskTidy\DeskTidy\native\build\desktidy_native.vcxproj]
+D:\a\DeskTidy\DeskTidy\native\third_party\tweetnacl\tweetnacl.c(57,3): warning C4018: '<': signed/unsigned mismatch [D:\a\DeskTidy\DeskTidy\native\build\desktidy_native.vcxproj]
+D:\a\DeskTidy\DeskTidy\native\third_party\tweetnacl\tweetnacl.c(123,17): warning C4295: 'sigma': array is too small to include a terminating null character [D:\a\DeskTidy\DeskTidy\native\build\desktidy_native.vcxproj]
+D:\a\DeskTidy\DeskTidy\native\third_party\tweetnacl\tweetnacl.c(138,14): warning C4244: '=': conversion from 'u32' to 'u8', possible loss of data [D:\a\DeskTidy\DeskTidy\native\build\desktidy_native.vcxproj]
+D:\a\DeskTidy\DeskTidy\native\third_party\tweetnacl\tweetnacl.c(228,7): warning C4146: unary minus operator applied to unsigned type, result still unsigned [D:\a\DeskTidy\DeskTidy\native\build\desktidy_native.vcxproj]
+D:\a\DeskTidy\DeskTidy\native\third_party\tweetnacl\tweetnacl.c(234,23): warning C4244: '=': conversion from 'u32' to 'u8', possible loss of data [D:\a\DeskTidy\DeskTidy\native\build\desktidy_native.vcxproj]
+D:\a\DeskTidy\DeskTidy\native\third_party\tweetnacl\tweetnacl.c(316,18): warning C4244: '=': conversion from 'i64' to 'u8', possible loss of data [D:\a\DeskTidy\DeskTidy\native\build\desktidy_native.vcxproj]
+D:\a\DeskTidy\DeskTidy\native\third_party\tweetnacl\tweetnacl.c(410,18): warning C4244: 'function': conversion from 'i64' to 'int', possible loss of data [D:\a\DeskTidy\DeskTidy\native\build\desktidy_native.vcxproj]
+D:\a\DeskTidy\DeskTidy\native\third_party\tweetnacl\tweetnacl.c(411,18): warning C4244: 'function': conversion from 'i64' to 'int', possible loss of data [D:\a\DeskTidy\DeskTidy\native\build\desktidy_native.vcxproj]
+D:\a\DeskTidy\DeskTidy\native\third_party\tweetnacl\tweetnacl.c(430,18): warning C4244: 'function': conversion from 'i64' to 'int', possible loss of data [D:\a\DeskTidy\DeskTidy\native\build\desktidy_native.vcxproj]
+D:\a\DeskTidy\DeskTidy\native\third_party\tweetnacl\tweetnacl.c(431,18): warning C4244: 'function': conversion from 'i64' to 'int', possible loss of data [D:\a\DeskTidy\DeskTidy\native\build\desktidy_native.vcxproj]
+D:\a\DeskTidy\DeskTidy\native\third_party\tweetnacl\tweetnacl.c(548,10): warning C4244: 'return': conversion from 'u64' to 'int', possible loss of data [D:\a\DeskTidy\DeskTidy\native\build\desktidy_native.vcxproj]
+D:\a\DeskTidy\DeskTidy\native\third_party\tweetnacl\tweetnacl.c(723,3): warning C4018: '<': signed/unsigned mismatch [D:\a\DeskTidy\DeskTidy\native\build\desktidy_native.vcxproj]
+D:\a\DeskTidy\DeskTidy\native\third_party\tweetnacl\tweetnacl.c(785,11): warning C4245: '=': conversion from 'int' to 'u64', signed/unsigned mismatch [D:\a\DeskTidy\DeskTidy\native\build\desktidy_native.vcxproj]
+  tweetnacl_no_random.c
+  Generating Code...
+  desktidy_native.vcxproj -> D:\a\DeskTidy\DeskTidy\native\build\Release\desktidy_native.exe
