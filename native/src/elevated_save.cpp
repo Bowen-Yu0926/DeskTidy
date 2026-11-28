@@ -247,12 +247,42 @@ bool DirectWriteFileBytes(const std::wstring& path, const void* data, size_t siz
     return false;
   }
 
+  // Snapshot the current contents first. This is the in-place fallback used for
+  // protected files (hosts) where the temp+MoveFileEx path was blocked — a
+  // partial WriteFile (e.g. disk full) would otherwise truncate/mix the live
+  // file with no way back. Keep the original so we can restore it on failure.
+  std::string backup;
+  {
+    LARGE_INTEGER zero{};
+    SetFilePointerEx(h, zero, nullptr, FILE_BEGIN);
+    char buf[65536];
+    DWORD got = 0;
+    for (;;) {
+      if (!ReadFile(h, buf, sizeof(buf), &got, nullptr) || got == 0) {
+        break;
+      }
+      backup.append(buf, got);
+      if (backup.size() > (64u * 1024u * 1024u)) {
+        break;  // sanity cap; a >64MB config file is not something we rewrite
+      }
+    }
+  }
+
   SetFilePointer(h, 0, nullptr, FILE_BEGIN);
   DWORD written = 0;
   const BOOL ok =
       WriteFile(h, data, static_cast<DWORD>(size), &written, nullptr);
   const DWORD write_err = ok ? 0 : GetLastError();
   if (ok && written == size) {
+    SetEndOfFile(h);
+    FlushFileBuffers(h);
+  } else {
+    // Roll back to the pre-write contents so a failed direct write cannot
+    // leave hosts (or any protected file) truncated or half-updated.
+    SetFilePointer(h, 0, nullptr, FILE_BEGIN);
+    DWORD restored = 0;
+    WriteFile(h, backup.data(), static_cast<DWORD>(backup.size()), &restored,
+              nullptr);
     SetEndOfFile(h);
     FlushFileBuffers(h);
   }
